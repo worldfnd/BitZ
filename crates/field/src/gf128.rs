@@ -19,8 +19,10 @@ mod portable;
 #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
 mod aarch64;
 
+mod pow;
 mod wide;
 
+pub use pow::{FixedBasePow, MULT_ORDER, ORDER_PRIME_FACTORS, is_generator, smallest_generator};
 pub use wide::Wide256;
 
 /// The multiply and square in use on this target. The gate is `aes`, not

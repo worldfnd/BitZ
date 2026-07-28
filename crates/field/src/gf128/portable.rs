@@ -68,6 +68,14 @@ pub fn square(a: [u64; 2]) -> [u64; 2] {
     reduce([l0, l1, h0, h1])
 }
 
+pub fn square_n(a: [u64; 2], k: u32) -> [u64; 2] {
+    let mut w = a;
+    for _ in 0..k {
+        w = square(w);
+    }
+    w
+}
+
 /// An unreduced 256-bit value. Four words in ascending significance, the same
 /// shape [`clmul128`] returns.
 pub type Wide = [u64; 4];

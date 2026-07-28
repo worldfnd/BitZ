@@ -155,6 +155,19 @@ pub fn square(a: [u64; 2]) -> [u64; 2] {
     }
 }
 
+/// `k` squarings with one load and one store: the value never leaves its
+/// vector register between them, which is the whole reason the inversion ladder
+/// asks for runs rather than single squarings.
+pub fn square_n(a: [u64; 2], k: u32) -> [u64; 2] {
+    unsafe {
+        let mut v = load(a);
+        for _ in 0..k {
+            v = square_inner(v);
+        }
+        store(v)
+    }
+}
+
 /// An unreduced 256-bit value, held as `(low, high)` in two vector registers.
 /// A sum of these never crosses into the general-purpose file, which is the
 /// reason the accumulator is ours rather than flock's GPR-resident one.
