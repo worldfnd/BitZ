@@ -155,6 +155,46 @@ pub fn square(a: [u64; 2]) -> [u64; 2] {
     }
 }
 
+/// An unreduced 256-bit value, held as `(low, high)` in two vector registers.
+/// A sum of these never crosses into the general-purpose file, which is the
+/// reason the accumulator is ours rather than flock's GPR-resident one.
+pub type Wide = (uint64x2_t, uint64x2_t);
+
+#[inline]
+pub fn wide_zero() -> Wide {
+    unsafe { (vdupq_n_u64(0), vdupq_n_u64(0)) }
+}
+
+#[inline]
+pub fn wide_of(a: [u64; 2]) -> Wide {
+    unsafe { (load(a), vdupq_n_u64(0)) }
+}
+
+#[inline]
+pub fn wide_mul(a: [u64; 2], b: [u64; 2]) -> Wide {
+    unsafe { clmul_256(load(a), load(b)) }
+}
+
+#[inline]
+pub fn wide_add(x: Wide, y: Wide) -> Wide {
+    unsafe { (veorq_u64(x.0, y.0), veorq_u64(x.1, y.1)) }
+}
+
+#[inline]
+pub fn wide_reduce(w: Wide) -> [u64; 2] {
+    unsafe { store(reduce_256(w.0, w.1)) }
+}
+
+/// Spill the accumulator to words so it can be compared against the portable
+/// one before reduction, where a cancelling error would still be visible.
+#[cfg(test)]
+pub fn wide_words(w: Wide) -> [u64; 4] {
+    unsafe {
+        let (low, high) = (store(w.0), store(w.1));
+        [low[0], low[1], high[0], high[1]]
+    }
+}
+
 /// Every multiply variant on the same input, so the equivalence test pins all
 /// of them to the portable pipeline, not only the one [`mul`] selects.
 #[cfg(test)]

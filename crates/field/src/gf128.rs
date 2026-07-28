@@ -19,6 +19,10 @@ mod portable;
 #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
 mod aarch64;
 
+mod wide;
+
+pub use wide::Wide256;
+
 /// The multiply and square in use on this target. The gate is `aes`, not
 /// `neon`, because `pmull` is a crypto extension: Rust enables it by default
 /// on `aarch64-apple-darwin` but not on `aarch64-unknown-linux-gnu`, where

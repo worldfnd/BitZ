@@ -68,6 +68,30 @@ pub fn square(a: [u64; 2]) -> [u64; 2] {
     reduce([l0, l1, h0, h1])
 }
 
+/// An unreduced 256-bit value. Four words in ascending significance, the same
+/// shape [`clmul128`] returns.
+pub type Wide = [u64; 4];
+
+pub fn wide_zero() -> Wide {
+    [0; 4]
+}
+
+pub fn wide_of(a: [u64; 2]) -> Wide {
+    [a[0], a[1], 0, 0]
+}
+
+pub fn wide_mul(a: [u64; 2], b: [u64; 2]) -> Wide {
+    clmul128(a, b)
+}
+
+pub fn wide_add(x: Wide, y: Wide) -> Wide {
+    [x[0] ^ y[0], x[1] ^ y[1], x[2] ^ y[2], x[3] ^ y[3]]
+}
+
+pub fn wide_reduce(w: Wide) -> [u64; 2] {
+    reduce(w)
+}
+
 /// Multiply by the generator `X`: a one-bit shift of the 128-bit value, folding
 /// `X^128 = g` back in when the `X^127` coefficient overflows.
 pub const fn mul_x(a: [u64; 2]) -> [u64; 2] {
