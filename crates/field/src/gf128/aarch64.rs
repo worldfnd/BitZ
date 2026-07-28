@@ -16,10 +16,10 @@ use core::arch::aarch64::{
 
 use super::REDUCTION;
 
-/// Taking an address here does not force the array to memory — the compiled
+/// Taking an address here does not force the array to memory: the compiled
 /// loop reads straight from the caller's slice. Building the register lane-wise
-/// with `vcombine_u64` to avoid the address measured inside run-to-run noise,
-/// so this stays as the simpler form.
+/// with `vcombine_u64` instead measured inside run-to-run noise, so this stays
+/// the simpler form.
 #[inline(always)]
 unsafe fn load(w: [u64; 2]) -> uint64x2_t {
     unsafe { vld1q_u64(w.as_ptr()) }
@@ -117,8 +117,8 @@ unsafe fn mul_schoolbook(a: uint64x2_t, b: uint64x2_t) -> uint64x2_t {
 /// as `t2.lo*X^64 + t2.hi*g` and folds it into `t1`; the second does the same
 /// to `t1` and folds it into `t0`.
 ///
-/// A candidate for [`mul`]'s default until the field bench decides; the tests
-/// already pin it to the portable path.
+/// Not yet measured against [`mul_schoolbook`]; the tests pin both to the
+/// scalar path.
 #[allow(dead_code)]
 #[inline(always)]
 unsafe fn mul_interleaved(a: uint64x2_t, b: uint64x2_t) -> uint64x2_t {
@@ -144,7 +144,7 @@ unsafe fn square_inner(a: uint64x2_t) -> uint64x2_t {
 }
 
 pub fn mul(a: [u64; 2], b: [u64; 2]) -> [u64; 2] {
-    // Default pending the field bench; `mul_interleaved` is the alternative.
+    // Provisional; `mul_interleaved` is the unmeasured alternative.
     unsafe { store(mul_schoolbook(load(a), load(b))) }
 }
 
@@ -168,9 +168,8 @@ pub fn square_n(a: [u64; 2], k: u32) -> [u64; 2] {
     }
 }
 
-/// An unreduced 256-bit value, held as `(low, high)` in two vector registers.
-/// A sum of these never crosses into the general-purpose file, which is the
-/// reason the accumulator is ours rather than flock's GPR-resident one.
+/// An unreduced 256-bit value, held as `(low, high)` in two vector registers,
+/// so a running sum never crosses into the general-purpose register file.
 pub type Wide = (uint64x2_t, uint64x2_t);
 
 #[inline]

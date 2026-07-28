@@ -5,8 +5,8 @@
 //! reflected byte order NIST SP 800-38D uses, so published GHASH vectors apply
 //! only through a bit-reversal.
 //!
-//! The layout matches flock's `F128`, so the commitment bridge converts by
-//! field copy.
+//! Layout matches flock's `F128`, so converting between the two is a field
+//! copy.
 
 use std::ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 
@@ -34,8 +34,7 @@ use aarch64 as kernel;
 #[cfg(not(all(target_arch = "aarch64", target_feature = "aes")))]
 use portable as kernel;
 
-/// Which kernel this build selected. Reported by the field bench, since a
-/// timing is meaningless without it.
+/// Which kernel this build selected. A timing means nothing without it.
 #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
 pub const KERNEL: &str = "neon";
 #[cfg(not(all(target_arch = "aarch64", target_feature = "aes")))]
@@ -55,9 +54,9 @@ pub struct F128 {
 impl F128 {
     pub const ZERO: Self = Self::new(0, 0);
     pub const ONE: Self = Self::new(1, 0);
-    /// `X`, whose multiplicative order is the full `2^128 - 1`. Not automatic
-    /// — the analogous element of AES's `GF(2^8)` does not generate that group
-    /// — and the exponent fold's injectivity rests on it.
+    /// `X`, whose multiplicative order is the full `2^128 - 1` — checked by
+    /// [`is_generator`], not assumed. The analogous element of AES's `GF(2^8)`
+    /// has order 51 out of 255.
     pub const GENERATOR: Self = Self::new(2, 0);
 
     pub const fn new(lo: u64, hi: u64) -> Self {
@@ -79,8 +78,8 @@ impl F128 {
         Self { lo, hi }
     }
 
-    /// Canonical encoding: 16 bytes little-endian, `lo` first — what flock's
-    /// challenger absorbs, so transcripts stay byte-parity.
+    /// Canonical encoding: 16 bytes little-endian, `lo` first — the encoding
+    /// flock's transcript absorbs.
     pub fn to_bytes(self) -> [u8; 16] {
         let mut out = [0u8; 16];
         out[..8].copy_from_slice(&self.lo.to_le_bytes());
