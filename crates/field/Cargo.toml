@@ -8,5 +8,7 @@ license.workspace = true
 [dependencies]
 
 [dev-dependencies]
+aes = "0.9.2"
+flock-core = { git = "https://github.com/succinctlabs/flock.git", rev = "85fc0e7cc002e7ca4dffdff805ba89976e9a5293" }
 rand_core = "0.9"
 rand_pcg = "0.9"
