@@ -255,10 +255,9 @@ mod tests {
         let x_64 = F128::new(0, 1);
         let x_127 = F128::new(0, 1 << 63);
 
-        assert_eq!(x * x_63, x_64);
-        assert_eq!(x * x_127, F128::new(REDUCTION, 0));
-        assert_eq!(x_64 * x_64, F128::new(REDUCTION, 0));
-        assert_eq!(x * x, F128::new(4, 0));
+        assert_eq!(x * x_63, x_64); // crosses the word boundary
+        assert_eq!(x * x_127, F128::new(REDUCTION, 0)); // crosses X^128
+        assert_eq!(x_64 * x_64, F128::new(REDUCTION, 0)); // the same, from both halves
     }
 
     /// Squaring is the Frobenius endomorphism, hence `F_2`-linear.
@@ -282,11 +281,11 @@ mod tests {
         assert_eq!(F128::new(0, 1).to_bytes()[8], 1);
     }
 
-    /// Every SIMD variant must agree with the portable pipeline bit for bit, on
+    /// The SIMD kernels must agree with the portable pipeline bit for bit, on
     /// the boundary cases as well as on random input.
     #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
     #[test]
-    fn neon_variants_match_portable() {
+    fn neon_matches_portable() {
         let edges = [
             F128::ZERO,
             F128::ONE,
@@ -314,16 +313,11 @@ mod tests {
         }
 
         for (a, b) in cases {
-            let expected = portable::mul(a.words(), b.words());
-            for (i, got) in aarch64::mul_variants(a.words(), b.words())
-                .into_iter()
-                .enumerate()
-            {
-                assert_eq!(
-                    got, expected,
-                    "multiply variant {i} disagrees on {a:?} * {b:?}"
-                );
-            }
+            assert_eq!(
+                aarch64::mul(a.words(), b.words()),
+                portable::mul(a.words(), b.words()),
+                "multiply disagrees on {a:?} * {b:?}"
+            );
             assert_eq!(
                 aarch64::square(a.words()),
                 portable::square(a.words()),

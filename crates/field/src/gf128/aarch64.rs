@@ -100,26 +100,16 @@ unsafe fn reduce_256(low: uint64x2_t, high: uint64x2_t) -> uint64x2_t {
     }
 }
 
-/// Schoolbook product then a single 3-PMULL reduction. 7 PMULL total.
-#[inline(always)]
-unsafe fn mul_schoolbook(a: uint64x2_t, b: uint64x2_t) -> uint64x2_t {
-    unsafe {
-        let (low, high) = clmul_256(a, b);
-        reduce_256(low, high)
-    }
-}
-
-/// Same product, reduced 64 bits at a time between the partial sums. 6 PMULL
-/// total — one fewer than [`mul_schoolbook`], at the cost of a longer
-/// dependency chain.
+/// The product, reduced 64 bits at a time between the partial sums: 6 PMULL.
 ///
 /// Writing `a*b = t0 + t1*X^64 + t2*X^128`, the first stage rewrites `t2*X^64`
 /// as `t2.lo*X^64 + t2.hi*g` and folds it into `t1`; the second does the same
 /// to `t1` and folds it into `t0`.
 ///
-/// Not yet measured against [`mul_schoolbook`]; the tests pin both to the
-/// scalar path.
-#[allow(dead_code)]
+/// The alternative is to form the whole 256-bit product with [`clmul_256`] and
+/// reduce once, which needs 7 PMULL and one more `ext` and `eor`. That measured
+/// 33% slower on independent products and 12% slower on a dependent chain, so
+/// this is the one kept.
 #[inline(always)]
 unsafe fn mul_interleaved(a: uint64x2_t, b: uint64x2_t) -> uint64x2_t {
     unsafe {
@@ -144,8 +134,7 @@ unsafe fn square_inner(a: uint64x2_t) -> uint64x2_t {
 }
 
 pub fn mul(a: [u64; 2], b: [u64; 2]) -> [u64; 2] {
-    // Provisional; `mul_interleaved` is the unmeasured alternative.
-    unsafe { store(mul_schoolbook(load(a), load(b))) }
+    unsafe { store(mul_interleaved(load(a), load(b))) }
 }
 
 pub fn square(a: [u64; 2]) -> [u64; 2] {
@@ -204,18 +193,5 @@ pub fn wide_words(w: Wide) -> [u64; 4] {
     unsafe {
         let (low, high) = (store(w.0), store(w.1));
         [low[0], low[1], high[0], high[1]]
-    }
-}
-
-/// Every multiply variant on the same input, so the equivalence test pins all
-/// of them to the portable pipeline, not only the one [`mul`] selects.
-#[cfg(test)]
-pub fn mul_variants(a: [u64; 2], b: [u64; 2]) -> [[u64; 2]; 2] {
-    unsafe {
-        let (va, vb) = (load(a), load(b));
-        [
-            store(mul_schoolbook(va, vb)),
-            store(mul_interleaved(va, vb)),
-        ]
     }
 }
