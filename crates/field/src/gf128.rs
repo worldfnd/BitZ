@@ -10,7 +10,30 @@
 
 use std::ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 
+// Always compiled: the active kernel on targets without a carryless-multiply
+// instruction, and the oracle the SIMD kernels are tested against everywhere.
+// On aarch64 only the tests call it, hence the allow.
+#[cfg_attr(all(target_arch = "aarch64", target_feature = "aes"), allow(dead_code))]
 mod portable;
+
+#[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+mod aarch64;
+
+/// The multiply and square in use on this target. The gate is `aes`, not
+/// `neon`, because `pmull` is a crypto extension: Rust enables it by default
+/// on `aarch64-apple-darwin` but not on `aarch64-unknown-linux-gnu`, where
+/// this silently selects `portable`.
+#[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+use aarch64 as kernel;
+#[cfg(not(all(target_arch = "aarch64", target_feature = "aes")))]
+use portable as kernel;
+
+/// Which kernel this build selected. Reported by the field bench, since a
+/// timing is meaningless without it.
+#[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+pub const KERNEL: &str = "neon";
+#[cfg(not(all(target_arch = "aarch64", target_feature = "aes")))]
+pub const KERNEL: &str = "portable";
 
 /// Low bits of the reduction polynomial: `X^128 = X^7 + X^2 + X + 1`.
 pub const REDUCTION: u64 = 0x87;
@@ -40,7 +63,7 @@ impl F128 {
     }
 
     pub fn square(self) -> Self {
-        portable::square(self.words()).into()
+        kernel::square(self.words()).into()
     }
 
     /// Multiply by `X`: a shift and a conditional fold, cheaper than the
@@ -131,7 +154,7 @@ impl Neg for F128 {
 impl Mul for F128 {
     type Output = Self;
     fn mul(self, rhs: Self) -> Self {
-        portable::mul(self.words(), rhs.words()).into()
+        kernel::mul(self.words(), rhs.words()).into()
     }
 }
 
@@ -252,6 +275,56 @@ mod tests {
         }
         assert_eq!(F128::ONE.to_bytes()[0], 1);
         assert_eq!(F128::new(0, 1).to_bytes()[8], 1);
+    }
+
+    /// Every SIMD variant must agree with the portable pipeline bit for bit, on
+    /// the boundary cases as well as on random input.
+    #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+    #[test]
+    fn neon_variants_match_portable() {
+        let edges = [
+            F128::ZERO,
+            F128::ONE,
+            F128::GENERATOR,
+            F128::new(REDUCTION, 0),
+            F128::new(1 << 63, 0),
+            F128::new(0, 1),
+            F128::new(0, 1 << 63),
+            F128::new(u64::MAX, u64::MAX),
+        ];
+
+        let mut rng = Pcg64::seed_from_u64(9);
+        let mut cases: Vec<(F128, F128)> = Vec::new();
+        for &a in &edges {
+            for &b in &edges {
+                cases.push((a, b));
+            }
+            for _ in 0..64 {
+                cases.push((a, f128(&mut rng)));
+                cases.push((f128(&mut rng), a));
+            }
+        }
+        for _ in 0..2048 {
+            cases.push((f128(&mut rng), f128(&mut rng)));
+        }
+
+        for (a, b) in cases {
+            let expected = portable::mul(a.words(), b.words());
+            for (i, got) in aarch64::mul_variants(a.words(), b.words())
+                .into_iter()
+                .enumerate()
+            {
+                assert_eq!(
+                    got, expected,
+                    "multiply variant {i} disagrees on {a:?} * {b:?}"
+                );
+            }
+            assert_eq!(
+                aarch64::square(a.words()),
+                portable::square(a.words()),
+                "square disagrees on {a:?}"
+            );
+        }
     }
 
     #[test]
