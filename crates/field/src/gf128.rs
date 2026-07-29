@@ -323,6 +323,15 @@ mod tests {
                 portable::square(a.words()),
                 "square disagrees on {a:?}"
             );
+            // The squaring runs are separate loops on each side, so they are
+            // checked against each other rather than only against `square`.
+            for k in [0, 1, 6, 24, 48, 127] {
+                assert_eq!(
+                    aarch64::square_n(a.words(), k),
+                    portable::square_n(a.words(), k),
+                    "square_n({k}) disagrees on {a:?}"
+                );
+            }
         }
     }
 
