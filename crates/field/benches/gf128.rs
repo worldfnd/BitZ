@@ -1,12 +1,10 @@
-//! Timings for the patterns the prover actually spends its time in.
+//! Timings for the patterns the prover spends its time in.
 //!
 //! Run with `cargo bench -p field`. Reps via `F2Z_BENCH_REPS`.
 //!
-//! Two things make a number here trustworthy. Every pattern is measured once
-//! per repetition and reported as a median, because run-to-run drift on a
-//! laptop is larger than most of the differences worth seeing. And the working
-//! set is small enough to stay in cache, so what is measured is arithmetic
-//! rather than memory.
+//! Each figure is the median of several samples, because run-to-run drift on a
+//! laptop exceeds most differences worth seeing, and the working set stays in
+//! cache so what is measured is arithmetic rather than memory.
 //!
 //! The header reports which kernel and which instructions the build selected.
 //! Both are silent: `pmull` needs the `aes` target feature and the three-way
@@ -76,9 +74,9 @@ struct Bench {
 }
 
 impl Bench {
-    /// Each pattern is timed `reps` times and reduced to a median. Patterns are
-    /// run in order within a repetition rather than one pattern to completion,
-    /// so a thermal ramp lands on all of them instead of on whichever ran last.
+    /// Times `f` `reps` times and keeps the median, after one warm-up run.
+    /// Samples of a pattern run consecutively, so figures from different
+    /// patterns are comparable only up to the drift between them.
     fn run(&mut self, name: &'static str, ops: usize, f: impl Fn()) {
         f(); // warm up: fault the operands in and let the clock ramp
         let samples = (0..self.reps).map(|_| time(ops, &f)).collect();

@@ -1,11 +1,11 @@
 //! Deferred-reduction accumulator.
 //!
 //! Reduction is a fixed pattern of shifts and XORs of the input words — no step
-//! of it depends on the data — so it is `F_2`-linear:
+//! depends on the data — so it is `F_2`-linear:
 //! `reduce(x + y) = reduce(x) + reduce(y)`. A sum of products can therefore be
-//! accumulated unreduced and reduced once at the end, and the result is
-//! bit-identical to reducing every product. That trades one reduction per term
-//! for one per accumulator, which is the shape of the sumcheck round bodies.
+//! accumulated unreduced and reduced once, bit-identically to reducing each
+//! product. That trades one reduction per term for one per accumulator, the
+//! shape of the sumcheck round bodies.
 
 use std::ops::AddAssign;
 

@@ -10,9 +10,9 @@
 
 use std::ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 
-// Always compiled: the active kernel on targets without a carryless-multiply
-// instruction, and the oracle the SIMD kernels are tested against everywhere.
-// On aarch64 only the tests call it, hence the allow.
+// Always compiled: the active kernel where no carryless-multiply instruction
+// exists, and the oracle the SIMD kernels are tested against. On aarch64 only
+// tests call it, hence the allow.
 #[cfg_attr(all(target_arch = "aarch64", target_feature = "aes"), allow(dead_code))]
 mod portable;
 
@@ -25,10 +25,9 @@ mod wide;
 pub use pow::{FixedBasePow, MULT_ORDER, ORDER_PRIME_FACTORS, is_generator, smallest_generator};
 pub use wide::Wide256;
 
-/// The multiply and square in use on this target. The gate is `aes`, not
-/// `neon`, because `pmull` is a crypto extension: Rust enables it by default
-/// on `aarch64-apple-darwin` but not on `aarch64-unknown-linux-gnu`, where
-/// this silently selects `portable`.
+// The multiply and square in use on this target. The gate is `aes`, not `neon`:
+// `pmull` is a crypto extension, on by default for `aarch64-apple-darwin` but
+// not for `aarch64-unknown-linux-gnu`, which silently gets `portable`.
 #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
 use aarch64 as kernel;
 #[cfg(not(all(target_arch = "aarch64", target_feature = "aes")))]
@@ -55,8 +54,8 @@ impl F128 {
     pub const ZERO: Self = Self::new(0, 0);
     pub const ONE: Self = Self::new(1, 0);
     /// `X`, whose multiplicative order is the full `2^128 - 1` — checked by
-    /// [`is_generator`], not assumed. The analogous element of AES's `GF(2^8)`
-    /// has order 51 out of 255.
+    /// [`is_generator`], not assumed. `X` in AES's `GF(2^8)` has order 51 of
+    /// 255.
     pub const GENERATOR: Self = Self::new(2, 0);
 
     pub const fn new(lo: u64, hi: u64) -> Self {
@@ -72,7 +71,7 @@ impl F128 {
     }
 
     /// Multiply by `X`: a shift and a conditional fold, cheaper than the
-    /// general multiply where one operand is known to be the generator.
+    /// general multiply.
     pub const fn mul_x(self) -> Self {
         let [lo, hi] = portable::mul_x(self.words());
         Self { lo, hi }

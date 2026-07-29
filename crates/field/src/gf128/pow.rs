@@ -4,9 +4,9 @@ use super::{F128, kernel};
 
 /// The order of the multiplicative group, `2^128 - 1`.
 ///
-/// That is exactly `u128::MAX`, so with a generator `alpha` the exponent map
-/// `n -> alpha^n` is injective on `[0, 2^128 - 1)`: every `u128` but
-/// `u128::MAX` names a distinct element.
+/// Exactly `u128::MAX`, so for a generator `alpha` the map `n -> alpha^n` is
+/// injective on `[0, 2^128 - 1)`: every `u128` but `u128::MAX` names a distinct
+/// element.
 pub const MULT_ORDER: u128 = u128::MAX;
 
 /// The nine distinct primes dividing [`MULT_ORDER`], which is squarefree.
@@ -16,15 +16,15 @@ pub const MULT_ORDER: u128 = u128::MAX;
 /// `2^64 + 1 = 274177 * 67280421310721`.
 ///
 /// [`is_generator`] tests one condition per entry, so a composite or missing
-/// entry would weaken it silently. `order_factorization_is_complete` re-derives
-/// the product and the primality of every entry rather than trusting this list.
+/// entry would weaken it silently. The tests re-derive the product and the
+/// primality of every entry rather than trusting this list.
 pub const ORDER_PRIME_FACTORS: [u128; 9] =
     [3, 5, 17, 257, 641, 65537, 274177, 6700417, 67280421310721];
 
 impl F128 {
-    /// `self^(2^k)`. On NEON the value stays in one vector register for the
-    /// whole run, so a run of `k` squarings costs `k` PMULL pairs and a single
-    /// load/store — the reason [`F128::inverse`] is written as runs.
+    /// `self^(2^k)`. On NEON the value stays in one vector register, so `k`
+    /// squarings cost `k` PMULL pairs and one load/store — why
+    /// [`F128::inverse`] works in runs.
     pub fn square_n(self, k: u32) -> Self {
         kernel::square_n(self.words(), k).into()
     }
@@ -77,7 +77,7 @@ impl F128 {
     }
 }
 
-/// Does `a` generate the whole multiplicative group?
+/// Returns `true` if `a` generates the whole multiplicative group.
 ///
 /// The primitive-element test: `a^((2^128 - 1)/p) != 1` for every prime `p`
 /// dividing the order. Zero needs its own guard rather than a fast path —
@@ -105,9 +105,9 @@ pub fn smallest_generator() -> F128 {
 /// Comb table for raising one fixed base to many different exponents.
 ///
 /// [`F128::pow`] re-runs the `alpha, alpha^2, alpha^4, ...` squaring chain on
-/// every call, but for a fixed base that chain never changes. Precomputing
+/// every call, though for a fixed base it never changes. Precomputing
 /// `table[i][d] = alpha^(d * 2^(win*i))` turns each exponentiation into one
-/// multiply per non-zero window and no squarings at all.
+/// multiply per non-zero window, with no squarings.
 pub struct FixedBasePow {
     table: Vec<Vec<F128>>,
     win: u32,

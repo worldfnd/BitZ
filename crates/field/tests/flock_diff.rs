@@ -57,8 +57,7 @@ fn cases() -> Vec<(F128, F128)> {
 }
 
 /// A field copy between the two types is only sound if these agree. `repr(C)`
-/// fixes the field order, so size and alignment are what is left to check —
-/// plus that the fields actually round-trip by name.
+/// fixes the field order, leaving size, alignment, and a round-trip by name.
 #[test]
 fn layouts_are_interchangeable() {
     assert_eq!(size_of::<F128>(), size_of::<Flock>());

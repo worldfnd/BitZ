@@ -32,8 +32,8 @@ const fn mul_wide(a: u128, b: u128) -> (u128, u128) {
     (lo, hi)
 }
 
-/// `(lo, hi) >> n` for `n < 128`, keeping only the low 128 bits of the result.
-/// Every use here shifts far enough that nothing above them survives.
+/// `(lo, hi) >> n` for `n < 128`, keeping the low 128 bits. Every use here
+/// shifts far enough that nothing above them survives.
 const fn shr_wide(lo: u128, hi: u128, n: u32) -> u128 {
     if n == 0 {
         lo
@@ -80,9 +80,9 @@ impl<const Q: u128> Fq<Q> {
 
     /// The least non-negative representative, in `[0, Q)`.
     ///
-    /// Which representative a lift picks is a convention, not forced — centred
-    /// representatives are the usual alternative — and it is visible wherever a
-    /// field element is turned back into an integer, so it is fixed here.
+    /// Which representative a lift picks is a convention — centred ones are the
+    /// usual alternative — and it shows wherever a field element becomes an
+    /// integer again, so it is fixed here.
     pub const fn value(self) -> u128 {
         self.0
     }

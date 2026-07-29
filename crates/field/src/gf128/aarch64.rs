@@ -145,8 +145,8 @@ pub fn square(a: [u64; 2]) -> [u64; 2] {
 }
 
 /// `k` squarings with one load and one store: the value never leaves its
-/// vector register between them, which is the whole reason the inversion ladder
-/// asks for runs rather than single squarings.
+/// vector register between them, which is why the inversion ladder asks for
+/// runs rather than single squarings.
 pub fn square_n(a: [u64; 2], k: u32) -> [u64; 2] {
     unsafe {
         let mut v = load(a);
