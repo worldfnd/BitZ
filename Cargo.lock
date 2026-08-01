@@ -267,6 +267,11 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 [[package]]
 name = "poly"
 version = "0.1.0"
+dependencies = [
+ "field",
+ "rand_core",
+ "rand_pcg",
+]
 
 [[package]]
 name = "proc-macro2"
