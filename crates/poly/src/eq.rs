@@ -1,4 +1,21 @@
-use field::F128;
+use std::ops::{Mul, Sub};
+
+use field::{F128, Fq};
+
+pub trait Field: Copy + From<u128> + Sub<Output = Self> + Mul<Output = Self> {
+    const ZERO: Self;
+    const ONE: Self;
+}
+
+impl Field for F128 {
+    const ZERO: Self = F128::ZERO;
+    const ONE: Self = F128::ONE;
+}
+
+impl<const Q: u128> Field for Fq<Q> {
+    const ZERO: Self = Fq::ZERO;
+    const ONE: Self = Fq::ONE;
+}
 
 /// Evaluates the multilinear equality polynomial over F128
 ///
@@ -12,10 +29,56 @@ use field::F128;
 pub fn eq_eval(x: &[F128], y: &[F128]) -> F128 {
     assert_eq!(x.len(), y.len());
     let mut result = F128::ONE;
-    for (&a, &b) in x.into_iter().zip(y.into_iter()) {
+    for (&a, &b) in x.iter().zip(y.iter()) {
         result *= F128::ONE + a + b;
     }
     result
+}
+
+/// Builds the evaluation table of `eq(b, r)` over all Boolean vectors
+/// `b ∈ {0,1}^n`, where `n = r.len()`.
+///
+/// For each Boolean vector `b`,
+///
+/// eq(b, r) = ∏_{i=0}^{n-1}
+///     [b_i r_i + (1 - b_i)(1 - r_i)].
+///
+/// Since each `b_i` is Boolean, this is equivalently
+///
+/// eq(b, r) = ∏_{i=0}^{n-1} {
+///     r_i       if b_i = 1,
+///     1 - r_i   if b_i = 0.
+/// }
+///
+/// The result has length `2^n`. Entry `j` contains `eq(b, r)` for
+/// `b_i = (j >> i) & 1`, so variable `i` corresponds to bit `i` of
+/// the index (little-endian order).
+///
+/// For `n = 0`, the table is `[F128::ONE]`, corresponding to the
+/// empty product.
+pub fn eq_table<F: Field>(r: &[F]) -> Vec<F> {
+    let n = 1 << r.len();
+    // Allocate the final output once.
+    let mut table = vec![F::ZERO; n];
+    table[0] = F::ONE;
+
+    for (i, &r_i) in r.iter().enumerate() {
+        let half = 1usize << i;
+
+        // The lower half contains the existing parent values.
+        // The upper half receives their one-children.
+        let (zero_children, one_children) = table[..2 * half].split_at_mut(half);
+
+        for (zero_child, one_child) in zero_children.iter_mut().zip(one_children) {
+            let parent = *zero_child;
+            let one_value = parent * r_i;
+
+            *zero_child = parent - one_value;
+            *one_child = one_value;
+        }
+    }
+
+    table
 }
 
 #[cfg(test)]
