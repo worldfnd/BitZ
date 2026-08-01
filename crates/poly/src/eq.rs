@@ -22,8 +22,7 @@ pub fn eq_eval(x: &[F128], y: &[F128]) -> F128 {
 pub mod tests {
     use super::eq_eval;
     use field::F128;
-    use rand_core::{RngCore, SeedableRng};
-    use rand_pcg::Pcg64;
+    use proptest::prelude::*;
 
     #[test]
     fn empty_vectors_give_one() {
@@ -42,7 +41,7 @@ pub mod tests {
     }
 
     #[test]
-    fn boolean_vectors_have_kronecker_behavior() {
+    fn boolean_vectors_are_equality_indicators() {
         let zero = F128::ZERO;
         let one = F128::ONE;
 
@@ -52,19 +51,6 @@ pub mod tests {
 
         assert_eq!(eq_eval(&x, &equal), one);
         assert_eq!(eq_eval(&x, &different), zero);
-    }
-
-    #[test]
-    fn matches_unsimplified_definition() {
-        let x = [F128::from(2u128), F128::from(7u128), F128::from(19u128)];
-        let y = [F128::from(5u128), F128::from(11u128), F128::from(23u128)];
-
-        let expected = x.iter().zip(&y).fold(F128::ONE, |acc, (&x_i, &y_i)| {
-            let factor = x_i * y_i + (F128::ONE - x_i) * (F128::ONE - y_i);
-            acc * factor
-        });
-
-        assert_eq!(eq_eval(&x, &y), expected);
     }
 
     #[test]
@@ -101,25 +87,34 @@ pub mod tests {
         assert_eq!(sum, F128::ONE);
     }
 
-    #[test]
-    fn randomized_results_match_unsimplified_definition() {
-        let mut rng = Pcg64::seed_from_u64(501);
+    proptest! {
+        #[test]
+        fn eq_matches_definition(
+            pairs in prop::collection::vec(
+                (any::<u128>(), any::<u128>()),
+                0..64,
+            )
+        ) {
+            let x: Vec<_> = pairs.iter()
+                .map(|&(x, _)| F128::from(x))
+                .collect();
+            let y: Vec<_> = pairs.iter()
+                .map(|&(_, y)| F128::from(y))
+                .collect();
 
-        for width in 0..12 {
-            for _ in 0..64 {
-                let x: Vec<_> = (0..width)
-                    .map(|_| F128::new(rng.next_u64(), rng.next_u64()))
-                    .collect();
-                let y: Vec<_> = (0..width)
-                    .map(|_| F128::new(rng.next_u64(), rng.next_u64()))
-                    .collect();
+            let expected = x.iter().zip(&y).fold(
+                F128::ONE,
+                |acc, (&x_i, &y_i)| {
+                    acc * (
+                        x_i * y_i
+                        + (F128::ONE - x_i)
+                            * (F128::ONE - y_i)
+                    )
+                },
+            );
 
-                let expected = x.iter().zip(&y).fold(F128::ONE, |acc, (&x_i, &y_i)| {
-                    acc * (x_i * y_i + (F128::ONE - x_i) * (F128::ONE - y_i))
-                });
-
-                assert_eq!(eq_eval(&x, &y), expected);
-            }
+            prop_assert_eq!(eq_eval(&x, &y), expected);
+            prop_assert_eq!(eq_eval(&x, &y), eq_eval(&y, &x));
         }
     }
 }

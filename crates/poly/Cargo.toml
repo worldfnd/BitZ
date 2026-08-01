@@ -9,5 +9,4 @@ license.workspace = true
 field = { path = "../field" }
 
 [dev-dependencies]
-rand_core = "0.9"
-rand_pcg = "0.9"
+proptest = "1.11.0"
