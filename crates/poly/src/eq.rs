@@ -83,9 +83,85 @@ pub fn eq_table<F: Field>(r: &[F]) -> Vec<F> {
 
 #[cfg(test)]
 pub mod tests {
-    use super::eq_eval;
-    use field::F128;
+    use super::{Field, eq_eval, eq_table};
+    use field::{F128, FqDefault};
     use proptest::prelude::*;
+
+    fn direct_table_entry<F: Field>(r: &[F], index: usize) -> F {
+        r.iter().enumerate().fold(F::ONE, |acc, (bit, &r_i)| {
+            let factor = if (index >> bit) & 1 == 0 {
+                F::ONE - r_i
+            } else {
+                r_i
+            };
+            acc * factor
+        })
+    }
+
+    #[test]
+    fn empty_eq_tables_contain_one() {
+        assert_eq!(eq_table::<F128>(&[]), vec![F128::ONE]);
+        assert_eq!(eq_table::<FqDefault>(&[]), vec![FqDefault::ONE]);
+    }
+
+    #[test]
+    fn eq_tables_use_little_endian_index_order() {
+        let r_0 = F128::from(2u128);
+        let r_1 = F128::from(7u128);
+        assert_eq!(
+            eq_table(&[r_0, r_1]),
+            vec![
+                (F128::ONE - r_0) * (F128::ONE - r_1),
+                r_0 * (F128::ONE - r_1),
+                (F128::ONE - r_0) * r_1,
+                r_0 * r_1,
+            ]
+        );
+
+        let r_0 = FqDefault::from(2u128);
+        let r_1 = FqDefault::from(7u128);
+        assert_eq!(
+            eq_table(&[r_0, r_1]),
+            vec![
+                (FqDefault::ONE - r_0) * (FqDefault::ONE - r_1),
+                r_0 * (FqDefault::ONE - r_1),
+                (FqDefault::ONE - r_0) * r_1,
+                r_0 * r_1,
+            ]
+        );
+    }
+
+    #[test]
+    fn boolean_eq_tables_are_one_hot() {
+        let selected = 0b1010usize;
+        let r_f128: Vec<_> = (0..4)
+            .map(|bit| F128::from((selected >> bit) & 1 == 1))
+            .collect();
+        let r_fq: Vec<_> = (0..4)
+            .map(|bit| FqDefault::from(((selected >> bit) & 1) as u128))
+            .collect();
+
+        for (index, &weight) in eq_table(&r_f128).iter().enumerate() {
+            assert_eq!(
+                weight,
+                if index == selected {
+                    F128::ONE
+                } else {
+                    F128::ZERO
+                }
+            );
+        }
+        for (index, &weight) in eq_table(&r_fq).iter().enumerate() {
+            assert_eq!(
+                weight,
+                if index == selected {
+                    FqDefault::ONE
+                } else {
+                    FqDefault::ZERO
+                }
+            );
+        }
+    }
 
     #[test]
     fn empty_vectors_give_one() {
@@ -151,6 +227,42 @@ pub mod tests {
     }
 
     proptest! {
+        #[test]
+        fn eq_tables_match_the_direct_definition(
+            raw in prop::collection::vec(any::<u128>(), 0..10)
+        ) {
+            let r_f128: Vec<_> = raw.iter().copied().map(F128::from).collect();
+            let table_f128 = eq_table(&r_f128);
+            prop_assert_eq!(table_f128.len(), 1usize << raw.len());
+            for (index, &weight) in table_f128.iter().enumerate() {
+                prop_assert_eq!(weight, direct_table_entry(&r_f128, index));
+            }
+
+            let r_fq: Vec<_> = raw.iter().copied().map(FqDefault::from).collect();
+            let table_fq = eq_table(&r_fq);
+            prop_assert_eq!(table_fq.len(), 1usize << raw.len());
+            for (index, &weight) in table_fq.iter().enumerate() {
+                prop_assert_eq!(weight, direct_table_entry(&r_fq, index));
+            }
+        }
+
+        #[test]
+        fn eq_table_weights_sum_to_one(
+            raw in prop::collection::vec(any::<u128>(), 0..10)
+        ) {
+            let r_f128: Vec<_> = raw.iter().copied().map(F128::from).collect();
+            let sum_f128 = eq_table(&r_f128)
+                .into_iter()
+                .fold(F128::ZERO, |sum, weight| sum + weight);
+            prop_assert_eq!(sum_f128, F128::ONE);
+
+            let r_fq: Vec<_> = raw.iter().copied().map(FqDefault::from).collect();
+            let sum_fq = eq_table(&r_fq)
+                .into_iter()
+                .fold(FqDefault::ZERO, |sum, weight| sum + weight);
+            prop_assert_eq!(sum_fq, FqDefault::ONE);
+        }
+
         #[test]
         fn eq_matches_definition(
             pairs in prop::collection::vec(
