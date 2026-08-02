@@ -8,13 +8,19 @@ use std::{
     slice::SliceIndex,
 };
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DenseMleError {
+    SizeMismatch,
+    InvalidNumVarsRange,
+}
+
 /// A multilinear polynomial represented by its evaluations on a Boolean cube.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DenseMultilinearExtension<T> {
     /// Evaluations on `{0,1}^num_vars` in little-endian index order.
-    pub evaluations: Vec<T>,
+    evaluations: Vec<T>,
     /// Number of variables.
-    pub num_vars: usize,
+    num_vars: usize,
 }
 
 impl<T> DenseMultilinearExtension<T> {
@@ -24,6 +30,25 @@ impl<T> DenseMultilinearExtension<T> {
             evaluations: vec![evaluation],
             num_vars: 0,
         }
+    }
+
+    pub fn from_evaluations(num_vars: usize, evaluations: Vec<T>) -> Result<Self, DenseMleError> {
+        if num_vars >= usize::BITS as usize {
+            return Err(DenseMleError::InvalidNumVarsRange);
+        }
+
+        if evaluations.len() != 1 << num_vars {
+            return Err(DenseMleError::SizeMismatch);
+        }
+
+        Ok(Self {
+            evaluations,
+            num_vars,
+        })
+    }
+
+    fn num_vars(&self) -> usize {
+        self.num_vars
     }
 }
 
@@ -66,7 +91,7 @@ impl<T, I: SliceIndex<[T]>> IndexMut<I> for DenseMultilinearExtension<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::DenseMultilinearExtension;
+    use super::{DenseMleError, DenseMultilinearExtension};
 
     #[test]
     fn zero_vars_contains_one_evaluation() {
@@ -74,6 +99,64 @@ mod tests {
 
         assert_eq!(mle.num_vars, 0);
         assert_eq!(mle.evaluations, vec![7]);
+    }
+
+    #[test]
+    fn from_evaluations_accepts_exact_shapes_and_preserves_order() {
+        for num_vars in 0..=8 {
+            let evaluations: Vec<_> = (0..1usize << num_vars).collect();
+            let expected = evaluations.clone();
+
+            let mle = DenseMultilinearExtension::from_evaluations(num_vars, evaluations)
+                .expect("an exact power-of-two table should be accepted");
+
+            assert_eq!(mle.num_vars(), num_vars);
+            assert_eq!(&*mle, expected.as_slice());
+        }
+    }
+
+    #[test]
+    fn zero_vars_matches_the_exact_shape_constructor() {
+        assert_eq!(
+            DenseMultilinearExtension::zero_vars(7u32),
+            DenseMultilinearExtension::from_evaluations(0, vec![7]).unwrap()
+        );
+    }
+
+    #[test]
+    fn from_evaluations_rejects_empty_table() {
+        assert_eq!(
+            DenseMultilinearExtension::<u32>::from_evaluations(0, vec![]),
+            Err(DenseMleError::SizeMismatch)
+        );
+    }
+
+    #[test]
+    fn from_evaluations_rejects_short_table() {
+        assert_eq!(
+            DenseMultilinearExtension::from_evaluations(2, vec![1u32, 2, 3]),
+            Err(DenseMleError::SizeMismatch)
+        );
+    }
+
+    #[test]
+    fn from_evaluations_rejects_long_table() {
+        assert_eq!(
+            DenseMultilinearExtension::from_evaluations(2, vec![1u32, 2, 3, 4, 5]),
+            Err(DenseMleError::SizeMismatch)
+        );
+    }
+
+    #[test]
+    fn from_evaluations_rejects_unrepresentable_num_vars_without_shifting() {
+        assert_eq!(
+            DenseMultilinearExtension::<u32>::from_evaluations(usize::BITS as usize, vec![]),
+            Err(DenseMleError::InvalidNumVarsRange)
+        );
+        assert_eq!(
+            DenseMultilinearExtension::<u32>::from_evaluations(usize::MAX, vec![]),
+            Err(DenseMleError::InvalidNumVarsRange)
+        );
     }
 
     #[test]
