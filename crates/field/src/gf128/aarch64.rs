@@ -106,9 +106,14 @@ unsafe fn reduce_256(low: uint64x2_t, high: uint64x2_t) -> uint64x2_t {
 /// as `t2.lo*X^64 + t2.hi*g` and folds it into `t1`; the second does the same
 /// to `t1` and folds it into `t0`.
 ///
+/// The fold is binius64's, `crates/field/src/arch/aarch64/arithmetic/ghash.rs`:
+/// its `gf2_128_reduce` is one stage, and `WideGhashProduct::reduce` composes
+/// the two the same way. MIT, and that file in turn carries RustCrypto's
+/// copyright.
+///
 /// The alternative is to form the whole 256-bit product with [`clmul_256`] and
 /// reduce once, which needs 7 PMULL and one more `ext` and `eor`. That measured
-/// 33% slower on independent products and 12% slower on a dependent chain, so
+/// 50% slower on independent products and 13% slower on a dependent chain, so
 /// this is the one kept.
 #[inline(always)]
 unsafe fn mul_interleaved(a: uint64x2_t, b: uint64x2_t) -> uint64x2_t {

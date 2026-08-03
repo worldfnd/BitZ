@@ -66,6 +66,10 @@ const fn barrett_mu(q: u128, k: u32) -> u128 {
 
 impl<const Q: u128> Fq<Q> {
     /// Bit length of the modulus, derived so it cannot disagree with `Q`.
+    ///
+    /// Its asserts are the only check on `Q`, and an associated constant is
+    /// evaluated where it is used, so an operation that does not need the
+    /// value reads it anyway rather than accept a modulus out of range.
     pub const BITS: u32 = {
         assert!(Q >= 3, "modulus must be at least 3");
         assert!(Q % 2 == 1, "modulus must be odd");
@@ -121,6 +125,7 @@ impl<const Q: u128> Fq<Q> {
 /// Reduces its input, so any `u128` is accepted.
 impl<const Q: u128> From<u128> for Fq<Q> {
     fn from(value: u128) -> Self {
+        let _ = Self::BITS;
         Self(value % Q)
     }
 }
@@ -128,6 +133,7 @@ impl<const Q: u128> From<u128> for Fq<Q> {
 impl<const Q: u128> Add for Fq<Q> {
     type Output = Self;
     fn add(self, rhs: Self) -> Self {
+        let _ = Self::BITS;
         // Both operands are below `Q < 2^126`, so the sum cannot wrap.
         let s = self.0 + rhs.0;
         Self(if s >= Q { s - Q } else { s })
@@ -137,6 +143,7 @@ impl<const Q: u128> Add for Fq<Q> {
 impl<const Q: u128> Sub for Fq<Q> {
     type Output = Self;
     fn sub(self, rhs: Self) -> Self {
+        let _ = Self::BITS;
         Self(if self.0 >= rhs.0 {
             self.0 - rhs.0
         } else {

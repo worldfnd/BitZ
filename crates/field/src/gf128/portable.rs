@@ -76,7 +76,7 @@ pub fn square_n(a: [u64; 2], k: u32) -> [u64; 2] {
     w
 }
 
-/// An unreduced 256-bit value. Four words in ascending significance, the same
+/// An unreduced 256-bit value. Four words, least significant first — the
 /// shape [`clmul128`] returns.
 pub type Wide = [u64; 4];
 
