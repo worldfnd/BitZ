@@ -72,7 +72,7 @@ unsafe fn shift_down(v: uint64x2_t) -> uint64x2_t {
 /// Karatsuba would trade one PMULL for an XOR-dependency chain — a loss on
 /// M-class cores, so its absence here is deliberate.
 #[inline(always)]
-unsafe fn clmul_256(a: uint64x2_t, b: uint64x2_t) -> (uint64x2_t, uint64x2_t) {
+unsafe fn clmul128(a: uint64x2_t, b: uint64x2_t) -> (uint64x2_t, uint64x2_t) {
     unsafe {
         let swapped = vextq_u64::<1>(b, b);
         let low = pmull_lo(a, b); // a0*b0
@@ -111,7 +111,7 @@ unsafe fn reduce_256(low: uint64x2_t, high: uint64x2_t) -> uint64x2_t {
 /// the two the same way. MIT, and that file in turn carries RustCrypto's
 /// copyright.
 ///
-/// The alternative is to form the whole 256-bit product with [`clmul_256`] and
+/// The alternative is to form the whole 256-bit product with [`clmul128`] and
 /// reduce once, which needs 7 PMULL and one more `ext` and `eor`. That measured
 /// 50% slower on independent products and 13% slower on a dependent chain, so
 /// this is the one kept.
@@ -178,7 +178,7 @@ pub fn wide_of(a: [u64; 2]) -> Wide {
 
 #[inline]
 pub fn wide_mul(a: [u64; 2], b: [u64; 2]) -> Wide {
-    unsafe { clmul_256(load(a), load(b)) }
+    unsafe { clmul128(load(a), load(b)) }
 }
 
 #[inline]
