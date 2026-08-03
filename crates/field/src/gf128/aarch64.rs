@@ -21,12 +21,12 @@ use super::REDUCTION;
 /// with `vcombine_u64` instead measured inside run-to-run noise, so this stays
 /// the simpler form.
 #[inline(always)]
-unsafe fn load(w: [u64; 2]) -> uint64x2_t {
+fn load(w: [u64; 2]) -> uint64x2_t {
     unsafe { vld1q_u64(w.as_ptr()) }
 }
 
 #[inline(always)]
-unsafe fn store(v: uint64x2_t) -> [u64; 2] {
+fn store(v: uint64x2_t) -> [u64; 2] {
     let mut out = [0u64; 2];
     unsafe { vst1q_u64(out.as_mut_ptr(), v) };
     out
@@ -34,13 +34,13 @@ unsafe fn store(v: uint64x2_t) -> [u64; 2] {
 
 /// Carryless product of the low lanes: `a[0] * b[0]`.
 #[inline(always)]
-unsafe fn pmull_lo(a: uint64x2_t, b: uint64x2_t) -> uint64x2_t {
+fn pmull_lo(a: uint64x2_t, b: uint64x2_t) -> uint64x2_t {
     unsafe { vreinterpretq_u64_p128(vmull_p64(vgetq_lane_u64::<0>(a), vgetq_lane_u64::<0>(b))) }
 }
 
 /// Carryless product of the high lanes: `a[1] * b[1]`.
 #[inline(always)]
-unsafe fn pmull_hi(a: uint64x2_t, b: uint64x2_t) -> uint64x2_t {
+fn pmull_hi(a: uint64x2_t, b: uint64x2_t) -> uint64x2_t {
     unsafe {
         vreinterpretq_u64_p128(vmull_high_p64(
             vreinterpretq_p64_u64(a),
@@ -51,19 +51,19 @@ unsafe fn pmull_hi(a: uint64x2_t, b: uint64x2_t) -> uint64x2_t {
 
 /// One word times the reduction polynomial: `w * g`, at most 71 bits.
 #[inline(always)]
-unsafe fn pmull_g(w: u64) -> uint64x2_t {
+fn pmull_g(w: u64) -> uint64x2_t {
     unsafe { vreinterpretq_u64_p128(vmull_p64(w, REDUCTION)) }
 }
 
 /// `v * X^64`, discarding the half that would land at or above `X^128`.
 #[inline(always)]
-unsafe fn shift_up(v: uint64x2_t) -> uint64x2_t {
+fn shift_up(v: uint64x2_t) -> uint64x2_t {
     unsafe { vextq_u64::<1>(vdupq_n_u64(0), v) }
 }
 
 /// The half of `v * X^64` that lands at or above `X^128`, rebased to zero.
 #[inline(always)]
-unsafe fn shift_down(v: uint64x2_t) -> uint64x2_t {
+fn shift_down(v: uint64x2_t) -> uint64x2_t {
     unsafe { vextq_u64::<1>(v, vdupq_n_u64(0)) }
 }
 
@@ -72,7 +72,7 @@ unsafe fn shift_down(v: uint64x2_t) -> uint64x2_t {
 /// Karatsuba would trade one PMULL for an XOR-dependency chain — a loss on
 /// M-class cores, so its absence here is deliberate.
 #[inline(always)]
-unsafe fn clmul128(a: uint64x2_t, b: uint64x2_t) -> (uint64x2_t, uint64x2_t) {
+fn clmul128(a: uint64x2_t, b: uint64x2_t) -> (uint64x2_t, uint64x2_t) {
     unsafe {
         let swapped = vextq_u64::<1>(b, b);
         let low = pmull_lo(a, b); // a0*b0
@@ -88,7 +88,7 @@ unsafe fn clmul128(a: uint64x2_t, b: uint64x2_t) -> (uint64x2_t, uint64x2_t) {
 /// Reduce a 256-bit product with 3 PMULL: fold the whole high half against `g`
 /// at once, then clear the at-most-7-bit spill that fold leaves behind.
 #[inline(always)]
-unsafe fn reduce_256(low: uint64x2_t, high: uint64x2_t) -> uint64x2_t {
+fn reduce_256(low: uint64x2_t, high: uint64x2_t) -> uint64x2_t {
     unsafe {
         // high * g, as a 192-bit quantity spread over two products.
         let p0 = pmull_lo(high, vdupq_n_u64(REDUCTION));
@@ -116,7 +116,7 @@ unsafe fn reduce_256(low: uint64x2_t, high: uint64x2_t) -> uint64x2_t {
 /// 50% slower on independent products and 13% slower on a dependent chain, so
 /// this is the one kept.
 #[inline(always)]
-unsafe fn mul_interleaved(a: uint64x2_t, b: uint64x2_t) -> uint64x2_t {
+fn mul_interleaved(a: uint64x2_t, b: uint64x2_t) -> uint64x2_t {
     unsafe {
         let swapped = vextq_u64::<1>(b, b);
         let t0 = pmull_lo(a, b);
@@ -134,32 +134,27 @@ unsafe fn mul_interleaved(a: uint64x2_t, b: uint64x2_t) -> uint64x2_t {
 /// In characteristic 2 the cross terms cancel, so the product needs 2 PMULL
 /// rather than 4.
 #[inline(always)]
-unsafe fn square_inner(a: uint64x2_t) -> uint64x2_t {
-    unsafe { reduce_256(pmull_lo(a, a), pmull_hi(a, a)) }
+fn square_inner(a: uint64x2_t) -> uint64x2_t {
+    reduce_256(pmull_lo(a, a), pmull_hi(a, a))
 }
 
 pub fn mul(a: [u64; 2], b: [u64; 2]) -> [u64; 2] {
-    unsafe { store(mul_interleaved(load(a), load(b))) }
+    store(mul_interleaved(load(a), load(b)))
 }
 
 pub fn square(a: [u64; 2]) -> [u64; 2] {
-    unsafe {
-        let v = load(a);
-        store(square_inner(v))
-    }
+    store(square_inner(load(a)))
 }
 
 /// `k` squarings with one load and one store: the value never leaves its
 /// vector register between them, which is why the inversion ladder asks for
 /// runs rather than single squarings.
 pub fn square_n(a: [u64; 2], k: u32) -> [u64; 2] {
-    unsafe {
-        let mut v = load(a);
-        for _ in 0..k {
-            v = square_inner(v);
-        }
-        store(v)
+    let mut v = load(a);
+    for _ in 0..k {
+        v = square_inner(v);
     }
+    store(v)
 }
 
 /// An unreduced 256-bit value, held as `(low, high)` in two vector registers,
@@ -178,7 +173,7 @@ pub fn wide_of(a: [u64; 2]) -> Wide {
 
 #[inline]
 pub fn wide_mul(a: [u64; 2], b: [u64; 2]) -> Wide {
-    unsafe { clmul128(load(a), load(b)) }
+    clmul128(load(a), load(b))
 }
 
 #[inline]
@@ -188,15 +183,13 @@ pub fn wide_add(x: Wide, y: Wide) -> Wide {
 
 #[inline]
 pub fn wide_reduce(w: Wide) -> [u64; 2] {
-    unsafe { store(reduce_256(w.0, w.1)) }
+    store(reduce_256(w.0, w.1))
 }
 
 /// Spill the accumulator to words so it can be compared against the portable
 /// one before reduction, where a cancelling error would still be visible.
 #[cfg(test)]
 pub fn wide_words(w: Wide) -> [u64; 4] {
-    unsafe {
-        let (low, high) = (store(w.0), store(w.1));
-        [low[0], low[1], high[0], high[1]]
-    }
+    let (low, high) = (store(w.0), store(w.1));
+    [low[0], low[1], high[0], high[1]]
 }
