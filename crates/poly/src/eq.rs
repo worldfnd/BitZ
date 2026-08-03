@@ -1,8 +1,10 @@
-use std::ops::{Mul, Sub};
+use std::ops::{Add, Mul, Sub};
 
 use field::{F128, Fq};
 
-pub trait Field: Copy + From<u128> + Sub<Output = Self> + Mul<Output = Self> {
+pub trait Field:
+    Copy + From<u128> + Add<Output = Self> + Sub<Output = Self> + Mul<Output = Self> + Default
+{
     const ZERO: Self;
     const ONE: Self;
 }
