@@ -5,8 +5,13 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+default = ["parallel"]
+parallel = ["dep:rayon"]
+
 [dependencies]
 field = { path = "../field" }
+rayon = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest = "1.11.0"

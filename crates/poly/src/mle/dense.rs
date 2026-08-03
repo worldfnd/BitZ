@@ -2,13 +2,24 @@
 //
 // Adapted from Zinc+ `DenseMultilinearExtension` at:
 // https://github.com/NethermindEth/zinc-plus/blob/8dbd6007008b2d10e95e73149ca2fd5b7d8e00f9/poly/src/mle/dense.rs
+// Hybrid parallel folding adapted from Flock at:
+// https://github.com/succinctlabs/flock/blob/85fc0e7cc002e7ca4dffdff805ba89976e9a5293/crates/flock-core/src/permutation.rs#L236-L263
+// Copyright (c) 2026 Succinct Labs, Benedikt Bunz, and William Wang.
 
 use std::{
     ops::{Deref, DerefMut, Index, IndexMut},
     slice::SliceIndex,
 };
 
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
+
 use crate::eq::Field;
+
+/// Number of outputs at which Flock dispatches a fold round to Rayon.
+/// This is an initial value; benchmarks should calibrate it for our field.
+#[cfg(feature = "parallel")]
+const PARALLEL_FOLD_THRESHOLD: usize = 1 << 12;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DenseMleError {
@@ -57,26 +68,68 @@ impl<T: Default> DenseMultilinearExtension<T> {
 }
 
 impl<F: Field> DenseMultilinearExtension<F> {
-    pub fn fold(&mut self, r: &[F]) -> Result<(), DenseMleError> {
-        let vars_to_fold = r.len();
-        if vars_to_fold == 0 {
-            return Ok(());
-        }
-        if vars_to_fold > self.num_vars {
-            return Err(DenseMleError::TooManyChallenges);
-        }
+    /// Fixes the lowest-index remaining variables at `r`, in order.
+    ///
+    /// Each round replaces adjacent evaluations with
+    /// `f(0, b) + r_i * (f(1, b) - f(0, b))`. Large rounds use a parallel
+    /// destination buffer; shrinking rounds are folded in place.
+    ///
+    /// Hybrid parallel scheduling adapted from Flock:
+    /// <https://github.com/succinctlabs/flock/blob/85fc0e7cc002e7ca4dffdff805ba89976e9a5293/crates/flock-core/src/permutation.rs#L236-L263>
+    pub fn fold(&mut self, r: &[F]) -> Result<(), DenseMleError>
+    where
+        F: Send + Sync,
+    {
+        self.check_fold_width(r)?;
 
-        for folding_r in r {
-            let half = 1 << (self.num_vars - 1);
-            for i in 0..half {
-                self.evaluations[i] = self.evaluations[2 * i]
-                    + *folding_r * (self.evaluations[2 * i + 1] - self.evaluations[2 * i]);
+        #[cfg(feature = "parallel")]
+        let mut scratch = Vec::new();
+
+        for &challenge in r {
+            #[cfg(feature = "parallel")]
+            if self.evaluations.len() / 2 >= PARALLEL_FOLD_THRESHOLD
+                && rayon::current_num_threads() > 1
+            {
+                self.fold_round_parallel(challenge, &mut scratch);
+                self.num_vars -= 1;
+                continue;
             }
+
+            self.fold_round_in_place(challenge);
             self.num_vars -= 1;
         }
 
-        self.evaluations.resize(1 << self.num_vars, F::default());
         Ok(())
+    }
+
+    fn check_fold_width(&self, r: &[F]) -> Result<(), DenseMleError> {
+        if r.len() > self.num_vars {
+            return Err(DenseMleError::TooManyChallenges);
+        }
+        Ok(())
+    }
+
+    fn fold_round_in_place(&mut self, challenge: F) {
+        let half = self.evaluations.len() / 2;
+        for i in 0..half {
+            let left = self.evaluations[2 * i];
+            let right = self.evaluations[2 * i + 1];
+            self.evaluations[i] = left + challenge * (right - left);
+        }
+        self.evaluations.truncate(half);
+    }
+
+    #[cfg(feature = "parallel")]
+    fn fold_round_parallel(&mut self, challenge: F, scratch: &mut Vec<F>)
+    where
+        F: Send + Sync,
+    {
+        self.evaluations
+            .par_chunks_exact(2)
+            .map(|pair| pair[0] + challenge * (pair[1] - pair[0]))
+            .collect_into_vec(scratch);
+
+        std::mem::swap(&mut self.evaluations, scratch);
     }
 }
 
@@ -307,6 +360,34 @@ mod tests {
 
         assert_eq!(mle.num_vars(), 0);
         assert_eq!(&*mle, expected.as_slice());
+    }
+
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn parallel_fold_matches_sequential_across_the_threshold() {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(2)
+            .build()
+            .unwrap()
+            .install(|| {
+                let num_vars = 14;
+                let evaluations: Vec<_> = (0..1usize << num_vars)
+                    .map(|i| F128::from(i as u128))
+                    .collect();
+                let challenges = [F128::from(3), F128::from(9), F128::from(27)];
+                let expected = challenges
+                    .iter()
+                    .fold(evaluations.clone(), |layer, &challenge| {
+                        fold_layer(&layer, challenge)
+                    });
+                let mut mle =
+                    DenseMultilinearExtension::from_evaluations(num_vars, evaluations).unwrap();
+
+                mle.fold(&challenges).unwrap();
+
+                assert_eq!(mle.num_vars(), num_vars - challenges.len());
+                assert_eq!(&*mle, expected.as_slice());
+            });
     }
 
     #[test]
