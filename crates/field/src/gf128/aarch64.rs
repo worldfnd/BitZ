@@ -184,6 +184,13 @@ pub fn wide_add(x: Wide, y: Wide) -> Wide {
     unsafe { (veorq_u64(x.0, y.0), veorq_u64(x.1, y.1)) }
 }
 
+/// Add a reduced element into an accumulator: one XOR on the low register,
+/// the high register passes through untouched.
+#[inline]
+pub fn wide_add_low(x: Wide, a: [u64; 2]) -> Wide {
+    unsafe { (veorq_u64(x.0, load(a)), x.1) }
+}
+
 #[inline]
 pub fn wide_reduce(w: Wide) -> [u64; 2] {
     store(reduce_256(w.0, w.1))

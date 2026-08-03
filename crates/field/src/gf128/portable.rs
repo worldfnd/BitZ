@@ -99,6 +99,12 @@ pub fn wide_add(x: Wide, y: Wide) -> Wide {
     [x[0] ^ y[0], x[1] ^ y[1], x[2] ^ y[2], x[3] ^ y[3]]
 }
 
+/// Add a reduced element into an accumulator: only the low words are touched,
+/// so no zero high half is materialized.
+pub fn wide_add_low(x: Wide, a: [u64; 2]) -> Wide {
+    [x[0] ^ a[0], x[1] ^ a[1], x[2], x[3]]
+}
+
 pub fn wide_reduce(w: Wide) -> [u64; 2] {
     reduce(w)
 }
