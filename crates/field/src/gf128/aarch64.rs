@@ -138,10 +138,12 @@ fn square_inner(a: uint64x2_t) -> uint64x2_t {
     reduce_256(pmull_lo(a, a), pmull_hi(a, a))
 }
 
+#[inline]
 pub fn mul(a: [u64; 2], b: [u64; 2]) -> [u64; 2] {
     store(mul_interleaved(load(a), load(b)))
 }
 
+#[inline]
 pub fn square(a: [u64; 2]) -> [u64; 2] {
     store(square_inner(load(a)))
 }
@@ -149,6 +151,7 @@ pub fn square(a: [u64; 2]) -> [u64; 2] {
 /// `k` squarings with one load and one store: the value never leaves its
 /// vector register between them, which is why the inversion ladder asks for
 /// runs rather than single squarings.
+#[inline]
 pub fn square_n(a: [u64; 2], k: u32) -> [u64; 2] {
     let mut v = load(a);
     for _ in 0..k {

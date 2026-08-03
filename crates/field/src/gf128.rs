@@ -66,6 +66,7 @@ impl F128 {
         self.lo == 0 && self.hi == 0
     }
 
+    #[inline]
     pub fn square(self) -> Self {
         kernel::square(self.words()).into()
     }
@@ -100,6 +101,7 @@ impl F128 {
 }
 
 impl From<[u64; 2]> for F128 {
+    #[inline]
     fn from(words: [u64; 2]) -> Self {
         Self::new(words[0], words[1])
     }
@@ -121,12 +123,14 @@ impl From<u128> for F128 {
 
 impl Add for F128 {
     type Output = Self;
+    #[inline]
     fn add(self, rhs: Self) -> Self {
         Self::new(self.lo ^ rhs.lo, self.hi ^ rhs.hi)
     }
 }
 
 impl AddAssign for F128 {
+    #[inline]
     fn add_assign(&mut self, rhs: Self) {
         self.lo ^= rhs.lo;
         self.hi ^= rhs.hi;
@@ -136,12 +140,14 @@ impl AddAssign for F128 {
 /// Characteristic 2: subtraction is addition.
 impl Sub for F128 {
     type Output = Self;
+    #[inline]
     fn sub(self, rhs: Self) -> Self {
         Self::new(self.lo ^ rhs.lo, self.hi ^ rhs.hi)
     }
 }
 
 impl SubAssign for F128 {
+    #[inline]
     fn sub_assign(&mut self, rhs: Self) {
         self.lo ^= rhs.lo;
         self.hi ^= rhs.hi;
@@ -150,6 +156,7 @@ impl SubAssign for F128 {
 
 impl Neg for F128 {
     type Output = Self;
+    #[inline]
     fn neg(self) -> Self {
         self
     }
@@ -157,12 +164,14 @@ impl Neg for F128 {
 
 impl Mul for F128 {
     type Output = Self;
+    #[inline]
     fn mul(self, rhs: Self) -> Self {
         kernel::mul(self.words(), rhs.words()).into()
     }
 }
 
 impl MulAssign for F128 {
+    #[inline]
     fn mul_assign(&mut self, rhs: Self) {
         *self = *self * rhs;
     }

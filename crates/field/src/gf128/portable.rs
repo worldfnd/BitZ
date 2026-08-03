@@ -56,18 +56,21 @@ pub fn reduce(r: [u64; 4]) -> [u64; 2] {
     [w0 ^ b1 ^ (b1 << 1) ^ (b1 << 2) ^ (b1 << 7), w1]
 }
 
+#[inline]
 pub fn mul(a: [u64; 2], b: [u64; 2]) -> [u64; 2] {
     reduce(clmul128(a, b))
 }
 
 /// In characteristic 2 the cross terms of `(a0 + a1*X^64)^2` cancel, leaving
 /// `a0^2 + a1^2*X^128`.
+#[inline]
 pub fn square(a: [u64; 2]) -> [u64; 2] {
     let (l0, l1) = clmul64(a[0], a[0]);
     let (h0, h1) = clmul64(a[1], a[1]);
     reduce([l0, l1, h0, h1])
 }
 
+#[inline]
 pub fn square_n(a: [u64; 2], k: u32) -> [u64; 2] {
     let mut w = a;
     for _ in 0..k {
