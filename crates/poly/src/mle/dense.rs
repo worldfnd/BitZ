@@ -1,10 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-//
-// Adapted from Zinc+ `DenseMultilinearExtension` at:
-// https://github.com/NethermindEth/zinc-plus/blob/8dbd6007008b2d10e95e73149ca2fd5b7d8e00f9/poly/src/mle/dense.rs
-// Hybrid parallel folding adapted from Flock at:
-// https://github.com/succinctlabs/flock/blob/85fc0e7cc002e7ca4dffdff805ba89976e9a5293/crates/flock-core/src/permutation.rs#L236-L263
-// Copyright (c) 2026 Succinct Labs, Benedikt Bunz, and William Wang.
 
 use std::{
     ops::{Deref, DerefMut, Index, IndexMut},
@@ -16,8 +10,8 @@ use rayon::prelude::*;
 
 use crate::eq::Field;
 
-/// Number of outputs at which Flock dispatches a fold round to Rayon.
-/// This is an initial value; benchmarks should calibrate it for our field.
+/// Number of outputs at which we dispatch a fold round to Rayon.
+/// This is an initial value picked from Flock; benchmarks should calibrate it for our field.
 #[cfg(feature = "parallel")]
 const PARALLEL_FOLD_THRESHOLD: usize = 1 << 12;
 
@@ -29,6 +23,7 @@ pub enum DenseMleError {
 }
 
 /// A multilinear polynomial represented by its evaluations on a Boolean cube.
+/// Adapted from Zinc+ `DenseMultilinearExtension` at: https://github.com/NethermindEth/zinc-plus/blob/8dbd6007008b2d10e95e73149ca2fd5b7d8e00f9/poly/src/mle/dense.rs
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DenseMultilinearExtension<T: Default> {
     /// Evaluations on `{0,1}^num_vars` in little-endian index order.
@@ -102,6 +97,72 @@ impl<F: Field> DenseMultilinearExtension<F> {
         Ok(())
     }
 
+    /// Evaluates this multilinear extension at `r` without cloning or mutating
+    /// the table.
+    pub fn evaluate(&self, r: &[F]) -> Result<F, DenseMleError> {
+        let len = self.evaluations.len();
+        if r.len() >= usize::BITS as usize {
+            return Err(DenseMleError::InvalidNumVarsRange);
+        }
+
+        if len != 1 << r.len() {
+            return Err(DenseMleError::SizeMismatch);
+        }
+
+        Ok(Self::evaluate_exact(&self.evaluations, r))
+    }
+
+    #[inline]
+    /// Unrolled base cases adapted from WHIR's `eval_exact` (Apache-2.0):
+    /// <https://github.com/worldfnd/whir/blob/e0aec15225fd5e63594bdc49566e080a6cab2f24/src/algebra/multilinear.rs#L31-L64>
+    fn evaluate_exact(evaluations: &[F], r: &[F]) -> F {
+        debug_assert_eq!(evaluations.len(), 1 << r.len());
+
+        let interpolate = |zero: F, one: F, challenge: F| zero + challenge * (one - zero);
+
+        match r {
+            [] => evaluations[0],
+            [r0] => interpolate(evaluations[0], evaluations[1], *r0),
+            [r0, r1] => {
+                let a0 = interpolate(evaluations[0], evaluations[1], *r0);
+                let a1 = interpolate(evaluations[2], evaluations[3], *r0);
+                interpolate(a0, a1, *r1)
+            }
+            [r0, r1, r2] => {
+                let a00 = interpolate(evaluations[0], evaluations[1], *r0);
+                let a01 = interpolate(evaluations[2], evaluations[3], *r0);
+                let a10 = interpolate(evaluations[4], evaluations[5], *r0);
+                let a11 = interpolate(evaluations[6], evaluations[7], *r0);
+                let a0 = interpolate(a00, a01, *r1);
+                let a1 = interpolate(a10, a11, *r1);
+                interpolate(a0, a1, *r2)
+            }
+            [r0, r1, r2, r3] => {
+                let a000 = interpolate(evaluations[0], evaluations[1], *r0);
+                let a001 = interpolate(evaluations[2], evaluations[3], *r0);
+                let a010 = interpolate(evaluations[4], evaluations[5], *r0);
+                let a011 = interpolate(evaluations[6], evaluations[7], *r0);
+                let a100 = interpolate(evaluations[8], evaluations[9], *r0);
+                let a101 = interpolate(evaluations[10], evaluations[11], *r0);
+                let a110 = interpolate(evaluations[12], evaluations[13], *r0);
+                let a111 = interpolate(evaluations[14], evaluations[15], *r0);
+                let a00 = interpolate(a000, a001, *r1);
+                let a01 = interpolate(a010, a011, *r1);
+                let a10 = interpolate(a100, a101, *r1);
+                let a11 = interpolate(a110, a111, *r1);
+                let a0 = interpolate(a00, a01, *r2);
+                let a1 = interpolate(a10, a11, *r2);
+                interpolate(a0, a1, *r3)
+            }
+            [remaining @ .., last_r] => {
+                let (zero, one) = evaluations.split_at(evaluations.len() / 2);
+                let zero = Self::evaluate_exact(zero, remaining);
+                let one = Self::evaluate_exact(one, remaining);
+                interpolate(zero, one, *last_r)
+            }
+        }
+    }
+
     fn check_fold_width(&self, r: &[F]) -> Result<(), DenseMleError> {
         if r.len() > self.num_vars {
             return Err(DenseMleError::TooManyChallenges);
@@ -173,13 +234,30 @@ impl<T: Default, I: SliceIndex<[T]>> IndexMut<I> for DenseMultilinearExtension<T
 #[cfg(test)]
 mod tests {
     use super::{DenseMleError, DenseMultilinearExtension};
+    use crate::eq::eq_table;
     use field::F128;
+    use proptest::prelude::*;
 
     fn fold_layer(evaluations: &[F128], challenge: F128) -> Vec<F128> {
         evaluations
             .chunks_exact(2)
             .map(|pair| pair[0] + challenge * (pair[1] - pair[0]))
             .collect()
+    }
+
+    fn arbitrary_evaluation_case() -> impl Strategy<Value = (Vec<F128>, Vec<F128>)> {
+        (0usize..=8).prop_flat_map(|num_vars| {
+            (
+                prop::collection::vec(any::<u128>(), 1usize << num_vars),
+                prop::collection::vec(any::<u128>(), num_vars),
+            )
+                .prop_map(|(evaluations, point)| {
+                    (
+                        evaluations.into_iter().map(F128::from).collect(),
+                        point.into_iter().map(F128::from).collect(),
+                    )
+                })
+        })
     }
 
     #[test]
@@ -360,6 +438,127 @@ mod tests {
 
         assert_eq!(mle.num_vars(), 0);
         assert_eq!(&*mle, expected.as_slice());
+    }
+
+    #[test]
+    fn evaluate_zero_variable_table_returns_its_only_evaluation() {
+        let evaluation = F128::from(7);
+        let mle = DenseMultilinearExtension::zero_vars(evaluation);
+
+        assert_eq!(mle.evaluate(&[]), Ok(evaluation));
+    }
+
+    #[test]
+    fn evaluate_rejects_points_with_the_wrong_width() {
+        let mle = DenseMultilinearExtension::from_evaluations(2, vec![F128::ZERO; 4]).unwrap();
+
+        assert_eq!(
+            mle.evaluate(&[F128::from(3)]),
+            Err(DenseMleError::SizeMismatch)
+        );
+        assert_eq!(
+            mle.evaluate(&[F128::from(3), F128::from(5), F128::from(7)]),
+            Err(DenseMleError::SizeMismatch)
+        );
+    }
+
+    #[test]
+    fn evaluate_rejects_unrepresentable_point_width_without_shifting() {
+        let point = vec![F128::ZERO; usize::BITS as usize];
+        let mle = DenseMultilinearExtension::zero_vars(F128::ZERO);
+
+        assert_eq!(
+            mle.evaluate(&point),
+            Err(DenseMleError::InvalidNumVarsRange)
+        );
+    }
+
+    #[test]
+    fn evaluate_at_boolean_points_selects_little_endian_entries() {
+        for num_vars in 0..=5 {
+            let evaluations: Vec<_> = (0..1usize << num_vars)
+                .map(|index| F128::from((index + 10) as u128))
+                .collect();
+            let mle =
+                DenseMultilinearExtension::from_evaluations(num_vars, evaluations.clone()).unwrap();
+
+            for (index, &expected) in evaluations.iter().enumerate() {
+                let point: Vec<_> = (0..num_vars)
+                    .map(|bit| F128::from(((index >> bit) & 1) as u128))
+                    .collect();
+
+                assert_eq!(
+                    mle.evaluate(&point),
+                    Ok(expected),
+                    "failed for {num_vars} variables at index {index}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn evaluate_at_non_boolean_point_matches_layer_folding() {
+        let evaluations = vec![F128::from(2), F128::from(3), F128::from(5), F128::from(7)];
+        let point = [F128::from(11), F128::from(13)];
+        let after_first = fold_layer(&evaluations, point[0]);
+        let expected = fold_layer(&after_first, point[1])[0];
+        let mle = DenseMultilinearExtension::from_evaluations(2, evaluations).unwrap();
+
+        assert_eq!(mle.evaluate(&point), Ok(expected));
+    }
+
+    #[test]
+    fn evaluate_unrolled_cases_and_recursive_boundary_match_folding() {
+        for num_vars in 0..=5 {
+            let evaluations: Vec<_> = (0..1usize << num_vars)
+                .map(|index| F128::from((3 * index + 1) as u128))
+                .collect();
+            let point: Vec<_> = (0..num_vars)
+                .map(|index| F128::from((5 * index + 2) as u128))
+                .collect();
+            let expected = point.iter().fold(evaluations.clone(), |layer, &challenge| {
+                fold_layer(&layer, challenge)
+            })[0];
+            let mle = DenseMultilinearExtension::from_evaluations(num_vars, evaluations).unwrap();
+
+            assert_eq!(
+                mle.evaluate(&point),
+                Ok(expected),
+                "failed for {num_vars} variables"
+            );
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn evaluate_matches_fold_and_eq_table(
+            (evaluations, point) in arbitrary_evaluation_case()
+        ) {
+            let mle = DenseMultilinearExtension::from_evaluations(
+                point.len(),
+                evaluations.clone(),
+            )
+            .unwrap();
+            let actual = mle.evaluate(&point).unwrap();
+
+            let weights = eq_table(&point);
+            let expected_from_eq = evaluations
+                .iter()
+                .zip(weights)
+                .fold(F128::ZERO, |sum, (&evaluation, weight)| {
+                    sum + evaluation * weight
+                });
+
+            let mut folded = DenseMultilinearExtension::from_evaluations(
+                point.len(),
+                evaluations,
+            )
+            .unwrap();
+            folded.fold(&point).unwrap();
+
+            prop_assert_eq!(actual, expected_from_eq);
+            prop_assert_eq!(actual, folded[0]);
+        }
     }
 
     #[cfg(feature = "parallel")]
