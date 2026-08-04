@@ -1,6 +1,11 @@
 use std::ops::{Add, Mul, Sub};
 
 use field::{F128, Fq};
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
+
+#[cfg(feature = "parallel")]
+use crate::parallel::workload_size;
 
 pub trait Field:
     Copy + From<u128> + Add<Output = Self> + Sub<Output = Self> + Mul<Output = Self> + Default
@@ -58,7 +63,7 @@ pub fn eq_eval(x: &[F128], y: &[F128]) -> F128 {
 ///
 /// For `n = 0`, the table is `[F128::ONE]`, corresponding to the
 /// empty product.
-pub fn eq_table<F: Field>(r: &[F]) -> Vec<F> {
+pub fn eq_table<F: Field + Send + Sync>(r: &[F]) -> Vec<F> {
     let n = 1 << r.len();
     // Allocate the final output once.
     let mut table = vec![F::ZERO; n];
@@ -71,13 +76,26 @@ pub fn eq_table<F: Field>(r: &[F]) -> Vec<F> {
         // The upper half receives their one-children.
         let (zero_children, one_children) = table[..2 * half].split_at_mut(half);
 
-        for (zero_child, one_child) in zero_children.iter_mut().zip(one_children) {
+        let update = |(zero_child, one_child): (&mut F, &mut F)| {
             let parent = *zero_child;
             let one_value = parent * r_i;
 
             *zero_child = parent - one_value;
             *one_child = one_value;
+        };
+
+        // Per-level parallel doubling adapted from Flock:
+        // https://github.com/succinctlabs/flock/blob/85fc0e7cc002e7ca4dffdff805ba89976e9a5293/crates/flock-core/src/pcs/ring_switch.rs#L276-L320
+        #[cfg(feature = "parallel")]
+        if half >= workload_size::<F>() && rayon::current_num_threads() > 1 {
+            zero_children
+                .par_iter_mut()
+                .zip(one_children.par_iter_mut())
+                .for_each(update);
+            continue;
         }
+
+        zero_children.iter_mut().zip(one_children).for_each(update);
     }
 
     table
@@ -226,6 +244,33 @@ pub mod tests {
         }
 
         assert_eq!(sum, F128::ONE);
+    }
+
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn parallel_eq_table_matches_serial_around_threshold() {
+        let threshold = crate::parallel::workload_size::<F128>();
+        assert!(threshold.is_power_of_two());
+
+        let threshold_log = threshold.trailing_zeros() as usize;
+        let serial_pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap();
+        let parallel_pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(2)
+            .build()
+            .unwrap();
+
+        // Final-round workloads immediately below and exactly at the cutoff.
+        for num_vars in [threshold_log, threshold_log + 1] {
+            let point: Vec<_> = (0..num_vars).map(|i| F128::from(i as u128 + 2)).collect();
+
+            let expected = serial_pool.install(|| eq_table(&point));
+            let actual = parallel_pool.install(|| eq_table(&point));
+
+            assert_eq!(actual, expected);
+        }
     }
 
     proptest! {
