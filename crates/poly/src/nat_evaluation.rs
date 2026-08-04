@@ -122,6 +122,20 @@ fn batch_invert_nonzero(values: &mut [F128]) {
 mod tests {
     use super::{LagrangeInterpolationDomain, NatEvaluatedPoly, NatEvaluationError};
     use field::F128;
+    use proptest::prelude::*;
+
+    fn arbitrary_field_vector_and_point() -> impl Strategy<Value = (Vec<F128>, F128)> {
+        (1usize..=8).prop_flat_map(|len| {
+            (prop::collection::vec(any::<u128>(), len), any::<u128>()).prop_map(
+                |(values, point)| {
+                    (
+                        values.into_iter().map(F128::from).collect(),
+                        F128::from(point),
+                    )
+                },
+            )
+        })
+    }
 
     fn evaluate_coefficients(coefficients: &[F128], point: F128) -> F128 {
         coefficients
@@ -352,6 +366,35 @@ mod tests {
                     Ok(evaluate_coefficients(&coefficients, point)),
                 );
             }
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn evaluation_matches_direct_lagrange_for_arbitrary_tables(
+            (evaluations, point) in arbitrary_field_vector_and_point(),
+        ) {
+            let domain = LagrangeInterpolationDomain::new(evaluations.len());
+            let expected = evaluate_lagrange_naively(&evaluations, &domain, point);
+            let polynomial = NatEvaluatedPoly::new(evaluations);
+
+            prop_assert_eq!(
+                polynomial.evaluate_at_point_with_domain(point, &domain),
+                Ok(expected),
+            );
+        }
+
+        #[test]
+        fn evaluation_matches_arbitrary_coefficient_polynomials(
+            (coefficients, point) in arbitrary_field_vector_and_point(),
+        ) {
+            let domain = LagrangeInterpolationDomain::new(coefficients.len());
+            let polynomial = polynomial_from_coefficients(&coefficients, &domain);
+
+            prop_assert_eq!(
+                polynomial.evaluate_at_point_with_domain(point, &domain),
+                Ok(evaluate_coefficients(&coefficients, point)),
+            );
         }
     }
 }
