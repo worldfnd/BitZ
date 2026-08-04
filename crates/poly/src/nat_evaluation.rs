@@ -50,6 +50,12 @@ impl NatEvaluatedPoly {
         Self { evaluations }
     }
 
+    /// Evaluates using a freshly constructed interpolation domain.
+    pub fn evaluate_at_point(&self, point: F128) -> Result<F128, NatEvaluationError> {
+        let domain = LagrangeInterpolationDomain::new(self.evaluations.len());
+        self.evaluate_at_point_with_domain(point, &domain)
+    }
+
     /// Linear, allocation-free adaptation of Binius64's
     /// `EvaluationDomain::extrapolate` (Apache-2.0):
     /// <https://github.com/binius-zk/binius64/blob/e0ddeb91d3826457322e3b7434a8ca0625f2f56e/crates/math/src/univariate.rs#L208-L223>
@@ -257,9 +263,14 @@ mod tests {
     fn evaluating_an_empty_polynomial_is_rejected() {
         let polynomial = NatEvaluatedPoly::new(vec![]);
         let domain = LagrangeInterpolationDomain::new(0);
+        let point = F128::from(7u128);
 
         assert_eq!(
-            polynomial.evaluate_at_point_with_domain(F128::from(7u128), &domain),
+            polynomial.evaluate_at_point(point),
+            Err(NatEvaluationError::EmptyPolynomial),
+        );
+        assert_eq!(
+            polynomial.evaluate_at_point_with_domain(point, &domain),
             Err(NatEvaluationError::EmptyPolynomial),
         );
     }
@@ -378,6 +389,10 @@ mod tests {
             let expected = evaluate_lagrange_naively(&evaluations, &domain, point);
             let polynomial = NatEvaluatedPoly::new(evaluations);
 
+            prop_assert_eq!(
+                polynomial.evaluate_at_point(point),
+                polynomial.evaluate_at_point_with_domain(point, &domain),
+            );
             prop_assert_eq!(
                 polynomial.evaluate_at_point_with_domain(point, &domain),
                 Ok(expected),
