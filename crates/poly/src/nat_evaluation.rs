@@ -5,32 +5,30 @@ use field::F128;
 /// Reusable interpolation data for evaluations on the natural `F128` domain.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LagrangeInterpolationDomain {
-    /// `domain[i] = F128::from(i as u128)`.
-    pub domain: Vec<F128>,
-    /// `w_i = (∏_{j != i} (domain[i] - domain[j]))⁻¹`
+    /// `points[i] = F128::from(i as u128)`.
+    pub points: Vec<F128>,
+    /// `w_i = (∏_{j != i} (points[i] - points[j]))⁻¹`
     pub weights: Vec<F128>,
 }
 
 impl LagrangeInterpolationDomain {
     /// Precomputes the interpolation nodes and their barycentric weights.
     pub fn new(len: usize) -> Self {
-        let domain: Vec<_> = (0..len).map(|i| F128::from(i as u128)).collect();
-        let mut weights = Vec::with_capacity(len);
-
-        for i in 0..len {
-            let mut denominator = F128::ONE;
-            for j in 0..len {
-                if j == i {
-                    continue;
-                }
-                denominator *= domain[i] - domain[j];
-            }
-            weights.push(denominator);
-        }
+        let points: Vec<_> = (0..len).map(|i| F128::from(i as u128)).collect();
+        let mut weights = (0..len)
+            .map(|i| {
+                (0..len)
+                    .filter(|j| *j != i)
+                    .fold(F128::ONE, |mut denominator, j| {
+                        denominator *= points[i] - points[j];
+                        denominator
+                    })
+            })
+            .collect::<Vec<F128>>();
 
         batch_invert_nonzero(&mut weights);
 
-        Self { domain, weights }
+        Self { points, weights }
     }
 }
 
@@ -67,7 +65,7 @@ impl NatEvaluatedPoly {
         let len = self.evaluations.len();
         if len == 0 {
             return Err(NatEvaluationError::EmptyPolynomial);
-        } else if len != domain.domain.len() || len != domain.weights.len() {
+        } else if len != domain.points.len() || len != domain.weights.len() {
             return Err(NatEvaluationError::DomainSizeMismatch);
         }
 
@@ -76,7 +74,7 @@ impl NatEvaluatedPoly {
         for ((&evaluation, &node), &weight) in self
             .evaluations
             .iter()
-            .zip(&domain.domain)
+            .zip(&domain.points)
             .zip(&domain.weights)
         {
             let difference = point - node;
@@ -158,7 +156,7 @@ mod tests {
     ) -> NatEvaluatedPoly {
         NatEvaluatedPoly::new(
             domain
-                .domain
+                .points
                 .iter()
                 .map(|&point| evaluate_coefficients(coefficients, point))
                 .collect(),
@@ -177,12 +175,12 @@ mod tests {
                 let mut numerator = F128::ONE;
                 let mut denominator = F128::ONE;
 
-                for (j, &node) in domain.domain.iter().enumerate() {
+                for (j, &node) in domain.points.iter().enumerate() {
                     if j == i {
                         continue;
                     }
                     numerator *= point - node;
-                    denominator *= domain.domain[i] - node;
+                    denominator *= domain.points[i] - node;
                 }
 
                 sum + evaluation
@@ -197,7 +195,7 @@ mod tests {
     fn zero_length_domain_is_empty() {
         let aux = LagrangeInterpolationDomain::new(0);
 
-        assert!(aux.domain.is_empty());
+        assert!(aux.points.is_empty());
         assert!(aux.weights.is_empty());
     }
 
@@ -206,14 +204,14 @@ mod tests {
         let aux = LagrangeInterpolationDomain::new(5);
         let expected: Vec<_> = (0..5).map(|i| F128::from(i as u128)).collect();
 
-        assert_eq!(aux.domain, expected);
+        assert_eq!(aux.points, expected);
     }
 
     #[test]
     fn singleton_has_inverse_of_the_empty_product() {
         let aux = LagrangeInterpolationDomain::new(1);
 
-        assert_eq!(aux.domain, vec![F128::ZERO]);
+        assert_eq!(aux.points, vec![F128::ZERO]);
         assert_eq!(aux.weights, vec![F128::ONE]);
     }
 
@@ -222,17 +220,17 @@ mod tests {
         for len in 2..=8 {
             let aux = LagrangeInterpolationDomain::new(len);
 
-            assert_eq!(aux.domain.len(), len);
+            assert_eq!(aux.points.len(), len);
             assert_eq!(aux.weights.len(), len);
 
             for i in 0..len {
                 let denominator = aux
-                    .domain
+                    .points
                     .iter()
                     .enumerate()
                     .filter(|(j, _)| *j != i)
                     .fold(F128::ONE, |product, (_, &point)| {
-                        product * (aux.domain[i] - point)
+                        product * (aux.points[i] - point)
                     });
 
                 assert_eq!(
@@ -322,7 +320,7 @@ mod tests {
         let polynomial = NatEvaluatedPoly::new(evaluations.clone());
         let domain = LagrangeInterpolationDomain::new(evaluations.len());
 
-        for (&point, &expected) in domain.domain.iter().zip(&evaluations) {
+        for (&point, &expected) in domain.points.iter().zip(&evaluations) {
             assert_eq!(
                 polynomial.evaluate_at_point_with_domain(point, &domain),
                 Ok(expected),
