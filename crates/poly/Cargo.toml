@@ -14,4 +14,9 @@ field = { path = "../field" }
 rayon = { workspace = true, optional = true }
 
 [dev-dependencies]
+divan = "0.1.21"
 proptest = "1.11.0"
+
+[[bench]]
+name = "poly"
+harness = false
