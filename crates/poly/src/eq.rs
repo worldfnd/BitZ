@@ -1,28 +1,10 @@
-use std::ops::{Add, Mul, Sub};
-
-use field::{F128, Fq};
+use field::F128;
+pub use field::{ConstOne, ConstZero, Field};
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
 #[cfg(feature = "parallel")]
 use crate::parallel::workload_size;
-
-pub trait Field:
-    Copy + From<u128> + Add<Output = Self> + Sub<Output = Self> + Mul<Output = Self> + Default
-{
-    const ZERO: Self;
-    const ONE: Self;
-}
-
-impl Field for F128 {
-    const ZERO: Self = F128::ZERO;
-    const ONE: Self = F128::ONE;
-}
-
-impl<const Q: u128> Field for Fq<Q> {
-    const ZERO: Self = Fq::ZERO;
-    const ONE: Self = Fq::ONE;
-}
 
 /// Evaluates the multilinear equality polynomial over F128
 ///
@@ -63,7 +45,7 @@ pub fn eq_eval(x: &[F128], y: &[F128]) -> F128 {
 ///
 /// For `n = 0`, the table is `[F128::ONE]`, corresponding to the
 /// empty product.
-pub fn eq_table<F: Field + Send + Sync>(r: &[F]) -> Vec<F> {
+pub fn eq_table<F: Field + ConstZero + ConstOne + Send + Sync>(r: &[F]) -> Vec<F> {
     let n = 1 << r.len();
     // Allocate the final output once.
     let mut table = vec![F::ZERO; n];
@@ -103,11 +85,11 @@ pub fn eq_table<F: Field + Send + Sync>(r: &[F]) -> Vec<F> {
 
 #[cfg(test)]
 pub mod tests {
-    use super::{Field, eq_eval, eq_table};
-    use field::{F128, FqDefault};
+    use super::{eq_eval, eq_table};
+    use field::{ConstOne, F128, Field, FqDefault};
     use proptest::prelude::*;
 
-    fn direct_table_entry<F: Field>(r: &[F], index: usize) -> F {
+    fn direct_table_entry<F: Field + ConstOne>(r: &[F], index: usize) -> F {
         r.iter().enumerate().fold(F::ONE, |acc, (bit, &r_i)| {
             let factor = if (index >> bit) & 1 == 0 {
                 F::ONE - r_i

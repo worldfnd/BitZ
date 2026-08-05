@@ -8,7 +8,8 @@ use std::{
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
-use crate::eq::Field;
+use field::Field;
+
 #[cfg(feature = "parallel")]
 use crate::parallel::workload_size;
 
