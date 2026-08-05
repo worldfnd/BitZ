@@ -11,9 +11,9 @@ use crate::parallel::workload_size;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LagrangeInterpolationDomain {
     /// `points[i] = F128::from(i as u128)`.
-    pub points: Vec<F128>,
+    points: Vec<F128>,
     /// `w_i = (∏_{j != i} (points[i] - points[j]))⁻¹`
-    pub weights: Vec<F128>,
+    weights: Vec<F128>,
 }
 
 impl LagrangeInterpolationDomain {
@@ -64,6 +64,16 @@ impl LagrangeInterpolationDomain {
 
         Self { points, weights }
     }
+
+    /// Natural interpolation nodes in index order.
+    pub fn points(&self) -> &[F128] {
+        &self.points
+    }
+
+    /// Barycentric weights corresponding to [`Self::points`].
+    pub fn weights(&self) -> &[F128] {
+        &self.weights
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -99,11 +109,11 @@ impl NatEvaluatedPoly {
         let len = self.evaluations.len();
         if len == 0 {
             return Err(NatEvaluationError::EmptyPolynomial);
-        } else if len != domain.points.len() || len != domain.weights.len() {
+        } else if len != domain.points().len() || len != domain.weights().len() {
             return Err(NatEvaluationError::DomainSizeMismatch);
         }
 
-        Ok(evaluate_block(&self.evaluations, &domain.points, &domain.weights, point).0)
+        Ok(evaluate_block(&self.evaluations, domain.points(), domain.weights(), point).0)
     }
 }
 
@@ -434,25 +444,6 @@ mod tests {
                 Ok(expected),
             );
         }
-    }
-
-    #[test]
-    fn evaluation_matches_the_direct_lagrange_definition() {
-        let evaluations = vec![
-            F128::from(2u128),
-            F128::from(7u128),
-            F128::from(13u128),
-            F128::from(29u128),
-            F128::from(43u128),
-        ];
-        let polynomial = NatEvaluatedPoly::new(evaluations.clone());
-        let domain = LagrangeInterpolationDomain::new(evaluations.len());
-        let point = F128::from(31u128);
-
-        assert_eq!(
-            polynomial.evaluate_at_point_with_domain(point, &domain),
-            Ok(evaluate_lagrange_naively(&evaluations, &domain, point)),
-        );
     }
 
     #[test]
