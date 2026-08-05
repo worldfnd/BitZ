@@ -9,6 +9,8 @@ use std::{
 use rayon::prelude::*;
 
 use crate::eq::Field;
+#[cfg(feature = "parallel")]
+use crate::parallel::workload_size;
 
 /// Number of outputs at which we dispatch a fold round to Rayon.
 /// This is an initial value picked from Flock; benchmarks should calibrate it for our field.
@@ -99,7 +101,10 @@ impl<F: Field> DenseMultilinearExtension<F> {
 
     /// Evaluates this multilinear extension at `r` without cloning or mutating
     /// the table.
-    pub fn evaluate(&self, r: &[F]) -> Result<F, DenseMleError> {
+    pub fn evaluate(&self, r: &[F]) -> Result<F, DenseMleError>
+    where
+        F: Send + Sync,
+    {
         let len = self.evaluations.len();
         if r.len() >= usize::BITS as usize {
             return Err(DenseMleError::InvalidNumVarsRange);
@@ -115,7 +120,10 @@ impl<F: Field> DenseMultilinearExtension<F> {
     #[inline]
     /// Unrolled base cases adapted from WHIR's `eval_exact` (Apache-2.0):
     /// <https://github.com/worldfnd/whir/blob/e0aec15225fd5e63594bdc49566e080a6cab2f24/src/algebra/multilinear.rs#L31-L64>
-    fn evaluate_exact(evaluations: &[F], r: &[F]) -> F {
+    fn evaluate_exact(evaluations: &[F], r: &[F]) -> F
+    where
+        F: Send + Sync,
+    {
         debug_assert_eq!(evaluations.len(), 1 << r.len());
 
         let interpolate = |zero: F, one: F, challenge: F| zero + challenge * (one - zero);
@@ -156,8 +164,28 @@ impl<F: Field> DenseMultilinearExtension<F> {
             }
             [remaining @ .., last_r] => {
                 let (zero, one) = evaluations.split_at(evaluations.len() / 2);
-                let zero = Self::evaluate_exact(zero, remaining);
-                let one = Self::evaluate_exact(one, remaining);
+
+                #[cfg(feature = "parallel")]
+                let (zero, one) = if evaluations.len() > workload_size::<F>()
+                    && rayon::current_num_threads() > 1
+                {
+                    rayon::join(
+                        || Self::evaluate_exact(zero, remaining),
+                        || Self::evaluate_exact(one, remaining),
+                    )
+                } else {
+                    (
+                        Self::evaluate_exact(zero, remaining),
+                        Self::evaluate_exact(one, remaining),
+                    )
+                };
+
+                #[cfg(not(feature = "parallel"))]
+                let (zero, one) = (
+                    Self::evaluate_exact(zero, remaining),
+                    Self::evaluate_exact(one, remaining),
+                );
+
                 interpolate(zero, one, *last_r)
             }
         }
@@ -527,6 +555,38 @@ mod tests {
                 "failed for {num_vars} variables"
             );
         }
+    }
+
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn evaluate_matches_folding_around_parallel_threshold() {
+        let threshold = crate::parallel::workload_size::<F128>();
+        assert!(threshold.is_power_of_two());
+
+        let threshold_log = threshold.trailing_zeros() as usize;
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(2)
+            .build()
+            .unwrap()
+            .install(|| {
+                // Exactly at the cutoff is serial; the next power of two
+                // performs one parallel split at the root.
+                for num_vars in [threshold_log, threshold_log + 1] {
+                    let evaluations: Vec<_> = (0..1usize << num_vars)
+                        .map(|i| F128::from((3 * i + 1) as u128))
+                        .collect();
+                    let point: Vec<_> = (0..num_vars)
+                        .map(|i| F128::from((5 * i + 2) as u128))
+                        .collect();
+                    let expected = point.iter().fold(evaluations.clone(), |layer, &challenge| {
+                        fold_layer(&layer, challenge)
+                    })[0];
+                    let mle =
+                        DenseMultilinearExtension::from_evaluations(num_vars, evaluations).unwrap();
+
+                    assert_eq!(mle.evaluate(&point), Ok(expected));
+                }
+            });
     }
 
     proptest! {
