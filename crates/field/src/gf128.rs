@@ -10,6 +10,8 @@
 
 use std::ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 
+use crate::traits::{ConstOne, ConstZero, Field};
+
 // Always compiled: the active kernel where no carryless-multiply instruction
 // exists, and the oracle the SIMD kernels are tested against. On aarch64 only
 // tests call it, hence the allow.
@@ -98,6 +100,16 @@ impl F128 {
     const fn words(self) -> [u64; 2] {
         [self.lo, self.hi]
     }
+}
+
+impl Field for F128 {}
+
+impl ConstZero for F128 {
+    const ZERO: Self = F128::ZERO;
+}
+
+impl ConstOne for F128 {
+    const ONE: Self = F128::ONE;
 }
 
 impl From<[u64; 2]> for F128 {

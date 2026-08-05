@@ -2,6 +2,8 @@
 
 use std::ops::{Add, AddAssign, Mul, MulAssign, Sub, SubAssign};
 
+use crate::traits::{ConstOne, ConstZero, Field};
+
 /// `2^100 - 15`, prime.
 pub const Q100: u128 = (1u128 << 100) - 15;
 
@@ -120,6 +122,16 @@ impl<const Q: u128> Fq<Q> {
         }
         Self(r)
     }
+}
+
+impl<const Q: u128> Field for Fq<Q> {}
+
+impl<const Q: u128> ConstZero for Fq<Q> {
+    const ZERO: Self = Fq::ZERO;
+}
+
+impl<const Q: u128> ConstOne for Fq<Q> {
+    const ONE: Self = Fq::ONE;
 }
 
 /// Reduces its input, so any `u128` is accepted.
