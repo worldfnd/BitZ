@@ -1,5 +1,7 @@
 //! Binary and prime field arithmetic.
 
+#[cfg(feature = "spongefish")]
+mod codec;
 pub mod fq;
 pub mod gf128;
 
