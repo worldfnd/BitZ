@@ -56,18 +56,21 @@ pub fn reduce(r: [u64; 4]) -> [u64; 2] {
     [w0 ^ b1 ^ (b1 << 1) ^ (b1 << 2) ^ (b1 << 7), w1]
 }
 
+#[inline]
 pub fn mul(a: [u64; 2], b: [u64; 2]) -> [u64; 2] {
     reduce(clmul128(a, b))
 }
 
 /// In characteristic 2 the cross terms of `(a0 + a1*X^64)^2` cancel, leaving
 /// `a0^2 + a1^2*X^128`.
+#[inline]
 pub fn square(a: [u64; 2]) -> [u64; 2] {
     let (l0, l1) = clmul64(a[0], a[0]);
     let (h0, h1) = clmul64(a[1], a[1]);
     reduce([l0, l1, h0, h1])
 }
 
+#[inline]
 pub fn square_n(a: [u64; 2], k: u32) -> [u64; 2] {
     let mut w = a;
     for _ in 0..k {
@@ -76,7 +79,7 @@ pub fn square_n(a: [u64; 2], k: u32) -> [u64; 2] {
     w
 }
 
-/// An unreduced 256-bit value. Four words in ascending significance, the same
+/// An unreduced 256-bit value. Four words, least significant first — the
 /// shape [`clmul128`] returns.
 pub type Wide = [u64; 4];
 
@@ -94,6 +97,12 @@ pub fn wide_mul(a: [u64; 2], b: [u64; 2]) -> Wide {
 
 pub fn wide_add(x: Wide, y: Wide) -> Wide {
     [x[0] ^ y[0], x[1] ^ y[1], x[2] ^ y[2], x[3] ^ y[3]]
+}
+
+/// Add a reduced element into an accumulator: only the low words are touched,
+/// so no zero high half is materialized.
+pub fn wide_add_low(x: Wide, a: [u64; 2]) -> Wide {
+    [x[0] ^ a[0], x[1] ^ a[1], x[2], x[3]]
 }
 
 pub fn wide_reduce(w: Wide) -> [u64; 2] {

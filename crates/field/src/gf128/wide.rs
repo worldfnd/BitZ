@@ -47,6 +47,15 @@ impl AddAssign for Wide256 {
     }
 }
 
+/// Adding a reduced element directly, without [`Wide256::of`] first: only the
+/// low half is touched, so the zero high half is never materialized.
+impl AddAssign<F128> for Wide256 {
+    #[inline]
+    fn add_assign(&mut self, rhs: F128) {
+        self.0 = kernel::wide_add_low(self.0, rhs.words());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::portable;
@@ -110,6 +119,29 @@ mod tests {
         }
     }
 
+    /// Adding a reduced element directly agrees with upcasting it first, and
+    /// with the field sum — interleaved with products, so the untouched high
+    /// half is checked against live data rather than zeros.
+    #[test]
+    fn adding_reduced_elements_matches_upcast() {
+        let mut rng = Pcg64::seed_from_u64(205);
+        for _ in 0..64 {
+            let mut direct = Wide256::zero();
+            let mut upcast = Wide256::zero();
+            let mut eager = F128::ZERO;
+            for _ in 0..16 {
+                let (a, b, c) = (f128(&mut rng), f128(&mut rng), f128(&mut rng));
+                direct += Wide256::mul(a, b);
+                direct += c;
+                upcast += Wide256::mul(a, b);
+                upcast += Wide256::of(c);
+                eager += a * b + c;
+            }
+            assert_eq!(direct.reduce(), upcast.reduce());
+            assert_eq!(direct.reduce(), eager);
+        }
+    }
+
     /// As with the multiply, the vector accumulator is pinned to the portable
     /// one — here before reduction as well as after, so an error in
     /// `clmul_256` that the fold happens to cancel still shows up.
@@ -138,6 +170,10 @@ mod tests {
         assert_eq!(
             aarch64::wide_words(aarch64::wide_of(a.words())),
             portable::wide_of(a.words())
+        );
+        assert_eq!(
+            aarch64::wide_words(aarch64::wide_add_low(neon, a.words())),
+            portable::wide_add_low(port, a.words())
         );
     }
 }
