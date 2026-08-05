@@ -1,0 +1,12 @@
+[package]
+name = "transcript"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+spongefish = "0.7.4"
+
+[dev-dependencies]
+field = { path = "../field", features = ["spongefish"] }

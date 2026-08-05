@@ -7,10 +7,8 @@
 //!   uniform sample through the same bijection.
 //! - `Fq<Q>`: the reduced representative as 16 little-endian bytes. Decoding
 //!   rejects anything at or above `Q`, so each element has exactly one wire
-//!   form. There is no `Decoding`: in the basic case, `deg(K) <= 1`, every
-//!   challenge is `F128` and `Fq` is never sampled. The `deg(K) > 1`
-//!   projection step samples `α` from a prime field, which would need a
-//!   wider squeeze to kill the modular bias — added when that step lands.
+//!   form. No `Decoding`: `Fq` is never sampled here, and sampling it would
+//!   need a wider squeeze to kill the modular bias.
 //!
 //! `NargSerialize` comes from spongefish's blanket impl over `Encoding`.
 
@@ -137,7 +135,6 @@ mod tests {
 
     #[test]
     fn fq_narg_rejects_non_canonical() {
-        // One wire form per element: the representative must be reduced.
         for v in [Q100, Q100 + 1, u128::MAX] {
             let narg = v.to_le_bytes();
             let mut buf = narg.as_slice();
