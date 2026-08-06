@@ -21,6 +21,7 @@ use binius_field::arithmetic_traits::{InvertOrZero, Square};
 use binius_field::{BinaryField128bGhash as Ghash, Field, WideMul};
 use field::gf128::KERNEL;
 use field::{F128, Wide256};
+use num_traits::ConstZero;
 
 /// Elements per pass, matching the `gf128` bench: 1024 of them is 16 KiB, so a
 /// pair of operand arrays stays in L1 and neither implementation is measured

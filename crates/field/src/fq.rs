@@ -1,13 +1,13 @@
 //! Arithmetic modulo a prime fixed at compile time.
 
-use std::fmt::{Display, Formatter, Result as FmtResult};
-use std::iter::{Product, Sum};
-use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 use crypto_primitives::{WithAssociatedInteger, WithExtensionDegree};
 use crypto_primitives_proc_macros::InfallibleCheckedOp;
 use num_traits::{
-    CheckedNeg, CheckedAdd, CheckedMul, CheckedSub, ConstOne, ConstZero, Inv, One, Pow, Zero,
+    CheckedAdd, CheckedMul, CheckedNeg, CheckedSub, ConstOne, ConstZero, Inv, One, Pow, Zero,
 };
+use std::fmt::{Display, Formatter, Result as FmtResult};
+use std::iter::{Product, Sum};
+use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 
 /// `2^100 - 15`, prime.
 pub const Q100: u128 = (1u128 << 100) - 15;
