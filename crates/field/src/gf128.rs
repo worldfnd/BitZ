@@ -43,6 +43,11 @@ pub const KERNEL: &str = "portable";
 pub const REDUCTION: u64 = 0x87;
 
 /// An element of `GF(2^128)`.
+///
+/// Two `u64` words rather than one `u128`: the words map onto the kernels'
+/// 64-bit SIMD lanes (`pmull` multiplies 64x64), scalar `u128` arithmetic
+/// lowers to the same word ops anyway, and on wasm32 `u128` multiplies
+/// become libcalls.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[repr(C, align(16))]
 pub struct F128 {
