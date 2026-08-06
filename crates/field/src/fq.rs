@@ -1,6 +1,13 @@
 //! Arithmetic modulo a prime fixed at compile time.
 
-use std::ops::{Add, AddAssign, Mul, MulAssign, Sub, SubAssign};
+use std::fmt::{Display, Formatter, Result as FmtResult};
+use std::iter::{Product, Sum};
+use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign};
+use crypto_primitives::{WithAssociatedInteger, WithExtensionDegree};
+use crypto_primitives_proc_macros::InfallibleCheckedOp;
+use num_traits::{
+    CheckedNeg, CheckedAdd, CheckedMul, CheckedSub, ConstOne, ConstZero, Inv, One, Pow, Zero,
+};
 
 /// `2^100 - 15`, prime.
 pub const Q100: u128 = (1u128 << 100) - 15;
@@ -15,7 +22,9 @@ pub type FqDefault = Fq<Q100>;
 /// Barrett leaves a value below `3Q`, which has to fit a `u128`. That admits
 /// anything up to `floor((2^128 - 1)/3)`, just over `2^126.41`; the bound is
 /// rounded down to a power of two.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, InfallibleCheckedOp)]
+#[infallible_checked_unary_op((CheckedNeg, neg))]
+#[infallible_checked_binary_op((CheckedAdd, add), (CheckedSub, sub), (CheckedMul, mul))]
 pub struct Fq<const Q: u128>(u128);
 
 /// Full 128x128 -> 256-bit product as `(low, high)`.
@@ -79,9 +88,6 @@ impl<const Q: u128> Fq<Q> {
 
     const MU: u128 = barrett_mu(Q, Self::BITS);
 
-    pub const ZERO: Self = Self(0);
-    pub const ONE: Self = Self(1);
-
     /// The least non-negative representative, in `[0, Q)`.
     ///
     /// Which representative a lift picks is a convention — centred ones are the
@@ -89,10 +95,6 @@ impl<const Q: u128> Fq<Q> {
     /// integer again, so it is fixed here.
     pub const fn value(self) -> u128 {
         self.0
-    }
-
-    pub const fn is_zero(self) -> bool {
-        self.0 == 0
     }
 
     /// Barrett reduction, Handbook of Applied Cryptography Algorithm 14.42,
@@ -122,11 +124,68 @@ impl<const Q: u128> Fq<Q> {
     }
 }
 
+impl<const Q: u128> Display for Fq<Q> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        write!(f, "{} (mod {})", self.0, Q)
+    }
+}
+
+impl<const Q: u128> Zero for Fq<Q> {
+    fn zero() -> Self {
+        Self::ZERO
+    }
+
+    fn is_zero(&self) -> bool {
+        self.0 == 0
+    }
+}
+
+impl<const Q: u128> One for Fq<Q> {
+    fn one() -> Self {
+        Self::ONE
+    }
+}
+
+impl<const Q: u128> ConstZero for Fq<Q> {
+    const ZERO: Self = Self(0);
+}
+
+impl<const Q: u128> ConstOne for Fq<Q> {
+    const ONE: Self = Self(1);
+}
+
 /// Reduces its input, so any `u128` is accepted.
 impl<const Q: u128> From<u128> for Fq<Q> {
     fn from(value: u128) -> Self {
         let _ = Self::BITS;
         Self(value % Q)
+    }
+}
+
+impl<const Q: u128> From<&u128> for Fq<Q> {
+    fn from(value: &u128) -> Self {
+        Self::from(*value)
+    }
+}
+
+/// Reduces its input, so any `u64` is accepted.
+impl<const Q: u128> From<u64> for Fq<Q> {
+    fn from(value: u64) -> Self {
+        Self::from(u128::from(value))
+    }
+}
+
+impl<const Q: u128> From<bool> for Fq<Q> {
+    fn from(value: bool) -> Self {
+        if value { Self::ONE } else { Self::ZERO }
+    }
+}
+
+impl<const Q: u128> Neg for Fq<Q> {
+    type Output = Self;
+    fn neg(self) -> Self {
+        let _ = Self::BITS;
+        Self(if self.0 == 0 { 0 } else { Q - self.0 })
     }
 }
 
@@ -160,6 +219,27 @@ impl<const Q: u128> Mul for Fq<Q> {
     }
 }
 
+impl<const Q: u128> Add<&Fq<Q>> for Fq<Q> {
+    type Output = Self;
+    fn add(self, rhs: &Self) -> Self {
+        self.add(*rhs)
+    }
+}
+
+impl<const Q: u128> Sub<&Fq<Q>> for Fq<Q> {
+    type Output = Self;
+    fn sub(self, rhs: &Self) -> Self {
+        self.sub(*rhs)
+    }
+}
+
+impl<const Q: u128> Mul<&Fq<Q>> for Fq<Q> {
+    type Output = Self;
+    fn mul(self, rhs: &Self) -> Self {
+        self.mul(*rhs)
+    }
+}
+
 impl<const Q: u128> AddAssign for Fq<Q> {
     fn add_assign(&mut self, rhs: Self) {
         *self = *self + rhs;
@@ -178,14 +258,130 @@ impl<const Q: u128> MulAssign for Fq<Q> {
     }
 }
 
+impl<const Q: u128> AddAssign<&Fq<Q>> for Fq<Q> {
+    fn add_assign(&mut self, rhs: &Self) {
+        *self = *self + *rhs;
+    }
+}
+
+impl<const Q: u128> SubAssign<&Fq<Q>> for Fq<Q> {
+    fn sub_assign(&mut self, rhs: &Self) {
+        *self = *self - *rhs;
+    }
+}
+
+impl<const Q: u128> MulAssign<&Fq<Q>> for Fq<Q> {
+    fn mul_assign(&mut self, rhs: &Self) {
+        *self = *self * *rhs;
+    }
+}
+
+impl<const Q: u128> Sum for Fq<Q> {
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.fold(Self::ZERO, Add::add)
+    }
+}
+
+impl<'a, const Q: u128> Sum<&'a Fq<Q>> for Fq<Q> {
+    fn sum<I: Iterator<Item = &'a Self>>(iter: I) -> Self {
+        iter.fold(Self::ZERO, Add::add)
+    }
+}
+
+impl<const Q: u128> Product for Fq<Q> {
+    fn product<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.fold(Self::ONE, Mul::mul)
+    }
+}
+
+impl<'a, const Q: u128> Product<&'a Fq<Q>> for Fq<Q> {
+    fn product<I: Iterator<Item = &'a Self>>(iter: I) -> Self {
+        iter.fold(Self::ONE, Mul::mul)
+    }
+}
+
+// Required by `crypto_primitives::Field`, not implemented yet.
+
+impl<const Q: u128> Pow<u32> for Fq<Q> {
+    type Output = Self;
+    fn pow(self, _rhs: u32) -> Self {
+        unimplemented!("exponentiation is not implemented yet")
+    }
+}
+
+impl<const Q: u128> Pow<u128> for Fq<Q> {
+    type Output = Self;
+    fn pow(self, _rhs: u128) -> Self {
+        unimplemented!("exponentiation is not implemented yet")
+    }
+}
+
+impl<const Q: u128> Pow<&u128> for Fq<Q> {
+    type Output = Self;
+    fn pow(self, _rhs: &u128) -> Self {
+        unimplemented!("exponentiation is not implemented yet")
+    }
+}
+
+impl<const Q: u128> Inv for Fq<Q> {
+    type Output = Option<Self>;
+    fn inv(self) -> Option<Self> {
+        unimplemented!("inversion is not implemented yet")
+    }
+}
+
+impl<const Q: u128> Div for Fq<Q> {
+    type Output = Self;
+    fn div(self, _rhs: Self) -> Self {
+        unimplemented!("division is not implemented yet")
+    }
+}
+
+impl<const Q: u128> Div<&Fq<Q>> for Fq<Q> {
+    type Output = Self;
+    fn div(self, _rhs: &Self) -> Self {
+        unimplemented!("division is not implemented yet")
+    }
+}
+
+impl<const Q: u128> DivAssign for Fq<Q> {
+    fn div_assign(&mut self, _rhs: Self) {
+        unimplemented!("division is not implemented yet")
+    }
+}
+
+impl<const Q: u128> DivAssign<&Fq<Q>> for Fq<Q> {
+    fn div_assign(&mut self, _rhs: &Self) {
+        unimplemented!("division is not implemented yet")
+    }
+}
+
+/// Exponents live in `[0, Q)`, and `Q` fits a `u128`.
+impl<const Q: u128> WithAssociatedInteger for Fq<Q> {
+    type Integer = u128;
+}
+
+impl<const Q: u128> WithExtensionDegree for Fq<Q> {
+    fn extension_degree() -> u64 {
+        1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crypto_primitives::ConstField;
     use rand_core::{RngCore, SeedableRng};
     use rand_pcg::Pcg64;
 
     /// A prime small enough to check every pair of operands.
     const SMALL: u128 = 251;
+
+    #[test]
+    fn ensure_traits() {
+        fn assert_impl<T: ConstField>() {}
+        assert_impl::<FqDefault>();
+    }
 
     fn u128_of(rng: &mut Pcg64) -> u128 {
         (rng.next_u64() as u128) << 64 | rng.next_u64() as u128
