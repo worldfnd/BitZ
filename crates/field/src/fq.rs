@@ -1,9 +1,10 @@
 //! Arithmetic modulo a prime fixed at compile time.
 
-use crypto_primitives::{WithAssociatedInteger, WithExtensionDegree};
+use crypto_primitives::{ConstBaseField, LiftElement, WithAssociatedInteger};
 use crypto_primitives_proc_macros::InfallibleCheckedOp;
 use num_traits::{
-    CheckedAdd, CheckedMul, CheckedNeg, CheckedSub, ConstOne, ConstZero, Inv, One, Pow, Zero,
+    Bounded, CheckedAdd, CheckedMul, CheckedNeg, CheckedSub, ConstOne, ConstZero, Inv, One, Pow,
+    Zero,
 };
 use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::iter::{Product, Sum};
@@ -87,15 +88,6 @@ impl<const Q: u128> Fq<Q> {
     };
 
     const MU: u128 = barrett_mu(Q, Self::BITS);
-
-    /// The least non-negative representative, in `[0, Q)`.
-    ///
-    /// Which representative a lift picks is a convention — centred ones are the
-    /// usual alternative — and it shows wherever a field element becomes an
-    /// integer again, so it is fixed here.
-    pub const fn value(self) -> u128 {
-        self.0
-    }
 
     /// Barrett reduction, Handbook of Applied Cryptography Algorithm 14.42,
     /// after Barrett, CRYPTO '86, LNCS 263:311-323: estimate the quotient
@@ -361,16 +353,41 @@ impl<const Q: u128> WithAssociatedInteger for Fq<Q> {
     type Integer = u128;
 }
 
-impl<const Q: u128> WithExtensionDegree for Fq<Q> {
-    fn extension_degree() -> u64 {
-        1
+/// The least non-negative representative, in `[0, Q)`.
+///
+/// Which representative a lift picks is a convention — centred ones are the
+/// usual alternative — and it shows wherever a field element becomes an
+/// integer again, so it is fixed here.
+impl<const Q: u128> LiftElement<u128> for Fq<Q> {
+    fn lift(&self) -> u128 {
+        self.0
     }
+}
+
+impl<const Q: u128> Bounded for Fq<Q> {
+    fn min_value() -> Self {
+        Self::ZERO
+    }
+
+    /// The largest residue, `Q - 1`.
+    fn max_value() -> Self {
+        let _ = Self::BITS;
+        Self(Q - 1)
+    }
+}
+
+impl<const Q: u128> ConstBaseField for Fq<Q> {
+    const MODULUS: Self::Integer = {
+        let _ = Self::BITS;
+        Q
+    };
+    const MODULUS_MINUS_ONE_DIV_TWO: Self::Integer = (Q - 1) / 2;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crypto_primitives::ConstField;
+    use crypto_primitives::{BaseField, WithExtensionDegree};
     use rand_core::{RngCore, SeedableRng};
     use rand_pcg::Pcg64;
 
@@ -379,8 +396,18 @@ mod tests {
 
     #[test]
     fn ensure_traits() {
-        fn assert_impl<T: ConstField>() {}
+        fn assert_impl<T: ConstBaseField>() {}
         assert_impl::<FqDefault>();
+    }
+
+    #[test]
+    fn base_field_metadata() {
+        assert_eq!(FqDefault::MODULUS, Q100);
+        assert_eq!(FqDefault::MODULUS_MINUS_ONE_DIV_TWO, (Q100 - 1) / 2);
+        assert_eq!(FqDefault::modulus(), Q100);
+        assert_eq!(FqDefault::min_value(), FqDefault::ZERO);
+        assert_eq!(FqDefault::max_value().lift(), Q100 - 1);
+        assert_eq!(FqDefault::extension_degree(), 1);
     }
 
     fn u128_of(rng: &mut Pcg64) -> u128 {
@@ -427,14 +454,14 @@ mod tests {
         let mut rng = Pcg64::seed_from_u64(402);
         for _ in 0..4096 {
             let (a, b) = (u128_of(&mut rng) % Q100, u128_of(&mut rng) % Q100);
-            let got = (Fq::<Q100>::from(a) * Fq::<Q100>::from(b)).value();
+            let got = (Fq::<Q100>::from(a) * Fq::<Q100>::from(b)).lift();
             assert_eq!(got, mulmod_reference(a, b, Q100), "{a} * {b}");
         }
         // The extremes of the input range, where a quotient estimate that is
         // one too small or one too large would show up.
         for &a in &[0, 1, Q100 - 1, Q100 / 2] {
             for &b in &[0, 1, Q100 - 1, Q100 / 2] {
-                let got = (Fq::<Q100>::from(a) * Fq::<Q100>::from(b)).value();
+                let got = (Fq::<Q100>::from(a) * Fq::<Q100>::from(b)).lift();
                 assert_eq!(got, mulmod_reference(a, b, Q100), "{a} * {b}");
             }
         }
@@ -445,19 +472,19 @@ mod tests {
         for a in 0..SMALL {
             for b in 0..SMALL {
                 let (x, y) = (Fq::<SMALL>::from(a), Fq::<SMALL>::from(b));
-                assert_eq!((x * y).value(), a * b % SMALL, "{a} * {b}");
-                assert_eq!((x + y).value(), (a + b) % SMALL, "{a} + {b}");
-                assert_eq!((x - y).value(), (a + SMALL - b) % SMALL, "{a} - {b}");
+                assert_eq!((x * y).lift(), a * b % SMALL, "{a} * {b}");
+                assert_eq!((x + y).lift(), (a + b) % SMALL, "{a} + {b}");
+                assert_eq!((x - y).lift(), (a + SMALL - b) % SMALL, "{a} - {b}");
             }
         }
     }
 
     #[test]
     fn from_u128_reduces() {
-        assert_eq!(Fq::<Q100>::from(Q100).value(), 0);
-        assert_eq!(Fq::<Q100>::from(Q100 + 1).value(), 1);
-        assert_eq!(Fq::<Q100>::from(u128::MAX).value(), u128::MAX % Q100);
-        assert_eq!(Fq::<Q100>::ONE.value(), 1);
+        assert_eq!(Fq::<Q100>::from(Q100).lift(), 0);
+        assert_eq!(Fq::<Q100>::from(Q100 + 1).lift(), 1);
+        assert_eq!(Fq::<Q100>::from(u128::MAX).lift(), u128::MAX % Q100);
+        assert_eq!(Fq::<Q100>::ONE.lift(), 1);
         assert!(Fq::<Q100>::ZERO.is_zero());
     }
 
