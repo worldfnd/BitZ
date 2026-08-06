@@ -16,7 +16,7 @@ use divan::counter::ItemsCount;
 use divan::{Bencher, black_box};
 use field::gf128::KERNEL;
 use field::{F128, FixedBasePow, Wide256};
-use num_traits::ConstZero;
+use num_traits::{ConstZero, Inv, Pow};
 
 /// Elements per invocation. 1024 of them is 16 KiB, so a pair of operand
 /// arrays stays in L1.
@@ -105,7 +105,7 @@ fn inverse(bencher: Bencher) {
     let xs = xs();
     bencher.counter(ItemsCount::new(N)).bench_local(|| {
         for &x in &xs {
-            black_box(x.inverse());
+            black_box(x.inv());
         }
     });
 }
