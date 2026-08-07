@@ -6,6 +6,9 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+num-traits = { workspace = true }
+crypto-primitives = { workspace = true }
+crypto-primitives-proc-macros = { workspace = true }
 
 [dev-dependencies]
 aes = "0.9.2"
