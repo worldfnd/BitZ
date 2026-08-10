@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use field::F128;
 use num_traits::{ConstOne, ConstZero, Inv, Zero};
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
@@ -8,19 +7,21 @@ use rayon::prelude::*;
 #[cfg(feature = "parallel")]
 use crate::parallel::workload_size;
 
+use crypto_primitives::Field;
+
 /// Reusable interpolation data for evaluations on the natural `F128` domain.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LagrangeInterpolationDomain {
+pub struct LagrangeInterpolationDomain<F: Field + ConstOne + Copy> {
     /// `points[i] = F128::from(i as u128)`.
-    points: Vec<F128>,
+    points: Vec<F>,
     /// `w_i = (∏_{j != i} (points[i] - points[j]))⁻¹`
-    weights: Vec<F128>,
+    weights: Vec<F>,
 }
 
-impl LagrangeInterpolationDomain {
+impl<F: Field + ConstOne + Copy> LagrangeInterpolationDomain<F> {
     /// Precomputes the interpolation nodes and their barycentric weights.
     pub fn new(len: usize) -> Self {
-        let points: Vec<_> = (0..len).map(|i| F128::from(i as u128)).collect();
+        let points: Vec<_> = (0..len).map(|i| F::from(i as u128)).collect();
 
         // Power-of-two natural domains are additive subspaces, so all weights
         // share one denominator. Adapted from Binius64 (MIT OR Apache-2.0):
@@ -29,7 +30,7 @@ impl LagrangeInterpolationDomain {
             let denominator = points[1..]
                 .iter()
                 .copied()
-                .fold(F128::ONE, |product, node| product * node);
+                .fold(F::ONE, |product, node| product * node);
             let weight = denominator
                 .inv()
                 .expect("the product of nonzero domain points is nonzero");
@@ -42,19 +43,18 @@ impl LagrangeInterpolationDomain {
 
         #[cfg(feature = "parallel")]
         // Require enough work for at least two cache-sized tasks.
-        let parallel_workload = workload_size::<F128>().saturating_mul(2);
+        let parallel_workload = workload_size::<F>().saturating_mul(2);
         #[cfg(feature = "parallel")]
-        let mut weights: Vec<F128> =
-            if len.saturating_mul(len.saturating_sub(1)) > parallel_workload {
-                let min_rows = (workload_size::<F128>() / len).max(1);
-                (0..len)
-                    .into_par_iter()
-                    .with_min_len(min_rows)
-                    .map(|i| lagrange_denominator(&points, i))
-                    .collect()
-            } else {
-                (0..len).map(|i| lagrange_denominator(&points, i)).collect()
-            };
+        let mut weights: Vec<F> = if len.saturating_mul(len.saturating_sub(1)) > parallel_workload {
+            let min_rows = (workload_size::<F>() / len).max(1);
+            (0..len)
+                .into_par_iter()
+                .with_min_len(min_rows)
+                .map(|i| lagrange_denominator(&points, i))
+                .collect()
+        } else {
+            (0..len).map(|i| lagrange_denominator(&points, i)).collect()
+        };
 
         #[cfg(not(feature = "parallel"))]
         let mut weights: Vec<F128> = (0..len).map(|i| lagrange_denominator(&points, i)).collect();
@@ -65,19 +65,19 @@ impl LagrangeInterpolationDomain {
     }
 
     /// Natural interpolation nodes in index order.
-    pub fn points(&self) -> &[F128] {
+    pub fn points(&self) -> &[F] {
         &self.points
     }
 
     /// Barycentric weights corresponding to [`Self::points`].
-    pub fn weights(&self) -> &[F128] {
+    pub fn weights(&self) -> &[F] {
         &self.weights
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NatEvaluatedPoly {
-    evaluations: Vec<F128>,
+pub struct NatEvaluatedPoly<F: Field + ConstOne + Copy> {
+    evaluations: Vec<F>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,13 +86,13 @@ pub enum NatEvaluationError {
     DomainSizeMismatch,
 }
 
-impl NatEvaluatedPoly {
-    pub const fn new(evaluations: Vec<F128>) -> Self {
+impl<F: Field + ConstZero + ConstOne + Copy> NatEvaluatedPoly<F> {
+    pub const fn new(evaluations: Vec<F>) -> Self {
         Self { evaluations }
     }
 
     /// Evaluates using a freshly constructed interpolation domain.
-    pub fn evaluate_at_point(&self, point: F128) -> Result<F128, NatEvaluationError> {
+    pub fn evaluate_at_point(&self, point: F) -> Result<F, NatEvaluationError> {
         let domain = LagrangeInterpolationDomain::new(self.evaluations.len());
         self.evaluate_at_point_with_domain(point, &domain)
     }
@@ -102,9 +102,9 @@ impl NatEvaluatedPoly {
     /// <https://github.com/IrreducibleOSS/binius64/blob/49deecec1bf691c57aeadcda2499316d8094fcd8/crates/math/src/univariate.rs#L200-L216>
     pub fn evaluate_at_point_with_domain(
         &self,
-        point: F128,
-        domain: &LagrangeInterpolationDomain,
-    ) -> Result<F128, NatEvaluationError> {
+        point: F,
+        domain: &LagrangeInterpolationDomain<F>,
+    ) -> Result<F, NatEvaluationError> {
         let len = self.evaluations.len();
         if len == 0 {
             return Err(NatEvaluationError::EmptyPolynomial);
@@ -116,30 +116,30 @@ impl NatEvaluatedPoly {
     }
 }
 
-fn lagrange_denominator(points: &[F128], i: usize) -> F128 {
+fn lagrange_denominator<F: Field + ConstOne + Copy>(points: &[F], i: usize) -> F {
     let point = points[i];
     points[..i]
         .iter()
         .chain(&points[i + 1..])
-        .fold(F128::ONE, |denominator, &node| denominator * (point - node))
+        .fold(F::ONE, |denominator, &node| denominator * (point - node))
 }
 
 /// Evaluates one contiguous block and returns its `(result, product)` summary.
 /// Adjacent summaries compose as
 /// `(r_l p_r + p_l r_r, p_l p_r)`, so independent halves can be evaluated
 /// concurrently without division or allocation.
-fn evaluate_block(
-    evaluations: &[F128],
-    nodes: &[F128],
-    weights: &[F128],
-    point: F128,
-) -> (F128, F128) {
+fn evaluate_block<F: Field + ConstZero + ConstOne + Copy>(
+    evaluations: &[F],
+    nodes: &[F],
+    weights: &[F],
+    point: F,
+) -> (F, F) {
     debug_assert_eq!(evaluations.len(), nodes.len());
     debug_assert_eq!(evaluations.len(), weights.len());
 
     #[cfg(feature = "parallel")]
     // Each term reads one evaluation, node, and weight.
-    if evaluations.len().saturating_mul(3) > workload_size::<F128>() {
+    if evaluations.len().saturating_mul(3) > workload_size::<F>() {
         let mid = evaluations.len() / 2;
         let (left_evaluations, right_evaluations) = evaluations.split_at(mid);
         let (left_nodes, right_nodes) = nodes.split_at(mid);
@@ -156,14 +156,14 @@ fn evaluate_block(
     evaluate_block_serial(evaluations, nodes, weights, point)
 }
 
-fn evaluate_block_serial(
-    evaluations: &[F128],
-    nodes: &[F128],
-    weights: &[F128],
-    point: F128,
-) -> (F128, F128) {
-    let mut result = F128::ZERO;
-    let mut product = F128::ONE;
+fn evaluate_block_serial<F: Field + ConstZero + ConstOne + Copy>(
+    evaluations: &[F],
+    nodes: &[F],
+    weights: &[F],
+    point: F,
+) -> (F, F) {
+    let mut result = F::ZERO;
+    let mut product = F::ONE;
     for ((&evaluation, &node), &weight) in evaluations.iter().zip(nodes).zip(weights) {
         let difference = point - node;
         result = result * difference + product * evaluation * weight;
@@ -175,10 +175,10 @@ fn evaluate_block_serial(
 
 #[cfg(feature = "parallel")]
 #[inline]
-fn combine_evaluation_blocks(
-    (left_result, left_product): (F128, F128),
-    (right_result, right_product): (F128, F128),
-) -> (F128, F128) {
+fn combine_evaluation_blocks<F: Field + Copy>(
+    (left_result, left_product): (F, F),
+    (right_result, right_product): (F, F),
+) -> (F, F) {
     (
         left_result * right_product + left_product * right_result,
         left_product * right_product,
@@ -193,7 +193,7 @@ fn combine_evaluation_blocks(
 /// <https://github.com/succinctlabs/flock/blob/85fc0e7cc002e7ca4dffdff805ba89976e9a5293/crates/flock-core/src/permutation.rs#L133-L159>
 /// Flock's parallel path uses `2^14`-element chunks; F2Z's natural domains are
 /// far smaller, so one scan and one inversion avoid unnecessary task overhead.
-fn batch_invert_nonzero(values: &mut [F128]) {
+fn batch_invert_nonzero<F: Field + Copy>(values: &mut [F]) {
     let Some((&first, remaining)) = values.split_first() else {
         return;
     };
@@ -254,8 +254,8 @@ mod tests {
 
     fn polynomial_from_coefficients(
         coefficients: &[F128],
-        domain: &LagrangeInterpolationDomain,
-    ) -> NatEvaluatedPoly {
+        domain: &LagrangeInterpolationDomain<F128>,
+    ) -> NatEvaluatedPoly<F128> {
         NatEvaluatedPoly::new(
             domain
                 .points
@@ -267,7 +267,7 @@ mod tests {
 
     fn evaluate_lagrange_naively(
         evaluations: &[F128],
-        domain: &LagrangeInterpolationDomain,
+        domain: &LagrangeInterpolationDomain<F128>,
         point: F128,
     ) -> F128 {
         evaluations
@@ -293,7 +293,7 @@ mod tests {
 
     #[test]
     fn zero_length_domain_is_empty() {
-        let aux = LagrangeInterpolationDomain::new(0);
+        let aux: LagrangeInterpolationDomain<F128> = LagrangeInterpolationDomain::new(0);
 
         assert!(aux.points.is_empty());
         assert!(aux.weights.is_empty());
@@ -301,7 +301,7 @@ mod tests {
 
     #[test]
     fn interpolation_nodes_use_f128_bit_pattern_embedding() {
-        let aux = LagrangeInterpolationDomain::new(5);
+        let aux: LagrangeInterpolationDomain<F128> = LagrangeInterpolationDomain::new(5);
         let expected: Vec<_> = (0..5).map(|i| F128::from(i as u128)).collect();
 
         assert_eq!(aux.points, expected);
@@ -309,7 +309,7 @@ mod tests {
 
     #[test]
     fn singleton_has_inverse_of_the_empty_product() {
-        let aux = LagrangeInterpolationDomain::new(1);
+        let aux: LagrangeInterpolationDomain<F128> = LagrangeInterpolationDomain::new(1);
 
         assert_eq!(aux.points, vec![F128::ZERO]);
         assert_eq!(aux.weights, vec![F128::ONE]);
@@ -318,7 +318,7 @@ mod tests {
     #[test]
     fn power_of_two_domains_share_one_barycentric_weight() {
         for len in [1, 2, 4, 8, 16] {
-            let domain = LagrangeInterpolationDomain::new(len);
+            let domain: LagrangeInterpolationDomain<F128> = LagrangeInterpolationDomain::new(len);
 
             assert!(
                 domain
@@ -332,7 +332,7 @@ mod tests {
     #[test]
     fn denominator_inverses_match_direct_field_products() {
         for len in 2..=8 {
-            let aux = LagrangeInterpolationDomain::new(len);
+            let aux: LagrangeInterpolationDomain<F128> = LagrangeInterpolationDomain::new(len);
 
             assert_eq!(aux.points.len(), len);
             assert_eq!(aux.weights.len(), len);
@@ -494,7 +494,8 @@ mod tests {
             .unwrap();
 
         for len in [serial_len, parallel_len] {
-            let expected = serial_pool.install(|| LagrangeInterpolationDomain::new(len));
+            let expected: LagrangeInterpolationDomain<F128> =
+                serial_pool.install(|| LagrangeInterpolationDomain::new(len));
             let actual = parallel_pool.install(|| LagrangeInterpolationDomain::new(len));
 
             assert_eq!(actual, expected);
