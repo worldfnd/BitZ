@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{
-    ops::{Deref, DerefMut, Index, IndexMut},
-    slice::SliceIndex,
-};
+use std::ops::Deref;
 
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
@@ -227,32 +224,12 @@ impl<T: Default> Deref for DenseMultilinearExtension<T> {
     }
 }
 
-impl<T: Default> DerefMut for DenseMultilinearExtension<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.evaluations
-    }
-}
-
 impl<T: Default> IntoIterator for DenseMultilinearExtension<T> {
     type Item = T;
     type IntoIter = std::vec::IntoIter<T>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.evaluations.into_iter()
-    }
-}
-
-impl<T: Default, I: SliceIndex<[T]>> Index<I> for DenseMultilinearExtension<T> {
-    type Output = I::Output;
-
-    fn index(&self, index: I) -> &Self::Output {
-        &self.evaluations[index]
-    }
-}
-
-impl<T: Default, I: SliceIndex<[T]>> IndexMut<I> for DenseMultilinearExtension<T> {
-    fn index_mut(&mut self, index: I) -> &mut Self::Output {
-        &mut self.evaluations[index]
     }
 }
 
@@ -350,19 +327,6 @@ mod tests {
             DenseMultilinearExtension::<u32>::from_evaluations(usize::MAX, vec![]),
             Err(DenseMleError::InvalidNumVarsRange)
         );
-    }
-
-    #[test]
-    fn forwards_slice_indexing_and_consuming_iteration() {
-        let mut mle = DenseMultilinearExtension {
-            evaluations: vec![1u32, 2, 3, 4],
-            num_vars: 2,
-        };
-
-        assert_eq!(&*mle, &[1, 2, 3, 4]);
-        mle[1] = 5;
-        assert_eq!(&mle[1..3], &[5, 3]);
-        assert_eq!(mle.into_iter().collect::<Vec<_>>(), vec![1, 5, 3, 4]);
     }
 
     #[test]
