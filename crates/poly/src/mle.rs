@@ -286,6 +286,13 @@ mod tests {
     }
 
     #[test]
+    fn consuming_iteration_preserves_evaluation_order() {
+        let mle = DenseMultilinearExtension::from_evaluations(2, vec![1u32, 2, 3, 4]).unwrap();
+
+        assert_eq!(mle.into_iter().collect::<Vec<_>>(), vec![1, 2, 3, 4]);
+    }
+
+    #[test]
     fn zero_vars_matches_the_exact_shape_constructor() {
         assert_eq!(
             DenseMultilinearExtension::zero_vars(7u32),
