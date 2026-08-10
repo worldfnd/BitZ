@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use num_traits::{ConstOne, ConstZero, Inv, Zero};
+use num_traits::{ConstOne, ConstZero};
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
