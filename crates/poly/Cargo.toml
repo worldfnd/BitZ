@@ -10,7 +10,9 @@ default = ["parallel"]
 parallel = ["dep:rayon"]
 
 [dependencies]
+crypto-primitives = { workspace = true }
 field = { path = "../field" }
+num-traits = { workspace = true }
 rayon = { workspace = true, optional = true }
 
 [dev-dependencies]

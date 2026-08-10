@@ -21,6 +21,7 @@ use binius_field::arithmetic_traits::{InvertOrZero, Square};
 use binius_field::{BinaryField128bGhash as Ghash, Field, WideMul};
 use field::gf128::KERNEL;
 use field::{F128, Wide256};
+use num_traits::{ConstZero, Inv, Pow};
 
 /// Elements per pass, matching the `gf128` bench: 1024 of them is 16 KiB, so a
 /// pair of operand arrays stays in L1 and neither implementation is measured
@@ -110,7 +111,7 @@ fn check_agreement(xs: &[F128], ys: &[F128]) {
             "wide {x:?} * {y:?}"
         );
         assert_eq!(
-            x.inverse().unwrap_or(F128::ZERO),
+            x.inv().unwrap_or(F128::ZERO),
             from_binius(bx.invert_or_zero()),
             "inverse {x:?}"
         );
@@ -216,7 +217,7 @@ fn binius_square_chain(mut a: Ghash, n: usize) -> Ghash {
 #[inline(never)]
 fn ours_inverses(xs: &[F128]) {
     for &x in xs {
-        black_box(x.inverse());
+        black_box(x.inv());
     }
 }
 

@@ -1,6 +1,7 @@
 //! Exponentiation, inversion, and the primitive-element test.
 
 use super::{F128, kernel};
+use num_traits::{ConstOne, Inv, Pow, Zero};
 
 /// The order of the multiplicative group, `2^128 - 1`.
 ///
@@ -24,14 +25,18 @@ pub const ORDER_PRIME_FACTORS: [u128; 9] =
 impl F128 {
     /// `self^(2^k)`. On NEON the value stays in one vector register, so `k`
     /// squarings cost `k` PMULL pairs and one load/store — why
-    /// [`F128::inverse`] works in runs.
+    /// [`Inv::inv`] works in runs.
     pub fn square_n(self, k: u32) -> Self {
         kernel::square_n(self.words(), k).into()
     }
+}
+
+impl Pow<u128> for F128 {
+    type Output = Self;
 
     /// Square-and-multiply, low bit first. `self^0` is `ONE`, including for
     /// `ZERO`.
-    pub fn pow(self, exp: u128) -> Self {
+    fn pow(self, exp: u128) -> Self {
         let mut acc = Self::ONE;
         let mut base = self;
         let mut e = exp;
@@ -44,6 +49,24 @@ impl F128 {
         }
         acc
     }
+}
+
+impl Pow<&u128> for F128 {
+    type Output = Self;
+    fn pow(self, rhs: &u128) -> Self {
+        self.pow(*rhs)
+    }
+}
+
+impl Pow<u32> for F128 {
+    type Output = Self;
+    fn pow(self, rhs: u32) -> Self {
+        self.pow(u128::from(rhs))
+    }
+}
+
+impl Inv for F128 {
+    type Output = Option<Self>;
 
     /// The multiplicative inverse, or `None` for zero.
     ///
@@ -58,7 +81,7 @@ impl F128 {
     /// The paper counts only the multiplies, since a normal basis squares by
     /// cyclic shift. This basis is polynomial, so the squarings are real work
     /// and [`F128::square_n`] is what keeps them cheap.
-    pub fn inverse(self) -> Option<Self> {
+    fn inv(self) -> Option<Self> {
         if self.is_zero() {
             return None;
         }
@@ -158,6 +181,7 @@ impl FixedBasePow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use num_traits::ConstZero;
     use rand_core::{RngCore, SeedableRng};
     use rand_pcg::Pcg64;
 
@@ -219,7 +243,7 @@ mod tests {
             }
             // A pure power of two exercises the squaring chain with a single
             // set bit, where an off-by-one in the ladder still shows up.
-            assert_eq!(a.pow(1 << 100), a.square_n(100));
+            assert_eq!(a.pow(1_u128 << 100), a.square_n(100));
         }
     }
 
@@ -241,14 +265,14 @@ mod tests {
     #[test]
     fn inverse_matches_fermat() {
         let mut rng = Pcg64::seed_from_u64(304);
-        assert_eq!(F128::ZERO.inverse(), None);
-        assert_eq!(F128::ONE.inverse(), Some(F128::ONE));
+        assert_eq!(F128::ZERO.inv(), None);
+        assert_eq!(F128::ONE.inv(), Some(F128::ONE));
         for _ in 0..256 {
             let a = f128(&mut rng);
             if a.is_zero() {
                 continue;
             }
-            let inv = a.inverse().expect("non-zero");
+            let inv = a.inv().expect("non-zero");
             assert_eq!(inv, a.pow(MULT_ORDER - 1), "{a:?}");
             assert_eq!(a * inv, F128::ONE, "{a:?}");
         }
@@ -274,7 +298,7 @@ mod tests {
             let a = g.pow(p);
             assert!(!is_generator(a), "g^{p} should have order (2^128-1)/{p}");
         }
-        assert!(is_generator(g.pow(2)));
+        assert!(is_generator(g.pow(2_u32)));
     }
 
     #[test]

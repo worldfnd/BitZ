@@ -8,7 +8,7 @@ use std::{
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
-use field::Field;
+use crypto_primitives::Field;
 
 #[cfg(feature = "parallel")]
 use crate::parallel::workload_size;
@@ -65,7 +65,7 @@ impl<T: Default> DenseMultilinearExtension<T> {
     }
 }
 
-impl<F: Field> DenseMultilinearExtension<F> {
+impl<F: Field + Copy> DenseMultilinearExtension<F> {
     /// Fixes the lowest-index remaining variables at `r`, in order.
     ///
     /// Each round replaces adjacent evaluations with
@@ -265,6 +265,7 @@ mod tests {
     use super::{DenseMleError, DenseMultilinearExtension};
     use crate::eq::eq_table;
     use field::F128;
+    use num_traits::{ConstOne, ConstZero};
     use proptest::prelude::*;
 
     fn fold_layer(evaluations: &[F128], challenge: F128) -> Vec<F128> {
@@ -370,7 +371,7 @@ mod tests {
 
     #[test]
     fn fold_with_no_challenges_is_a_noop() {
-        let mut zero_vars = DenseMultilinearExtension::zero_vars(F128::from(7));
+        let mut zero_vars = DenseMultilinearExtension::zero_vars(F128::from(7u128));
         let expected_zero_vars = zero_vars.clone();
         zero_vars.fold(&[]).unwrap();
         assert_eq!(zero_vars, expected_zero_vars);
@@ -378,10 +379,10 @@ mod tests {
         let mut two_vars = DenseMultilinearExtension::from_evaluations(
             2,
             vec![
-                F128::from(10),
-                F128::from(11),
-                F128::from(20),
-                F128::from(21),
+                F128::from(10u128),
+                F128::from(11u128),
+                F128::from(20u128),
+                F128::from(21u128),
             ],
         )
         .unwrap();
@@ -392,7 +393,7 @@ mod tests {
 
     #[test]
     fn fold_at_zero_selects_adjacent_zero_children() {
-        let evaluations: Vec<_> = (0..8).map(F128::from).collect();
+        let evaluations: Vec<_> = (0u128..8).map(F128::from).collect();
         let mut mle = DenseMultilinearExtension::from_evaluations(3, evaluations.clone()).unwrap();
 
         mle.fold(&[F128::ZERO]).unwrap();
@@ -411,7 +412,7 @@ mod tests {
 
     #[test]
     fn fold_at_one_selects_adjacent_one_children() {
-        let evaluations: Vec<_> = (0..8).map(F128::from).collect();
+        let evaluations: Vec<_> = (0u128..8).map(F128::from).collect();
         let mut mle = DenseMultilinearExtension::from_evaluations(3, evaluations.clone()).unwrap();
 
         mle.fold(&[F128::ONE]).unwrap();
@@ -430,8 +431,13 @@ mod tests {
 
     #[test]
     fn fold_at_non_boolean_challenge_interpolates_adjacent_pairs() {
-        let evaluations = vec![F128::from(3), F128::from(5), F128::from(11), F128::from(19)];
-        let challenge = F128::from(7);
+        let evaluations = vec![
+            F128::from(3u128),
+            F128::from(5u128),
+            F128::from(11u128),
+            F128::from(19u128),
+        ];
+        let challenge = F128::from(7u128);
         let expected = fold_layer(&evaluations, challenge);
         let mut mle = DenseMultilinearExtension::from_evaluations(2, evaluations).unwrap();
 
@@ -443,8 +449,8 @@ mod tests {
 
     #[test]
     fn fold_uses_each_challenge_in_little_endian_variable_order() {
-        let evaluations: Vec<_> = (10..18).map(F128::from).collect();
-        let challenges = [F128::from(3), F128::from(9)];
+        let evaluations: Vec<_> = (10u128..18).map(F128::from).collect();
+        let challenges = [F128::from(3u128), F128::from(9u128)];
         let after_first = fold_layer(&evaluations, challenges[0]);
         let expected = fold_layer(&after_first, challenges[1]);
         let mut mle = DenseMultilinearExtension::from_evaluations(3, evaluations).unwrap();
@@ -457,8 +463,13 @@ mod tests {
 
     #[test]
     fn folding_all_variables_leaves_one_evaluation() {
-        let evaluations = vec![F128::from(2), F128::from(3), F128::from(5), F128::from(7)];
-        let challenges = [F128::from(11), F128::from(13)];
+        let evaluations = vec![
+            F128::from(2u128),
+            F128::from(3u128),
+            F128::from(5u128),
+            F128::from(7u128),
+        ];
+        let challenges = [F128::from(11u128), F128::from(13u128)];
         let after_first = fold_layer(&evaluations, challenges[0]);
         let expected = fold_layer(&after_first, challenges[1]);
         let mut mle = DenseMultilinearExtension::from_evaluations(2, evaluations).unwrap();
@@ -471,7 +482,7 @@ mod tests {
 
     #[test]
     fn evaluate_zero_variable_table_returns_its_only_evaluation() {
-        let evaluation = F128::from(7);
+        let evaluation = F128::from(7u128);
         let mle = DenseMultilinearExtension::zero_vars(evaluation);
 
         assert_eq!(mle.evaluate(&[]), Ok(evaluation));
@@ -482,11 +493,11 @@ mod tests {
         let mle = DenseMultilinearExtension::from_evaluations(2, vec![F128::ZERO; 4]).unwrap();
 
         assert_eq!(
-            mle.evaluate(&[F128::from(3)]),
+            mle.evaluate(&[F128::from(3u128)]),
             Err(DenseMleError::SizeMismatch)
         );
         assert_eq!(
-            mle.evaluate(&[F128::from(3), F128::from(5), F128::from(7)]),
+            mle.evaluate(&[F128::from(3u128), F128::from(5u128), F128::from(7u128),]),
             Err(DenseMleError::SizeMismatch)
         );
     }
@@ -527,8 +538,13 @@ mod tests {
 
     #[test]
     fn evaluate_at_non_boolean_point_matches_layer_folding() {
-        let evaluations = vec![F128::from(2), F128::from(3), F128::from(5), F128::from(7)];
-        let point = [F128::from(11), F128::from(13)];
+        let evaluations = vec![
+            F128::from(2u128),
+            F128::from(3u128),
+            F128::from(5u128),
+            F128::from(7u128),
+        ];
+        let point = [F128::from(11u128), F128::from(13u128)];
         let after_first = fold_layer(&evaluations, point[0]);
         let expected = fold_layer(&after_first, point[1])[0];
         let mle = DenseMultilinearExtension::from_evaluations(2, evaluations).unwrap();
@@ -634,7 +650,7 @@ mod tests {
                 let evaluations: Vec<_> = (0..1usize << num_vars)
                     .map(|i| F128::from(i as u128))
                     .collect();
-                let challenges = [F128::from(3), F128::from(9), F128::from(27)];
+                let challenges = [F128::from(3u128), F128::from(9u128), F128::from(27u128)];
                 let expected = challenges
                     .iter()
                     .fold(evaluations.clone(), |layer, &challenge| {
@@ -652,13 +668,15 @@ mod tests {
 
     #[test]
     fn fold_rejects_too_many_challenges_before_mutating() {
-        let mut mle =
-            DenseMultilinearExtension::from_evaluations(1, vec![F128::from(3), F128::from(5)])
-                .unwrap();
+        let mut mle = DenseMultilinearExtension::from_evaluations(
+            1,
+            vec![F128::from(3u128), F128::from(5u128)],
+        )
+        .unwrap();
         let expected = mle.clone();
 
         assert_eq!(
-            mle.fold(&[F128::from(7), F128::from(11)]),
+            mle.fold(&[F128::from(7u128), F128::from(11u128)]),
             Err(DenseMleError::TooManyChallenges)
         );
         assert_eq!(mle, expected);

@@ -60,6 +60,7 @@ impl AddAssign<F128> for Wide256 {
 mod tests {
     use super::super::portable;
     use super::*;
+    use num_traits::ConstZero;
     use rand_core::{RngCore, SeedableRng};
     use rand_pcg::Pcg64;
 

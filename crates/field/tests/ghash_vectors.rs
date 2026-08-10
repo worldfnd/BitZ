@@ -14,6 +14,7 @@
 use aes::Aes128;
 use aes::cipher::{BlockCipherEncrypt, KeyInit, array::Array};
 use field::F128;
+use num_traits::{ConstOne, ConstZero};
 
 /// NIST numbers the bits of a block with the *most* significant bit of byte 0
 /// as the coefficient of `X^0`. This crate uses bit `i` of the little-endian

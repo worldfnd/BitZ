@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use field::F128;
+use num_traits::{ConstOne, ConstZero, Inv, Zero};
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
@@ -30,7 +31,7 @@ impl LagrangeInterpolationDomain {
                 .copied()
                 .fold(F128::ONE, |product, node| product * node);
             let weight = denominator
-                .inverse()
+                .inv()
                 .expect("the product of nonzero domain points is nonzero");
 
             return Self {
@@ -215,7 +216,7 @@ fn batch_invert_nonzero(values: &mut [F128]) {
     }
 
     let mut inverse = product
-        .inverse()
+        .inv()
         .expect("a product of nonzero field elements is nonzero");
 
     for i in (1..values.len()).rev() {
@@ -230,6 +231,7 @@ fn batch_invert_nonzero(values: &mut [F128]) {
 mod tests {
     use super::{LagrangeInterpolationDomain, NatEvaluatedPoly, NatEvaluationError};
     use field::F128;
+    use num_traits::{ConstOne, ConstZero, Inv};
     use proptest::prelude::*;
 
     fn arbitrary_field_vector_and_point() -> impl Strategy<Value = (Vec<F128>, F128)> {
@@ -289,9 +291,7 @@ mod tests {
 
                 sum + evaluation
                     * numerator
-                    * denominator
-                        .inverse()
-                        .expect("interpolation nodes are distinct")
+                    * denominator.inv().expect("interpolation nodes are distinct")
             })
     }
 
@@ -366,7 +366,7 @@ mod tests {
             let mut values: Vec<_> = (1..=len).map(|value| F128::from(value as u128)).collect();
             let expected: Vec<_> = values
                 .iter()
-                .map(|value| value.inverse().expect("test inputs are nonzero"))
+                .map(|value| value.inv().expect("test inputs are nonzero"))
                 .collect();
 
             super::batch_invert_nonzero(&mut values);

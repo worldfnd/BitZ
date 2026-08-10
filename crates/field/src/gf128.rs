@@ -8,9 +8,15 @@
 //! Layout matches flock's `F128`, so converting between the two is a field
 //! copy.
 
-use std::ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign};
+use std::fmt::{Display, Formatter, Result as FmtResult};
+use std::iter::{Product, Sum};
+use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 
-use crate::traits::{ConstOne, ConstZero, Field};
+use crypto_primitives::{WithAssociatedInteger, WithExtensionDegree};
+use crypto_primitives_proc_macros::InfallibleCheckedOp;
+use num_traits::{
+    CheckedAdd, CheckedMul, CheckedNeg, CheckedSub, ConstOne, ConstZero, Inv, One, Zero,
+};
 
 // Always compiled: the active kernel where no carryless-multiply instruction
 // exists, and the oracle the SIMD kernels are tested against. On aarch64 only
@@ -45,7 +51,14 @@ pub const KERNEL: &str = "portable";
 pub const REDUCTION: u64 = 0x87;
 
 /// An element of `GF(2^128)`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+///
+/// Two `u64` words rather than one `u128`: the words map onto the kernels'
+/// 64-bit SIMD lanes (`pmull` multiplies 64x64), scalar `u128` arithmetic
+/// lowers to the same word ops anyway, and on wasm32 `u128` multiplies
+/// become libcalls.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, InfallibleCheckedOp)]
+#[infallible_checked_unary_op((CheckedNeg, neg))]
+#[infallible_checked_binary_op((CheckedAdd, add), (CheckedSub, sub), (CheckedMul, mul))]
 #[repr(C, align(16))]
 pub struct F128 {
     pub lo: u64,
@@ -53,8 +66,6 @@ pub struct F128 {
 }
 
 impl F128 {
-    pub const ZERO: Self = Self::new(0, 0);
-    pub const ONE: Self = Self::new(1, 0);
     /// `X`, whose multiplicative order is the full `2^128 - 1` — checked by
     /// [`is_generator`], not assumed. `X` in AES's `GF(2^8)` has order 51 of
     /// 255.
@@ -62,10 +73,6 @@ impl F128 {
 
     pub const fn new(lo: u64, hi: u64) -> Self {
         Self { lo, hi }
-    }
-
-    pub const fn is_zero(self) -> bool {
-        self.lo == 0 && self.hi == 0
     }
 
     #[inline]
@@ -102,14 +109,36 @@ impl F128 {
     }
 }
 
-impl Field for F128 {}
+/// The bit pattern as 32 hex digits, `hi` first — how the polynomial reads on
+/// paper, high coefficients leftmost.
+impl Display for F128 {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        write!(f, "{:#034x}", (self.hi as u128) << 64 | self.lo as u128)
+    }
+}
+
+impl Zero for F128 {
+    fn zero() -> Self {
+        Self::ZERO
+    }
+
+    fn is_zero(&self) -> bool {
+        self.lo == 0 && self.hi == 0
+    }
+}
+
+impl One for F128 {
+    fn one() -> Self {
+        Self::ONE
+    }
+}
 
 impl ConstZero for F128 {
-    const ZERO: Self = F128::ZERO;
+    const ZERO: Self = Self::new(0, 0);
 }
 
 impl ConstOne for F128 {
-    const ONE: Self = F128::ONE;
+    const ONE: Self = Self::new(1, 0);
 }
 
 impl From<[u64; 2]> for F128 {
@@ -133,6 +162,19 @@ impl From<u128> for F128 {
     }
 }
 
+impl From<&u128> for F128 {
+    fn from(value: &u128) -> Self {
+        Self::from(*value)
+    }
+}
+
+/// Bit `i` of `value` becomes the coefficient of `X^i`, zero-extended.
+impl From<u64> for F128 {
+    fn from(value: u64) -> Self {
+        Self::new(value, 0)
+    }
+}
+
 impl Add for F128 {
     type Output = Self;
     #[inline]
@@ -141,11 +183,26 @@ impl Add for F128 {
     }
 }
 
+impl Add<&F128> for F128 {
+    type Output = Self;
+    #[inline]
+    fn add(self, rhs: &Self) -> Self {
+        self.add(*rhs)
+    }
+}
+
 impl AddAssign for F128 {
     #[inline]
     fn add_assign(&mut self, rhs: Self) {
         self.lo ^= rhs.lo;
         self.hi ^= rhs.hi;
+    }
+}
+
+impl AddAssign<&F128> for F128 {
+    #[inline]
+    fn add_assign(&mut self, rhs: &Self) {
+        *self += *rhs;
     }
 }
 
@@ -158,11 +215,26 @@ impl Sub for F128 {
     }
 }
 
+impl Sub<&F128> for F128 {
+    type Output = Self;
+    #[inline]
+    fn sub(self, rhs: &Self) -> Self {
+        self.sub(*rhs)
+    }
+}
+
 impl SubAssign for F128 {
     #[inline]
     fn sub_assign(&mut self, rhs: Self) {
         self.lo ^= rhs.lo;
         self.hi ^= rhs.hi;
+    }
+}
+
+impl SubAssign<&F128> for F128 {
+    #[inline]
+    fn sub_assign(&mut self, rhs: &Self) {
+        *self -= *rhs;
     }
 }
 
@@ -182,6 +254,14 @@ impl Mul for F128 {
     }
 }
 
+impl Mul<&F128> for F128 {
+    type Output = Self;
+    #[inline]
+    fn mul(self, rhs: &Self) -> Self {
+        self.mul(*rhs)
+    }
+}
+
 impl MulAssign for F128 {
     #[inline]
     fn mul_assign(&mut self, rhs: Self) {
@@ -189,15 +269,98 @@ impl MulAssign for F128 {
     }
 }
 
+impl MulAssign<&F128> for F128 {
+    #[inline]
+    fn mul_assign(&mut self, rhs: &Self) {
+        *self = *self * *rhs;
+    }
+}
+
+impl Sum for F128 {
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.fold(Self::ZERO, Add::add)
+    }
+}
+
+impl<'a> Sum<&'a F128> for F128 {
+    fn sum<I: Iterator<Item = &'a Self>>(iter: I) -> Self {
+        iter.fold(Self::ZERO, Add::add)
+    }
+}
+
+impl Product for F128 {
+    fn product<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.fold(Self::ONE, Mul::mul)
+    }
+}
+
+impl<'a> Product<&'a F128> for F128 {
+    fn product<I: Iterator<Item = &'a Self>>(iter: I) -> Self {
+        iter.fold(Self::ONE, Mul::mul)
+    }
+}
+
+impl Div for F128 {
+    type Output = Self;
+    #[allow(clippy::suspicious_arithmetic_impl)] // Division is multiplication by the inverse
+    fn div(self, rhs: Self) -> Self {
+        self * rhs.inv().expect("Division by zero")
+    }
+}
+
+impl Div<&F128> for F128 {
+    type Output = Self;
+    fn div(self, rhs: &Self) -> Self {
+        self.div(*rhs)
+    }
+}
+
+impl DivAssign for F128 {
+    fn div_assign(&mut self, rhs: Self) {
+        *self = *self / rhs;
+    }
+}
+
+impl DivAssign<&F128> for F128 {
+    fn div_assign(&mut self, rhs: &Self) {
+        *self = *self / *rhs;
+    }
+}
+
+/// Exponents live in `[0, 2^128 - 1]`: the multiplicative order is exactly
+/// `u128::MAX`, so `u128` is the full exponent domain.
+impl WithAssociatedInteger for F128 {
+    type Integer = u128;
+}
+
+impl WithExtensionDegree for F128 {
+    fn extension_degree() -> u64 {
+        128
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crypto_primitives::ConstField;
     use rand_core::{RngCore, SeedableRng};
     use rand_pcg::Pcg64;
 
     /// A random field element; the tests only need uniform 128-bit words.
     fn f128(rng: &mut Pcg64) -> F128 {
         F128::new(rng.next_u64(), rng.next_u64())
+    }
+
+    #[test]
+    fn ensure_traits() {
+        fn assert_impl<T: ConstField>() {}
+        assert_impl::<F128>();
+    }
+
+    #[test]
+    #[should_panic(expected = "Division by zero")]
+    fn div_by_zero_panics() {
+        let _ = F128::ONE / F128::ZERO;
     }
 
     #[test]

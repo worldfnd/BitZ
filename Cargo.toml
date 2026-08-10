@@ -10,6 +10,9 @@ license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 rayon = "1.10"
+num-traits = "0.2"
+crypto-primitives = { git = "https://github.com/NethermindEth/crypto-primitives.git", rev = "3c4232b", features = ["rand"] }
+crypto-primitives-proc-macros = { git = "https://github.com/NethermindEth/crypto-primitives.git", rev = "3c4232b" }
 
 # Benchmark parity: without these, kernels lose cross-unit inlining.
 [profile.release]
