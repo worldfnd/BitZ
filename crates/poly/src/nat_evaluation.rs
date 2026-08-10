@@ -44,19 +44,17 @@ impl LagrangeInterpolationDomain {
         // Require enough work for at least two cache-sized tasks.
         let parallel_workload = workload_size::<F128>().saturating_mul(2);
         #[cfg(feature = "parallel")]
-        let mut weights: Vec<F128> = if len.saturating_mul(len.saturating_sub(1))
-            > parallel_workload
-            && rayon::current_num_threads() > 1
-        {
-            let min_rows = (workload_size::<F128>() / len).max(1);
-            (0..len)
-                .into_par_iter()
-                .with_min_len(min_rows)
-                .map(|i| lagrange_denominator(&points, i))
-                .collect()
-        } else {
-            (0..len).map(|i| lagrange_denominator(&points, i)).collect()
-        };
+        let mut weights: Vec<F128> =
+            if len.saturating_mul(len.saturating_sub(1)) > parallel_workload {
+                let min_rows = (workload_size::<F128>() / len).max(1);
+                (0..len)
+                    .into_par_iter()
+                    .with_min_len(min_rows)
+                    .map(|i| lagrange_denominator(&points, i))
+                    .collect()
+            } else {
+                (0..len).map(|i| lagrange_denominator(&points, i)).collect()
+            };
 
         #[cfg(not(feature = "parallel"))]
         let mut weights: Vec<F128> = (0..len).map(|i| lagrange_denominator(&points, i)).collect();
@@ -141,9 +139,7 @@ fn evaluate_block(
 
     #[cfg(feature = "parallel")]
     // Each term reads one evaluation, node, and weight.
-    if evaluations.len().saturating_mul(3) > workload_size::<F128>()
-        && rayon::current_num_threads() > 1
-    {
+    if evaluations.len().saturating_mul(3) > workload_size::<F128>() {
         let mid = evaluations.len() / 2;
         let (left_evaluations, right_evaluations) = evaluations.split_at(mid);
         let (left_nodes, right_nodes) = nodes.split_at(mid);

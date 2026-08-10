@@ -85,9 +85,7 @@ impl<F: Field + Copy> DenseMultilinearExtension<F> {
 
         for &challenge in r {
             #[cfg(feature = "parallel")]
-            if self.evaluations.len() / 2 >= PARALLEL_FOLD_THRESHOLD
-                && rayon::current_num_threads() > 1
-            {
+            if self.evaluations.len() / 2 >= PARALLEL_FOLD_THRESHOLD {
                 self.fold_round_parallel(challenge, &mut scratch);
                 self.num_vars -= 1;
                 continue;
@@ -167,9 +165,7 @@ impl<F: Field + Copy> DenseMultilinearExtension<F> {
                 let (zero, one) = evaluations.split_at(evaluations.len() / 2);
 
                 #[cfg(feature = "parallel")]
-                let (zero, one) = if evaluations.len() > workload_size::<F>()
-                    && rayon::current_num_threads() > 1
-                {
+                let (zero, one) = if evaluations.len() > workload_size::<F>() {
                     rayon::join(
                         || Self::evaluate_exact(zero, remaining),
                         || Self::evaluate_exact(one, remaining),

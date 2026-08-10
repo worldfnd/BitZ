@@ -70,7 +70,7 @@ pub fn eq_table<F: ConstField + Copy>(r: &[F]) -> Vec<F> {
         // Per-level parallel doubling adapted from Flock:
         // https://github.com/succinctlabs/flock/blob/85fc0e7cc002e7ca4dffdff805ba89976e9a5293/crates/flock-core/src/pcs/ring_switch.rs#L276-L320
         #[cfg(feature = "parallel")]
-        if half >= workload_size::<F>() && rayon::current_num_threads() > 1 {
+        if half >= workload_size::<F>() {
             zero_children
                 .par_iter_mut()
                 .zip(one_children.par_iter_mut())
