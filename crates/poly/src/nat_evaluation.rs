@@ -1,24 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use num_traits::{ConstOne, ConstZero};
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
 #[cfg(feature = "parallel")]
 use crate::parallel::workload_size;
 
-use crypto_primitives::Field;
+use crypto_primitives::{ConstField, Field};
 
 /// Reusable interpolation data for evaluations on the natural `F128` domain.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LagrangeInterpolationDomain<F: Field + ConstOne + Copy> {
+pub struct LagrangeInterpolationDomain<F: ConstField + Copy> {
     /// `points[i] = F128::from(i as u128)`.
     points: Vec<F>,
     /// `w_i = (∏_{j != i} (points[i] - points[j]))⁻¹`
     weights: Vec<F>,
 }
 
-impl<F: Field + ConstOne + Copy> LagrangeInterpolationDomain<F> {
+impl<F: ConstField + Copy> LagrangeInterpolationDomain<F> {
     /// Precomputes the interpolation nodes and their barycentric weights.
     pub fn new(len: usize) -> Self {
         let points: Vec<_> = (0..len).map(|i| F::from(i as u128)).collect();
@@ -76,7 +75,7 @@ impl<F: Field + ConstOne + Copy> LagrangeInterpolationDomain<F> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NatEvaluatedPoly<F: Field + ConstOne + Copy> {
+pub struct NatEvaluatedPoly<F: ConstField + Copy> {
     evaluations: Vec<F>,
 }
 
@@ -86,7 +85,7 @@ pub enum NatEvaluationError {
     DomainSizeMismatch,
 }
 
-impl<F: Field + ConstZero + ConstOne + Copy> NatEvaluatedPoly<F> {
+impl<F: ConstField + Copy> NatEvaluatedPoly<F> {
     pub const fn new(evaluations: Vec<F>) -> Self {
         Self { evaluations }
     }
@@ -116,7 +115,7 @@ impl<F: Field + ConstZero + ConstOne + Copy> NatEvaluatedPoly<F> {
     }
 }
 
-fn lagrange_denominator<F: Field + ConstOne + Copy>(points: &[F], i: usize) -> F {
+fn lagrange_denominator<F: ConstField + Copy>(points: &[F], i: usize) -> F {
     let point = points[i];
     points[..i]
         .iter()
@@ -128,7 +127,7 @@ fn lagrange_denominator<F: Field + ConstOne + Copy>(points: &[F], i: usize) -> F
 /// Adjacent summaries compose as
 /// `(r_l p_r + p_l r_r, p_l p_r)`, so independent halves can be evaluated
 /// concurrently without division or allocation.
-fn evaluate_block<F: Field + ConstZero + ConstOne + Copy>(
+fn evaluate_block<F: ConstField + Copy>(
     evaluations: &[F],
     nodes: &[F],
     weights: &[F],
@@ -156,7 +155,7 @@ fn evaluate_block<F: Field + ConstZero + ConstOne + Copy>(
     evaluate_block_serial(evaluations, nodes, weights, point)
 }
 
-fn evaluate_block_serial<F: Field + ConstZero + ConstOne + Copy>(
+fn evaluate_block_serial<F: ConstField + Copy>(
     evaluations: &[F],
     nodes: &[F],
     weights: &[F],
