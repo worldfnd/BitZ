@@ -71,10 +71,7 @@ impl<F: Field + Copy> DenseMultilinearExtension<F> {
     ///
     /// Hybrid parallel scheduling adapted from Flock:
     /// <https://github.com/succinctlabs/flock/blob/85fc0e7cc002e7ca4dffdff805ba89976e9a5293/crates/flock-core/src/permutation.rs#L236-L263>
-    pub fn fold(&mut self, r: &[F]) -> Result<(), DenseMleError>
-    where
-        F: Send + Sync,
-    {
+    pub fn fold(&mut self, r: &[F]) -> Result<(), DenseMleError> {
         let num_vars = self.num_vars();
         if r.len() > num_vars {
             return Err(DenseMleError::TooManyChallenges);
@@ -98,10 +95,7 @@ impl<F: Field + Copy> DenseMultilinearExtension<F> {
 
     /// Evaluates this multilinear extension at `r` without cloning or mutating
     /// the table.
-    pub fn evaluate(&self, r: &[F]) -> Result<F, DenseMleError>
-    where
-        F: Send + Sync,
-    {
+    pub fn evaluate(&self, r: &[F]) -> Result<F, DenseMleError> {
         let expected = self.num_vars();
         if r.len() != expected {
             return Err(DenseMleError::WrongPointWidth);
@@ -113,10 +107,7 @@ impl<F: Field + Copy> DenseMultilinearExtension<F> {
     #[inline]
     /// Unrolled base cases adapted from WHIR's `eval_exact` (Apache-2.0):
     /// <https://github.com/worldfnd/whir/blob/e0aec15225fd5e63594bdc49566e080a6cab2f24/src/algebra/multilinear.rs#L31-L64>
-    fn evaluate_exact(evaluations: &[F], r: &[F]) -> F
-    where
-        F: Send + Sync,
-    {
+    fn evaluate_exact(evaluations: &[F], r: &[F]) -> F {
         debug_assert_eq!(evaluations.len(), 1 << r.len());
 
         let interpolate = |zero: F, one: F, challenge: F| zero + challenge * (one - zero);
@@ -193,10 +184,7 @@ impl<F: Field + Copy> DenseMultilinearExtension<F> {
     }
 
     #[cfg(feature = "parallel")]
-    fn fold_round_parallel(&mut self, challenge: F, scratch: &mut Vec<F>)
-    where
-        F: Send + Sync,
-    {
+    fn fold_round_parallel(&mut self, challenge: F, scratch: &mut Vec<F>) {
         self.evaluations
             .par_chunks_exact(2)
             .map(|pair| pair[0] + challenge * (pair[1] - pair[0]))
