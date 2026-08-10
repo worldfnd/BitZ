@@ -17,48 +17,48 @@ const PARALLEL_FOLD_THRESHOLD: usize = 1 << 12;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DenseMleError {
-    SizeMismatch,
-    InvalidNumVarsRange,
+    InvalidNumVars,
+    WrongEvaluationCount,
+    WrongPointWidth,
     TooManyChallenges,
 }
 
 /// A multilinear polynomial represented by its evaluations on a Boolean cube.
-/// Adapted from Zinc+ `DenseMultilinearExtension` at: https://github.com/NethermindEth/zinc-plus/blob/8dbd6007008b2d10e95e73149ca2fd5b7d8e00f9/poly/src/mle/dense.rs
+/// Adapted from Zinc+ `DenseMultilinearExtension`: <https://github.com/NethermindEth/zinc-plus/blob/8dbd6007008b2d10e95e73149ca2fd5b7d8e00f9/poly/src/mle/dense.rs>
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DenseMultilinearExtension<T: Default> {
+pub struct DenseMultilinearExtension<T> {
     /// Evaluations on `{0,1}^num_vars` in little-endian index order.
     evaluations: Vec<T>,
-    /// Number of (unfixed) variables.
-    num_vars: usize,
 }
 
-impl<T: Default> DenseMultilinearExtension<T> {
+impl<T> DenseMultilinearExtension<T> {
     /// Constructs the unique zero-variable MLE with the supplied evaluation.
     pub fn zero_vars(evaluation: T) -> Self {
         Self {
             evaluations: vec![evaluation],
-            num_vars: 0,
         }
     }
 
-    /// @dev: question to reviewer: should we use assert instead of error?
+    /// Constructs an MLE from a complete Boolean-hypercube evaluation table.
+    ///
+    /// The table length must equal `2^num_vars`.
     pub fn from_evaluations(num_vars: usize, evaluations: Vec<T>) -> Result<Self, DenseMleError> {
         if num_vars >= usize::BITS as usize {
-            return Err(DenseMleError::InvalidNumVarsRange);
+            return Err(DenseMleError::InvalidNumVars);
         }
 
-        if evaluations.len() != 1 << num_vars {
-            return Err(DenseMleError::SizeMismatch);
+        let expected = 1 << num_vars;
+        if evaluations.len() != expected {
+            return Err(DenseMleError::WrongEvaluationCount);
         }
 
-        Ok(Self {
-            evaluations,
-            num_vars,
-        })
+        Ok(Self { evaluations })
     }
 
+    /// Returns the number of variables represented by the evaluation table.
     pub fn num_vars(&self) -> usize {
-        self.num_vars
+        debug_assert!(self.evaluations.len().is_power_of_two());
+        self.evaluations.len().ilog2() as usize
     }
 }
 
@@ -75,7 +75,10 @@ impl<F: Field + Copy> DenseMultilinearExtension<F> {
     where
         F: Send + Sync,
     {
-        self.check_fold_width(r)?;
+        let num_vars = self.num_vars();
+        if r.len() > num_vars {
+            return Err(DenseMleError::TooManyChallenges);
+        }
 
         #[cfg(feature = "parallel")]
         let mut scratch = Vec::new();
@@ -84,12 +87,10 @@ impl<F: Field + Copy> DenseMultilinearExtension<F> {
             #[cfg(feature = "parallel")]
             if self.evaluations.len() / 2 >= PARALLEL_FOLD_THRESHOLD {
                 self.fold_round_parallel(challenge, &mut scratch);
-                self.num_vars -= 1;
                 continue;
             }
 
             self.fold_round_in_place(challenge);
-            self.num_vars -= 1;
         }
 
         Ok(())
@@ -101,13 +102,9 @@ impl<F: Field + Copy> DenseMultilinearExtension<F> {
     where
         F: Send + Sync,
     {
-        let len = self.evaluations.len();
-        if r.len() >= usize::BITS as usize {
-            return Err(DenseMleError::InvalidNumVarsRange);
-        }
-
-        if len != 1 << r.len() {
-            return Err(DenseMleError::SizeMismatch);
+        let expected = self.num_vars();
+        if r.len() != expected {
+            return Err(DenseMleError::WrongPointWidth);
         }
 
         Ok(Self::evaluate_exact(&self.evaluations, r))
@@ -185,13 +182,6 @@ impl<F: Field + Copy> DenseMultilinearExtension<F> {
         }
     }
 
-    fn check_fold_width(&self, r: &[F]) -> Result<(), DenseMleError> {
-        if r.len() > self.num_vars {
-            return Err(DenseMleError::TooManyChallenges);
-        }
-        Ok(())
-    }
-
     fn fold_round_in_place(&mut self, challenge: F) {
         let half = self.evaluations.len() / 2;
         for i in 0..half {
@@ -216,7 +206,7 @@ impl<F: Field + Copy> DenseMultilinearExtension<F> {
     }
 }
 
-impl<T: Default> Deref for DenseMultilinearExtension<T> {
+impl<T> Deref for DenseMultilinearExtension<T> {
     type Target = [T];
 
     fn deref(&self) -> &Self::Target {
@@ -224,7 +214,7 @@ impl<T: Default> Deref for DenseMultilinearExtension<T> {
     }
 }
 
-impl<T: Default> IntoIterator for DenseMultilinearExtension<T> {
+impl<T> IntoIterator for DenseMultilinearExtension<T> {
     type Item = T;
     type IntoIter = std::vec::IntoIter<T>;
 
@@ -267,7 +257,7 @@ mod tests {
     fn zero_vars_contains_one_evaluation() {
         let mle = DenseMultilinearExtension::zero_vars(7u32);
 
-        assert_eq!(mle.num_vars, 0);
+        assert_eq!(mle.num_vars(), 0);
         assert_eq!(mle.evaluations, vec![7]);
     }
 
@@ -304,35 +294,33 @@ mod tests {
     fn from_evaluations_rejects_empty_table() {
         assert_eq!(
             DenseMultilinearExtension::<u32>::from_evaluations(0, vec![]),
-            Err(DenseMleError::SizeMismatch)
+            Err(DenseMleError::WrongEvaluationCount)
         );
     }
 
     #[test]
-    fn from_evaluations_rejects_short_table() {
-        assert_eq!(
-            DenseMultilinearExtension::from_evaluations(2, vec![1u32, 2, 3]),
-            Err(DenseMleError::SizeMismatch)
-        );
-    }
-
-    #[test]
-    fn from_evaluations_rejects_long_table() {
-        assert_eq!(
-            DenseMultilinearExtension::from_evaluations(2, vec![1u32, 2, 3, 4, 5]),
-            Err(DenseMleError::SizeMismatch)
-        );
+    fn from_evaluations_rejects_the_wrong_table_length() {
+        for (num_vars, evaluations) in [
+            (2, vec![1u32, 2, 3]),
+            (2, vec![1u32, 2, 3, 4, 5]),
+            (3, vec![1u32, 2, 3, 4]),
+        ] {
+            assert_eq!(
+                DenseMultilinearExtension::from_evaluations(num_vars, evaluations),
+                Err(DenseMleError::WrongEvaluationCount)
+            );
+        }
     }
 
     #[test]
     fn from_evaluations_rejects_unrepresentable_num_vars_without_shifting() {
         assert_eq!(
-            DenseMultilinearExtension::<u32>::from_evaluations(usize::BITS as usize, vec![]),
-            Err(DenseMleError::InvalidNumVarsRange)
+            DenseMultilinearExtension::<u32>::from_evaluations(usize::BITS as usize, vec![],),
+            Err(DenseMleError::InvalidNumVars)
         );
         assert_eq!(
             DenseMultilinearExtension::<u32>::from_evaluations(usize::MAX, vec![]),
-            Err(DenseMleError::InvalidNumVarsRange)
+            Err(DenseMleError::InvalidNumVars)
         );
     }
 
@@ -461,23 +449,20 @@ mod tests {
 
         assert_eq!(
             mle.evaluate(&[F128::from(3u128)]),
-            Err(DenseMleError::SizeMismatch)
+            Err(DenseMleError::WrongPointWidth)
         );
         assert_eq!(
             mle.evaluate(&[F128::from(3u128), F128::from(5u128), F128::from(7u128),]),
-            Err(DenseMleError::SizeMismatch)
+            Err(DenseMleError::WrongPointWidth)
         );
     }
 
     #[test]
-    fn evaluate_rejects_unrepresentable_point_width_without_shifting() {
+    fn evaluate_rejects_oversized_point_without_shifting() {
         let point = vec![F128::ZERO; usize::BITS as usize];
         let mle = DenseMultilinearExtension::zero_vars(F128::ZERO);
 
-        assert_eq!(
-            mle.evaluate(&point),
-            Err(DenseMleError::InvalidNumVarsRange)
-        );
+        assert_eq!(mle.evaluate(&point), Err(DenseMleError::WrongPointWidth));
     }
 
     #[test]
@@ -593,15 +578,31 @@ mod tests {
                     sum + evaluation * weight
                 });
 
-            let mut folded = DenseMultilinearExtension::from_evaluations(
-                point.len(),
-                evaluations,
-            )
-            .unwrap();
+            let mut folded =
+                DenseMultilinearExtension::from_evaluations(point.len(), evaluations).unwrap();
             folded.fold(&point).unwrap();
 
             prop_assert_eq!(actual, expected_from_eq);
             prop_assert_eq!(actual, folded[0]);
+            prop_assert_eq!(folded.len(), 1usize << folded.num_vars());
+        }
+
+        #[test]
+        fn fold_preserves_the_shape_invariant(
+            (evaluations, point) in arbitrary_evaluation_case()
+        ) {
+            for challenge_count in 0..=point.len() {
+                let mut mle = DenseMultilinearExtension::from_evaluations(
+                    point.len(),
+                    evaluations.clone(),
+                )
+                .unwrap();
+
+                mle.fold(&point[..challenge_count]).unwrap();
+
+                prop_assert_eq!(mle.num_vars(), point.len() - challenge_count);
+                prop_assert_eq!(mle.len(), 1usize << mle.num_vars());
+            }
         }
     }
 
