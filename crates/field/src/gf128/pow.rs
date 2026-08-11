@@ -25,7 +25,7 @@ pub const ORDER_PRIME_FACTORS: [u128; 9] =
 impl F128 {
     /// `self^(2^k)`. On NEON the value stays in one vector register, so `k`
     /// squarings cost `k` PMULL pairs and one load/store — why
-    /// [`F128::inverse`] works in runs.
+    /// [`Inv::inv`] works in runs.
     pub fn square_n(self, k: u32) -> Self {
         kernel::square_n(self.words(), k).into()
     }
