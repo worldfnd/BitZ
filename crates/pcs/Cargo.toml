@@ -7,4 +7,5 @@ license.workspace = true
 
 [dependencies]
 field = { path = "../field" }
+flock-core = { workspace = true }
 transcript = { path = "../transcript" }
