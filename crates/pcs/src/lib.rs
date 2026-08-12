@@ -1,7 +1,14 @@
 //! Shared interface for the binary polynomial commitment.
 
+mod commitment;
+mod field_bridge;
+
 use field::F128;
 use transcript::{ProverState, VerifierState};
+
+pub use commitment::{FlockCommitment, FlockProverData, FlockScheme};
+pub use flock_core::hash::HashKind;
+pub use flock_core::pcs::ligerito::LigeritoProfile;
 
 /// Errors from commitment and linear-query operations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -13,6 +20,8 @@ pub enum CommitError {
     CoefficientLengthMismatch { expected: usize, actual: usize },
     /// The scheme configuration is not valid for the selected backend.
     InvalidConfiguration,
+    /// The one-shot prover data has already produced an opening.
+    ProverDataConsumed,
     /// The transcript does not contain a complete canonical proof.
     MalformedProof,
     /// The commitment backend rejected an operation.
