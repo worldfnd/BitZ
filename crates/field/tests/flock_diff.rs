@@ -1,10 +1,11 @@
 //! Differential test against flock's `GF(2^128)`.
 //!
-//! flock implements the same field independently, and a later stage converts
-//! between the two types by copying fields rather than re-encoding. Two things
-//! have to hold for that to be sound: the arithmetic has to agree, and the
-//! layouts have to match. Both are checked here, so a change on either side
-//! fails at this crate rather than at the conversion.
+//! flock implements the same field independently, and the PCS uses a zero-copy
+//! slice view between both types. Two things have to hold for that to be sound:
+//! the arithmetic has to agree, and the layouts have to match. Both are checked
+//! here, so a change on either side fails before the conversion.
+
+use core::mem::offset_of;
 
 use field::F128;
 use flock_core::field::gf2_128::F128 as Flock;
@@ -65,6 +66,10 @@ fn layouts_are_interchangeable() {
     assert_eq!(align_of::<F128>(), align_of::<Flock>());
     assert_eq!(size_of::<F128>(), 16);
     assert_eq!(align_of::<F128>(), 16);
+    assert_eq!(offset_of!(F128, lo), offset_of!(Flock, lo));
+    assert_eq!(offset_of!(F128, hi), offset_of!(Flock, hi));
+    assert_eq!(offset_of!(F128, lo), 0);
+    assert_eq!(offset_of!(F128, hi), 8);
 
     let mut rng = Pcg64::seed_from_u64(602);
     for _ in 0..256 {
