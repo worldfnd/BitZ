@@ -592,7 +592,7 @@ checksum = "26b73573e6edcd2af0cdf47bd6cb58f0b3839491263c314eaad1ccf24430e1de"
 [[package]]
 name = "flock-core"
 version = "0.1.0"
-source = "git+https://github.com/succinctlabs/flock.git?rev=85fc0e7cc002e7ca4dffdff805ba89976e9a5293#85fc0e7cc002e7ca4dffdff805ba89976e9a5293"
+source = "git+https://github.com/succinctlabs/flock.git?rev=879072249e52b8b9054bf0c6a034cec20f8f6fc7#879072249e52b8b9054bf0c6a034cec20f8f6fc7"
 dependencies = [
  "bincode",
  "blake3",
@@ -967,6 +967,7 @@ name = "pcs"
 version = "0.1.0"
 dependencies = [
  "field",
+ "flock-core",
  "transcript",
 ]
 
