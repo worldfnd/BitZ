@@ -31,6 +31,18 @@ impl VerifierState<'_> {
         T::deserialize_from_narg(&mut self.hints)
     }
 
+    /// Reads one bounded, length-prefixed byte string from the hint stream.
+    pub fn hint_bytes(&mut self, max_len: usize) -> VerificationResult<Vec<u8>> {
+        let mut rest = self.hints;
+        let len = u32::deserialize_from_narg(&mut rest)? as usize;
+        if len > max_len || rest.len() < len {
+            return Err(VerificationError);
+        }
+        let bytes = rest[..len].to_vec();
+        self.hints = &rest[len..];
+        Ok(bytes)
+    }
+
     /// Fails unless both the narg string and the hint stream were consumed
     /// exactly.
     pub fn check_eof(self) -> VerificationResult<()> {

@@ -1,14 +1,14 @@
 //! Shared interface for the binary polynomial commitment.
 
+mod bridge;
+mod challenger;
 mod commitment;
-mod field_bridge;
+mod opening;
 
 use field::F128;
 use transcript::{ProverState, VerifierState};
 
-pub use commitment::{FlockCommitment, FlockProverData, FlockScheme};
-pub use flock_core::hash::HashKind;
-pub use flock_core::pcs::ligerito::LigeritoProfile;
+pub use commitment::{Commitment, MerkleHash, Pcs, PcsConfig, ProverData};
 
 /// Errors from commitment and linear-query operations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,6 +22,8 @@ pub enum CommitError {
     InvalidConfiguration,
     /// The one-shot prover data has already produced an opening.
     ProverDataConsumed,
+    /// The coefficients do not encode a supported flock ring-switch point.
+    UnsupportedCoefficients,
     /// The transcript does not contain a complete canonical proof.
     MalformedProof,
     /// The commitment backend rejected an operation.
@@ -46,8 +48,11 @@ pub trait CommitScheme {
     /// Proves `<coeffs, pi_2(bits)>_{F128} = target`.
     ///
     /// This is Construction 3.4's residual Phase 3 claim, with `nu = 128`.
-    /// `coeffs` has one entry per bit. `target` is the residual `mu_prime`,
-    /// not Construction 3.10's original `R`-valued `mu`.
+    /// `coeffs` has one entry per bit. It must encode Flock's structured
+    /// univariate-skip and multilinear evaluation weights. Other linear
+    /// functionals return [`CommitError::UnsupportedCoefficients`]. `target`
+    /// is the residual `mu_prime`, not Construction 3.10's original
+    /// `R`-valued `mu`.
     fn prove_lin(
         &self,
         data: &Self::ProverData,
