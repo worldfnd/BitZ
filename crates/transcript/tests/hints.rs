@@ -88,3 +88,17 @@ fn trailing_hint_bytes_fail_eof() {
     verifier.hint::<u32>().unwrap();
     assert!(verifier.check_eof().is_err());
 }
+
+#[test]
+fn bounded_hint_bytes_round_trip() {
+    let mut prover = build_prover(SESSION, INSTANCE);
+    prover.hint_bytes(b"opening-proof");
+    let proof = prover.finish();
+
+    let mut verifier = build_verifier(SESSION, INSTANCE, &proof);
+    assert_eq!(verifier.hint_bytes(13).unwrap(), b"opening-proof");
+    verifier.check_eof().unwrap();
+
+    let mut verifier = build_verifier(SESSION, INSTANCE, &proof);
+    assert!(verifier.hint_bytes(12).is_err());
+}
