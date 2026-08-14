@@ -20,10 +20,37 @@ use crate::{CommitError, OpeningQuery, Pcs, ProverData};
 
 #[allow(dead_code)]
 pub(crate) fn prove_lin(
-    _pcs: &Pcs,
-    _data: ProverData,
-    _query: &OpeningQuery,
-    _transcript: &mut ProverState,
+    pcs: &Pcs,
+    data: ProverData,
+    query: &OpeningQuery,
+    transcript: &mut ProverState,
 ) -> Result<(), CommitError> {
-    todo!("implement the standard FLoCK opening prover")
+    let expected_m = pcs.params().m;
+    if query.point.len() != expected_m {
+        return Err(CommitError::PointLengthMismatch);
+    }
+    if data.bit_len() != pcs.bit_len() || !params_match(pcs, &data) {
+        return Err(CommitError::InvalidConfiguration);
+    }
+
+    let ligerito_config = pcs
+        .params()
+        .ligerito_prover_config()
+        .map_err(|_| CommitError::InvalidConfiguration)?;
+
+    let commitment = data.commitment();
+    let (packed_witness, flock_data) = data.into_opening_parts();
+
+    Ok(())
+}
+
+fn params_match(pcs: &Pcs, data: &ProverData) -> bool {
+    let expected = pcs.params();
+    let actual = &data.commitment().params;
+
+    expected.m == actual.m
+        && expected.log_inv_rate == actual.log_inv_rate
+        && expected.log_batch_size == actual.log_batch_size
+        && expected.profile == actual.profile
+        && expected.merkle_hash == actual.merkle_hash
 }
