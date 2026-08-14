@@ -4,9 +4,13 @@ use crate::CommitError;
 use flock_core::field::F128 as FlockF128;
 pub use flock_core::hash::HashKind;
 use flock_core::pcs::ligerito::LigeritoProfile;
-use flock_core::pcs::{LOG_PACKING, PcsParams, ProverData as FlockProverData, pack_witness};
+use flock_core::pcs::{PcsParams, ProverData as FlockProverData, pack_witness};
 
-/// A checked PCS instance.
+/// Initial Ligerito fold size required by FLoCK's registered security profiles.
+/// The value `6` selects 64 lanes
+/// See: https://github.com/succinctlabs/flock/blob/879072249e52b8b9054bf0c6a034cec20f8f6fc7/crates/flock-core/src/pcs/ligerito.rs#L1245
+const LIGERITO_INITIAL_K: usize = 6;
+
 #[derive(Clone, Debug)]
 pub struct Pcs {
     params: PcsParams,
@@ -34,7 +38,7 @@ impl Pcs {
             params: PcsParams {
                 m: m,
                 log_inv_rate: security_profile.log_inv_rate(),
-                log_batch_size: LOG_PACKING,
+                log_batch_size: LIGERITO_INITIAL_K,
                 profile: security_profile,
                 merkle_hash: merkle_hash,
             },
@@ -45,7 +49,7 @@ impl Pcs {
     /// Commits to the exact configured number of bits.
     pub fn commit(&self, bits: &[bool]) -> Result<(Commitment, ProverData), CommitError> {
         if bits.len() != self.bit_len {
-            return Err(CommitError::InvalidBitLength { len: bits.len() });
+            return Err(CommitError::InvalidBitLength);
         }
         let packed_witness = pack_witness(bits, self.params.m);
         let (commitment, flock_prover_data) =
@@ -115,7 +119,7 @@ mod tests {
         let scheme = Pcs::new(22, LigeritoProfile::Fast, HashKind::Blake3);
         assert!(matches!(
             scheme.commit(&[false; 128]),
-            Err(CommitError::InvalidBitLength { len: 128 })
+            Err(CommitError::InvalidBitLength)
         ));
     }
 
