@@ -1,4 +1,69 @@
-//! Shared interface for the binary polynomial commitment.
+//! Binary polynomial commitments for multilinear extensions of bit tables.
+//!
+//! # Statement
+//!
+//! A vector of `2^m` bits defines a function `q: {0,1}^m → F2`.
+//! Bit-vector indices and evaluation-point coordinates use low-bit-first order.
+//! For `r ∈ F128^m`, the multilinear extension is
+//! `q̂(r) = Σ_{b ∈ {0,1}^m} q(b) · eq(b, r)`, where
+//! `eq(b, r) = ∏_i (b_i · r_i + (1 - b_i) · (1 - r_i))`.
+//! An [`OpeningQuery`] claims that `q̂(query.point) = query.target`.
+//!
+//! # Packing and opening
+//!
+//! The commit phase packs the seven low Boolean coordinates into one `F128` element:
+//! `q_pkd(y) = Σ_{v ∈ {0,1}^7} q(y, v) · basis[v]`.
+//! FLoCK Reed–Solomon-encodes `q_pkd` and commits to its codeword with a Merkle root.
+//!
+//! The opening splits `r` into `r_lo = r[0..7]` and `r_hi = r[7..m]`.
+//! It computes `s_v = q̂(r_hi, v)` and checks
+//! `query.target = Σ_v eq(r_lo, v) · s_v`.
+//! Ring-switching transposes `(s_v)` into `(s_u)` and samples `r_dprime`.
+//! It sets `beta0 = Σ_u eq(r_dprime, u) · s_u`.
+//! Recursive Ligerito proves `Σ_y B(y) · q_pkd(y) = beta0` against the committed root.
+//!
+//! # Interface
+//!
+//! - [`Pcs`] stores trusted FLoCK parameters and the expected bit length.
+//! - [`Commitment`] contains the public Merkle root.
+//! - [`ProverData`] retains the packed witness, codeword, and Merkle tree after commit
+//! - [`OpeningQuery`] contains one evaluation point and its claimed value.
+//! - [`CommitScheme`] connects commitment, proving, and verification to project transcripts.
+//!
+//! [`CommitScheme::prove_lin`] consumes [`ProverData`] because one opening owns the retained data.
+//! The caller must use matching transcript session and instance labels.
+//! The caller must also call `VerifierState::check_eof` after successful verification.
+//!
+//! # Example
+//!
+//! This example uses the zero polynomial, so its evaluation is zero at every point.
+//!
+//! ```no_run
+//! use field::F128;
+//! use pcs::{CommitScheme, HashKind, LigeritoProfile, OpeningQuery, Pcs};
+//! use transcript::{build_prover, build_verifier};
+//!
+//! const M: usize = 22;
+//! let pcs = Pcs::new(M, LigeritoProfile::Fast, HashKind::Blake3);
+//! let bits = vec![false; pcs.bit_len()];
+//! let point = (0..M)
+//!     .map(|coordinate| F128::from(coordinate as u64 + 2))
+//!     .collect();
+//! let query = OpeningQuery {
+//!     point,
+//!     target: F128::from(0u64),
+//! };
+//!
+//! let (commitment, prover_data) = pcs.commit(&bits).unwrap();
+//! let mut prover = build_prover(b"pcs-example", b"zero-polynomial");
+//! pcs.prove_lin(prover_data, &query, &mut prover).unwrap();
+//! let proof = prover.finish();
+//!
+//! let mut verifier = build_verifier(b"pcs-example", b"zero-polynomial", &proof);
+//! pcs.verify_lin(&commitment, &query, &mut verifier)
+//!     .unwrap();
+//! verifier.check_eof().unwrap();
+//! ```
 
 mod bridge;
 mod challenger;
@@ -11,6 +76,7 @@ use field::F128;
 use transcript::{ProverState, VerifierState};
 
 pub use commitment::{Commitment, HashKind, Pcs, ProverData};
+pub use flock_core::pcs::ligerito::LigeritoProfile;
 
 /// A standard multilinear evaluation claim.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -43,20 +109,22 @@ pub enum CommitError {
 ///
 /// Construction 3.10 reduces its `R`-valued claim through Construction 3.4.
 /// This trait implements Construction 3.4, Phase 3, with `F_{2^nu} = F128`.
+///
+/// Let `q: {0,1}^m → F2` be the committed bit table. For `r ∈ F128^m`,
+/// this trait proves
+/// `q̂(r) = Σ_{b ∈ {0,1}^m} q(b) · eq(b, r) = query.target`, where
+/// `eq(b, r) = ∏_i (b_i · r_i + (1 - b_i) · (1 - r_i))`.
 pub trait CommitScheme {
     /// The public commitment.
     type Commitment;
     /// Private data retained by the prover after commitment.
     type ProverData;
 
-    /// Commits to `Enc_C(Pack_128(pi_2(bits)))`, Construction 3.10's oracle.
+    /// Commits to `Enc_C(q_pkd)`, where
+    /// `q_pkd(y) = Σ_{v ∈ {0,1}^7} q(y, v) · basis[v]`.
     fn commit(&self, bits: &[bool]) -> Result<(Self::Commitment, Self::ProverData), CommitError>;
 
     /// Proves `MLE(pi_2(bits))(query.point) = query.target`.
-    ///
-    /// This is Construction 3.4's residual Phase 3 claim, with `nu = 128`.
-    /// `query.target` is the residual `mu_prime`, not Construction 3.10's
-    /// original `R`-valued `mu`.
     fn prove_lin(
         &self,
         data: Self::ProverData,
@@ -102,7 +170,6 @@ impl CommitScheme for Pcs {
 
 #[cfg(test)]
 mod tests {
-    use flock_core::pcs::ligerito::LigeritoProfile;
     use transcript::{Proof, build_prover, build_verifier};
 
     use super::*;
