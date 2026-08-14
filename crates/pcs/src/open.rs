@@ -13,6 +13,12 @@
 //! 10. Build the packed Ligerito basis with `fold_b128_elems`.
 //! 11. Call `recursive_prover_with_basis` with the retained codeword and Merkle tree.
 //! 12. Write a bounded opening proof to the transcript.
+//!
+//! Ring-switch equations, with `r_lo = r[0..7]` and `r_hi = r[7..m]`:
+//! `s_v = q̂(r_hi, v)` and `target = Σ_v eq(r_lo, v) · s_v`.
+//! Write `eq(r_hi, y) = Σ_u A(y, u) · basis[u]` and transpose `(s_v)` into `(s_u)`.
+//! For sampled `r_dprime`, set `B(y) = Σ_u eq(r_dprime, u) · A(y, u)`.
+//! The final packed claim is `Σ_y B(y) · q_pkd(y) = beta0`.
 
 use crate::bridge::as_flock_f128s;
 use crate::challenger::ProverChallenger;
@@ -53,15 +59,17 @@ pub(crate) fn open(
     // 3. Split Point
     let (r_lo, r_hi) = query.point.split_at(LOG_PACKING);
 
-    // 4. Build eq table
+    // 4. Build eq table: eq_hi[y] = eq(r_hi, y)
     let eq_hi = build_eq(as_flock_f128s(r_hi));
     debug_assert_eq!(eq_hi.len(), packed_witness.len());
 
     // 5. Compute Partial Evaluations
+    // s_hat_v[v] = Σ_y eq(r_hi, y) · q(y, v) = q̂(r_hi, v).
     let s_hat_v = fold_1b_rows_naive(&packed_witness, &eq_hi);
     debug_assert_eq!(s_hat_v.len(), 1 << LOG_PACKING);
 
     // 6. Check Target
+    // query.target = Σ_v eq(r_lo, v) · s_hat_v[v].
     let eq_lo = build_eq(as_flock_f128s(r_lo));
     let evaluation = claim_check(&eq_lo, &s_hat_v);
     let target = as_flock_f128s(core::slice::from_ref(&query.target))[0];
@@ -75,19 +83,23 @@ pub(crate) fn open(
     challenger.observe_f128_slice(&s_hat_v);
 
     // 8. Sample Ring-Switch Challenges
+    // eq_r_dprime[u] = eq(r_dprime, u).
     let r_dprime = challenger.sample_f128_vec(LOG_PACKING);
     let eq_r_dprime = build_eq(&r_dprime);
     debug_assert_eq!(eq_r_dprime.len(), 1 << LOG_PACKING);
 
     // 9. Compute the Ligerito Target
+    // beta0 = Σ_u eq(r_dprime, u) · s_hat_u[u].
     let s_hat_u = tensor_algebra_transpose(&s_hat_v);
     let beta0 = inner_product(&s_hat_u, &eq_r_dprime);
 
     // 10. Build the Ligerito Basis
+    // b_initial[y] = B(y) = Σ_u eq(r_dprime, u) · A(y, u).
     let b_initial = fold_b128_elems(&eq_hi, &eq_r_dprime);
     debug_assert_eq!(b_initial.len(), packed_witness.len());
 
     // 11. Prove the Ligerito Claim
+    // Prove Σ_y b_initial[y] · packed_witness[y] = beta0.
     let ligerito_proof = recursive_prover_with_basis(
         &ligerito_config,
         packed_witness,

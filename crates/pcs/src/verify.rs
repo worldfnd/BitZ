@@ -12,6 +12,12 @@
 //! 9. Build the succinct Ligerito basis evaluator from the high coordinates.
 //! 10. Call `recursive_verifier_with_basis_succinct` against the commitment root.
 //! 11. Reject FLoCK failures and transcript mismatches.
+//!
+//! The verifier checks `target = Σ_v eq(r_lo, v) · s_v`.
+//! It samples `r_dprime` and computes `beta0 = Σ_u eq(r_dprime, u) · s_u`.
+//! The succinct basis evaluates `B_hat`, where
+//! `B(y) = Σ_u eq(r_dprime, u) · A(y, u)`.
+//! Ligerito then verifies `Σ_y B(y) · q_pkd(y) = beta0` against the root.
 
 use flock_core::challenger::Challenger;
 use flock_core::field::F128 as FlockF128;
@@ -75,6 +81,7 @@ pub(crate) fn verify(
     }
 
     // 7. Check Target
+    // query.target = Σ_v eq(r_lo, v) · s_hat_v[v].
     let eq_lo = build_eq(as_flock_f128s(r_lo));
     let target = as_flock_f128s(core::slice::from_ref(&query.target))[0];
     if claim_check(&eq_lo, &ring_switch.s_hat_v) != target {
@@ -82,12 +89,14 @@ pub(crate) fn verify(
     }
 
     // 8. Compute the Ligerito Target
+    // beta0 = Σ_u eq(r_dprime, u) · s_hat_u[u].
     let r_dprime = challenger.sample_f128_vec(LOG_PACKING);
     let eq_r_dprime = build_eq(&r_dprime);
     let s_hat_u = tensor_algebra_transpose(&ring_switch.s_hat_v);
     let beta0 = inner_product(&s_hat_u, &eq_r_dprime);
 
     // 9. Build the Succinct Basis Evaluator
+    // result[y] = B_hat(ris || bits(y)).
     let eval_b_residual = |ris: &[FlockF128], yr_log_n: usize| {
         if yr_log_n > 32 || ris.len().checked_add(yr_log_n) != Some(r_hi.len()) {
             return Vec::new();
@@ -105,6 +114,7 @@ pub(crate) fn verify(
     };
 
     // 10. Verify the Ligerito Claim
+    // Verify Σ_y B(y) · q_pkd(y) = beta0 without materializing B.
     let valid = recursive_verifier_with_basis_succinct(
         &ligerito_config,
         &proof.ligerito,
