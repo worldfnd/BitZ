@@ -4,11 +4,9 @@ use crate::CommitError;
 use flock_core::field::F128 as FlockF128;
 pub use flock_core::hash::HashKind;
 use flock_core::pcs::ligerito::LigeritoProfile;
-use flock_core::pcs::{
-    Commitment as FlockCommitment, LOG_PACKING, PcsParams, ProverData as FlockProverData,
-    pack_witness,
-};
+use flock_core::pcs::{LOG_PACKING, PcsParams, ProverData as FlockProverData, pack_witness};
 
+pub use flock_core::pcs::Commitment as FlockCommitment;
 /// A checked PCS instance.
 #[derive(Clone, Debug)]
 pub struct Pcs {
@@ -17,17 +15,11 @@ pub struct Pcs {
     bit_len: usize,
 }
 
-/// The public commitment. Parameters stay in the trusted [`Pcs`] instance.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Commitment {
-    root: [u8; 32],
-}
-
 /// Private state retained between commitment and one opening.
 pub struct ProverData {
+    // length of witness before packing
     bit_len: usize,
     packed_witness: Vec<FlockF128>,
-    commitment: FlockCommitment,
     flock_prover_data: FlockProverData,
 }
 
@@ -46,7 +38,7 @@ impl Pcs {
     }
 
     /// Commits to the exact configured number of bits.
-    pub fn commit(&self, bits: &[bool]) -> Result<(Commitment, ProverData), CommitError> {
+    pub fn commit(&self, bits: &[bool]) -> Result<(FlockCommitment, ProverData), CommitError> {
         if bits.len() != self.bit_len {
             return Err(CommitError::InvalidBitLength { len: bits.len() });
         }
@@ -54,13 +46,10 @@ impl Pcs {
         let (commitment, flock_prover_data) =
             flock_core::pcs::commit(&packed_witness, &self.params);
         Ok((
-            Commitment {
-                root: commitment.root,
-            },
+            commitment,
             ProverData {
                 bit_len: self.bit_len,
                 packed_witness,
-                commitment,
                 flock_prover_data,
             },
         ))
@@ -72,17 +61,6 @@ impl Pcs {
 
     pub(crate) fn params(&self) -> &PcsParams {
         &self.params
-    }
-}
-
-impl Commitment {
-    /// Reconstructs a public commitment from its canonical root.
-    pub const fn from_root(root: [u8; 32]) -> Self {
-        Self { root }
-    }
-
-    pub fn root(&self) -> &[u8; 32] {
-        &self.root
     }
 }
 
@@ -101,10 +79,6 @@ impl ProverData {
 
     pub(crate) fn into_opening_parts(self) -> (Vec<FlockF128>, FlockProverData) {
         (self.packed_witness, self.flock_prover_data)
-    }
-
-    pub(crate) fn commitment(&self) -> &FlockCommitment {
-        &self.commitment
     }
 }
 
@@ -130,7 +104,7 @@ mod tests {
         }
         let (first, data) = scheme.commit(&bits).unwrap();
         let (second, _) = scheme.commit(&bits).unwrap();
-        assert_eq!(first, second);
+        assert_eq!(first.root, second.root);
         assert_eq!(data.bit_len(), bits.len());
         assert_eq!(data.packed_len(), bits.len() / 128);
         assert!(data.codeword_len() > 0);
