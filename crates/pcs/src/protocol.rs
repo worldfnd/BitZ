@@ -83,3 +83,75 @@ fn proof_options() -> impl Options {
         .with_limit(PROOF_HINT_LIMIT as u64)
         .reject_trailing_bytes()
 }
+
+#[cfg(test)]
+mod tests {
+    use field::F128;
+    use proptest::prelude::*;
+    use transcript::{NargSerialize, Proof, build_prover, build_verifier};
+
+    use super::*;
+    use crate::{HashKind, LigeritoProfile};
+
+    #[test]
+    fn opening_proof_reader_rejects_malformed_bytes() {
+        let mut prover = build_prover(b"pcs-protocol-test", b"malformed-proof");
+        prover.hint_bytes(&[0xff]);
+        let proof = prover.finish();
+        let mut verifier = build_verifier(b"pcs-protocol-test", b"malformed-proof", &proof);
+
+        assert_eq!(
+            read_opening_proof(&mut verifier),
+            Err(CommitError::MalformedProof)
+        );
+    }
+
+    #[test]
+    fn opening_proof_reader_rejects_an_oversized_hint() {
+        let oversized = u32::try_from(PROOF_HINT_LIMIT + 1).unwrap();
+        let mut hints = Vec::new();
+        oversized.serialize_into_narg(&mut hints);
+        let proof = Proof {
+            narg_string: Vec::new(),
+            hints,
+        };
+        let mut verifier = build_verifier(b"pcs-protocol-test", b"oversized-proof", &proof);
+
+        assert_eq!(
+            read_opening_proof(&mut verifier),
+            Err(CommitError::MalformedProof)
+        );
+    }
+
+    proptest! {
+        #[test]
+        fn statement_binding_matches_between_roles(
+            root in any::<[u8; 32]>(),
+            point_words in prop::collection::vec((any::<u64>(), any::<u64>()), 0..32),
+            target_words in (any::<u64>(), any::<u64>()),
+        ) {
+            let pcs = Pcs::new(22, LigeritoProfile::Fast, HashKind::Blake3);
+            let query = OpeningQuery {
+                point: point_words
+                    .iter()
+                    .map(|&(lo, hi)| F128::new(lo, hi))
+                    .collect(),
+                target: F128::new(target_words.0, target_words.1),
+            };
+
+            let mut prover = build_prover(b"pcs-protocol-test", b"statement-binding");
+            bind_statement_prover(&pcs, &root, &query, &mut prover);
+            let expected = prover.verifier_message::<F128>();
+            let proof = prover.finish();
+
+            let mut verifier = build_verifier(
+                b"pcs-protocol-test",
+                b"statement-binding",
+                &proof,
+            );
+            bind_statement_verifier(&pcs, &root, &query, &mut verifier);
+            prop_assert_eq!(verifier.verifier_message::<F128>(), expected);
+            prop_assert!(verifier.check_eof().is_ok());
+        }
+    }
+}

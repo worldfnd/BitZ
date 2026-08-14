@@ -11,3 +11,6 @@ blake3 = "1.8"
 field = { path = "../field", features = ["spongefish"] }
 flock-core = { workspace = true }
 transcript = { path = "../transcript" }
+
+[dev-dependencies]
+proptest = "1.11.0"

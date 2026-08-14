@@ -207,6 +207,9 @@ fn leading_zero_bits(bytes: &[u8]) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+    use transcript::{build_prover, build_verifier};
+
     use super::*;
 
     #[test]
@@ -225,5 +228,68 @@ mod tests {
             changed = changed.wrapping_add(1);
         }
         assert!(!pow_valid(&seed, changed, 8));
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn challenger_methods_round_trip(
+            scalar_words in (any::<u64>(), any::<u64>()),
+            slice_words in prop::collection::vec((any::<u64>(), any::<u64>()), 0..16),
+            bytes in prop::collection::vec(any::<u8>(), 0..64),
+            sample_count in 0usize..8,
+            pow_bits in 0u32..=6,
+        ) {
+            let scalar = FlockF128::new(scalar_words.0, scalar_words.1);
+            let slice = slice_words
+                .iter()
+                .map(|&(lo, hi)| FlockF128::new(lo, hi))
+                .collect::<Vec<_>>();
+
+            let mut prover = build_prover(b"pcs-challenger-test", b"method-round-trip");
+            let (sampled_scalar, sampled_vector, nonce) = {
+                let mut challenger = ProverChallenger::new(&mut prover);
+                challenger.observe_label(b"test-label");
+                challenger.observe_f128(scalar);
+                challenger.observe_f128_slice(&slice);
+                challenger.observe_bytes(&bytes);
+                (
+                    challenger.sample_f128(),
+                    challenger.sample_f128_vec(sample_count),
+                    challenger.grind_pow(pow_bits),
+                )
+            };
+            let proof = prover.finish();
+
+            let mut verifier = build_verifier(
+                b"pcs-challenger-test",
+                b"method-round-trip",
+                &proof,
+            );
+            {
+                let mut challenger = VerifierChallenger::new(&mut verifier);
+                challenger.observe_label(b"test-label");
+                challenger.observe_f128(scalar);
+                challenger.observe_f128_slice(&slice);
+                challenger.observe_bytes(&bytes);
+                prop_assert_eq!(challenger.sample_f128(), sampled_scalar);
+                prop_assert_eq!(challenger.sample_f128_vec(sample_count), sampled_vector);
+                prop_assert!(challenger.verify_pow(nonce, pow_bits));
+                prop_assert!(!challenger.failed());
+            }
+            prop_assert!(verifier.check_eof().is_ok());
+        }
+
+        #[test]
+        fn find_pow_returns_the_first_valid_nonce(
+            seed in any::<[u8; 16]>(),
+            bits in 0u32..=8,
+        ) {
+            let nonce = find_pow(&seed, bits);
+
+            prop_assert!(pow_valid(&seed, nonce, bits));
+            prop_assert!((0..nonce).all(|candidate| !pow_valid(&seed, candidate, bits)));
+        }
     }
 }
