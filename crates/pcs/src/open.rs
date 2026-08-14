@@ -4,7 +4,7 @@
 //! 1. Validate the prover data and require `query.point.len() == params.m`.
 //! 2. Bind the commitment root, trusted parameters, point, and target to the transcript.
 //! 3. Split the point into seven low coordinates and `m - 7` high coordinates.
-//! 4. Build the high-coordinate equality table with FLoCK's `build_eq`.
+//! 4. Build the low and high equality tables with FLoCK's `build_eq_split`.
 //! 5. Compute the 128 partial evaluations with `fold_1b_rows_naive`.
 //! 6. Check the target against the low-coordinate equality table.
 //! 7. Absorb the ring-switch domain label and all partial evaluations.
@@ -27,7 +27,8 @@ use crate::{CommitError, OpeningQuery, Pcs, ProverData};
 use flock_core::challenger::Challenger;
 use flock_core::pcs::ligerito::recursive_prover_with_basis;
 use flock_core::pcs::ring_switch::{
-    claim_check, fold_1b_rows_naive, fold_b128_elems, inner_product, tensor_algebra_transpose,
+    build_eq_split, claim_check, fold_1b_rows_naive, fold_b128_elems, inner_product,
+    tensor_algebra_transpose,
 };
 use flock_core::pcs::{BatchOpeningProofLigerito, RingSwitchProof};
 use flock_core::{pcs::LOG_PACKING, zerocheck::univariate_skip::build_eq};
@@ -59,8 +60,10 @@ pub(crate) fn open(
     // 3. Split Point
     let (r_lo, r_hi) = query.point.split_at(LOG_PACKING);
 
-    // 4. Build eq table: eq_hi[y] = eq(r_hi, y)
-    let eq_hi = build_eq(as_flock_f128s(r_hi));
+    // 4. Build eq Tables
+    let (eq_lo, eq_hi) = build_eq_split(as_flock_f128s(&query.point), r_lo.len());
+    debug_assert_eq!(eq_lo.len(), 1 << r_lo.len());
+    debug_assert_eq!(eq_hi.len(), 1 << r_hi.len());
     debug_assert_eq!(eq_hi.len(), packed_witness.len());
 
     // 5. Compute Partial Evaluations
@@ -70,7 +73,6 @@ pub(crate) fn open(
 
     // 6. Check Target
     // query.target = Σ_v eq(r_lo, v) · s_hat_v[v].
-    let eq_lo = build_eq(as_flock_f128s(r_lo));
     let evaluation = claim_check(&eq_lo, &s_hat_v);
     let target = as_flock_f128s(core::slice::from_ref(&query.target))[0];
     if evaluation != target {
