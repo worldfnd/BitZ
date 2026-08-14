@@ -27,12 +27,12 @@ pub enum CommitError {
     InvalidBitLength,
     /// The evaluation point does not match the committed polynomial.
     PointLengthMismatch,
-    /// The scheme configuration is not valid for the selected backend.
+    /// The scheme configuration is not valid for FLoCK.
     InvalidConfiguration,
     /// The transcript does not contain a complete canonical proof.
     MalformedProof,
-    /// The commitment backend rejected an operation.
-    Backend,
+    /// FLoCK rejected an operation.
+    Flock,
     /// The linear-query proof did not verify.
     VerificationFailed,
 }

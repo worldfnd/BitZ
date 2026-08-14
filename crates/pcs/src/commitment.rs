@@ -164,8 +164,8 @@ mod tests {
     fn prover_data_moves_into_opening_parts() {
         let scheme = Pcs::new(22, LigeritoProfile::Fast, HashKind::Blake3);
         let data = scheme.commit(&vec![false; scheme.bit_len()]).unwrap();
-        let (packed_witness, backend) = data.1.into_opening_parts();
+        let (packed_witness, flock_data) = data.1.into_opening_parts();
         assert_eq!(packed_witness.len(), scheme.bit_len() / 128);
-        assert!(!backend.codeword.is_empty());
+        assert!(!flock_data.codeword.is_empty());
     }
 }
