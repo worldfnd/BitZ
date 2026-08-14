@@ -3,8 +3,8 @@
 //! Prover steps:
 //! 1. [x] Validate the prover data and require `query.point.len() == params.m`.
 //! 2. [x] Bind the commitment root, trusted parameters, point, and target to the transcript.
-//! 3. Split the point into seven low coordinates and `m - 7` high coordinates.
-//! 4. Build the high-coordinate equality table with FLoCK's `build_eq`.
+//! 3. [x] Split the point into seven low coordinates and `m - 7` high coordinates.
+//! 4. [X] Build the high-coordinate equality table with FLoCK's `build_eq`.
 //! 5. Compute the 128 partial evaluations with `fold_1b_rows_naive`.
 //! 6. Check the target against the low-coordinate equality table.
 //! 7. Absorb the ring-switch domain label and all partial evaluations.
@@ -14,9 +14,10 @@
 //! 11. Call `recursive_prover_with_basis` with the retained codeword and Merkle tree.
 //! 12. Write a bounded opening proof to the transcript.
 
-use transcript::ProverState;
-
+use crate::bridge::as_flock_f128s;
 use crate::{CommitError, OpeningQuery, Pcs, ProverData};
+use flock_core::{pcs::LOG_PACKING, zerocheck::univariate_skip::build_eq};
+use transcript::ProverState;
 
 const STATEMENT_LABEL: &[u8] = b"f2z/pcs/mle-opening/v1";
 
@@ -42,7 +43,13 @@ pub(crate) fn prove_lin(
 
     // 2. Bind Statement
     bind_statement_prover(pcs, &data.commitment().root, query, transcript);
+
     let (packed_witness, flock_data) = data.into_opening_parts();
+
+    // 3. Split Point
+    let (r_lo, r_hi) = query.point.split_at(LOG_PACKING);
+    let eq_hi = build_eq(as_flock_f128s(r_hi));
+    debug_assert_eq!(eq_hi.len(), packed_witness.len());
 
     Ok(())
 }
