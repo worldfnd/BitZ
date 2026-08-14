@@ -3,12 +3,20 @@
 mod bridge;
 mod challenger;
 mod commitment;
-mod opening;
 
 use field::F128;
 use transcript::{ProverState, VerifierState};
 
-pub use commitment::{Commitment, MerkleHash, Pcs, PcsConfig, ProverData};
+pub use commitment::{Commitment, HashKind, Pcs, ProverData};
+
+/// A standard multilinear evaluation claim.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpeningQuery {
+    /// The evaluation point, in low-index-bit-first order.
+    pub point: Vec<F128>,
+    /// The claimed multilinear evaluation at `point`.
+    pub target: F128,
+}
 
 /// Errors from commitment and linear-query operations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -16,14 +24,10 @@ pub use commitment::{Commitment, MerkleHash, Pcs, PcsConfig, ProverData};
 pub enum CommitError {
     /// The bit vector has no supported commitment shape.
     InvalidBitLength { len: usize },
-    /// The coefficient vector does not match the committed bit vector.
-    CoefficientLengthMismatch { expected: usize, actual: usize },
+    /// The evaluation point does not match the committed polynomial.
+    PointLengthMismatch { expected: usize, actual: usize },
     /// The scheme configuration is not valid for the selected backend.
     InvalidConfiguration,
-    /// The one-shot prover data has already produced an opening.
-    ProverDataConsumed,
-    /// The coefficients do not encode a supported flock ring-switch point.
-    UnsupportedCoefficients,
     /// The transcript does not contain a complete canonical proof.
     MalformedProof,
     /// The commitment backend rejected an operation.
@@ -45,19 +49,15 @@ pub trait CommitScheme {
     /// Commits to `Enc_C(Pack_128(pi_2(bits)))`, Construction 3.10's oracle.
     fn commit(&self, bits: &[bool]) -> Result<(Self::Commitment, Self::ProverData), CommitError>;
 
-    /// Proves `<coeffs, pi_2(bits)>_{F128} = target`.
+    /// Proves `MLE(pi_2(bits))(query.point) = query.target`.
     ///
     /// This is Construction 3.4's residual Phase 3 claim, with `nu = 128`.
-    /// `coeffs` has one entry per bit. It must encode Flock's structured
-    /// univariate-skip and multilinear evaluation weights. Other linear
-    /// functionals return [`CommitError::UnsupportedCoefficients`]. `target`
-    /// is the residual `mu_prime`, not Construction 3.10's original
-    /// `R`-valued `mu`.
+    /// `query.target` is the residual `mu_prime`, not Construction 3.10's
+    /// original `R`-valued `mu`.
     fn prove_lin(
         &self,
-        data: &Self::ProverData,
-        coeffs: &[F128],
-        target: F128,
+        data: Self::ProverData,
+        query: &OpeningQuery,
         transcript: &mut ProverState,
     ) -> Result<(), CommitError>;
 
@@ -65,8 +65,7 @@ pub trait CommitScheme {
     fn verify_lin(
         &self,
         commitment: &Self::Commitment,
-        coeffs: &[F128],
-        target: F128,
+        query: &OpeningQuery,
         transcript: &mut VerifierState<'_>,
     ) -> Result<(), CommitError>;
 }
@@ -104,74 +103,71 @@ mod tests {
 
         fn prove_lin(
             &self,
-            data: &Self::ProverData,
-            coeffs: &[F128],
-            _target: F128,
+            data: Self::ProverData,
+            query: &OpeningQuery,
             _transcript: &mut ProverState,
         ) -> Result<(), CommitError> {
-            check_coefficient_length(data.len, coeffs.len())
+            check_point_length(data.len, query.point.len())
         }
 
         fn verify_lin(
             &self,
             commitment: &Self::Commitment,
-            coeffs: &[F128],
-            _target: F128,
+            query: &OpeningQuery,
             _transcript: &mut VerifierState<'_>,
         ) -> Result<(), CommitError> {
-            check_coefficient_length(commitment.len, coeffs.len())
+            check_point_length(commitment.len, query.point.len())
         }
     }
 
-    fn check_coefficient_length(expected: usize, actual: usize) -> Result<(), CommitError> {
+    fn check_point_length(expected: usize, actual: usize) -> Result<(), CommitError> {
         if actual == expected {
             Ok(())
         } else {
-            Err(CommitError::CoefficientLengthMismatch { expected, actual })
+            Err(CommitError::PointLengthMismatch { expected, actual })
         }
     }
 
     #[test]
-    fn interface_accepts_bits_and_f128_linear_queries() {
+    fn interface_accepts_a_multilinear_opening_query() {
         let scheme = TestScheme;
         let (commitment, data) = scheme.commit(&[false, true]).unwrap();
-        let coeffs = [F128::from(3u64), F128::from(5u64)];
-        let target = F128::from(5u64);
+        let query = OpeningQuery {
+            point: vec![F128::from(3u64), F128::from(5u64)],
+            target: F128::from(7u64),
+        };
 
         let mut prover = build_prover(SESSION, INSTANCE);
-        scheme
-            .prove_lin(&data, &coeffs, target, &mut prover)
-            .unwrap();
+        scheme.prove_lin(data, &query, &mut prover).unwrap();
         let proof = prover.finish();
 
         let mut verifier = build_verifier(SESSION, INSTANCE, &proof);
         scheme
-            .verify_lin(&commitment, &coeffs, target, &mut verifier)
+            .verify_lin(&commitment, &query, &mut verifier)
             .unwrap();
         verifier.check_eof().unwrap();
     }
 
     #[test]
-    fn interface_reports_coefficient_length_mismatches() {
+    fn interface_reports_point_length_mismatches() {
         let scheme = TestScheme;
         let (commitment, data) = scheme.commit(&[false, true]).unwrap();
-        let coeffs = [F128::from(3u64)];
-        let target = F128::from(0u64);
-        let expected = CommitError::CoefficientLengthMismatch {
+        let query = OpeningQuery {
+            point: vec![F128::from(3u64)],
+            target: F128::from(0u64),
+        };
+        let expected = CommitError::PointLengthMismatch {
             expected: 2,
             actual: 1,
         };
 
         let mut prover = build_prover(SESSION, INSTANCE);
-        assert_eq!(
-            scheme.prove_lin(&data, &coeffs, target, &mut prover),
-            Err(expected)
-        );
+        assert_eq!(scheme.prove_lin(data, &query, &mut prover), Err(expected));
 
         let proof = Proof::default();
         let mut verifier = build_verifier(SESSION, INSTANCE, &proof);
         assert_eq!(
-            scheme.verify_lin(&commitment, &coeffs, target, &mut verifier),
+            scheme.verify_lin(&commitment, &query, &mut verifier),
             Err(expected)
         );
     }
