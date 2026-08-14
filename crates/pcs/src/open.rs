@@ -10,7 +10,7 @@
 //! 7. [x] Absorb the ring-switch domain label and all partial evaluations.
 //! 8. [x] Sample seven ring-switch challenges and build their equality table.
 //! 9. [x] Transpose the partial evaluations and compute the packed target `beta0`.
-//! 10. Build the packed Ligerito basis with `fold_b128_elems`.
+//! 10. [x] Build the packed Ligerito basis with `fold_b128_elems`.
 //! 11. Call `recursive_prover_with_basis` with the retained codeword and Merkle tree.
 //! 12. Write a bounded opening proof to the transcript.
 
@@ -19,7 +19,7 @@ use crate::challenger::ProverChallenger;
 use crate::{CommitError, OpeningQuery, Pcs, ProverData};
 use flock_core::challenger::Challenger;
 use flock_core::pcs::ring_switch::{
-    claim_check, fold_1b_rows_naive, inner_product, tensor_algebra_transpose,
+    claim_check, fold_1b_rows_naive, fold_b128_elems, inner_product, tensor_algebra_transpose,
 };
 use flock_core::{pcs::LOG_PACKING, zerocheck::univariate_skip::build_eq};
 use transcript::ProverState;
@@ -74,6 +74,9 @@ pub(crate) fn prove_lin(
     // 9. Compute the Ligerito Target
     let s_hat_u = tensor_algebra_transpose(&s_hat_v);
     let beta0 = inner_product(&s_hat_u, &eq_r_dprime);
+    // 10. Build the Ligerito Basis
+    let b_initial = fold_b128_elems(&eq_hi, &eq_r_dprime);
+    debug_assert_eq!(b_initial.len(), packed_witness.len());
 
     Ok(())
 }
