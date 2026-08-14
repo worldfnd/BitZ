@@ -7,7 +7,7 @@
 //! 4. [X] Build the high-coordinate equality table with FLoCK's `build_eq`.
 //! 5. [x] Compute the 128 partial evaluations with `fold_1b_rows_naive`.
 //! 6. [x] Check the target against the low-coordinate equality table.
-//! 7. Absorb the ring-switch domain label and all partial evaluations.
+//! 7. [x] Absorb the ring-switch domain label and all partial evaluations.
 //! 8. Sample seven ring-switch challenges and build their equality table.
 //! 9. Transpose the partial evaluations and compute the packed target `beta0`.
 //! 10. Build the packed Ligerito basis with `fold_b128_elems`.
@@ -15,12 +15,15 @@
 //! 12. Write a bounded opening proof to the transcript.
 
 use crate::bridge::as_flock_f128s;
+use crate::challenger::ProverChallenger;
 use crate::{CommitError, OpeningQuery, Pcs, ProverData};
+use flock_core::challenger::Challenger;
 use flock_core::pcs::ring_switch::{claim_check, fold_1b_rows_naive};
 use flock_core::{pcs::LOG_PACKING, zerocheck::univariate_skip::build_eq};
 use transcript::ProverState;
 
 const STATEMENT_LABEL: &[u8] = b"f2z/pcs/mle-opening/v1";
+const RING_SWITCH_LABEL: &[u8] = b"flock-ring-switch-v0";
 
 #[allow(dead_code)]
 pub(crate) fn prove_lin(
@@ -59,7 +62,10 @@ pub(crate) fn prove_lin(
     if evaluation != target {
         return Err(CommitError::VerificationFailed);
     }
-    // 7.
+    // 7. Record Ring-Switch Message
+    let mut challenger = ProverChallenger::new(transcript);
+    challenger.observe_label(RING_SWITCH_LABEL);
+    challenger.observe_f128_slice(&s_hat_v);
 
     Ok(())
 }
