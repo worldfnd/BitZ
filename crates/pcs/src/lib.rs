@@ -26,7 +26,7 @@
 //!
 //! - [`Pcs`] stores trusted FLoCK parameters and the expected bit length.
 //! - [`Commitment`] contains the public Merkle root.
-//! - [`ProverData`] retains the packed witness, codeword, and Merkle tree after commit
+//! - [`ProverData`] retains the packed witness, codeword, and Merkle tree after commit.
 //! - [`OpeningQuery`] contains one evaluation point and its claimed value.
 //! - [`CommitScheme`] connects commitment, proving, and verification to project transcripts.
 //!
@@ -105,10 +105,7 @@ pub enum CommitError {
     VerificationFailed,
 }
 
-/// The terminal binary-field PCS used by Section 3.5, Construction 3.10.
-///
-/// Construction 3.10 reduces its `R`-valued claim through Construction 3.4.
-/// This trait implements Construction 3.4, Phase 3, with `F_{2^nu} = F128`.
+/// A polynomial commitment scheme for multilinear extensions of bit tables.
 ///
 /// Let `q: {0,1}^m → F2` be the committed bit table. For `r ∈ F128^m`,
 /// this trait proves
@@ -120,12 +117,11 @@ pub trait CommitScheme {
     /// Private data retained by the prover after commitment.
     type ProverData;
 
-    /// Commits to `Enc_C(q_pkd)`, where
+    /// Packs the bits and commits to `Enc_C(q_pkd)`, where
     /// `q_pkd(y) = Σ_{v ∈ {0,1}^7} q(y, v) · basis[v]`.
-    /// note to reviewer: do we want F2 field? each bit is 1 byte in rust, so not ideal
     fn commit(&self, bits: &[bool]) -> Result<(Self::Commitment, Self::ProverData), CommitError>;
 
-    /// Proves `MLE(pi_2(bits))(query.point) = query.target`.
+    /// Proves `q̂(query.point) = query.target` for the committed bit table.
     fn prove_lin(
         &self,
         data: Self::ProverData,
@@ -133,7 +129,7 @@ pub trait CommitScheme {
         transcript: &mut ProverState,
     ) -> Result<(), CommitError>;
 
-    /// Verifies the same Construction 3.4, Phase 3 claim against `commitment`.
+    /// Verifies the same multilinear claim against `commitment`.
     fn verify_lin(
         &self,
         commitment: &Self::Commitment,
