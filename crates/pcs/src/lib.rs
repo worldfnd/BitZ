@@ -3,11 +3,12 @@
 mod bridge;
 mod challenger;
 mod commitment;
+mod open;
 
 use field::F128;
 use transcript::{ProverState, VerifierState};
 
-pub use commitment::{Commitment, HashKind, Pcs, ProverData};
+pub use commitment::{FlockCommitment as Commitment, HashKind, Pcs, ProverData};
 
 /// A standard multilinear evaluation claim.
 #[derive(Clone, Debug, PartialEq, Eq)]
