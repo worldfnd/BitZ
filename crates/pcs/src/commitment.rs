@@ -77,6 +77,26 @@ impl Pcs {
     pub(crate) fn params(&self) -> &PcsParams {
         &self.params
     }
+
+    pub(crate) fn statement_tags(&self) -> [u64; 5] {
+        let profile_tag = match self.params.profile {
+            LigeritoProfile::Fast => 0,
+            LigeritoProfile::Slim => 1,
+            LigeritoProfile::Secure => 2,
+        };
+        let hash_tag = match self.params.merkle_hash {
+            HashKind::Sha256 => 0,
+            HashKind::Blake3 => 1,
+        };
+
+        [
+            self.params.m as u64,
+            self.params.log_inv_rate as u64,
+            self.params.log_batch_size as u64,
+            profile_tag,
+            hash_tag,
+        ]
+    }
 }
 
 impl ProverData {
