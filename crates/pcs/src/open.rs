@@ -6,7 +6,7 @@
 //! 3. [x] Split the point into seven low coordinates and `m - 7` high coordinates.
 //! 4. [X] Build the high-coordinate equality table with FLoCK's `build_eq`.
 //! 5. [x] Compute the 128 partial evaluations with `fold_1b_rows_naive`.
-//! 6. Check the target against the low-coordinate equality table.
+//! 6. [x] Check the target against the low-coordinate equality table.
 //! 7. Absorb the ring-switch domain label and all partial evaluations.
 //! 8. Sample seven ring-switch challenges and build their equality table.
 //! 9. Transpose the partial evaluations and compute the packed target `beta0`.
@@ -16,7 +16,7 @@
 
 use crate::bridge::as_flock_f128s;
 use crate::{CommitError, OpeningQuery, Pcs, ProverData};
-use flock_core::pcs::ring_switch::fold_1b_rows_naive;
+use flock_core::pcs::ring_switch::{claim_check, fold_1b_rows_naive};
 use flock_core::{pcs::LOG_PACKING, zerocheck::univariate_skip::build_eq};
 use transcript::ProverState;
 
@@ -41,22 +41,25 @@ pub(crate) fn prove_lin(
         .params()
         .ligerito_prover_config()
         .map_err(|_| CommitError::InvalidConfiguration)?;
-
     // 2. Bind Statement
     bind_statement_prover(pcs, &data.commitment().root, query, transcript);
-
     let (packed_witness, flock_data) = data.into_opening_parts();
-
     // 3. Split Point
     let (r_lo, r_hi) = query.point.split_at(LOG_PACKING);
-
     // 4. Build eq table
     let eq_hi = build_eq(as_flock_f128s(r_hi));
     debug_assert_eq!(eq_hi.len(), packed_witness.len());
-
     // 5. s_hat_v
     let s_hat_v = fold_1b_rows_naive(&packed_witness, &eq_hi);
     debug_assert_eq!(s_hat_v.len(), 1 << LOG_PACKING);
+    // 6. Check Target
+    let eq_lo = build_eq(as_flock_f128s(r_lo));
+    let evaluation = claim_check(&eq_lo, &s_hat_v);
+    let target = as_flock_f128s(core::slice::from_ref(&query.target))[0];
+    if evaluation != target {
+        return Err(CommitError::VerificationFailed);
+    }
+    // 7.
 
     Ok(())
 }
