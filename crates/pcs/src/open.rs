@@ -9,7 +9,7 @@
 //! 6. [x] Check the target against the low-coordinate equality table.
 //! 7. [x] Absorb the ring-switch domain label and all partial evaluations.
 //! 8. [x] Sample seven ring-switch challenges and build their equality table.
-//! 9. Transpose the partial evaluations and compute the packed target `beta0`.
+//! 9. [x] Transpose the partial evaluations and compute the packed target `beta0`.
 //! 10. Build the packed Ligerito basis with `fold_b128_elems`.
 //! 11. Call `recursive_prover_with_basis` with the retained codeword and Merkle tree.
 //! 12. Write a bounded opening proof to the transcript.
@@ -18,7 +18,9 @@ use crate::bridge::as_flock_f128s;
 use crate::challenger::ProverChallenger;
 use crate::{CommitError, OpeningQuery, Pcs, ProverData};
 use flock_core::challenger::Challenger;
-use flock_core::pcs::ring_switch::{claim_check, fold_1b_rows_naive};
+use flock_core::pcs::ring_switch::{
+    claim_check, fold_1b_rows_naive, inner_product, tensor_algebra_transpose,
+};
 use flock_core::{pcs::LOG_PACKING, zerocheck::univariate_skip::build_eq};
 use transcript::ProverState;
 
@@ -52,9 +54,12 @@ pub(crate) fn prove_lin(
     // 4. Build eq table
     let eq_hi = build_eq(as_flock_f128s(r_hi));
     debug_assert_eq!(eq_hi.len(), packed_witness.len());
-    // 5. s_hat_v
+    // 5 and 7 Ring-Switch
     let s_hat_v = fold_1b_rows_naive(&packed_witness, &eq_hi);
     debug_assert_eq!(s_hat_v.len(), 1 << LOG_PACKING);
+    let mut challenger = ProverChallenger::new(transcript);
+    challenger.observe_label(RING_SWITCH_LABEL);
+    challenger.observe_f128_slice(&s_hat_v);
     // 6. Check Target
     let eq_lo = build_eq(as_flock_f128s(r_lo));
     let evaluation = claim_check(&eq_lo, &s_hat_v);
@@ -62,14 +67,13 @@ pub(crate) fn prove_lin(
     if evaluation != target {
         return Err(CommitError::VerificationFailed);
     }
-    // 7. Record Ring-Switch Message
-    let mut challenger = ProverChallenger::new(transcript);
-    challenger.observe_label(RING_SWITCH_LABEL);
-    challenger.observe_f128_slice(&s_hat_v);
     // 8. Sample Ring-Switch Challenges
     let r_dprime = challenger.sample_f128_vec(LOG_PACKING);
     let eq_r_dprime = build_eq(&r_dprime);
     debug_assert_eq!(eq_r_dprime.len(), 1 << LOG_PACKING);
+    // 9. Compute the Ligerito Target
+    let s_hat_u = tensor_algebra_transpose(&s_hat_v);
+    let beta0 = inner_product(&s_hat_u, &eq_r_dprime);
 
     Ok(())
 }
