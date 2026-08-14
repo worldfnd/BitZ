@@ -24,9 +24,9 @@ pub struct OpeningQuery {
 #[non_exhaustive]
 pub enum CommitError {
     /// The bit vector has no supported commitment shape.
-    InvalidBitLength { len: usize },
+    InvalidBitLength,
     /// The evaluation point does not match the committed polynomial.
-    PointLengthMismatch { expected: usize, actual: usize },
+    PointLengthMismatch,
     /// The scheme configuration is not valid for the selected backend.
     InvalidConfiguration,
     /// The transcript does not contain a complete canonical proof.
@@ -125,7 +125,7 @@ mod tests {
         if actual == expected {
             Ok(())
         } else {
-            Err(CommitError::PointLengthMismatch { expected, actual })
+            Err(CommitError::PointLengthMismatch)
         }
     }
 
@@ -157,10 +157,7 @@ mod tests {
             point: vec![F128::from(3u64)],
             target: F128::from(0u64),
         };
-        let expected = CommitError::PointLengthMismatch {
-            expected: 2,
-            actual: 1,
-        };
+        let expected = CommitError::PointLengthMismatch;
 
         let mut prover = build_prover(SESSION, INSTANCE);
         assert_eq!(scheme.prove_lin(data, &query, &mut prover), Err(expected));
