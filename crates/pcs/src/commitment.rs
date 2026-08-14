@@ -1,4 +1,11 @@
 //! Checked commit-phase wrapper for flock's binary-field PCS.
+//!
+//! Commitment steps:
+//! 1. Require the configured number of witness bits.
+//! 2. Pack each 128-bit witness block into one binary-field element.
+//! 3. Commit the packed witness with FLoCK.
+//! 4. Expose the Merkle root as the public commitment.
+//! 5. Retain the packed witness and FLoCK prover data for one opening.
 
 use crate::CommitError;
 use flock_core::field::F128 as FlockF128;
@@ -50,15 +57,24 @@ impl Pcs {
 
     /// Commits to the exact configured number of bits.
     pub fn commit(&self, bits: &[bool]) -> Result<(Commitment, ProverData), CommitError> {
+        // 1. Input Validation
         if bits.len() != self.bit_len {
             return Err(CommitError::InvalidBitLength);
         }
+
+        // 2. Pack Witness
         let packed_witness = pack_witness(bits, self.params.m);
+
+        // 3. Commit Packed Witness
         let (flock_commitment, flock_prover_data) =
             flock_core::pcs::commit(&packed_witness, &self.params);
+
+        // 4. Build Public Commitment
         let commitment = Commitment {
             root: flock_commitment.root,
         };
+
+        // 5. Retain Opening Data
         Ok((
             commitment,
             ProverData {
