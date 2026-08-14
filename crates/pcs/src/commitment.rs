@@ -15,10 +15,16 @@ pub struct Pcs {
     bit_len: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Commitment {
+    root: [u8; 32],
+}
+
 /// Private state retained between commitment and one opening.
 pub struct ProverData {
     // length of witness before packing
     bit_len: usize,
+    commitment: Commitment,
     packed_witness: Vec<FlockF128>,
     flock_prover_data: FlockProverData,
 }
@@ -38,21 +44,21 @@ impl Pcs {
     }
 
     /// Commits to the exact configured number of bits.
-    pub fn commit(&self, bits: &[bool]) -> Result<(FlockCommitment, ProverData), CommitError> {
+    pub fn commit(&self, bits: &[bool]) -> Result<ProverData, CommitError> {
         if bits.len() != self.bit_len {
             return Err(CommitError::InvalidBitLength { len: bits.len() });
         }
         let packed_witness = pack_witness(bits, self.params.m);
         let (commitment, flock_prover_data) =
             flock_core::pcs::commit(&packed_witness, &self.params);
-        Ok((
-            commitment,
-            ProverData {
-                bit_len: self.bit_len,
-                packed_witness,
-                flock_prover_data,
+        Ok(ProverData {
+            bit_len: self.bit_len,
+            commitment: Commitment {
+                root: commitment.root,
             },
-        ))
+            packed_witness,
+            flock_prover_data,
+        })
     }
 
     pub fn bit_len(&self) -> usize {
@@ -80,6 +86,20 @@ impl ProverData {
     pub(crate) fn into_opening_parts(self) -> (Vec<FlockF128>, FlockProverData) {
         (self.packed_witness, self.flock_prover_data)
     }
+
+    pub fn commitment(&self) -> &Commitment {
+        &self.commitment
+    }
+}
+
+impl Commitment {
+    pub const fn from_root(root: [u8; 32]) -> Self {
+        Self { root }
+    }
+
+    pub fn root(&self) -> &[u8; 32] {
+        &self.root
+    }
 }
 
 #[cfg(test)]
@@ -102,9 +122,9 @@ mod tests {
         for index in [0, 1, 63, 64, 127, 128, bits.len() - 1] {
             bits[index] = true;
         }
-        let (first, data) = scheme.commit(&bits).unwrap();
-        let (second, _) = scheme.commit(&bits).unwrap();
-        assert_eq!(first.root, second.root);
+        let data = scheme.commit(&bits).unwrap();
+        let data2 = scheme.commit(&bits).unwrap();
+        assert_eq!(data.commitment().root, data2.commitment().root);
         assert_eq!(data.bit_len(), bits.len());
         assert_eq!(data.packed_len(), bits.len() / 128);
         assert!(data.codeword_len() > 0);
@@ -113,7 +133,7 @@ mod tests {
     #[test]
     fn prover_data_moves_into_opening_parts() {
         let scheme = Pcs::new(22, LigeritoProfile::Fast, HashKind::Blake3);
-        let (_, data) = scheme.commit(&vec![false; scheme.bit_len()]).unwrap();
+        let data = scheme.commit(&vec![false; scheme.bit_len()]).unwrap();
         let (packed_witness, backend) = data.into_opening_parts();
         assert_eq!(packed_witness.len(), scheme.bit_len() / 128);
         assert!(!backend.codeword.is_empty());
