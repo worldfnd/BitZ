@@ -4,6 +4,8 @@ mod bridge;
 mod challenger;
 mod commitment;
 mod open;
+mod protocol;
+mod verify;
 
 use field::F128;
 use transcript::{ProverState, VerifierState};
@@ -71,14 +73,43 @@ pub trait CommitScheme {
     ) -> Result<(), CommitError>;
 }
 
+impl CommitScheme for Pcs {
+    type Commitment = Commitment;
+    type ProverData = ProverData;
+
+    fn commit(&self, bits: &[bool]) -> Result<(Self::Commitment, Self::ProverData), CommitError> {
+        Pcs::commit(self, bits)
+    }
+
+    fn prove_lin(
+        &self,
+        data: Self::ProverData,
+        query: &OpeningQuery,
+        transcript: &mut ProverState,
+    ) -> Result<(), CommitError> {
+        open::open(self, data, query, transcript)
+    }
+
+    fn verify_lin(
+        &self,
+        commitment: &Self::Commitment,
+        query: &OpeningQuery,
+        transcript: &mut VerifierState<'_>,
+    ) -> Result<(), CommitError> {
+        verify::verify(self, commitment, query, transcript)
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use flock_core::pcs::ligerito::LigeritoProfile;
     use transcript::{Proof, build_prover, build_verifier};
 
     use super::*;
 
     const SESSION: &[u8] = b"pcs-interface-test";
     const INSTANCE: &[u8] = b"two-bits";
+    const REAL_INSTANCE: &[u8] = b"m22-singleton-opening";
 
     struct TestScheme;
     struct TestCommitment {
@@ -168,5 +199,92 @@ mod tests {
             scheme.verify_lin(&commitment, &query, &mut verifier),
             Err(expected)
         );
+    }
+
+    fn singleton_target(point: &[F128], index: usize) -> F128 {
+        let one = F128::from(1u64);
+        point
+            .iter()
+            .copied()
+            .enumerate()
+            .fold(one, |target, (coordinate, value)| {
+                let weight = if ((index >> coordinate) & 1) == 1 {
+                    value
+                } else {
+                    one + value
+                };
+                target * weight
+            })
+    }
+
+    #[test]
+    fn real_pcs_opening_round_trip_rejects_mutations() {
+        const M: usize = 22;
+        const SINGLETON: usize = (1 << 21) | (1 << 7) | 0b101_0101;
+
+        let pcs = Pcs::new(M, LigeritoProfile::Fast, HashKind::Blake3);
+        let mut bits = vec![false; pcs.bit_len()];
+        bits[SINGLETON] = true;
+
+        let point = (0..M)
+            .map(|coordinate| F128::from(coordinate as u64 + 2))
+            .collect::<Vec<_>>();
+        let query = OpeningQuery {
+            target: singleton_target(&point, SINGLETON),
+            point,
+        };
+
+        let (commitment, data) = pcs.commit(&bits).unwrap();
+        let mut prover = build_prover(SESSION, REAL_INSTANCE);
+        pcs.prove_lin(data, &query, &mut prover).unwrap();
+        let proof = prover.finish();
+
+        let mut verifier = build_verifier(SESSION, REAL_INSTANCE, &proof);
+        pcs.verify_lin(&commitment, &query, &mut verifier).unwrap();
+        verifier.check_eof().unwrap();
+
+        let mut changed_query = query.clone();
+        changed_query.target += F128::from(1u64);
+        let mut verifier = build_verifier(SESSION, REAL_INSTANCE, &proof);
+        assert!(
+            pcs.verify_lin(&commitment, &changed_query, &mut verifier)
+                .is_err()
+        );
+
+        let mut changed_root = *commitment.root();
+        changed_root[0] ^= 1;
+        let changed_commitment = Commitment::from_root(changed_root);
+        let mut verifier = build_verifier(SESSION, REAL_INSTANCE, &proof);
+        assert!(
+            pcs.verify_lin(&changed_commitment, &query, &mut verifier)
+                .is_err()
+        );
+
+        let mut changed_stream = proof.clone();
+        changed_stream.narg_string[0] ^= 1;
+        let mut verifier = build_verifier(SESSION, REAL_INSTANCE, &changed_stream);
+        assert_eq!(
+            pcs.verify_lin(&commitment, &query, &mut verifier),
+            Err(CommitError::MalformedProof)
+        );
+
+        let mut truncated_hint = proof.clone();
+        truncated_hint.hints.pop();
+        let mut verifier = build_verifier(SESSION, REAL_INSTANCE, &truncated_hint);
+        assert_eq!(
+            pcs.verify_lin(&commitment, &query, &mut verifier),
+            Err(CommitError::MalformedProof)
+        );
+
+        let mut changed_hint = proof.clone();
+        *changed_hint.hints.last_mut().unwrap() ^= 1;
+        let mut verifier = build_verifier(SESSION, REAL_INSTANCE, &changed_hint);
+        assert!(pcs.verify_lin(&commitment, &query, &mut verifier).is_err());
+
+        let mut trailing_hint = proof;
+        trailing_hint.hints.push(0);
+        let mut verifier = build_verifier(SESSION, REAL_INSTANCE, &trailing_hint);
+        pcs.verify_lin(&commitment, &query, &mut verifier).unwrap();
+        assert!(verifier.check_eof().is_err());
     }
 }

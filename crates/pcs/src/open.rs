@@ -1,23 +1,23 @@
 //! Standard multilinear openings over the FLoCK commitment.
 //!
 //! Prover steps:
-//! 1. [x] Validate the prover data and require `query.point.len() == params.m`.
-//! 2. [x] Bind the commitment root, trusted parameters, point, and target to the transcript.
-//! 3. [x] Split the point into seven low coordinates and `m - 7` high coordinates.
-//! 4. [X] Build the high-coordinate equality table with FLoCK's `build_eq`.
-//! 5. [x] Compute the 128 partial evaluations with `fold_1b_rows_naive`.
-//! 6. [x] Check the target against the low-coordinate equality table.
-//! 7. [x] Absorb the ring-switch domain label and all partial evaluations.
-//! 8. [x] Sample seven ring-switch challenges and build their equality table.
-//! 9. [x] Transpose the partial evaluations and compute the packed target `beta0`.
-//! 10. [x] Build the packed Ligerito basis with `fold_b128_elems`.
-//! 11. [x] Call `recursive_prover_with_basis` with the retained codeword and Merkle tree.
-//! 12. [x] Write a bounded opening proof to the transcript.
+//! 1. Validate the prover data and require `query.point.len() == params.m`.
+//! 2. Bind the commitment root, trusted parameters, point, and target to the transcript.
+//! 3. Split the point into seven low coordinates and `m - 7` high coordinates.
+//! 4. Build the high-coordinate equality table with FLoCK's `build_eq`.
+//! 5. Compute the 128 partial evaluations with `fold_1b_rows_naive`.
+//! 6. Check the target against the low-coordinate equality table.
+//! 7. Absorb the ring-switch domain label and all partial evaluations.
+//! 8. Sample seven ring-switch challenges and build their equality table.
+//! 9. Transpose the partial evaluations and compute the packed target `beta0`.
+//! 10. Build the packed Ligerito basis with `fold_b128_elems`.
+//! 11. Call `recursive_prover_with_basis` with the retained codeword and Merkle tree.
+//! 12. Write a bounded opening proof to the transcript.
 
 use crate::bridge::as_flock_f128s;
 use crate::challenger::ProverChallenger;
+use crate::protocol::{RING_SWITCH_LABEL, bind_statement_prover, write_opening_proof};
 use crate::{CommitError, OpeningQuery, Pcs, ProverData};
-use bincode::Options;
 use flock_core::challenger::Challenger;
 use flock_core::pcs::ligerito::recursive_prover_with_basis;
 use flock_core::pcs::ring_switch::{
@@ -27,11 +27,6 @@ use flock_core::pcs::{BatchOpeningProofLigerito, RingSwitchProof};
 use flock_core::{pcs::LOG_PACKING, zerocheck::univariate_skip::build_eq};
 use transcript::ProverState;
 
-const PROOF_HINT_LIMIT: usize = 64 * 1024 * 1024;
-const STATEMENT_LABEL: &[u8] = b"f2z/pcs/mle-opening/v1";
-const RING_SWITCH_LABEL: &[u8] = b"flock-ring-switch-v0";
-
-#[allow(dead_code)]
 pub(crate) fn open(
     pcs: &Pcs,
     data: ProverData,
@@ -97,22 +92,9 @@ pub(crate) fn open(
         ring_switches: vec![RingSwitchProof { s_hat_v }],
         ligerito: ligerito_proof,
     };
-    let proof_bytes = proof_options()
-        .serialize(&opening_proof)
-        .map_err(|_| CommitError::Flock)?;
-    if proof_bytes.len() > PROOF_HINT_LIMIT {
-        return Err(CommitError::Flock);
-    }
-    transcript.hint_bytes(&proof_bytes);
+    write_opening_proof(&opening_proof, transcript)?;
 
     Ok(())
-}
-
-fn proof_options() -> impl Options {
-    bincode::DefaultOptions::new()
-        .with_fixint_encoding()
-        .with_limit(PROOF_HINT_LIMIT as u64)
-        .reject_trailing_bytes()
 }
 
 fn params_match(pcs: &Pcs, data: &ProverData) -> bool {
@@ -124,26 +106,4 @@ fn params_match(pcs: &Pcs, data: &ProverData) -> bool {
         && expected.log_batch_size == actual.log_batch_size
         && expected.profile == actual.profile
         && expected.merkle_hash == actual.merkle_hash
-}
-
-/// Absorbs the public opening statement without writing proof bytes.
-/// Order: domain label, root, PCS tags, point length, point coordinates, and target.
-fn bind_statement_prover(
-    pcs: &Pcs,
-    root: &[u8; 32],
-    query: &OpeningQuery,
-    transcript: &mut ProverState,
-) {
-    transcript.public_message(STATEMENT_LABEL);
-    transcript.public_message(root);
-
-    for tag in pcs.statement_tags() {
-        transcript.public_message(&tag);
-    }
-
-    transcript.public_message(&(query.point.len() as u64));
-    for coordinate in &query.point {
-        transcript.public_message(coordinate);
-    }
-    transcript.public_message(&query.target);
 }

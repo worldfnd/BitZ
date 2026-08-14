@@ -38,11 +38,11 @@ impl Pcs {
     pub fn new(m: usize, security_profile: LigeritoProfile, merkle_hash: HashKind) -> Self {
         Self {
             params: PcsParams {
-                m: m,
+                m,
                 log_inv_rate: security_profile.log_inv_rate(),
                 log_batch_size: LIGERITO_INITIAL_K,
                 profile: security_profile,
-                merkle_hash: merkle_hash,
+                merkle_hash,
             },
             bit_len: 1 << m,
         }
