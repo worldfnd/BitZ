@@ -5,7 +5,7 @@
 //! 2. [x] Bind the commitment root, trusted parameters, point, and target to the transcript.
 //! 3. [x] Split the point into seven low coordinates and `m - 7` high coordinates.
 //! 4. [X] Build the high-coordinate equality table with FLoCK's `build_eq`.
-//! 5. Compute the 128 partial evaluations with `fold_1b_rows_naive`.
+//! 5. [x] Compute the 128 partial evaluations with `fold_1b_rows_naive`.
 //! 6. Check the target against the low-coordinate equality table.
 //! 7. Absorb the ring-switch domain label and all partial evaluations.
 //! 8. Sample seven ring-switch challenges and build their equality table.
@@ -16,6 +16,7 @@
 
 use crate::bridge::as_flock_f128s;
 use crate::{CommitError, OpeningQuery, Pcs, ProverData};
+use flock_core::pcs::ring_switch::fold_1b_rows_naive;
 use flock_core::{pcs::LOG_PACKING, zerocheck::univariate_skip::build_eq};
 use transcript::ProverState;
 
@@ -48,8 +49,14 @@ pub(crate) fn prove_lin(
 
     // 3. Split Point
     let (r_lo, r_hi) = query.point.split_at(LOG_PACKING);
+
+    // 4. Build eq table
     let eq_hi = build_eq(as_flock_f128s(r_hi));
     debug_assert_eq!(eq_hi.len(), packed_witness.len());
+
+    // 5. s_hat_v
+    let s_hat_v = fold_1b_rows_naive(&packed_witness, &eq_hi);
+    debug_assert_eq!(s_hat_v.len(), 1 << LOG_PACKING);
 
     Ok(())
 }
