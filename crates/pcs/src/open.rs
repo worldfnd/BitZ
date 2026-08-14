@@ -1,8 +1,8 @@
 //! Standard multilinear openings over the FLoCK commitment.
 //!
 //! Prover steps:
-//! 1. Validate the prover data and require `query.point.len() == params.m`.
-//! 2. Bind the commitment root, trusted parameters, point, and target to the transcript.
+//! 1. [x] Validate the prover data and require `query.point.len() == params.m`.
+//! 2. [x] Bind the commitment root, trusted parameters, point, and target to the transcript.
 //! 3. Split the point into seven low coordinates and `m - 7` high coordinates.
 //! 4. Build the high-coordinate equality table with FLoCK's `build_eq`.
 //! 5. Compute the 128 partial evaluations with `fold_1b_rows_naive`.
@@ -18,6 +18,8 @@ use transcript::ProverState;
 
 use crate::{CommitError, OpeningQuery, Pcs, ProverData};
 
+const STATEMENT_LABEL: &[u8] = b"f2z/pcs/mle-opening/v1";
+
 #[allow(dead_code)]
 pub(crate) fn prove_lin(
     pcs: &Pcs,
@@ -25,6 +27,7 @@ pub(crate) fn prove_lin(
     query: &OpeningQuery,
     transcript: &mut ProverState,
 ) -> Result<(), CommitError> {
+    // 1. Input Validation
     let expected_m = pcs.params().m;
     if query.point.len() != expected_m {
         return Err(CommitError::PointLengthMismatch);
@@ -32,13 +35,13 @@ pub(crate) fn prove_lin(
     if data.bit_len() != pcs.bit_len() || !params_match(pcs, &data) {
         return Err(CommitError::InvalidConfiguration);
     }
-
     let ligerito_config = pcs
         .params()
         .ligerito_prover_config()
         .map_err(|_| CommitError::InvalidConfiguration)?;
 
-    let commitment = data.commitment();
+    // 2. Bind Statement
+    bind_statement_prover(pcs, &data.commitment().root, query, transcript);
     let (packed_witness, flock_data) = data.into_opening_parts();
 
     Ok(())
@@ -53,4 +56,26 @@ fn params_match(pcs: &Pcs, data: &ProverData) -> bool {
         && expected.log_batch_size == actual.log_batch_size
         && expected.profile == actual.profile
         && expected.merkle_hash == actual.merkle_hash
+}
+
+/// Absorbs the public opening statement without writing proof bytes.
+/// Order: domain label, root, PCS tags, point length, point coordinates, and target.
+fn bind_statement_prover(
+    pcs: &Pcs,
+    root: &[u8; 32],
+    query: &OpeningQuery,
+    transcript: &mut ProverState,
+) {
+    transcript.public_message(STATEMENT_LABEL);
+    transcript.public_message(root);
+
+    for tag in pcs.statement_tags() {
+        transcript.public_message(&tag);
+    }
+
+    transcript.public_message(&(query.point.len() as u64));
+    for coordinate in &query.point {
+        transcript.public_message(coordinate);
+    }
+    transcript.public_message(&query.target);
 }
