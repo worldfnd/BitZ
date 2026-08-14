@@ -150,38 +150,77 @@ impl Commitment {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
     #[test]
-    fn rejects_the_wrong_bit_length_before_flock() {
-        let scheme = Pcs::new(22, LigeritoProfile::Fast, HashKind::Blake3);
-        assert!(matches!(
-            scheme.commit(&[false; 128]),
-            Err(CommitError::InvalidBitLength)
-        ));
-    }
-
-    #[test]
-    fn commitment_is_deterministic_and_retains_the_packed_witness() {
+    fn commitment_is_deterministic_and_packing_preserves_boundary_bits() {
         let scheme = Pcs::new(22, LigeritoProfile::Fast, HashKind::Blake3);
         let mut bits = vec![false; scheme.bit_len()];
         for index in [0, 1, 63, 64, 127, 128, bits.len() - 1] {
             bits[index] = true;
         }
-        let data = scheme.commit(&bits).unwrap();
-        let data2 = scheme.commit(&bits).unwrap();
-        assert_eq!(data.0.root, data2.0.root);
-        assert_eq!(data.1.bit_len(), bits.len());
-        assert_eq!(data.1.packed_len(), bits.len() / 128);
-        assert!(data.1.codeword_len() > 0);
+
+        let (commitment, data) = scheme.commit(&bits).unwrap();
+        let (second_commitment, _) = scheme.commit(&bits).unwrap();
+        let mut changed_bits = bits.clone();
+        changed_bits[2] = true;
+        let (changed_commitment, _) = scheme.commit(&changed_bits).unwrap();
+
+        assert_eq!(commitment, second_commitment);
+        assert_ne!(commitment, changed_commitment);
+        assert_eq!(data.bit_len(), bits.len());
+        assert_eq!(data.packed_len(), bits.len() / 128);
+        assert!(data.codeword_len() > 0);
+        assert_eq!(data.packed_witness[0].lo, 1 | (1 << 1) | (1 << 63));
+        assert_eq!(data.packed_witness[0].hi, 1 | (1 << 63));
+        assert_eq!(data.packed_witness[1].lo, 1);
+        assert_eq!(data.packed_witness[1].hi, 0);
+        assert_eq!(data.packed_witness.last().unwrap().lo, 0);
+        assert_eq!(data.packed_witness.last().unwrap().hi, 1 << 63);
     }
 
     #[test]
-    fn prover_data_moves_into_opening_parts() {
-        let scheme = Pcs::new(22, LigeritoProfile::Fast, HashKind::Blake3);
-        let data = scheme.commit(&vec![false; scheme.bit_len()]).unwrap();
-        let (packed_witness, flock_data) = data.1.into_opening_parts();
-        assert_eq!(packed_witness.len(), scheme.bit_len() / 128);
-        assert!(!flock_data.codeword.is_empty());
+    fn statement_tags_cover_every_profile_and_hash() {
+        for (profile, profile_tag) in [
+            (LigeritoProfile::Fast, 0),
+            (LigeritoProfile::Slim, 1),
+            (LigeritoProfile::Secure, 2),
+        ] {
+            for (hash, hash_tag) in [(HashKind::Sha256, 0), (HashKind::Blake3, 1)] {
+                let pcs = Pcs::new(22, profile, hash);
+                assert_eq!(
+                    pcs.statement_tags(),
+                    [
+                        22,
+                        profile.log_inv_rate() as u64,
+                        LIGERITO_INITIAL_K as u64,
+                        profile_tag,
+                        hash_tag,
+                    ]
+                );
+            }
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn rejects_arbitrary_short_bit_lengths(len in 0usize..4096) {
+            let pcs = Pcs::new(22, LigeritoProfile::Fast, HashKind::Blake3);
+            let bits = vec![false; len];
+
+            prop_assert!(matches!(
+                pcs.commit(&bits),
+                Err(CommitError::InvalidBitLength)
+            ));
+        }
+
+        #[test]
+        fn commitment_root_reconstruction_round_trips(root in any::<[u8; 32]>()) {
+            prop_assert_eq!(*Commitment::from_root(root).root(), root);
+        }
     }
 }

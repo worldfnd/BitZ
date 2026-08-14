@@ -34,6 +34,8 @@ pub(crate) fn as_flock_f128s(values: &[LocalF128]) -> &[FlockF128] {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
     #[test]
@@ -55,5 +57,24 @@ mod tests {
     #[test]
     fn cast_accepts_an_empty_slice() {
         assert!(as_flock_f128s(&[]).is_empty());
+    }
+
+    proptest! {
+        #[test]
+        fn cast_preserves_arbitrary_words(
+            words in prop::collection::vec((any::<u64>(), any::<u64>()), 0..64)
+        ) {
+            let values = words
+                .iter()
+                .map(|&(lo, hi)| LocalF128::new(lo, hi))
+                .collect::<Vec<_>>();
+            let cast = as_flock_f128s(&values);
+
+            prop_assert_eq!(cast.as_ptr().cast::<LocalF128>(), values.as_ptr());
+            prop_assert_eq!(cast.len(), values.len());
+            for (local, flock) in values.iter().zip(cast) {
+                prop_assert_eq!((flock.lo, flock.hi), (local.lo, local.hi));
+            }
+        }
     }
 }

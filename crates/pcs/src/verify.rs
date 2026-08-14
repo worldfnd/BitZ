@@ -298,3 +298,77 @@ fn positive_fold_nonce_count(config: &VerifierConfig) -> Result<usize, CommitErr
 fn rows_match(rows: &[Vec<FlockF128>], expected_rows: usize, expected_width: usize) -> bool {
     rows.len() == expected_rows && rows.iter().all(|row| row.len() == expected_width)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{HashKind, LigeritoProfile};
+
+    fn registered_config() -> (VerifierConfig, usize, usize) {
+        let pcs = Pcs::new(22, LigeritoProfile::Fast, HashKind::Blake3);
+        let config = pcs.params().ligerito_verifier_config().unwrap();
+        (
+            config,
+            pcs.params().m - LOG_PACKING,
+            pcs.params().log_batch_size,
+        )
+    }
+
+    #[test]
+    fn registered_verifier_config_passes_local_validation() {
+        let (config, log_n, initial_k) = registered_config();
+        assert!(validate_config(&config, log_n, initial_k).is_ok());
+    }
+
+    #[test]
+    fn config_validation_rejects_invalid_shapes_and_values() {
+        let (valid, log_n, initial_k) = registered_config();
+
+        let mut config = valid.clone();
+        config.log_inv_rates.pop();
+        assert_eq!(
+            validate_config(&config, log_n, initial_k),
+            Err(CommitError::InvalidConfiguration)
+        );
+
+        let mut config = valid.clone();
+        config.log_inv_rates[0] = 0;
+        assert_eq!(
+            validate_config(&config, log_n, initial_k),
+            Err(CommitError::InvalidConfiguration)
+        );
+
+        let mut config = valid.clone();
+        config.queries[0] = 0;
+        assert_eq!(
+            validate_config(&config, log_n, initial_k),
+            Err(CommitError::InvalidConfiguration)
+        );
+
+        let mut config = valid.clone();
+        config.recursive_ks[0] = 0;
+        assert_eq!(
+            validate_config(&config, log_n, initial_k),
+            Err(CommitError::InvalidConfiguration)
+        );
+
+        let mut config = valid;
+        config.queries[0] = usize::MAX;
+        assert_eq!(
+            validate_config(&config, log_n, initial_k),
+            Err(CommitError::InvalidConfiguration)
+        );
+    }
+
+    #[test]
+    fn checked_pow2_and_rows_match_reject_bad_shapes() {
+        assert_eq!(checked_pow2(0), Some(1));
+        assert_eq!(checked_pow2(3), Some(8));
+        assert_eq!(checked_pow2(usize::BITS as usize), None);
+
+        let zero = FlockF128::ZERO;
+        assert!(rows_match(&[vec![zero; 4], vec![zero; 4]], 2, 4));
+        assert!(!rows_match(&[vec![zero; 4]], 2, 4));
+        assert!(!rows_match(&[vec![zero; 3], vec![zero; 4]], 2, 4));
+    }
+}

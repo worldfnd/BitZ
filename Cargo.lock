@@ -970,6 +970,7 @@ dependencies = [
  "blake3",
  "field",
  "flock-core",
+ "proptest",
  "transcript",
 ]
 
