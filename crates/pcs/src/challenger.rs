@@ -168,6 +168,7 @@ impl Challenger for VerifierChallenger<'_, '_> {
     }
 }
 
+/// todo: parallel pow? use potentially spongefish?
 fn find_pow(seed: &[u8; 16], bits: u32) -> u64 {
     if bits == 0 {
         return 0;
