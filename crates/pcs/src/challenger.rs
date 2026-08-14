@@ -1,8 +1,8 @@
-//! Flock challenger adapters over the project transcript.
+//! FLoCK challenger adapters over the project transcript.
 
 use field::F128 as LocalF128;
 use flock_core::challenger::Challenger;
-use flock_core::field::F128 as BackendF128;
+use flock_core::field::F128 as FlockF128;
 use transcript::{ProverState, VerifierState};
 
 const VECTOR_SQUEEZE_TAG: &[u8] = b"pcs/flock/sample-vector/v1";
@@ -50,13 +50,13 @@ impl<'a, 'proof> VerifierChallenger<'a, 'proof> {
 }
 
 #[inline]
-fn local(value: BackendF128) -> LocalF128 {
+fn local(value: FlockF128) -> LocalF128 {
     LocalF128::new(value.lo, value.hi)
 }
 
 #[inline]
-fn backend(value: LocalF128) -> BackendF128 {
-    BackendF128::new(value.lo, value.hi)
+fn flock(value: LocalF128) -> FlockF128 {
+    FlockF128::new(value.lo, value.hi)
 }
 
 impl Challenger for ProverChallenger<'_> {
@@ -64,11 +64,11 @@ impl Challenger for ProverChallenger<'_> {
         self.transcript.public_message(label);
     }
 
-    fn observe_f128(&mut self, value: BackendF128) {
+    fn observe_f128(&mut self, value: FlockF128) {
         self.transcript.prover_message(&local(value));
     }
 
-    fn observe_f128_slice(&mut self, values: &[BackendF128]) {
+    fn observe_f128_slice(&mut self, values: &[FlockF128]) {
         self.transcript.prover_message(
             &u32::try_from(values.len()).expect("observed field slice exceeds u32"),
         );
@@ -85,11 +85,11 @@ impl Challenger for ProverChallenger<'_> {
         }
     }
 
-    fn sample_f128(&mut self) -> BackendF128 {
-        backend(self.transcript.verifier_message::<LocalF128>())
+    fn sample_f128(&mut self) -> FlockF128 {
+        flock(self.transcript.verifier_message::<LocalF128>())
     }
 
-    fn sample_f128_vec(&mut self, n: usize) -> Vec<BackendF128> {
+    fn sample_f128_vec(&mut self, n: usize) -> Vec<FlockF128> {
         self.transcript.public_message(VECTOR_SQUEEZE_TAG);
         self.transcript.public_message(&(n as u64));
         (0..n).map(|_| self.sample_f128()).collect()
@@ -114,13 +114,13 @@ impl Challenger for VerifierChallenger<'_, '_> {
         self.transcript.public_message(label);
     }
 
-    fn observe_f128(&mut self, value: BackendF128) {
+    fn observe_f128(&mut self, value: FlockF128) {
         if self.read::<LocalF128>() != Some(local(value)) {
             self.failed = true;
         }
     }
 
-    fn observe_f128_slice(&mut self, values: &[BackendF128]) {
+    fn observe_f128_slice(&mut self, values: &[FlockF128]) {
         if self.read::<u32>() != Some(values.len() as u32) {
             self.failed = true;
         }
@@ -140,11 +140,11 @@ impl Challenger for VerifierChallenger<'_, '_> {
         }
     }
 
-    fn sample_f128(&mut self) -> BackendF128 {
-        backend(self.transcript.verifier_message::<LocalF128>())
+    fn sample_f128(&mut self) -> FlockF128 {
+        flock(self.transcript.verifier_message::<LocalF128>())
     }
 
-    fn sample_f128_vec(&mut self, n: usize) -> Vec<BackendF128> {
+    fn sample_f128_vec(&mut self, n: usize) -> Vec<FlockF128> {
         self.transcript.public_message(VECTOR_SQUEEZE_TAG);
         self.transcript.public_message(&(n as u64));
         (0..n).map(|_| self.sample_f128()).collect()
