@@ -45,17 +45,22 @@ pub(crate) fn open(
         .params()
         .ligerito_prover_config()
         .map_err(|_| CommitError::InvalidConfiguration)?;
+
     // 2. Bind Statement
     bind_statement_prover(pcs, &data.commitment().root, query, transcript);
     let (packed_witness, flock_data) = data.into_opening_parts();
+
     // 3. Split Point
     let (r_lo, r_hi) = query.point.split_at(LOG_PACKING);
+
     // 4. Build eq table
     let eq_hi = build_eq(as_flock_f128s(r_hi));
     debug_assert_eq!(eq_hi.len(), packed_witness.len());
+
     // 5. Compute Partial Evaluations
     let s_hat_v = fold_1b_rows_naive(&packed_witness, &eq_hi);
     debug_assert_eq!(s_hat_v.len(), 1 << LOG_PACKING);
+
     // 6. Check Target
     let eq_lo = build_eq(as_flock_f128s(r_lo));
     let evaluation = claim_check(&eq_lo, &s_hat_v);
@@ -63,20 +68,25 @@ pub(crate) fn open(
     if evaluation != target {
         return Err(CommitError::VerificationFailed);
     }
+
     // 7. Record Ring-Switch Message
     let mut challenger = ProverChallenger::new(transcript);
     challenger.observe_label(RING_SWITCH_LABEL);
     challenger.observe_f128_slice(&s_hat_v);
+
     // 8. Sample Ring-Switch Challenges
     let r_dprime = challenger.sample_f128_vec(LOG_PACKING);
     let eq_r_dprime = build_eq(&r_dprime);
     debug_assert_eq!(eq_r_dprime.len(), 1 << LOG_PACKING);
+
     // 9. Compute the Ligerito Target
     let s_hat_u = tensor_algebra_transpose(&s_hat_v);
     let beta0 = inner_product(&s_hat_u, &eq_r_dprime);
+
     // 10. Build the Ligerito Basis
     let b_initial = fold_b128_elems(&eq_hi, &eq_r_dprime);
     debug_assert_eq!(b_initial.len(), packed_witness.len());
+
     // 11. Prove the Ligerito Claim
     let ligerito_proof = recursive_prover_with_basis(
         &ligerito_config,
@@ -87,6 +97,7 @@ pub(crate) fn open(
         &flock_data.merkle_tree,
         &mut challenger,
     );
+
     // 12. Write the Bounded Opening Proof
     let opening_proof = BatchOpeningProofLigerito {
         ring_switches: vec![RingSwitchProof { s_hat_v }],
