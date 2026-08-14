@@ -8,7 +8,7 @@
 //! 5. [x] Compute the 128 partial evaluations with `fold_1b_rows_naive`.
 //! 6. [x] Check the target against the low-coordinate equality table.
 //! 7. [x] Absorb the ring-switch domain label and all partial evaluations.
-//! 8. Sample seven ring-switch challenges and build their equality table.
+//! 8. [x] Sample seven ring-switch challenges and build their equality table.
 //! 9. Transpose the partial evaluations and compute the packed target `beta0`.
 //! 10. Build the packed Ligerito basis with `fold_b128_elems`.
 //! 11. Call `recursive_prover_with_basis` with the retained codeword and Merkle tree.
@@ -66,6 +66,10 @@ pub(crate) fn prove_lin(
     let mut challenger = ProverChallenger::new(transcript);
     challenger.observe_label(RING_SWITCH_LABEL);
     challenger.observe_f128_slice(&s_hat_v);
+    // 8. Sample Ring-Switch Challenges
+    let r_dprime = challenger.sample_f128_vec(LOG_PACKING);
+    let eq_r_dprime = build_eq(&r_dprime);
+    debug_assert_eq!(eq_r_dprime.len(), 1 << LOG_PACKING);
 
     Ok(())
 }
