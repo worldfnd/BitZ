@@ -12,19 +12,22 @@
 //! 9. [x] Transpose the partial evaluations and compute the packed target `beta0`.
 //! 10. [x] Build the packed Ligerito basis with `fold_b128_elems`.
 //! 11. [x] Call `recursive_prover_with_basis` with the retained codeword and Merkle tree.
-//! 12. Write a bounded opening proof to the transcript.
+//! 12. [x] Write a bounded opening proof to the transcript.
 
 use crate::bridge::as_flock_f128s;
 use crate::challenger::ProverChallenger;
 use crate::{CommitError, OpeningQuery, Pcs, ProverData};
+use bincode::Options;
 use flock_core::challenger::Challenger;
 use flock_core::pcs::ligerito::recursive_prover_with_basis;
 use flock_core::pcs::ring_switch::{
     claim_check, fold_1b_rows_naive, fold_b128_elems, inner_product, tensor_algebra_transpose,
 };
+use flock_core::pcs::{BatchOpeningProofLigerito, RingSwitchProof};
 use flock_core::{pcs::LOG_PACKING, zerocheck::univariate_skip::build_eq};
 use transcript::ProverState;
 
+const PROOF_HINT_LIMIT: usize = 64 * 1024 * 1024;
 const STATEMENT_LABEL: &[u8] = b"f2z/pcs/mle-opening/v1";
 const RING_SWITCH_LABEL: &[u8] = b"flock-ring-switch-v0";
 
@@ -89,8 +92,27 @@ pub(crate) fn open(
         &flock_data.merkle_tree,
         &mut challenger,
     );
+    // 12. Write the Bounded Opening Proof
+    let opening_proof = BatchOpeningProofLigerito {
+        ring_switches: vec![RingSwitchProof { s_hat_v }],
+        ligerito: ligerito_proof,
+    };
+    let proof_bytes = proof_options()
+        .serialize(&opening_proof)
+        .map_err(|_| CommitError::Flock)?;
+    if proof_bytes.len() > PROOF_HINT_LIMIT {
+        return Err(CommitError::Flock);
+    }
+    transcript.hint_bytes(&proof_bytes);
 
     Ok(())
+}
+
+fn proof_options() -> impl Options {
+    bincode::DefaultOptions::new()
+        .with_fixint_encoding()
+        .with_limit(PROOF_HINT_LIMIT as u64)
+        .reject_trailing_bytes()
 }
 
 fn params_match(pcs: &Pcs, data: &ProverData) -> bool {
