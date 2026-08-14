@@ -6,7 +6,6 @@ pub use flock_core::hash::HashKind;
 use flock_core::pcs::ligerito::LigeritoProfile;
 use flock_core::pcs::{LOG_PACKING, PcsParams, ProverData as FlockProverData, pack_witness};
 
-pub use flock_core::pcs::Commitment as FlockCommitment;
 /// A checked PCS instance.
 #[derive(Clone, Debug)]
 pub struct Pcs {
@@ -44,21 +43,26 @@ impl Pcs {
     }
 
     /// Commits to the exact configured number of bits.
-    pub fn commit(&self, bits: &[bool]) -> Result<ProverData, CommitError> {
+    pub fn commit(&self, bits: &[bool]) -> Result<(Commitment, ProverData), CommitError> {
         if bits.len() != self.bit_len {
             return Err(CommitError::InvalidBitLength { len: bits.len() });
         }
         let packed_witness = pack_witness(bits, self.params.m);
         let (commitment, flock_prover_data) =
             flock_core::pcs::commit(&packed_witness, &self.params);
-        Ok(ProverData {
-            bit_len: self.bit_len,
-            commitment: Commitment {
+        Ok((
+            Commitment {
                 root: commitment.root,
             },
-            packed_witness,
-            flock_prover_data,
-        })
+            ProverData {
+                bit_len: self.bit_len,
+                commitment: Commitment {
+                    root: commitment.root,
+                },
+                packed_witness,
+                flock_prover_data,
+            },
+        ))
     }
 
     pub fn bit_len(&self) -> usize {
@@ -124,17 +128,17 @@ mod tests {
         }
         let data = scheme.commit(&bits).unwrap();
         let data2 = scheme.commit(&bits).unwrap();
-        assert_eq!(data.commitment().root, data2.commitment().root);
-        assert_eq!(data.bit_len(), bits.len());
-        assert_eq!(data.packed_len(), bits.len() / 128);
-        assert!(data.codeword_len() > 0);
+        assert_eq!(data.0.root, data2.0.root);
+        assert_eq!(data.1.bit_len(), bits.len());
+        assert_eq!(data.1.packed_len(), bits.len() / 128);
+        assert!(data.1.codeword_len() > 0);
     }
 
     #[test]
     fn prover_data_moves_into_opening_parts() {
         let scheme = Pcs::new(22, LigeritoProfile::Fast, HashKind::Blake3);
         let data = scheme.commit(&vec![false; scheme.bit_len()]).unwrap();
-        let (packed_witness, backend) = data.into_opening_parts();
+        let (packed_witness, backend) = data.1.into_opening_parts();
         assert_eq!(packed_witness.len(), scheme.bit_len() / 128);
         assert!(!backend.codeword.is_empty());
     }
