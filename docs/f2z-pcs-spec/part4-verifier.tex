@@ -50,7 +50,7 @@ order.  The labels below remain meaningful without color.
 \textbf{P1/V1--P3/V3} statement&
 \textbf{P4/V4--P5/V5} per chunk&
 \textbf{P6/V6--P7/V7} reconstruction&
-\textbf{P8/V8--P10/V10} opening\\
+\textbf{P8/V8--P11/V11} opening\\
 \end{tabularx}
 \endgroup
 
@@ -136,7 +136,8 @@ order.  The labels below remain meaningful without color.
 \State Fix, without advancing either cursor, the remaining semantic schedule
   \(\bigl((\nu^{(\ell)},u^{(\ell)},\pi_{\rm red}^{(\ell)})_{
   \ell\in\mathcal A\uparrow},
-  (s^{(\ell)})_{\ell\in\mathcal A\uparrow},\pi_{\rm open}\bigr)\)
+  \pi_{\rm LC},(s^{(\ell)})_{\ell\in\mathcal A\uparrow},
+  \pi_{\rm open}\bigr)\)
 
 \For{\(\ell\in\mathcal A\) in increasing order}
   \Statex
@@ -191,10 +192,18 @@ order.  The labels below remain meaningful without color.
     \RLin(\K,\mathcal C,\Pack)\)
 \State \(\VCheckOp[\mathsf{profile}=\mathsf{direct}]\)
 \Statex \hspace{\algorithmicindent}
-  \textit{Virtual profiles use a specified partial-core, adjoint, and compatible
-  ring adapter.}
+  \textit{Virtual profiles use a specified partial-core, adjoint, and the
+  one-LinCheck adapter below.}
 
-\Statex \PVStep{8}{Verify the ring switch}
+\Statex \PVStep{8}{LinCheck a general coefficient when required}
+\State \(\VCheckOp[\mathsf{profile}=\mathsf{direct}
+  \Longrightarrow \pi_{\rm LC}=()\land\varepsilon_{\rm LC}=0]\)
+\Statex \hspace{\algorithmicindent}
+  \textit{A virtual profile alternates tag-\code{4002} degree-two messages and
+  tag-\code{4103} challenges, then checks its terminal gate with the first
+  tag-\code{4001} vector.}
+
+\Statex \PVStep{9}{Verify the ring switch}
 \Statex \hspace{\algorithmicindent}
   internal expansion of \(\Pi_{\mathsf{iopp}}\)
 \For{\(\ell\in\mathcal A\) in increasing order}
@@ -219,7 +228,7 @@ order.  The labels below remain meaningful without color.
     \(B_\ell(Y)\gets\Phi_{r''}(\eq(r_{\hi}^{(\ell)},Y))\)
 \EndFor
 
-\Statex \PVStep{9}{Batch the packed LIN claims}
+\Statex \PVStep{10}{Batch the packed LIN claims}
 \Statex \hspace{\algorithmicindent}
   internal expansion of \(\Pi_{\mathsf{iopp}}\)
 \For{\(\ell\in\mathcal A\) in increasing order}
@@ -230,7 +239,7 @@ order.  The labels below remain meaningful without color.
 \State \(\VDerive B\gets\sum_{\ell\in\mathcal A}\eta_\ell B_\ell\),
   \(\beta\gets\sum_{\ell\in\mathcal A}\eta_\ell\beta_\ell\)
 
-\Statex \PVStep{10}{Open the batched claim}
+\Statex \PVStep{11}{Open the batched claim}
 \Statex \hspace{\algorithmicindent}
   profile-selected polynomial opening (Ligerito in the current profile)
 \State \(\VCheckOp[B=\mathsf{DerivedCoefficient}(x_{\rm app},\tr)

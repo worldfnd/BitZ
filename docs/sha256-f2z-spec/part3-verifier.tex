@@ -2,10 +2,11 @@
 
 \subsection{Verifier algorithm}
 
-Algorithm~\ref{alg:sha-verifier} replays P0--P11.  Its two adapter calls have
-the contracts in \cref{eq:sha-virtual-evaluation,eq:sha-ring-adapter-contract};
-the direct PCS profile resolves neither and rejects on
-Line~\ref{ln:sha-no-virtual-profile}.
+Algorithm~\ref{alg:sha-verifier} replays P0--P11.  The virtual partial core
+returns \cref{eq:sha-gkr-lin}; the public adjoint, one LinCheck, and inherited
+ring switch then follow \cref{eq:sha-full-adjoint,eq:sha-lincheck-terminal,%
+eq:sha-ring-successor}.  The direct PCS profile does not enable this virtual
+path and rejects on Line~\ref{ln:sha-no-virtual-profile}.
 
 \begin{algorithm}[H]
 \caption{SHA front-end verifier and virtual-PCS handoff}
@@ -20,17 +21,19 @@ Line~\ref{ln:sha-no-virtual-profile}.
   \land\operatorname{ord}(g)=2^{128}-1
   \land\Call{PreflightSHAStatement}{x_{\rm sha}}=1$}
 \State $p_{\rm part}\gets\mathsf{ResolvePartialProfile}(p_{\rm core},p_{\rm GKR})$;
+  $p_{\rm LC}\gets\mathsf{ResolveLinCheckProfile}(p_{\rm core})$;
   $p_{\rm ring}\gets\mathsf{ResolveRingProfile}(p_{\rm core})$;
   $p_{\rm open}\gets\mathsf{ResolveCodeOpenProfile}(p_{\rm core},p_{\rm code})$
 \State \label{ln:sha-no-virtual-profile}
-  \VCheck{$p_{\rm part}\ne\bot\land p_{\rm ring}\ne\bot\land p_{\rm open}\ne\bot$}
+  \VCheck{$p_{\rm part}\ne\bot\land p_{\rm LC}\ne\bot\land
+    p_{\rm ring}\ne\bot\land p_{\rm open}\ne\bot$}
 \State derive $n_f\gets6641N+256$, $n_h\gets20005N+256$,
   $m_f\gets\max(22,\lceil\log_2n_f\rceil)$,
   $m_h\gets\max(22,\lceil\log_2(n_h+1)\rceil)$
 \State $t_f\gets m_f-7$, $t_h\gets m_h-7$,
   $n_A\gets196N+16$, $d_A\gets\lceil\log_2n_A\rceil$, $d_h\gets m_h$
 \State \VCheck{$22\le m_f\le m_h\le33$};
-  $b_{\rm host}\gets\Call{ProfileBounds}{p_{\rm part},p_{\rm ring},p_{\rm open},
+  $b_{\rm host}\gets\Call{ProfileBounds}{p_{\rm part},p_{\rm LC},p_{\rm ring},p_{\rm open},
     N,m_f,m_h}$; \VCheck{$b_{\rm host}\ne\bot$}
 \State $(c_N,c_H)\gets\Call{DecodeHostV1}{
   \pi_{\rm host},b_{\rm host},p_{\rm core}}$
@@ -50,16 +53,17 @@ Line~\ref{ln:sha-no-virtual-profile}.
   $c\gets\mle{v}(r_h)$, $a_h[z]\gets c\,\eqp(z,r_h)$
 \State $\mathcal I_H\gets(T,h_0,\Pi_f,t_h,7,r_h,c,a_h,\tau,\rho,
   m_f,m_h,p_{\rm core},p_{\rm GKR},g)$
-\State \VCheck{$\Call{AdaptersAdmitInstance}{
-  p_{\rm part},p_{\rm ring},\mathcal I_H}=1$}
+\State \VCheck{$\Call{VirtualProfilesAdmitInstance}{
+  p_{\rm part},p_{\rm LC},p_{\rm ring},\mathcal I_H}=1$}
 \State $\Tr\gets\Call{AbsorbVirtualSeam}{\Tr,\mathtt{0x1003},
   t_h,7,r_h,c,\tau}$
-\State $(\mathsf{ok},\Tr,q_H,\eta)\gets
+\State $(\mathsf{ok},\Tr,R,e)\gets
   \Call{VerifyVirtualPartialStream}{p_{\rm part},\mathcal I_H,\Tr,c_N,c_H}$
 \State \VCheck{$\mathsf{ok}=1$};
-  $(u,\kappa_0)\gets\Call{FullAdjoint}{T,h_0,q_H}$; $\widehat u\gets\Pi_fu$
+  $\mu_f\gets e-\langle R,h_{0,\K}\rangle$;
+  $\mathsf{Eval}_a(r)\gets\langle R,T_{\K}(\Pi_f^{-1}\eqp(\cdot,r))\rangle$
 \State $(\mathsf{ok},\Tr,B,\beta)\gets
-  \Call{VerifyVirtualRingStream}{p_{\rm ring},\widehat u,\eta+\kappa_0,\rho,
+  \Call{VerifyLinCheckRingStream}{p_{\rm LC},p_{\rm ring},\mathsf{Eval}_a,\mu_f,\rho,
     \Tr,c_N,c_H}$
 \State \VCheck{$\mathsf{ok}=1\land
   \operatorname{dom}(B)=\{0,1\}^{t_f}$}
@@ -89,8 +93,9 @@ $d_{\rm app}$; recompute maps and challenges from the bound prefix. &
 math specified; fixture open\\
 Application stream & NARG round polynomials are checked and absorbed before
 their dependent challenge. & specified\\
-Core/opening & Partial core and ring adapter are unresolved; the adjoint is
-derived, and the packed opening is unreachable until both resolve. & open\\
+Core/opening & The partial core is unresolved.  The adjoint and one-LinCheck
+ring contract are specified; their integrated implementation and fixtures are
+still absent. & open\\
 \bottomrule
 \end{tabularx}
 \endgroup
@@ -124,17 +129,19 @@ one execution-ordered, LSB-first compact tensor.  Nonsemantic filler is committe
 unconstrained; honest encoders zero it. & John Wu; Shreyas Londhe &
 Index-map fixture, honest-zero encoding bytes, and independent root vector.\\
 \textbf{G5} & Freigen proves one compression, but chained row sharing, the
-padded selector, $h$-only normalization, and the full adjoint remain derived. &
+padded selector, $h$-only normalization, and the dual adjoint evaluator remain derived. &
 John Wu; Albert & Chain equivalence proof and constraint-by-constraint
-differential tests.\\
-\hypertarget{gap:sha-g6}{\textbf{G6}} & P8 has no registered virtual partial-core/pre-sumcheck event
-ledger or numeric error.  The direct PCS profile therefore rejects. & John Wu;
-Shreyas Londhe & Profile ID, typed reduction proof including the nonzero
-terminal-factor gate, byte ledger, and positive/negative fixtures.\\
-\hypertarget{gap:sha-g7}{\textbf{G7}} & P10 has no registered multi-evaluation ring adapter, integrated
-implementation, or independent full fixture.  Interoperability is unclaimed.
-& John Wu; Shreyas Londhe & Adapter proof plus two independent verifiers that
-agree on full proofs and reject tag, order, suffix, root, and adapter tampering.\\
+differential tests, including
+$\widetilde a(r)=\langle R,T_{\K}(\Pi_f^{-1}\eqp(\cdot,r))\rangle$.\\
+\hypertarget{gap:sha-g6}{\textbf{G6}} & P5--P7 have no registered virtual
+partial-core/GKR ledger or numeric reduction error.  The direct PCS profile
+therefore rejects. & John Wu; Shreyas Londhe & Profile ID, typed reduction
+proof, byte ledger, numeric error, and positive/negative fixtures.\\
+\hypertarget{gap:sha-g7}{\textbf{G7}} & The PCS now fixes one LinCheck and its
+reuse of the inherited ring vector, but no integrated implementation or
+independent full fixture exists.  Interoperability is unclaimed. & John Wu;
+Shreyas Londhe & Two independent verifiers that agree on full proofs and reject
+round, tag, order, terminal, suffix, root, and opening tampering.\\
 \bottomrule
 \end{tabularx}
 \endgroup

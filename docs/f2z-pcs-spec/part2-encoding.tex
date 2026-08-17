@@ -434,6 +434,12 @@ $\bm b_{\K}:=\iota_{2\to\K}(\pi_2(\bm b))$.  The paper's linear target is
 Equation~\eqref{eq:rel-lin-pack} is the linear target consumed by the opening
 IOP.
 
+For the profile geometry $n=2^m$, write $\widetilde a$ and
+$\widetilde b_{\K}$ for the multilinear extensions of $\bm a$ and
+$\bm b_{\K}$.  The direct GKR successor is the special case
+$a[z]=\eq(z,r)$, so its claim is already
+$\widetilde b_{\K}(r)=\mu$.  A general coefficient need not have this form.
+
 \paragraph{Direct reductions.}
 \begin{itemize}
 
@@ -459,10 +465,44 @@ IOP.
   \texorpdfstring{$\Pi_{\rm iopp}$}{Pi-iopp}}
 
 The chunked recursive-opening profile implements $\Pi_{\rm iopp}$ on the
-MLE-shaped LIN family emitted by $\Pi_{\rm red}$ as follows.  These are
-internal claim transformations, not additional solid edges in the paper's
+MLE-shaped LIN family emitted by $\Pi_{\rm red}$.  A virtual profile first
+normalizes a general LIN coefficient with the single LinCheck below.  These
+are internal claim transformations, not additional solid edges in the paper's
 relation graph.
 \begin{enumerate}
+
+\item \textbf{One LinCheck for a general coefficient.}
+The direct profile skips this item.  For a general claim
+$\langle\bm a,\bm b_{\K}\rangle_{\K}=\mu$, the prover and verifier run the
+degree-two sumcheck for
+\begin{equation}
+ \sum_{x\in\bits^m}\widetilde a(x)\widetilde b_{\K}(x)=\mu.
+ \label{eq:lincheck-sum}
+\end{equation}
+Starting with $\sigma_{-1}:=\mu$, round $i$ sends one degree-two polynomial
+$g_i$ and enforces
+\begin{equation}
+ g_i(0)+g_i(1)=\sigma_{i-1},\qquad
+ r_i\leftarrow\K,\qquad \sigma_i:=g_i(r_i),\qquad 0\le i<m.
+ \label{eq:lincheck-round}
+\end{equation}
+Equation~\eqref{eq:lincheck-round} fixes every round check and challenge
+deadline.  Let $r=(r_{\lo},r_{\hi})$, where $|r_{\lo}|=7$.  The first ring-switch
+message derives
+\begin{equation}
+ z:=\sum_{v=0}^{127}\eq(v,r_{\lo})s_v
+    =\widetilde b_{\K}(r),\qquad
+ \sigma_{m-1}=\widetilde a(r)z.
+ \label{eq:lincheck-terminal}
+\end{equation}
+The verifier checks Equation~\eqref{eq:lincheck-terminal} immediately after
+absorbing that message and before the next squeeze.  This terminal rule uses
+no division and has no exceptional branch when $\widetilde a(r)=0$.  The
+LinCheck proof fragment is $\pi_{\rm LC}:=(g_i)_{i=0}^{m-1}$ and its
+soundness error is at most
+$\varepsilon_{\rm LC}:=2m/|\K|$.  After the check, the same $s$ vector is
+reused by the ring switch; no second LinCheck or extra evaluation target is
+introduced.
 
 \item \textbf{Per-claim ring switch.}
 For each active $\ell$, the prover transmits
@@ -482,8 +522,10 @@ the verifier squeezes one shared $r''$ and derives a packed claim
 \end{equation}
 In Equation~\eqref{eq:profile-packed-claim}, the witness is
 $P=\Pack(\pi_2(\bm b))$ and $\rho=\Root(O)$ is unchanged.  This step
-has error $\varepsilon_{\rm ring}^{(\ell)}$ on the admitted MLE-shaped source;
-it does not specify a general ring switch for arbitrary LIN coefficients.
+has error $\varepsilon_{\rm ring}^{(\ell)}$.  For a direct MLE-shaped source,
+the verifier checks $z=\mu_\ell$; for the singleton general source normalized
+by LinCheck, it checks Equation~\eqref{eq:lincheck-terminal}.  Thus the ring
+switch itself still consumes only one MLE evaluation.
 
 \item \textbf{Batch.}
 The verifier squeezes fresh
@@ -510,7 +552,7 @@ $\Pi_{\rm iopp}$ with error $\varepsilon_{\rm open}$.
 \end{enumerate}
 
 The intended paper ring-switch construction is not used as an independent
-solid edge here: the three operations above are the selected profile's
+solid edge here: the operations above are the selected profile's
 internal implementation of the already named
 $\RLin(\K,\mathcal C,\Pack)\xRightarrow{\Pi_{\rm iopp}}\mathcal R_{\rm triv}$
 edge.
@@ -582,10 +624,20 @@ Its public adjoint rewrite transmits nothing:
  \label{eq:virtual-adjoint-rewrite}
 \end{equation}
 The exact rewrite in Equation~\eqref{eq:virtual-adjoint-rewrite} need not
-preserve the MLE coefficient shape admitted by the current internal ring
-switch.  A virtual profile must therefore supply a compatible
-$\Pi_{\rm iopp}$ adapter or opening; the direct profile rejects the virtual
-source.
+preserve the direct profile's MLE coefficient shape.  The virtual profile
+therefore invokes the one LinCheck in
+Equations~\eqref{eq:lincheck-sum}--\eqref{eq:lincheck-terminal} before the
+existing ring switch.  It must provide a deterministic evaluator for the
+adjoint coefficient, for example by the dual identity
+\begin{equation}
+ \widetilde{T_{\K}^{*}(\bm a_{\K})}(r)
+ =\left\langle\bm a_{\K},T_{\K}(\eq(\cdot,r))\right\rangle_{\K},
+ \label{eq:virtual-adjoint-evaluator}
+\end{equation}
+and prove that evaluator equivalent to the declared full adjoint.  No dense
+adjoint vector and no multi-evaluation ring adapter are required.  A profile
+without the partial-core predecessor, evaluator, LinCheck ledger, and composed
+error rejects; the direct profile continues to reject the virtual source.
 
 \subsection{The complete relation graph and proof object}
 
@@ -625,6 +677,7 @@ refine the displayed edges.  The semantic proof object is
    \pi_{\rm PIOP},
    \bigl(\nu^{(\ell)},u^{(\ell)},\pi_{\rm red}^{(\ell)}\bigr)_{
          \ell\in\mathcal A\text{ increasing}},
+   \pi_{\rm LC},
    (s^{(\ell)})_{\ell\in\mathcal A\text{ increasing}},
    \pi_{\rm lig}
  \right).
@@ -650,7 +703,8 @@ fixes their byte meaning, the outer 72-byte container, and the exact record
 counts and exhaustion rules.
 
 With edge errors $\varepsilon_{{\rm app},1}$, $\varepsilon_{{\rm app},2}$,
-$\varepsilon_{\rm red}^{(\ell)}$, $\varepsilon_{\rm ring}^{(\ell)}$,
+$\varepsilon_{\rm red}^{(\ell)}$, the optional $\varepsilon_{\rm LC}$,
+$\varepsilon_{\rm ring}^{(\ell)}$,
 $\varepsilon_{\rm batch}$, and $\varepsilon_{\rm open}$,
 \begin{equation}
  \varepsilon_{\rm F2Z}
@@ -658,10 +712,12 @@ $\varepsilon_{\rm batch}$, and $\varepsilon_{\rm open}$,
     +\sum_{\ell\in\mathcal A}
        \bigl(\varepsilon_{\rm red}^{(\ell)}
              +\varepsilon_{\rm ring}^{(\ell)}\bigr)
+    +\varepsilon_{\rm LC}
     +\varepsilon_{\rm batch}+\varepsilon_{\rm open}.
  \label{eq:composed-soundness}
 \end{equation}
 Equation~\eqref{eq:composed-soundness} is the profile's composed soundness
-bound.
+bound.  The direct profile sets $\pi_{\rm LC}=()$ and
+$\varepsilon_{\rm LC}=0$.
 
 \endgroup

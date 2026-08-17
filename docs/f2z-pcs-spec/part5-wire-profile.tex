@@ -315,10 +315,17 @@ message tags, codecs, and checks in this range.\\
 squeeze tags and result types in this range.\\
 \code{4001}&N&ring $s$ vector&$(\ell,\bot,\bot)$; vector of exactly 128
 elements of $\K$.\\
+\code{4002}&N&LinCheck round&$(\bot,\bot,i)$ for $0\le i<m$; exactly the
+three coefficients of $g_i(X)=\gamma_{i,0}+\gamma_{i,1}X+\gamma_{i,2}X^2$,
+encoded as $\operatorname{Enc}_{\K}(\gamma_{i,0})\parallel
+ \operatorname{Enc}_{\K}(\gamma_{i,1})\parallel
+ \operatorname{Enc}_{\K}(\gamma_{i,2})$, with no vector prefix.\\
 \code{4101}&S&shared $r''$&$(\bot,\bot,i)$ for $0\le i<7$; one $\K$
 challenge.\\
 \code{4102}&S&batch $\eta$&$(\ell,\bot,\bot)$ in increasing active-chunk
 order; one $\K$ challenge.\\
+\code{4103}&S&LinCheck challenge&$(\bot,\bot,i)$ for $0\le i<m$; one $\K$
+challenge.\\
 \code{5001}&D&opening target&$(\bot,\bot,\bot)$;
 $\LE{32}{m_p}\parallel\operatorname{Enc}_{\K}(\beta)$.  $B$ is recomputed.\\
 \code{5002}&N&initial root&$(\bot,0,\bot)$; one 32-byte SHA-256 digest.\\
@@ -441,6 +448,19 @@ structure-field order.  Acceptance requires no deferred record or pending
 hint and exact logical and byte exhaustion of both streams and every nested
 slice.
 
+Tags \code{4002} and \code{4103} are enabled only by a top-level profile that
+declares a general-coefficient LinCheck; the direct v1 profile requires zero
+such events.  An enabled profile alternates, for $i=0,\ldots,m-1$, one
+tag-\code{4002} read-and-absorb, the check
+$g_i(0)+g_i(1)=\sigma_{i-1}$, and one tag-\code{4103} squeeze at the same
+scope.  No event may intervene within a round.  It then reads and absorbs the
+singleton tag-\code{4001} vector at scope $(0,\bot,\bot)$, derives
+$z=\sum_v\eq(v,r_{\lo})s_v$, and checks
+$\sigma_{m-1}=\widetilde a(r)z$ before tag \code{4101}.  The coefficient
+evaluator is verifier-derived and contributes no payload.  This is the only
+LinCheck in the virtual path; the same tag-\code{4001} vector continues into
+the inherited ring-switch computation.
+
 \subsection{Grinding and query derivation}
 \label{sec:wire-pow}
 
@@ -527,7 +547,7 @@ two canonical $\K$
 elements in the registry.  Any other kind/scope pair rejects.
 
 The outer $\mathsf{VerifyF2Z}$ caller first requires that $B$ is the
-deterministic coefficient function derived in P9/V9, with domain size
+deterministic coefficient function derived in P10/V10, with domain size
 $2^{m_p}$; $B$ is never densely serialized.  The caller alone absorbs tag
 \code{5001} with payload
 $\LE{32}{m_p}\parallel\operatorname{Enc}_{\K}(\beta)$ and then invokes
@@ -621,7 +641,9 @@ from Equation~\eqref{eq:wire-lengths-v1}.  Negative fixtures \must{} cover an
 unknown version/profile/tag, a reserved bit, wrong endian or channel, record
 reordering, truncation and suffix bytes, noncanonical scalars, count overflow,
 a failed or late $u/\nu$ hint, altered PoW scope/difficulty/nonce, and missing
-or extra recursive fields.  Native, recursive, and independent reference
+or extra recursive fields.  A LinCheck-enabled fixture must additionally
+cover a wrong round polynomial, reordered \code{4002/4103} pair, altered
+terminal coefficient, and failed terminal gate.  Native, recursive, and independent reference
 verifiers must produce byte-identical transcript audit logs.
 
 The repository file \code{wire-v1-vectors.txt} is the normative initial

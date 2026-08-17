@@ -164,7 +164,7 @@ Equation~\eqref{eq:sha-column-folds}, including $g^u=\nu$ and the full-order
 condition on $g$, before clearing the Hint.  No squeeze may occur earlier.
 Both vectors have exactly $2^s=128$ entries and scope
 $(0,\bot_{32},\bot_{32})$.  The remaining first equality is the
-claim reduced by P6--P8.
+claim reduced by P6--P7.
 \end{step}
 
 \vspace*{0.10in}
@@ -189,113 +189,122 @@ reduction in Equation~\eqref{eq:sha-product-claim} exact; the random column
 compression is charged to the partial-core error.
 \end{step}
 
-\begin{step}{P7/V7 --- Reduce the merged product forest}{%
+\begin{step}{P7/V7 --- Reduce the merged product forest to LIN}{%
   \clgdone{P}%
-  \clgnew{L}{$e_d+1=\langle \Lambda,(D_h)_{z_c}\rangle_{\K}$}%
+  \clgnew{$E_H$}{$\langle R,h_{\K}\rangle_{\K}=e$}%
 }
 \pvpair{P7.}{Stream the selected GKR profile's sumcheck and child messages.}
- {V7.}{Check and absorb every message before its challenge, returning the
-  final leaf-boundary point and value.}
+ {V7.}{Check and absorb every message before its challenge, returning one
+  general linear claim on the virtual table.}
 The one core-fixed GKR event is NARG tag \code{0x3001}: the phase-$c$ claimed
 sum is absorbed after the phase-link check and before the first phase-$c$
 round.  The selected GKR profile owns NARG tags \code{0x3002--0x30ff} and
-squeeze tags \code{0x3100--0x31ff}; tag \code{0x3081} is forbidden.  At each
-layer terminal, V7 checks the child pair before absorbing it and squeezing its
-glue challenge.  The returned claim is
+squeeze tags \code{0x3100--0x31ff}; tag \code{0x3081} is forbidden.  Its
+required successor is
+defined using the coefficientwise $\K$-embeddings
+$f_{\K},h_{\K},h_{0,\K}$ and the scalar extension $T_{\K}$:
 \begin{equation}
- e_d+1=\sum_{b,c}\eqp(b,z_r)\eqp(c,z_c)
-       (g^{w_b}-1)D_h[b,c]=:\langle \Lambda,(D_h)_{z_c}\rangle_{\K}.
- \label{eq:sha-gkr-boundary}
+ E_H:\quad \langle R,h_{\K}\rangle_{\K}=e,
+ \qquad h_{\K}=h_{0,\K}+T_{\K}f_{\K},
+ \label{eq:sha-gkr-lin}
 \end{equation}
-Equation~\eqref{eq:sha-gkr-boundary} is accepted only if the statement-bound
-GKR identifier resolves to a byte-exact ledger; an unknown ledger rejects.
+where $R$ is a verifier-derived coefficient function, not a transmitted dense
+vector.  \textbf{\hyperlink{gap:sha-g6}{G6}} remains the requirement that the
+statement-bound virtual-GKR identifier publish the exact P5--P7 ledger,
+reduction proof, and numeric error.  An unknown ledger rejects.
 \end{step}
 
-\begin{step}{P8/V8 --- Reduce the boundary to one virtual evaluation}{%
-  \clgdone{L}%
-  \clgnew{$E_H$}{$\mle{D_h}(r_*,z_c)=\eta$}%
-}
-\pvpair{P8.}{Run the degree-two row-only pre-sumcheck.}
- {V8.}{Check each Boolean sum before its row challenge; require the terminal
-  public factor to be nonzero before dividing.}
-Let $\widetilde\Lambda$ be the multilinear extension of the public row
-coefficient returned by P7/V7, and let $\theta$ be the terminal value of the
-row-only sumcheck.  The intended output is
-\begin{equation}
- \widetilde\Lambda(r_{\rm row}^{*})\ne0,\qquad
- \eta:=\frac{\theta}{\widetilde\Lambda(r_{\rm row}^{*})},\qquad
- E_H:\ \mle{D_h}(r_{\rm row}^{*},z_c)=\eta.
- \label{eq:sha-virtual-evaluation}
-\end{equation}
-Equation~\eqref{eq:sha-virtual-evaluation} has no remaining column variable.
-\textbf{\hyperlink{gap:sha-g6}{G6 (partial-core event ledger).}}
-The PCS core assigns no standalone tags, payload codec, scopes, or cardinality
-to this pre-sumcheck.  Until the selected virtual-GKR identifier publishes
-those events inside its reserved ledger and states their soundness error, V8
-must reject before reading a P8 message; it must not infer structure order.
-That ledger must include the nonzero check in
-Equation~\eqref{eq:sha-virtual-evaluation}; a zero terminal factor rejects.
-This is a profile-closure condition, not an optional implementation detail.
-\end{step}
-
-\begin{step}{P9/V9 --- Apply the full virtual adjoint}{%
+\begin{step}{P8/V8 --- Apply the full virtual adjoint}{%
   \clgdone{$E_H$}%
   \clgdone{H}%
-  \clgnew{$E_f$}{$\langle u,f_{\K}\rangle=\eta+\kappa_0$}%
+  \clgnew{$E_f$}{$\langle a,F\rangle_{\K}=\mu_f$}%
 }
-\pvpair{P9.}{Send nothing.}
- {V9.}{Compute the statement-bound full transpose $T_{\K}^{*}$ and its affine
-  correction; do not squeeze or absorb.}
-Write $f_{\K},h_{\K},h_{0,\K}$ for the coefficientwise embeddings of
-$\operatorname{vec}(D_f),h,h_0$ into $\K$, and write $T_{\K}$ for the
-coefficientwise extension of $T$.  With
-$q_H=\eqp(\cdot,(r_{\rm row}^{*},z_c))$, V9 derives
+\pvpair{P8.}{Send nothing.}
+ {V8.}{Apply the statement-bound adjoint and affine correction without a
+  message, absorb, or squeeze.}
+Let $F:=\Pi_f f_{\K}$ be the committed bits in PCS $(c,b)$ order.  V8 derives
 \begin{equation}
- \begin{aligned}
- \eta&=\langle q_H,h_{\K}\rangle_{\K}
-     =\langle T_{\K}^{*}q_H,f_{\K}\rangle_{\K}
-       +\langle q_H,h_{0,\K}\rangle_{\K},\\
- u&:=T_{\K}^{*}q_H,\qquad
- \kappa_0:=-\langle q_H,h_{0,\K}\rangle_{\K},\\
- E_f&:\quad \langle u,f_{\K}\rangle_{\K}=\eta+\kappa_0.
- \end{aligned}
+ a:=\Pi_fT_{\K}^{*}R,\qquad
+ \mu_f:=e-\langle R,h_{0,\K}\rangle_{\K},\qquad
+ E_f:\ \langle a,F\rangle_{\K}=\mu_f.
  \label{eq:sha-full-adjoint}
 \end{equation}
-Equation~\eqref{eq:sha-full-adjoint} is exact and zero-message.  A tap-closure
-optimization is admissible only after proving equality to the full transpose;
-a columnwise $T_0$ shortcut rejects.
+The coefficient need not be materialized.  At any LinCheck point $r$, V8
+evaluates it by duality:
+\begin{equation}
+ \widetilde a(r)=
+ \left\langle R,
+ T_{\K}\!\left(\Pi_f^{-1}\eqp(\cdot,r)\right)
+ \right\rangle_{\K}.
+ \label{eq:sha-adjoint-evaluator}
+\end{equation}
+Equations~\eqref{eq:sha-full-adjoint} and~\eqref{eq:sha-adjoint-evaluator} are
+exact.  A sparse tap evaluator is conforming only if it is proved identical to
+this full adjoint; a columnwise shortcut rejects.
 \end{step}
 
-\begin{step}{P10/V10 --- Adapt and ring-switch the committed claim}{%
+\begin{step}{P9/V9 --- Run exactly one LinCheck}{%
   \clgdone{$E_f$}%
+  \clgnew{LC}{$\sigma=\widetilde a(r)\mle{F}(r)$}%
+}
+\pvpair{P9.}{For $i=0,\ldots,m_f-1$, send one degree-two polynomial $g_i$.}
+ {V9.}{Absorb and check $g_i$, squeeze $r_i\in\K$, and carry the terminal
+  equality to P10/V10.}
+Starting with $\sigma_{-1}:=\mu_f$, the exact round rule is
+\begin{equation}
+ g_i(0)+g_i(1)=\sigma_{i-1},\qquad
+ r_i\leftarrow\K,\qquad \sigma_i:=g_i(r_i).
+ \label{eq:sha-lincheck-round}
+\end{equation}
+Equation~\eqref{eq:sha-lincheck-round} fixes the running claim before every
+challenge.
+Writing $g_i(X)=\gamma_{i,0}+\gamma_{i,1}X+\gamma_{i,2}X^2$, the NARG tag is
+\code{0x4002}, with payload
+$\operatorname{Enc}_{\K}(\gamma_{i,0})\parallel
+ \operatorname{Enc}_{\K}(\gamma_{i,1})\parallel
+ \operatorname{Enc}_{\K}(\gamma_{i,2})$ and scope
+$(\bot_{32},\bot_{32},i)$.  After checking it, V9 squeezes tag
+\code{0x4103} at the same scope.  The final point
+$r=(r_{\rm lo},r_{\rm hi})\in\K^7\times\K^{t_f}$ leaves
+\begin{equation}
+ \sigma_{m_f-1}=\widetilde a(r)\mle{F}(r).
+ \label{eq:sha-lincheck-terminal}
+\end{equation}
+P10/V10 checks Equation~\eqref{eq:sha-lincheck-terminal} with the first ring
+vector.  This is the only LinCheck, uses no division, and has error at most
+$2m_f/|\K|$.
+\end{step}
+
+\begin{step}{P10/V10 --- Discharge LinCheck and ring-switch}{%
+  \clgdone{LC}%
   \clgnew{$E_P$}{$\langle B,P\rangle_{\K}=\beta$}%
 }
-\pvpair{P10.}{Supply the registered adapter's partial evaluations.}
- {V10.}{Verify them against $E_f$, then derive one packed coefficient and
-  target against $P=\Pack(B_f)$.}
-Write each source point as $r_f^{(a)}=(r_b^{(a)},r_c^{(a)})$ in semantic
-$(b,c)$ order, and set
-$\widehat r_f^{(a)}:=(r_c^{(a)},r_b^{(a)})$,
-$F:=\Pi_f f_{\K}$, and $\widehat u:=\Pi_f u$.  Thus $F$ is in the inherited
-PCS $(c,b)$ order and $\langle\widehat u,F\rangle=\langle u,f_{\K}\rangle$.
-The required adapter contract is
+\pvpair{P10.}{Send the inherited ring vector $s$, then retain the derived
+  packed claim.}
+ {V10.}{Use $s$ to check the LinCheck terminal, then reuse it for the inherited
+  ring switch and singleton batch.}
+For $0\le v<128$, P10 sends under NARG tag \code{0x4001}, scope
+$(0,\bot_{32},\bot_{32})$,
 \begin{equation}
- \widehat u=\sum_a\lambda_a\eqp(\cdot,\widehat r_f^{(a)}),\qquad
- E_f:\ \sum_a\lambda_a\mle{F}(\widehat r_f^{(a)})=\eta+\kappa_0
- \quad\Longrightarrow\quad
- E_P:\ \langle B,P\rangle_{\K}=\beta.
- \label{eq:sha-ring-adapter-contract}
+ s_v:=\mle{(B_f)_{v,\K}}(r_{\rm hi}),\qquad
+ z:=\sum_{v=0}^{127}\eqp(v,r_{\rm lo})s_v=\mle{F}(r).
+ \label{eq:sha-ring-vector}
 \end{equation}
-The direct PCS events \code{0x4001}, \code{0x4101}, and \code{0x4102} cover
-one MLE-shaped source per active chunk, not the multi-evaluation input in
-Equation~\eqref{eq:sha-ring-adapter-contract}.
-\textbf{\hyperlink{gap:sha-g7}{G7 (ring-adapter ledger).}}
-No registered profile currently fixes the extra NARG fields, term scopes,
-checks, squeeze deadlines, or composed error for this adapter.  V10 must reject
-before consuming an adapter field unless its identifier resolves to that
-ledger.  Tags \code{0x4001/0x4101/0x4102} must not be silently reinterpreted.
-Only closure of G7 may produce the single deterministic claim $(B,\beta)$
-consumed by P11.
+After deriving $z$ in Equation~\eqref{eq:sha-ring-vector}, V10 absorbs $s$ and
+requires
+$\sigma_{m_f-1}=\widetilde a(r)z$ using
+Equation~\eqref{eq:sha-adjoint-evaluator}, and only then squeezes the seven
+tag-\code{0x4101} coordinates of $r''$.  It derives $(B_0,\beta_0)$ by the
+PCS ring-switch equation, squeezes the singleton tag-\code{0x4102} coefficient
+$\eta_0$, and sets
+\begin{equation}
+ B:=\eta_0B_0,\qquad \beta:=\eta_0\beta_0,
+ \qquad E_P:\ \langle B,P\rangle_{\K}=\beta,\qquad P=\Pack(B_f).
+ \label{eq:sha-ring-successor}
+\end{equation}
+No extra adapter message, target, or second LinCheck exists.  The event rules
+are now fixed by the PCS profile; \textbf{\hyperlink{gap:sha-g7}{G7}} is the
+remaining implementation and full-fixture closure for this virtual profile.
 \end{step}
 
 \begin{step}{P11/V11 --- Open the packed claim}{%
@@ -322,21 +331,21 @@ sumcheck messages \code{0x5004}, OOD values \code{0x5005}, final vector
 authenticated before a later event, and both streams, every nested slice, and
 the host container must end exactly.
 
-With the two unresolved adapters named rather than assumed, the composed
-soundness statement is
+With the still-unresolved partial-core profile named rather than assumed, the
+composed soundness statement is
 \begin{equation}
  \varepsilon_{\rm SHA\text{-}F2Z}
  \le \frac{d_A+2d_h}{q}
    +\varepsilon_{\rm partial}
-   +\varepsilon_{\rm vring}
+   +\frac{2m_f}{2^{128}}
+   +\varepsilon_{\rm ring}
    +\varepsilon_{\rm batch}
    +\varepsilon_{\rm open}.
  \label{eq:sha-composed-error}
 \end{equation}
-Here $\varepsilon_{\rm partial}$ includes P6 column compression, P7 GKR, and
-P8 pre-sumcheck; $\varepsilon_{\rm vring}$ belongs to P10.
+Here $\varepsilon_{\rm partial}$ includes P6 column compression and P7 GKR;
+$2m_f/2^{128}$ is the single P9 LinCheck term.
 Equation~\eqref{eq:sha-composed-error} is symbolic until
 \hyperlink{gap:sha-g6}{G6} and \hyperlink{gap:sha-g7}{G7} publish their proofs
-and numeric bounds.  P1, P2, P5, and P9 are exact under their stated reject
-gates.
+and fixtures.  P1, P2, P5, and P8 are exact under their stated reject gates.
 \end{step}

@@ -72,7 +72,7 @@
 \begin{center}
   {\Large\bfseries Proving Chained SHA-256 Compressions with F2Z}\par\vspace{-1pt}
   {\large Protocol Specification --- application profile v1}\par\vspace{2pt}
-  {\small Status: normative draft; profile \profileid; 16 August 2026}
+  {\small Status: normative draft; profile \profileid; 17 August 2026}
 \end{center}
 \vspace{-0.45em}
 
@@ -86,9 +86,11 @@ named GKR and Ligerito subprotocols are outside this document.
 \textbf{Core-profile delta.} \coreprofileid\ is a reserved, non-resolving
 candidate for a new top-level wire/core profile.  It replaces the generic PCS
 ProfileID in the host header and tag \code{0x0001}, and replaces direct tag
-\code{0x0003} with tag \code{0x1003}; all other inherited byte rules remain
-unchanged unless G6 or G7 explicitly registers a further delta.  It must not
-resolve to acceptance until both ledgers and their fixtures are frozen.
+\code{0x0003} with tag \code{0x1003}.  It also enables the generic PCS
+LinCheck tags \code{0x4002/0x4103} and the singleton tag-\code{0x4001}
+terminal gate; all other inherited byte rules remain unchanged.  It must not
+resolve to acceptance until the virtual partial-core ledger and the integrated
+LinCheck/ring fixtures in G6 and G7 are frozen.
 \endgroup
 
 \input{part1-constraints}

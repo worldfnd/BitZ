@@ -82,7 +82,8 @@ for $0\le b<2^{t_f}$ and $0\le c<2^s$.  Thus the committed object is
  \label{eq:sha-commitment}
 \end{equation}
 Equation~\eqref{eq:sha-pack-permutation} is the only semantic-to-PCS index
-permutation; it is applied again to the coefficient in P10/V10.
+permutation.  P8/V8 applies it to the adjoint coefficient, and P10/V10 uses
+the resulting PCS order for the ring switch.
 
 \subsection{The binary matrix $M_{\rm SHA}$}
 

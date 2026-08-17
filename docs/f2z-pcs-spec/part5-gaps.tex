@@ -60,7 +60,8 @@ and recursive opening are only the internal expansion of
 \(\Pi_{\mathsf{iopp}}\), with error
 $\sum_{\ell\in\mathcal A}
  (\varepsilon_{\rm red}^{(\ell)}+\varepsilon_{\rm ring}^{(\ell)})
- +\varepsilon_{\rm batch}+\varepsilon_{\rm open}$.&
+ +\varepsilon_{\rm LC}+\varepsilon_{\rm batch}+\varepsilon_{\rm open}$,
+where the direct profile sets $\varepsilon_{\rm LC}=0$.&
 No runtime closure is missing for the direct profile.  A profile claiming the
 abstract theorem must fix coordinate order and prove both that its concrete
 \(\Pi_{\rm red}\) realizes the named LIN successor and that its internal
@@ -74,13 +75,14 @@ A virtual seam may yield the general coefficient
 declared LIN source family (MLE-shaped in the core profile).&
 The direct verifier rejects virtual inputs.  A virtual extension may apply the
 public adjoint without a message only after verifying its own partial-core
-predecessor, and then rejects unless the resulting
-\(\RLin(\K,\mathcal C,\Pack)\) claim is admitted by its internal
-\(\Pi_{\mathsf{iopp}}\) adapter.&
-The extension must type \(T,T^*\), specify the virtual partial-core seam, and prove
-either that every adjoint coefficient lies in the admitted ring-source family or
-supply a compatible \(\Pi_{\mathsf{iopp}}\) expansion, transcript, verifier,
-and composed error.\\
+predecessor.  It then runs exactly one degree-two LinCheck on the resulting
+\(\RLin(\K,\mathcal C,\Pack)\) claim, checks the LinCheck terminal with the
+first inherited ring vector, and reuses that vector for ring switching.  No
+multi-evaluation ring adapter is required.&
+The extension must type \(T,T^*\), specify the virtual partial-core seam, prove
+its on-demand adjoint-coefficient evaluator equivalent to the full transpose,
+enable the fixed \code{4002/4103} LinCheck ledger under a new top-level profile,
+and supply its verifier, implementation, fixtures, and composed error.\\
 \addlinespace
 \textbf{G4}&
 The general relation permits a zero functional, while the active-chunk core
@@ -118,7 +120,9 @@ nested and outer exhaustion.  It sends and absorbs
 \(\nu^{(\ell)}=g^{u^{(\ell)}}\) under tag \code{2001}, then checks the
 tag-\code{2081} \(u^{(\ell)}\) hint before tag \code{2101}.  A missing or
 unknown application/GKR event ledger or constrained-code construction is a
-hard reject, not an inferred encoding.&
+hard reject, not an inferred encoding.  It also fixes conditional LinCheck
+tags \code{4002/4103}, their alternation, terminal deadline, and reuse of the
+tag-\code{4001} ring vector; the direct profile permits none of those events.&
 \textbf{Owner: John Wu.}  Port Section~\ref{sec:wire-profile} to the host and
 recursive verifiers, remove the opaque bincode payload, and publish the
 required complete proof, transcript, Merkle, PoW, and negative fixtures.  The

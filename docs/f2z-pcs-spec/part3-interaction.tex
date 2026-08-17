@@ -21,7 +21,7 @@
 \newcommand{\idLINID}{$\mathsf{LIN}[\mathsf{id}]$}
 
 \newcolumntype{L}{>{\raggedright\arraybackslash}p{2.04in}}
-\newcolumntype{T}{>{\centering\arraybackslash\columncolor{pvtraffic}}p{0.50in}}
+\newcolumntype{T}{>{\centering\arraybackslash\columncolor{pvtraffic}}p{0.65in}}
 \newcolumntype{R}{>{\raggedright\arraybackslash}p{2.24in}}
 
 \newenvironment{pvexchange}
@@ -153,10 +153,13 @@ populated interaction row denotes one event.
 The tables realize Equation~\eqref{eq:solid-reduction-graph} as matched
 prover/verifier steps in this exact order:
 \begin{equation}
- (P_1/V_1);(P_2/V_2);(P_3/V_3);\quad
- \mathbf{for}\ \ell\in\mathcal A\ \text{in increasing order}:\
- ((P_4/V_4)^{(\ell)};(P_5/V_5)^{(\ell)});\quad
- (P_6/V_6);(P_7/V_7);(P_8/V_8);(P_9/V_9);(P_{10}/V_{10}).
+ \begin{aligned}
+ &(P_1/V_1);(P_2/V_2);(P_3/V_3);\\
+ &\mathbf{for}\ \ell\in\mathcal A\ \text{in increasing order}:\
+   ((P_4/V_4)^{(\ell)};(P_5/V_5)^{(\ell)});\\
+ &(P_6/V_6);(P_7/V_7);(P_8/V_8);(P_9/V_9);(P_{10}/V_{10});
+   (P_{11}/V_{11}).
+ \end{aligned}
  \label{eq:pv-step-order}
 \end{equation}
 Equation~\eqref{eq:pv-step-order} is the normative top-level replay order.
@@ -390,8 +393,45 @@ zero-message:
  \label{eq:interaction-virtual-adjoint}
 \end{equation}
 Equation~\eqref{eq:interaction-virtual-adjoint} generates no message or
-challenge.  A profile without this predecessor and
-a compatible ring adapter rejects virtual inputs.
+challenge.  A profile without this predecessor and the LinCheck evaluator of
+Equation~\eqref{eq:virtual-adjoint-evaluator} rejects virtual inputs.
+\end{pvstep}
+
+% --------------------------------------------------------------------------
+\begin{pvstep}[2.35in]{LinCheck a general coefficient when needed}{%
+  \clgedge[$\Pi_{\rm iopp}$ internal]{$\Pi_{\rm LC}$}
+    {$\RLin(\K,\mathcal C,\Pack)$}
+    {$\mathsf{EvalGate}(\K,\mathcal C,\Pack)$}%
+  \clgtouch{\idLINPACK}%
+}
+The direct profile skips P8/V8 because every GKR successor is already
+MLE-shaped.  A virtual profile runs exactly one degree-two LinCheck on the
+general claim produced by P7/V7.  Write
+$g_i(X)=\gamma_{i,0}+\gamma_{i,1}X+\gamma_{i,2}X^2$.  For
+$i=0,\ldots,m-1$, P8 sends its three canonical coefficients under NARG tag
+\code{4002} and scope
+$(\bot_{32},\bot_{32},i)$.  V8 absorbs that frame, requires
+\begin{equation}
+ g_i(0)+g_i(1)=\sigma_{i-1},\qquad
+ \sigma_{-1}=\mu_b,
+ \label{eq:interaction-lincheck-round}
+\end{equation}
+then squeezes $r_i\in\K$ under tag \code{4103} at the same scope and sets
+$\sigma_i=g_i(r_i)$.  Equation~\eqref{eq:interaction-lincheck-round} is
+checked before every dependent squeeze.  Put
+$r=(r_{\lo},r_{\hi})$, $|r_{\lo}|=7$.  P8/V8 leaves the terminal gate
+\begin{equation}
+ \sigma_{m-1}=\widetilde a_b(r)\widetilde b_{\K}(r),
+ \label{eq:interaction-lincheck-terminal}
+\end{equation}
+Equation~\eqref{eq:interaction-lincheck-terminal} is checked by P9/V9 with its
+first ring vector.  No other LinCheck is permitted.
+\begin{pvexchange}
+\Pturn{Send each degree-two $g_i$ in increasing $i$.}
+\Psend{\Nbadge{(g_i)_{i<m}}}
+\Vturn{Check, absorb, and squeeze each round in exact alternation; derive
+$(r,\sigma_{m-1})$ and the public evaluator $r\mapsto\widetilde a_b(r)$.}
+\end{pvexchange}
 \end{pvstep}
 
 % --------------------------------------------------------------------------
@@ -412,6 +452,19 @@ a compatible ring adapter rejects virtual inputs.
 For the direct MLE-structured profile, split
 $\mathit{pt}_\ell=(r_{\lo}^{(\ell)},r_{\hi}^{(\ell)})$ with
 $|r_{\lo}^{(\ell)}|=7$.
+For the virtual singleton, use $\ell=0$ and the LinCheck point $r$ instead.
+In both cases define
+\begin{equation}
+ z_\ell:=\sum_{v=0}^{127}\eq(v,r_{\lo}^{(\ell)})s_v^{(\ell)},
+ \quad
+ \begin{cases}
+  z_\ell=\mu_\ell,&\text{direct MLE source},\\
+  \sigma_{m-1}=\widetilde a_b(r)z_0,&\text{virtual LinCheck source}.
+ \end{cases}
+ \label{eq:ring-source-gate}
+\end{equation}
+The applicable gate in Equation~\eqref{eq:ring-source-gate} is checked after
+the NARG frame is absorbed and before tag \code{4101}; no division occurs.
 After the shared challenge $r''$, the successor coefficients are
 \begin{align}
  \bar s_u^{(\ell)}&:=\sum_v[s_v^{(\ell)}]_u\beta_v,&
@@ -427,10 +480,7 @@ After the shared challenge $r''$, the successor coefficients are
 \)}
 \Psend{\Nbadge{s^{(\ell)}}}
 \Vturn{For each $\ell$, validate and absorb the canonical $s^{(\ell)}$ frame,
-then require
-\(\displaystyle
- \sum_{v=0}^{127}\eq(v,r_{\lo}^{(\ell)})s_v^{(\ell)}=\mu_\ell,
-\)
+then require the applicable equality in Equation~\eqref{eq:ring-source-gate}
 before any squeeze.  After the last vector squeeze
 $r''\leftarrow\Squeeze_{\K}^{7}(\tr)$.}
 \Vsend{\Dbadge{r''}}
@@ -495,7 +545,7 @@ where their checks appear.
 
 \begingroup\scriptsize
 \renewcommand{\arraystretch}{1.08}
-\begin{tabularx}{\linewidth}{@{}p{0.40in}p{1.58in}X@{}}
+\begin{tabularx}{\linewidth}{@{}p{0.48in}p{1.50in}X@{}}
 \toprule
 \textbf{Class}&\textbf{Fields}&\textbf{Binding and verification deadline}\\
 \midrule
@@ -540,7 +590,7 @@ prover-local commitment cache/key, not an $H_{\rm F2Z}$ record.  Its rows,
 packed columns, message, and prover data are not proof bytes; only the public
 commitment/root enters the verifier-facing protocol.
 
-Steps P8/V8 through P10/V10 are the concrete recursive-opening profile's internal
+Steps P8/V8 through P11/V11 are the concrete recursive-opening profile's internal
 expansion of the paper edge $\Pi_{\rm iopp}$.  The verifier accepts iff every
 displayed check succeeds and the proof parser consumes exactly the fields
 specified by these steps.
