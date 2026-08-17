@@ -20,7 +20,9 @@ derived PCS statement, a commitment, and local prover state:
  \end{aligned}
  \label{eq:public-objects}
 \end{equation}
-Here $(\bm x,\bm p,\bm I)$ specifies the public PIMSAT instance of
+Equation~\eqref{eq:public-objects} fixes the public and local objects used
+throughout the protocol.  Here $(\bm x,\bm p,\bm I)$ specifies the public
+PIMSAT instance of
 Section~\ref{sec:encoding}.  The application PIOP derives
 $\mathsf{claim}$ and hence $x_{\rm core}$; neither is trusted as an independent
 prover input.  The commitment is public before the first PIOP challenge, and
@@ -34,11 +36,13 @@ scalarized, it is finite free with a
 fixed basis, or the profile supplies a separating family of $R$-linear
 functionals.  A public unital ring homomorphism $\varphi$ and a
 $\varphi$-semilinear public map $\psi$ satisfy
-\[
+\begin{equation}
  \varphi:R_M\to R,\qquad \psi:M\to N,\qquad
  \psi(ax+by)=\varphi(a)\psi(x)+\varphi(b)\psi(y)
-\]
-connect the witness and evaluation domains.  Packing uses
+ \label{eq:semilinear-domain-maps}
+\end{equation}
+The maps in Equation~\eqref{eq:semilinear-domain-maps} connect the witness and
+evaluation domains.  Packing uses
 $\Fbin\cong\mathbb F_{2^\kappa}$ with an ordered $\Ftwo$-basis
 $(\beta_v)_{v<\kappa}$ and a linear code $\mathcal C$ over $\Fbin$; any
 padding to a multiple of $\kappa$ is canonical and statement-bound.

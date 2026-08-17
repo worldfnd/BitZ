@@ -1,0 +1,38 @@
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{sha256notation}[2026/08/16 SHA-256 F2Z specification notation]
+
+\RequirePackage{amsmath}
+\RequirePackage{amssymb}
+\RequirePackage{xcolor}
+
+\newcommand{\Ftwo}{\mathbb F_2}
+\newcommand{\Fq}{\mathbb F_q}
+\newcommand{\K}{\mathbb F_{2^{128}}}
+\newcommand{\bits}{\{0,1\}}
+\newcommand{\eqp}{\operatorname{eq}}
+\newcommand{\mle}[1]{\widetilde{#1}}
+\newcommand{\Root}{\operatorname{Root}}
+\newcommand{\Enc}{\operatorname{Enc}_{\mathcal C}}
+\newcommand{\Pack}{\operatorname{Pack}_{128}}
+\newcommand{\Pad}{\operatorname{Pad}_{0}}
+\newcommand{\lift}{\operatorname{lift}_{2}}
+\newcommand{\can}{\operatorname{can}_{q}}
+\newcommand{\ROTR}{\operatorname{ROTR}}
+\newcommand{\SHR}{\operatorname{SHR}}
+\newcommand{\Ch}{\operatorname{Ch}}
+\newcommand{\Maj}{\operatorname{Maj}}
+\newcommand{\Tr}{\mathsf{tr}}
+\newcommand{\NARG}{\mathsf N}
+\newcommand{\HINT}{\mathsf H}
+\newcommand{\DER}{\mathsf D}
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\must}{\textsc{must}}
+\newcommand{\reject}{\textsc{reject}}
+
+\definecolor{specnavy}{HTML}{183153}
+\definecolor{specblue}{HTML}{285F9E}
+\definecolor{specmuted}{HTML}{5C6573}
+\definecolor{specgreen}{HTML}{1D7044}
+\definecolor{specamber}{HTML}{8A5A00}
+
+\endinput

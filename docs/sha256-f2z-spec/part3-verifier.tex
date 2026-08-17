@@ -1,0 +1,140 @@
+\section{Verifier, status, and gaps}
+
+\subsection{Verifier algorithm}
+
+Algorithm~\ref{alg:sha-verifier} replays P0--P11.  Its two adapter calls have
+the contracts in \cref{eq:sha-virtual-evaluation,eq:sha-ring-adapter-contract};
+the direct PCS profile resolves neither and rejects on
+Line~\ref{ln:sha-no-virtual-profile}.
+
+\begin{algorithm}[H]
+\caption{SHA front-end verifier and virtual-PCS handoff}
+\label{alg:sha-verifier}
+\scriptsize
+\begin{algorithmic}[1]
+\Require $\mathsf{pp}_{\rm SHA},x_{\rm sha},\rho,\pi_{\rm host}$
+\Ensure $\mathsf{true}$ or $\mathsf{false}$
+\State $(p_{\rm core},p_{\rm app},p_{\rm GKR},p_{\rm code},g)
+  \gets\Call{ProfileFields}{\mathsf{pp}_{\rm SHA}}$
+\State \VCheck{$p_{\rm core}=\coreprofileid\land p_{\rm app}=\profileid
+  \land\operatorname{ord}(g)=2^{128}-1
+  \land\Call{PreflightSHAStatement}{x_{\rm sha}}=1$}
+\State $p_{\rm part}\gets\mathsf{ResolvePartialProfile}(p_{\rm core},p_{\rm GKR})$;
+  $p_{\rm ring}\gets\mathsf{ResolveRingProfile}(p_{\rm core})$;
+  $p_{\rm open}\gets\mathsf{ResolveCodeOpenProfile}(p_{\rm core},p_{\rm code})$
+\State \label{ln:sha-no-virtual-profile}
+  \VCheck{$p_{\rm part}\ne\bot\land p_{\rm ring}\ne\bot\land p_{\rm open}\ne\bot$}
+\State derive $n_f\gets6641N+256$, $n_h\gets20005N+256$,
+  $m_f\gets\max(22,\lceil\log_2n_f\rceil)$,
+  $m_h\gets\max(22,\lceil\log_2(n_h+1)\rceil)$
+\State $t_f\gets m_f-7$, $t_h\gets m_h-7$,
+  $n_A\gets196N+16$, $d_A\gets\lceil\log_2n_A\rceil$, $d_h\gets m_h$
+\State \VCheck{$22\le m_f\le m_h\le33$};
+  $b_{\rm host}\gets\Call{ProfileBounds}{p_{\rm part},p_{\rm ring},p_{\rm open},
+    N,m_f,m_h}$; \VCheck{$b_{\rm host}\ne\bot$}
+\State $(c_N,c_H)\gets\Call{DecodeHostV1}{
+  \pi_{\rm host},b_{\rm host},p_{\rm core}}$
+\State derive canonical $(M_{\rm SHA},T,h_0,A_x,\Pi_f)$;
+  $B_x\gets\max_{\beta<2^{d_A}}\sum_j|A_x[\beta,j]|$
+\State \VCheck{$\Call{ShapeAndCensus}{M_{\rm SHA},T,h_0,A_x,\Pi_f,n_f,n_h,n_A}=1$}
+\State \VCheck{$2B_x<2^{39}<q$}
+\State $d_{\rm app}\gets\Call{AppDigestV1}{p_{\rm app},x_{\rm sha}}$
+\State $\Tr\gets\Call{AbsorbProfileAndStatementV1}{
+  p_{\rm core},p_{\rm app},p_{\rm GKR},p_{\rm code},d_{\rm app},
+  (t_f,7,1),g,\rho}$
+\State $r_{\rm con}\gets\Call{SqueezeConstraintPoint}{\Tr,d_A}$;
+  $v\gets\pi_q(A_x)^{\mathsf T}\eqp(\cdot,r_{\rm con})$
+\State $(\mathsf{ok},\Tr,r_h,\tau)\gets
+  \Call{VerifyEvalShapeStream}{v,\Tr,c_N,d_h}$
+\State \VCheck{$\mathsf{ok}=1\land|r_h|=d_h$};
+  $c\gets\mle{v}(r_h)$, $a_h[z]\gets c\,\eqp(z,r_h)$
+\State $\mathcal I_H\gets(T,h_0,\Pi_f,t_h,7,r_h,c,a_h,\tau,\rho,
+  m_f,m_h,p_{\rm core},p_{\rm GKR},g)$
+\State \VCheck{$\Call{AdaptersAdmitInstance}{
+  p_{\rm part},p_{\rm ring},\mathcal I_H}=1$}
+\State $\Tr\gets\Call{AbsorbVirtualSeam}{\Tr,\mathtt{0x1003},
+  t_h,7,r_h,c,\tau}$
+\State $(\mathsf{ok},\Tr,q_H,\eta)\gets
+  \Call{VerifyVirtualPartialStream}{p_{\rm part},\mathcal I_H,\Tr,c_N,c_H}$
+\State \VCheck{$\mathsf{ok}=1$};
+  $(u,\kappa_0)\gets\Call{FullAdjoint}{T,h_0,q_H}$; $\widehat u\gets\Pi_fu$
+\State $(\mathsf{ok},\Tr,B,\beta)\gets
+  \Call{VerifyVirtualRingStream}{p_{\rm ring},\widehat u,\eta+\kappa_0,\rho,
+    \Tr,c_N,c_H}$
+\State \VCheck{$\mathsf{ok}=1\land
+  \operatorname{dom}(B)=\{0,1\}^{t_f}$}
+\State $\Tr\gets\Call{AbsorbOpeningTarget}{\Tr,\mathtt{0x5001},
+  \operatorname{LE}_{32}(t_f)\parallel\operatorname{Enc}_{\K}(\beta)}$
+\State $\mathsf{ok}\gets
+  \Call{VerifyPackedOpenStream}{p_{\rm open},\rho,B,\beta,\Tr,c_N,c_H}$
+\State \VCheck{$\Call{NoPendingHint}{}=1\land
+  \Call{ExactNargHintCountsAndBytes}{c_N,c_H}=1
+  \land\Call{NestedCursorAndHostEOF}{\pi_{\rm host},c_N,c_H}=1$}
+\State \Return $\mathsf{ok}$
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Provenance and current status}
+
+\begingroup\scriptsize
+\setlength{\tabcolsep}{3pt}
+\renewcommand{\arraystretch}{0.96}
+\begin{tabularx}{\linewidth}{@{}p{0.78in}Xp{1.08in}@{}}
+\toprule
+\textbf{Quantity} & \textbf{Provenance and verifier treatment} &
+\textbf{Status}\\
+\midrule
+Public/derived & Validate $x_{\rm sha},\rho$, all IDs, $g$, shape, and
+$d_{\rm app}$; recompute maps and challenges from the bound prefix. &
+math specified; fixture open\\
+Application stream & NARG round polynomials are checked and absorbed before
+their dependent challenge. & specified\\
+Core/opening & Partial core and ring adapter are unresolved; the adjoint is
+derived, and the packed opening is unreachable until both resolve. & open\\
+\bottomrule
+\end{tabularx}
+\endgroup
+
+\subsection{Gap register: do not silently resolve in code}
+
+\begingroup\footnotesize
+\setlength{\tabcolsep}{2.5pt}
+\renewcommand{\arraystretch}{0.95}
+\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{0.25in}
+  >{\raggedright\arraybackslash}X
+  >{\raggedright\arraybackslash}p{0.96in}
+  >{\raggedright\arraybackslash}p{1.29in}@{}}
+\toprule
+& \textbf{Source omission and this profile's rule} &
+\textbf{Owner; reviewer} & \textbf{Required closure evidence}\\
+\midrule
+\textbf{G1} & FIPS specifies hashing and padding, while this profile proves
+public chained compressions only.  Padding, private blocks, and an empty chain
+reject. & John Wu; Shreyas Londhe & Public-statement fixtures for one and
+multiple blocks plus negative scope tests.\\
+\textbf{G2} & The sources do not prove that fixed $q$ is injective on every
+reachable integer residual.  The verifier enforces $q>2B_x$. & John Wu;
+Albert & Reviewed symbolic residual bound and executable maximum-row check.\\
+\textbf{G3} & Earlier SHA material omitted feed-forward from its census.  This
+profile includes every feed-forward equation and uses $n_A=196N+16$. &
+John Wu; Albert & FIPS known-answer vectors and an independently recomputed
+census for several chain lengths.\\
+\textbf{G4} & Prototype paths expose incompatible layouts.  This profile has
+one execution-ordered, LSB-first compact tensor.  Nonsemantic filler is committed but
+unconstrained; honest encoders zero it. & John Wu; Shreyas Londhe &
+Index-map fixture, honest-zero encoding bytes, and independent root vector.\\
+\textbf{G5} & Freigen proves one compression, but chained row sharing, the
+padded selector, $h$-only normalization, and the full adjoint remain derived. &
+John Wu; Albert & Chain equivalence proof and constraint-by-constraint
+differential tests.\\
+\hypertarget{gap:sha-g6}{\textbf{G6}} & P8 has no registered virtual partial-core/pre-sumcheck event
+ledger or numeric error.  The direct PCS profile therefore rejects. & John Wu;
+Shreyas Londhe & Profile ID, typed reduction proof including the nonzero
+terminal-factor gate, byte ledger, and positive/negative fixtures.\\
+\hypertarget{gap:sha-g7}{\textbf{G7}} & P10 has no registered multi-evaluation ring adapter, integrated
+implementation, or independent full fixture.  Interoperability is unclaimed.
+& John Wu; Shreyas Londhe & Adapter proof plus two independent verifiers that
+agree on full proofs and reject tag, order, suffix, root, and adapter tampering.\\
+\bottomrule
+\end{tabularx}
+\endgroup

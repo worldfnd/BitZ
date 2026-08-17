@@ -1,0 +1,98 @@
+%%% Proving chained SHA-256 compressions with F2Z --------------------------
+%% Build: latexmk -pdf -interaction=nonstopmode -halt-on-error main.tex
+%%
+%% Normative precedence:
+%%   1. NIST FIPS 180-4 for SHA-256 semantics.
+%%   2. docs/f2z-pcs-spec for the generic PCS wire and verifier rules.
+%%   3. This document for the SHA application profile and virtual adapter.
+%% Prototype code is reference evidence only; re-derive, do not transcribe.
+
+\documentclass[10pt,letterpaper]{article}
+
+\usepackage[letterpaper,
+            left=0.85in,right=0.45in,top=0.56in,bottom=0.62in,
+            marginparwidth=1.72in,marginparsep=0.13in,includemp]{geometry}
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+\allowdisplaybreaks
+\usepackage{booktabs,array,tabularx,longtable,multirow}
+\usepackage{enumitem,microtype,xcolor}
+\usepackage{float,algorithm,algpseudocode}
+\makeatletter
+\newcommand{\theHALG@line}{\thealgorithm.\arabic{ALG@line}}
+\makeatother
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,calc}
+\usepackage{caption}
+\usepackage[colorlinks=true,
+            linkcolor=blue!50!black,
+            citecolor=blue!50!black,
+            urlcolor=blue!50!black]{hyperref}
+\usepackage[capitalize,nameinlink]{cleveref}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern,anyfontsize}
+\usepackage{claimledger}
+\usepackage{sha256notation}
+
+\tolerance=1700
+\setlength{\emergencystretch}{1.8em}
+\hbadness=2500
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{2.1pt}
+\setlist[itemize]{leftmargin=1.2em,itemsep=0.8pt,topsep=1.5pt,parsep=0pt}
+\setlist[enumerate]{leftmargin=1.35em,itemsep=0.8pt,topsep=1.5pt,parsep=0pt}
+\linespread{0.965}
+
+\theoremstyle{definition}
+\newtheorem{definition}{Definition}[section]
+\newtheorem{obligation}[definition]{Obligation}
+\newtheorem{gap}{Gap}
+\crefname{definition}{Definition}{Definitions}
+\crefname{obligation}{Obligation}{Obligations}
+\crefname{gap}{Gap}{Gaps}
+\crefname{clgstep}{Step}{Steps}
+\Crefname{clgstep}{Step}{Steps}
+
+\newcommand{\profileid}{\code{SHA256-F2Z-MULTICOMP-APP-V1-0000}}
+\newcommand{\coreprofileid}{\code{SHA256-F2Z-VIRTUAL-CORE-V1-00000}}
+\newcommand{\channelN}[1]{\textcolor{specblue}{\textbf{NARG}}~#1}
+\newcommand{\channelH}[1]{\textcolor{specamber}{\textbf{HINT}}~#1}
+\newcommand{\derived}[1]{\textcolor{specgreen}{\textbf{DERIVED}}~#1}
+\newcommand{\pvpair}[4]{%
+  \vspace{-1pt}\noindent
+  \begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}X@{\hspace{0.65em}}>{\raggedright\arraybackslash}X@{}}
+  \textcolor{specblue}{\textbf{#1}}\;#2 &
+  \textcolor{specgreen}{\textbf{#3}}\;#4
+  \end{tabularx}\vspace{-2pt}}
+\newcommand{\VCheck}[1]{\textbf{require }#1}
+
+\pagestyle{plain}
+
+\begin{document}
+
+\begin{center}
+  {\Large\bfseries Proving Chained SHA-256 Compressions with F2Z}\par\vspace{-1pt}
+  {\large Protocol Specification --- application profile v1}\par\vspace{2pt}
+  {\small Status: normative draft; profile \profileid; 16 August 2026}
+\end{center}
+\vspace{-0.45em}
+
+\begingroup\footnotesize
+\textbf{Scope.} This profile proves a public chain of SHA-256 compression
+calls, including feed-forward.  It commits only the base witness $f$, derives
+the virtual bit tensor $h$, and instantiates the eleven reductions ending in
+the F2Z PCS opening.  SHA padding, private messages, and the internals of the
+named GKR and Ligerito subprotocols are outside this document.
+
+\textbf{Core-profile delta.} \coreprofileid\ is a reserved, non-resolving
+candidate for a new top-level wire/core profile.  It replaces the generic PCS
+ProfileID in the host header and tag \code{0x0001}, and replaces direct tag
+\code{0x0003} with tag \code{0x1003}; all other inherited byte rules remain
+unchanged unless G6 or G7 explicitly registers a further delta.  It must not
+resolve to acceptance until both ledgers and their fixtures are frozen.
+\endgroup
+
+\input{part1-constraints}
+\input{part2-interaction}
+\input{part3-verifier}
+
+\end{document}

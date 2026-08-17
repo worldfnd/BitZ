@@ -78,7 +78,7 @@
    \clgmarkstart
    \noindent
    {\normalsize\bfseries\sffamily\textcolor{clgtitlec}%
-     {Group \theclgstep.}~#2}%
+     {P\theclgstep/V\theclgstep.}~#2}%
    \nopagebreak\par\vspace{0.08\baselineskip}%
    #3%
    \clgboard%
@@ -125,7 +125,8 @@ if its accepted value is computationally unique:
  \le \operatorname{negl}(\lambda).
  \label{eq:hint-single-valued}
 \end{equation}
-The check \must{} finish before the next $\Squeeze$.  Acceptance requires no
+The uniqueness condition in Equation~\eqref{eq:hint-single-valued} \must{} be
+checked before the next $\Squeeze$.  Acceptance requires no
 pending hint and exact exhaustion of both cursors; missing, misordered, or
 trailing records reject.
 
@@ -149,15 +150,17 @@ domain-separated by their numeric tag and fixed $(\ell,k,i)$ scope fields.
 A squeeze updates $\tr$ and yields a derived, non-transmitted value; each
 populated interaction row denotes one event.
 
-The tables realize Equation~\eqref{eq:solid-reduction-graph} in this exact order:
+The tables realize Equation~\eqref{eq:solid-reduction-graph} as matched
+prover/verifier steps in this exact order:
 \begin{equation}
- G_1;G_2;G_3;\quad
+ (P_1/V_1);(P_2/V_2);(P_3/V_3);\quad
  \mathbf{for}\ \ell\in\mathcal A\ \text{in increasing order}:\
- (G_4^{(\ell)};G_5^{(\ell)});\quad
- G_6;G_7;G_8;G_9;G_{10}.
- \label{eq:group-order}
+ ((P_4/V_4)^{(\ell)};(P_5/V_5)^{(\ell)});\quad
+ (P_6/V_6);(P_7/V_7);(P_8/V_8);(P_9/V_9);(P_{10}/V_{10}).
+ \label{eq:pv-step-order}
 \end{equation}
-Right ledgers contain post-group claims; \emph{internal} claims and
+Equation~\eqref{eq:pv-step-order} is the normative top-level replay order.
+Right ledgers contain post-step claims; \emph{internal} claims and
 superscript-$(\ell)$ copies add no paper relation.
 
 \setlength{\textwidth}{5.63in}
@@ -181,19 +184,16 @@ superscript-$(\ell)$ copies add no paper relation.
 }
 \begin{pvexchange}
 \Pturn{Construct
-\[
- \begin{aligned}
+\(\begin{aligned}
  \bm b&:=\bits(\bm f),\\
  P&:=\Pack(\pi_2(\bm b)),\\
  O&:=\Enc_{\mathcal C}(P),\qquad \rho:=\Root(O).
- \end{aligned}
-\]}
+\end{aligned}\).}
 \Psend{\Dbadge{\mathsf{com}}}
 \Vturn{Validate the profile, statement, shape, code, and root type; then set
-\[
+\(\displaystyle
  \tr\leftarrow\Absorb_{\mathsf{statement}}
-   (\tr,(\mathsf{pp},x_{\rm app},\mathsf{com})).
-\]}
+   (\tr,(\mathsf{pp},x_{\rm app},\mathsf{com}))\).}
 \end{pvexchange}
 \end{pvstep}
 
@@ -209,18 +209,15 @@ The displayed edge abbreviates the paper's application-PESAT stage followed by
 its linear reduction; both retain the same encoded oracle.
 \begin{pvexchange}
 \Pturn{Construct
-\[
+\(\displaystyle
  (\tr,\pi_{\rm PIOP})\leftarrow
- \mathsf{PIOP.Prove}(\mathsf{pp},x_{\rm app},\bm f;\tr).
-\]}
+ \mathsf{PIOP.Prove}(\mathsf{pp},x_{\rm app},\bm f;\tr)\).}
 \Psend{\Splitbadge{\pi_{\rm PIOP}}}
 \Vturn{Compute
-\[
- \begin{aligned}
+\(\begin{aligned}
  (\tr,\bm v,y,\bm w,\bm w')&\leftarrow\mathsf{VerifyPIOP}\\[-2pt]
  &\quad(x_{\rm app},\rho,\pi_{\rm PIOP};\tr),
- \end{aligned}
-\]
+\end{aligned}\)
 require $v_{b,c}=\pi_q(w_b)w'_c$ and all public bounds, and bind the
 derived core instance before its first challenge.}
 \end{pvexchange}
@@ -237,10 +234,9 @@ derived core instance before its first challenge.}
 \begin{pvexchange}
 \Pturn{Retain $\bm b=\bits(\bm f)$ and its matrix form $\Bbit$.}
 \Vturn{Derive, without a message or challenge,
-\[
+\(\displaystyle
  u_{c,b,j}:=v_{b,c}\pi_q(2^j)
-             =\pi_q(w_b2^j)w'_c.
-\]
+             =\pi_q(w_b2^j)w'_c\).
 This is retyping by semilinearity, not a Booleanity round.}
 \Vturn{Encode $\mathsf{CoreSeamV1}$ by
 Equation~\eqref{eq:core-seam-payload} and absorb its tag-\code{0003} frame at
@@ -259,25 +255,22 @@ scope $(\bot_{32},\bot_{32},\bot_{32})$ before the first chunk record.}
 }
 \begin{pvexchange}
 \Pturn{Before sending anything, compute
-\[
+\(\displaystyle
  u_c^{(\ell)}=\sum_i\omega_i^{(\ell)}\Bbit[c,i],\qquad
- \nu_c^{(\ell)}=g^{u_c^{(\ell)}}.
-\]}
+ \nu_c^{(\ell)}=g^{u_c^{(\ell)}}\).}
 \Psend{\Nbadge{\nu^{(\ell)}}}
 \Vturn{Read and absorb the canonical typed vector $\nu^{(\ell)}$.}
 \Psend{\Hbadge{u^{(\ell)}}}
 \Vturn{Before any later squeeze, require
-\[
+\(\displaystyle
  |u^{(\ell)}|=2^s,\qquad 0\le u_c^{(\ell)}<2^{127},
-\]
+\)
 and $g^{u_c^{(\ell)}}=\nu_c^{(\ell)}$ for every $c$.  The order of $g$ and the
 range bound make this accepted exponent unique.  Then set
-\[
- \begin{aligned}
+\(\begin{aligned}
  \zeta^{(\ell)}&\leftarrow\Squeeze_{\K}^{s}(\tr),\\
  e_0^{(\ell)}&:=\MLE{\nu^{(\ell)}}(\zeta^{(\ell)}).
- \end{aligned}
-\]}
+\end{aligned}\)}
 \Vsend{\Dbadge{\zeta^{(\ell)}}}
 \end{pvexchange}
 \end{pvstep}
@@ -305,20 +298,17 @@ $\MLE{B_{\mathrm{bit},\K}}(\mathit{pt}_\ell)=\mu_\ell$ against the same root.
 
 \begin{pvexchange}
 \Pturn{Construct the selected GKR profile's canonical proof fragment
-\[
+\(\displaystyle
  \pi_{\rm red}^{(\ell)}\leftarrow
  \mathsf{GKR.Prove}
- (\mathsf{pp}_{\rm GKR},\mathcal I_{\rm GKR}^{(\ell)},\Bbit;\tr).
-\]}
+ (\mathsf{pp}_{\rm GKR},\mathcal I_{\rm GKR}^{(\ell)},\Bbit;\tr)\).}
 \Psend{\Splitbadge{\pi_{\rm red}^{(\ell)}}}
 \Vturn{Compute
-\[
- \begin{aligned}
+\(\begin{aligned}
  (\tr',\mathit{pt}_\ell,\mu_\ell)&\leftarrow\mathsf{GKR.Verify}\\
  &\quad(\mathsf{pp}_{\rm GKR},\mathcal I_{\rm GKR}^{(\ell)},
         \pi_{\rm red}^{(\ell)};\tr),
- \end{aligned}
-\]
+\end{aligned}\)
 require success and complete consumption of the GKR fragment, then set
 $\tr\leftarrow\tr'$.}
 \Pturn{Retain the witness value
@@ -361,14 +351,12 @@ encounters the reserved legacy tag \code{3081} \must{} reject.
 }
 \begin{pvexchange}
 \Vturn{After all active chunks, set inactive $u^{(\ell)}:=0$, reconstruct
-\[
+\(\displaystyle
  \mu_c^{\rm col}:=\sum_{\ell=0}^{L-1}2^{c_w\ell}u_c^{(\ell)}\in\Z,
-\]
+\)
 and require the paper's tensor reconstruction equality
-\[
- \boxed{\displaystyle
-   \sum_c w'_c\,\pi_q(\mu_c^{\rm col})=y.}
-\]
+\(\displaystyle
+ \boxed{\sum_c w'_c\,\pi_q(\mu_c^{\rm col})=y}\).
 This check has no message, absorb, or challenge.}
 \end{pvexchange}
 \end{pvstep}
@@ -381,24 +369,28 @@ This check has no message, absorb, or challenge.}
     {$\RLin(\K,\mathcal C,\Pack)$}%
   \clgtouch{\idLINPACK}%
 }
-The direct profile skips this optional group and carries its current LIN
+The direct profile skips this optional P7/V7 step and carries its current LIN
 family unchanged.  A virtual profile substitutes its specified partial core
-for Groups $G_4$--$G_6$, producing
+for P4/V4 through P6/V6, producing
 $h=h_{0,\K}+T_K(b_K)$ and $\langle a_h,h\rangle_{\K}=\mu_h$ by the
 proof-carrying conditional edge
-\[
+\begin{equation}
  \RLBD^{\virt}
  \overset{\Pi_{\rm partial\text{-}core}}{\dashrightarrow}
  \mathcal R_{h\text{-}{\rm Lin}}^{\virt}.
-\]
-Only the following adjoint rewrite is zero-message:
+ \label{eq:interaction-virtual-partial-edge}
+\end{equation}
+Equation~\eqref{eq:interaction-virtual-partial-edge} is the required
+proof-carrying predecessor; only the following adjoint rewrite is
+zero-message:
 \begin{equation}
  a_b:=T_K^*a_h,\qquad
  \mu_b:=\mu_h-\langle a_h,h_{0,\K}\rangle_{\K},\qquad
  \langle a_b,b_K\rangle_{\K}=\mu_b.
  \label{eq:interaction-virtual-adjoint}
 \end{equation}
-No message or challenge is generated.  A profile without this predecessor and
+Equation~\eqref{eq:interaction-virtual-adjoint} generates no message or
+challenge.  A profile without this predecessor and
 a compatible ring adapter rejects virtual inputs.
 \end{pvstep}
 
@@ -430,15 +422,15 @@ After the shared challenge $r''$, the successor coefficients are
 \end{align}
 \begin{pvlongexchange}
 \Pturn{For every $\ell\in\mathcal A$ and $0\le v<128$, compute
-\[
+\(\displaystyle
  s_v^{(\ell)}:=\MLE{B_{\rm bit,v}}(r_{\hi}^{(\ell)}).
-\]}
+\)}
 \Psend{\Nbadge{s^{(\ell)}}}
 \Vturn{For each $\ell$, validate and absorb the canonical $s^{(\ell)}$ frame,
 then require
-\[
+\(\displaystyle
  \sum_{v=0}^{127}\eq(v,r_{\lo}^{(\ell)})s_v^{(\ell)}=\mu_\ell,
-\]
+\)
 before any squeeze.  After the last vector squeeze
 $r''\leftarrow\Squeeze_{\K}^{7}(\tr)$.}
 \Vsend{\Dbadge{r''}}
@@ -463,11 +455,10 @@ $(B_\ell,\beta_\ell)_{\ell\in\mathcal A}$.}
 under tag \code{4102} and scope $(\ell,\bot_{32},\bot_{32})$.}
 \Vsend{\Dbadge{\bm\eta}}
 \Pturn{Form
-\[
+\(\displaystyle
  B:=\sum_{\ell\in\mathcal A}\eta_\ell B_\ell,
  \qquad
- \beta:=\sum_{\ell\in\mathcal A}\eta_\ell\beta_\ell.
-\]}
+ \beta:=\sum_{\ell\in\mathcal A}\eta_\ell\beta_\ell\).}
 \Vturn{Independently derive the same $(B,\beta)$.}
 \end{pvexchange}
 \end{pvstep}
@@ -549,7 +540,7 @@ prover-local commitment cache/key, not an $H_{\rm F2Z}$ record.  Its rows,
 packed columns, message, and prover data are not proof bytes; only the public
 commitment/root enters the verifier-facing protocol.
 
-Groups $G_8$--$G_{10}$ are the concrete recursive-opening profile's internal
+Steps P8/V8 through P10/V10 are the concrete recursive-opening profile's internal
 expansion of the paper edge $\Pi_{\rm iopp}$.  The verifier accepts iff every
 displayed check succeeds and the proof parser consumes exactly the fields
-specified by these groups.
+specified by these steps.

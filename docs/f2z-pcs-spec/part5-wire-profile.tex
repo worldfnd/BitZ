@@ -134,7 +134,8 @@ leaf count, and row width by
  \Lambda_k:=2^{D_k},\qquad I_k:=2^{k_k}.
  \label{eq:merkle-level-geometry}
 \end{equation}
-Thus $n_0=m-7$, $n_k=h_{k-1}$ for $k>0$, $D_k=m-10-2k$,
+Equation~\eqref{eq:merkle-level-geometry} implies
+$n_0=m-7$, $n_k=h_{k-1}$ for $k>0$, $D_k=m-10-2k$,
 $I_0=16$, and $I_k=8$ for $k>0$.  Let
 $C_k\in\K^{\Lambda_k\times I_k}$ be the level-$k$ codeword matrix, with
 leaves and lanes in increasing integer order.  Its exact row and tree bytes
@@ -172,7 +173,8 @@ and in that scan order, and its exact count is
  \left|\{p\in A_d:(p\mathbin{\mathsf{xor}}1)\notin A_d\}\right|.
  \label{eq:merkle-proof-count}
 \end{equation}
-The level-$k$ opening payload is exactly
+Equation~\eqref{eq:merkle-proof-count} fixes the exact number of transmitted
+path digests.  The level-$k$ opening payload is exactly
 \begin{equation}
  \LE{32}{Q_k}\parallel
  \prod_{j=0}^{Q_k-1}
@@ -519,11 +521,13 @@ The four canonical tag-\code{5004} message kinds and scopes are
  \end{array}
  \label{eq:sumcheck-message-kinds}
 \end{equation}
-Each payload is the one-byte kind followed by the two canonical $\K$
+Equation~\eqref{eq:sumcheck-message-kinds} is the complete tag-
+\code{5004} kind registry.  Each payload is the one-byte kind followed by the
+two canonical $\K$
 elements in the registry.  Any other kind/scope pair rejects.
 
 The outer $\mathsf{VerifyF2Z}$ caller first requires that $B$ is the
-deterministic coefficient function derived in Group~9, with domain size
+deterministic coefficient function derived in P9/V9, with domain size
 $2^{m_p}$; $B$ is never densely serialized.  The caller alone absorbs tag
 \code{5001} with payload
 $\LE{32}{m_p}\parallel\operatorname{Enc}_{\K}(\beta)$ and then invokes
@@ -584,6 +588,7 @@ The fixed record/event cardinalities are therefore
  \end{aligned}
  \label{eq:recursive-event-counts}
 \end{equation}
+The cardinalities in Equation~\eqref{eq:recursive-event-counts} are exact.
 Here $\#508{*}$ is one opening Hint per level.  Tag-\code{5105} count is the
 transcript-derived number of attempts, all of which appear in the audit log.
 Nonce counts remain Equation~\eqref{eq:pow-count-v1}.  A different order,

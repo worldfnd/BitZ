@@ -1,0 +1,282 @@
+\section{Constraints}
+
+This section fixes the SHA application matrices.  SHA-256 word semantics are
+those of FIPS~180-4.  The row templates and the one-compression counts are
+those proved in
+\href{https://github.com/reilabs/freigen/commit/93d3c55d69b4e7747eacf24212f93c795d05fdba}
+{Freigen commit \code{93d3c55}}; this profile additionally fixes public-word
+binding and the canonical row sharing for a chain of $N$ compressions.
+
+\subsection{Statement and compact matrix geometry}
+
+The public statement contains the initial and final chaining values and all
+message blocks:
+\begin{equation}
+ x_{\rm sha}:=(N,H_0,(B_i)_{i=0}^{N-1},H_N),\qquad
+ H_i\in(\{0,1\}^{32})^8,\quad B_i\in(\{0,1\}^{32})^{16}.
+ \label{eq:sha-statement}
+\end{equation}
+Every word in \cref{eq:sha-statement} has big-endian byte encoding.  The
+canonical $\mathsf{app\_statement\_bytes}$ are $\operatorname{LE}_{32}(N)$
+followed by $H_0,B_0,\ldots,B_{N-1},H_N$, four big-endian bytes per word and
+no inner lengths.  Their exact length is $68+64N$ bytes; trailing bytes reject.
+This profile requires
+$1\le N\le429389$, where the upper endpoint is the largest $N$ for which
+$20005N+257\le2^{33}$.  Before allocating, the statement preflight computes
+$68+64N$, $n_f$, $n_h$, and $n_A$ with checked integer arithmetic and rejects
+on any overflow or bound failure.  Padding and private-message hashing require
+different application profiles.
+
+The compact Boolean input and virtual-output lengths, excluding the affine
+constant coordinate, are
+\begin{equation}
+ n_f:=6641N+256,\qquad n_h:=20005N+256.
+ \label{eq:sha-live-lengths}
+\end{equation}
+Set
+\begin{equation}
+ \begin{aligned}
+ m_f&:=\max(22,\lceil\log_2n_f\rceil),&
+ m_h&:=\max(22,\lceil\log_2(n_h+1)\rceil),\\
+ (t_f,s,W_{\rm PCS})&=(m_f-7,7,1),&
+ (t_h,s,W_{\rm PCS})&=(m_h-7,7,1).
+ \end{aligned}
+ \label{eq:sha-shapes}
+\end{equation}
+The profile requires $22\le m_f\le m_h\le33$.  Otherwise it rejects and a
+different profile is required.  In particular the virtual chunk width is
+$127-t_h-W_{\rm PCS}=133-m_h\ge100$, so $L=1$ and
+$\mathcal A=\{0\}$.  The packed-opening domain exponent is $m_p=t_f$.
+
+Let $f\in\Ftwo^{n_f}$ be ordered as follows: all public message bits, the
+initial-state bits, and then the hinted decomposition bits in circuit execution
+order.  Within a word, bit $j=0$ is least significant and
+\begin{equation}
+ [X]:=\sum_{j=0}^{31}2^jX[j],\qquad
+ \operatorname{lo}_{32}(Q)[j]:=Q[j]\quad(0\le j<32).
+ \label{eq:sha-word-value}
+\end{equation}
+The execution order within each compression is: rounds $0,\ldots,15$;
+schedule-plus-round steps $16,\ldots,61$; inlined round $62$; and the fused
+round-$63$ feed-forward.  Adjacent compressions reuse the previous output bits
+as the next state rather than allocating a duplicate state.
+
+Let $D_f\in\Ftwo^{2^{t_f}\times2^s}$ be the committed tensor and let $J_f$
+inject the first $n_f$ row-major coordinates into that tensor, so its transpose
+selects them and
+$f=J_f^{\mathsf T}\operatorname{vec}(D_f)$.  The remaining committed padding
+is ignored by this relation; an honest encoder zeros it.  The inherited PCS
+packing order is the transpose of this semantic order.  Define
+\begin{equation}
+ \begin{aligned}
+ B_f[c,b]&:=D_f[b,c],\\
+ [\Pi_f\operatorname{vec}(D_f)]_{c2^{t_f}+b}
+   &:=[\operatorname{vec}(D_f)]_{b2^s+c},
+   \qquad\operatorname{vec}(B_f)=\Pi_f\operatorname{vec}(D_f),
+ \end{aligned}
+ \label{eq:sha-pack-permutation}
+\end{equation}
+for $0\le b<2^{t_f}$ and $0\le c<2^s$.  Thus the committed object is
+\begin{equation}
+ O:=\Enc(\Pack(B_f)),\qquad \rho:=\Root(O).
+ \label{eq:sha-commitment}
+\end{equation}
+Equation~\eqref{eq:sha-pack-permutation} is the only semantic-to-PCS index
+permutation; it is applied again to the coefficient in P10/V10.
+
+\subsection{The binary matrix $M_{\rm SHA}$}
+
+Use augmented vectors $\bar f=(1,f)$ and $\bar h=(1,h_{\rm sem})$.  The
+Freigen matrix is the fixed binary matrix
+\begin{equation}
+ M_{\rm SHA}\in\Ftwo^{(n_h+1)\times(n_f+1)},\qquad
+ \bar h=M_{\rm SHA}\bar f.
+ \label{eq:sha-m-matrix}
+\end{equation}
+Let $J_h$ inject $\bar h$ into the first $n_h+1$ coordinates of
+$D_h\in\Ftwo^{2^{t_h}\times2^s}$.  Split
+$M_{\rm SHA}=[m_0\mid M_1]$ into its constant and nonconstant columns.  The
+PCS form is
+\begin{equation}
+ \operatorname{vec}(D_h)=h_0+T\operatorname{vec}(D_f),\quad
+ h_0:=J_hm_0,\quad T:=J_hM_1J_f^{\mathsf T}.
+ \label{eq:sha-virtual-map}
+\end{equation}
+Only $D_f$ is committed.  Neither $M_{\rm SHA}$ nor $T$ is materialized:
+their rows are emitted from the following parity templates.
+
+For a word $X$ and $0\le j<32$, define
+\begin{equation}
+ \begin{aligned}
+ \Sigma_0(X)[j]&=X[j+2]\oplus X[j+13]\oplus X[j+22],\\
+ \Sigma_1(X)[j]&=X[j+6]\oplus X[j+11]\oplus X[j+25],\\
+ \sigma_0(X)[j]&=X[j+7]\oplus X[j+18]\oplus X[j+3],\\
+ \sigma_1(X)[j]&=X[j+17]\oplus X[j+19]\oplus X[j+10],
+ \end{aligned}
+ \label{eq:sha-m-rotations}
+\end{equation}
+where every rotation index is modulo $32$, while the final
+$\sigma_0,\sigma_1$ shift term is zero when
+$j+3\ge32$ or $j+10\ge32$, respectively.  The other nonlinear-function
+characters are
+\begin{equation}
+ P_{ef}=e\oplus f,\qquad P_{eg}=e\oplus g,\qquad
+ P_{abc}=a\oplus b\oplus c.
+ \label{eq:sha-m-parities}
+\end{equation}
+The integer combinations used below are consequently
+\begin{equation}
+ C_h:=[f]+[g]-[P_{ef}]+[P_{eg}]=2\Ch(e,f,g),\qquad
+ C_m:=[a]+[b]+[c]-[P_{abc}]=2\Maj(a,b,c).
+ \label{eq:sha-chmaj}
+\end{equation}
+
+The remaining rows of $M_{\rm SHA}$ are identity rows for input and hinted
+bits.  A 34-bit schedule result derives bit zero as the XOR of its four
+addends' low bits and commits only bits $1,\ldots,33$; a 33-bit ordinary
+feed-forward result does the same for its two addends.  All bits of the
+$Q^e$ and $Q^a$ decompositions are committed.  Concretely, for
+$16\le k\le61$ and $j\in\{1,2,3,5,6,7\}$,
+\begin{equation}
+ \begin{aligned}
+ Q^W_k[0]&=W_{k-16}[0]\oplus\sigma_0(W_{k-15})[0]
+              \oplus W_{k-7}[0]\oplus\sigma_1(W_{k-2})[0],\\
+ Q^{\rm out}_j[0]&=H_i[j][0]\oplus S_{64}[j][0].
+ \end{aligned}
+ \label{eq:sha-derived-low-bits}
+\end{equation}
+The two identities in \cref{eq:sha-derived-low-bits} are $M_{\rm SHA}$ rows,
+not R1CS rows.  In canonical row order the exact census is
+\begin{equation}
+\begin{array}{@{}lr@{}}
+\toprule
+\text{row family in }M_{\rm SHA} & \text{rows}\\
+\midrule
+\text{affine constant} & 1\\
+\text{message inputs; initial state} & 512N+256\\
+\Sigma_0,\Sigma_1,P_{ef},P_{eg},P_{abc}\text{ in 64 rounds} & 10240N\\
+\sigma_0,\sigma_1\text{ in 48 schedule steps} & 3072N\\
+Q^W_{16},\ldots,Q^W_{61} & 1564N\\
+Q^e\text{ decompositions} & 2242N\\
+Q^a\text{ decompositions} & 2177N\\
+\text{six remaining feed-forward decompositions} & 198N\\
+\midrule
+\textbf{total} & \mathbf{20005N+257}
+\\\bottomrule
+\end{array}
+ \label{eq:sha-m-row-census}
+\end{equation}
+The augmented column count, in the same constant-first convention, is
+\begin{equation}
+ 1+(512N+256)+1518N+2242N+2177N+192N
+   =6641N+257.
+ \label{eq:sha-m-column-census}
+\end{equation}
+For $N=1$, \cref{eq:sha-m-row-census,eq:sha-m-column-census} give exactly
+$20262$ rows and $6898$ columns.  The previous $20457\times7145$ system loses
+$64$ rows/columns by coupling $a^+$ to $e^+$, $66$ by inlining $W_{62},W_{63}$,
+$65$ by fusing final feed-forward, and another $52$ columns by deriving low
+sum bits.
+
+\subsection{The linear $\mathbb Z$-R1CS rows}
+
+For compression $i$, let $(a_k,b_k,c_k,d_k,e_k,f_k,g_k,h_k)$ denote the
+state before round $k$, and let $W_k$ denote its schedule word.  For
+$0\le k\le61$, the two round rows are
+\begin{equation}
+ \begin{aligned}
+ 2[Q^e_k]&=2\bigl([d_k]+[h_k]+[\Sigma_1(e_k)]+K_k+[W_k]\bigr)+C_h(k),\\
+ 2[Q^a_k]&=2\bigl([e_{k+1}]+[\Sigma_0(a_k)]-[d_k]\bigr)+C_m(k)+2^{33},
+ \end{aligned}
+ \label{eq:sha-r1cs-round}
+\end{equation}
+where $Q^e_k$ is 35 bits, $Q^a_k$ is 34 bits,
+$e_{k+1}=\operatorname{lo}_{32}(Q^e_k)$, and
+$a_{k+1}=\operatorname{lo}_{32}(Q^a_k)$.  The other six words are wiring
+aliases, not R1CS rows:
+$(b_{k+1},c_{k+1},d_{k+1},f_{k+1},g_{k+1},h_{k+1})
+=(a_k,b_k,c_k,e_k,f_k,g_k)$.
+Equation~\eqref{eq:sha-r1cs-round} uses
+$a^+=e^+-d+\Sigma_0(a)+\Maj(a,b,c)\pmod{2^{32}}$; it does not allocate a
+separate $T_1$ or 35th $Q^a$ bit.
+
+For $16\le k\le61$, one schedule row is also present:
+\begin{equation}
+ [Q^W_k]=[W_{k-16}]+[\sigma_0(W_{k-15})]+[W_{k-7}]+[\sigma_1(W_{k-2})],
+ \qquad W_k=\operatorname{lo}_{32}(Q^W_k),
+ \label{eq:sha-r1cs-schedule}
+\end{equation}
+where $Q^W_k$ is 34 bits and its low bit is derived as specified above.
+Define the unmaterialized terminal sums
+\begin{equation}
+ S_k:=[W_{k-16}]+[\sigma_0(W_{k-15})]+[W_{k-7}]+[\sigma_1(W_{k-2})]
+ \quad(k\in\{62,63\}).
+ \label{eq:sha-terminal-schedule}
+\end{equation}
+Round $62$ has only
+\begin{equation}
+ \begin{aligned}
+ 2[Q^e_{62}]&=2\bigl([d_{62}]+[h_{62}]+[\Sigma_1(e_{62})]+K_{62}+S_{62}\bigr)
+   +C_h(62),\\
+ 2[Q^a_{62}]&=2\bigl([e_{63}]+[\Sigma_0(a_{62})]-[d_{62}]\bigr)
+   +C_m(62)+2^{33},
+ \end{aligned}
+ \label{eq:sha-r1cs-round62}
+\end{equation}
+with 36-bit $Q^e_{62}$ and 34-bit $Q^a_{62}$.
+
+Round $63$ is fused with the first and fifth feed-forward words.  If
+$A_{\rm in}=H_i[0]$ and $E_{\rm in}=H_i[4]$, its rows are
+\begin{equation}
+ \begin{aligned}
+ 2[Q^{\rm out}_e]&=2\bigl([d_{63}]+[h_{63}]+[\Sigma_1(e_{63})]+K_{63}
+       +S_{63}+E_{\rm in}\bigr)+C_h(63),\\
+ 2[Q^{\rm out}_a]&=2\bigl([\operatorname{lo}_{32}(Q^{\rm out}_e)]+[\Sigma_0(a_{63})]
+       +A_{\rm in}-E_{\rm in}-[d_{63}]\bigr)+C_m(63)+2^{34}.
+ \end{aligned}
+ \label{eq:sha-r1cs-final}
+\end{equation}
+Here $Q^{\rm out}_e$ is 36 bits and $Q^{\rm out}_a$ is 35 bits; their low
+32 bits are $H_{i+1}[4]$ and $H_{i+1}[0]$.  For
+$j\in\{1,2,3,5,6,7\}$, the six remaining rows are
+\begin{equation}
+ [Q^{\rm out}_j]=H_i[j]+S_{64}[j],\qquad
+ H_{i+1}[j]=\operatorname{lo}_{32}(Q^{\rm out}_j),
+ \label{eq:sha-r1cs-feedforward}
+\end{equation}
+where $S_{64}$ is the final pre-feed-forward state and each
+$Q^{\rm out}_j$ is 33 bits with a derived low bit.
+
+The internal row count per compression is therefore
+\begin{equation}
+ 62\cdot2+46+2+2+6=180.
+ \label{eq:sha-r1cs-census}
+\end{equation}
+This application additionally binds the sixteen public message words per
+compression and the eight words of each public endpoint.  Intermediate states
+are shared.  Set $n_A:=196N+16$ and
+$d_A:=\lceil\log_2n_A\rceil$.  With
+$h:=\lift(\operatorname{vec}(D_h))\in\mathbb Z^{2^{m_h}}$, the row-padded
+integer constraint matrix is
+\begin{equation}
+ \begin{aligned}
+ A_x&\in\mathbb Z^{2^{d_A}\times2^{m_h}},& A_xh&=0,\\
+ A_x[\beta,*]&=0&& (n_A\le\beta<2^{d_A}).
+ \end{aligned}
+ \label{eq:sha-relation-census}
+\end{equation}
+Rows are ordered blockwise as
+\cref{eq:sha-r1cs-round,eq:sha-r1cs-schedule,%
+eq:sha-r1cs-round62,eq:sha-r1cs-final,eq:sha-r1cs-feedforward}, followed by
+message pins and the two endpoint-pin families.  Omitted columns of $A_x$ are
+zero; an implementation stores row templates, not the padded matrix.
+
+Finally, projection to the fixed PCS field is accepted only after the verifier
+recomputes
+\begin{equation}
+ B_x:=\max_{\beta<2^{d_A}}\sum_z|A_x[\beta,z]|,\qquad
+ 2B_x<2^{39}<q=2^{100}-15.
+ \label{eq:sha-residual-bound}
+\end{equation}
+Equation~\eqref{eq:sha-residual-bound} makes reduction modulo $q$ injective on
+every reachable bit-witness residual.  Failure is a hard reject.

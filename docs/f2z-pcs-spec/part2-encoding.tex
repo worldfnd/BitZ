@@ -8,27 +8,31 @@
 A paper-level encoded relation contains triples $(x,O;w)$: $x$ is the explicit
 instance, $O$ is the implicit encoded oracle, and $w$ is the witness.  For a public
 witness map $T$, the binding condition is
-\[
+\begin{equation}
  O=\Enc_{\mathcal C}(T(w)).
-\]
-Merkle compilation commits to $O$ with the public root
+ \label{eq:encoded-oracle-binding}
+\end{equation}
+Merkle compilation commits to the oracle in
+Equation~\eqref{eq:encoded-oracle-binding} with the public root
 $\rho:=\Root(O)$; $\rho$ is not a proof field.
 Every relation below is additionally parameterized by the fixed public
 context $\chi:=(\mathsf{pp},t,s,W,g)$ and its derived dimensions.  The context
 is omitted from displayed instances and is carried unchanged by every edge.
 
 The edge notation is
-\[
- \mathcal R_0\equiv_F\mathcal R_1
- \quad\text{deterministic retyping},\qquad
- \mathcal R_0\xRightarrow{\Pi}\mathcal R_1
- \quad\text{interactive reduction},
-\]
-\[
- \mathcal R_0\mathrel{\dashrightarrow}\mathcal R_1
- \quad\text{conditional extension or classification only}.
-\]
-Each subsection defines one source relation and lists its direct outgoing
+\begin{equation}
+ \begin{aligned}
+  \mathcal R_0\equiv_F\mathcal R_1
+    &\quad\text{denotes deterministic retyping},\\
+  \mathcal R_0\xRightarrow{\Pi}\mathcal R_1
+    &\quad\text{denotes an interactive reduction},\\
+  \mathcal R_0\mathrel{\dashrightarrow}\mathcal R_1
+    &\quad\text{denotes a conditional extension or classification only}.
+ \end{aligned}
+ \label{eq:reduction-edge-notation}
+\end{equation}
+Every reduction below uses the notation fixed by
+Equation~\eqref{eq:reduction-edge-notation}.  Each subsection defines one source relation and lists its direct outgoing
 reductions.  A proof fragment lists transmitted values only.  Challenges,
 successor coefficients, exponentiated values, batching coefficients, and
 work tables are verifier-derived.
@@ -55,27 +59,34 @@ Encoding the witness gives the encoded application relation
  &p_j^{(a)}(\bm x,\bm f)\in I_a\quad(\forall a,j)\Bigr\}.
  \label{eq:rel-pimsat-app}
 \end{align}
+Equations~\eqref{eq:rel-pimsat-unencoded} and~\eqref{eq:rel-pimsat-app}
+distinguish the semantic witness relation from its encoded-oracle form.
 
 \paragraph{Direct reductions.}
 \begin{itemize}
 
 \item \textbf{Reduction 0: Compile the witness oracle.}
-\[
+\begin{equation}
  \RPIMSAT^{\rm app}
  \xRightarrow{\mathsf{Encode}}
  \RPIMSAT^{\rm enc}.
-\]
-The IOP supplies the encoded oracle $O$; Merkle compilation exposes
+ \label{eq:edge-encode-witness}
+\end{equation}
+Along the edge in Equation~\eqref{eq:edge-encode-witness}, the IOP supplies the
+encoded oracle $O$; Merkle compilation exposes
 $\rho=\Root(O)$.  The constraint predicates are unchanged.
 
 \item \textbf{Reduction 1: Reduce ideal membership to application PESAT.}
-\[
+\begin{equation}
  \RPIMSAT^{\rm enc}
  \xRightarrow{\Pi_{{\rm app},1}}
  \RPESAT^{\rm app}.
-\]
+ \label{eq:edge-application-pesat}
+\end{equation}
 \begin{itemize}
- \item \textbf{Proof:} $\pi_{{\rm app},1}$ carries the PIOP messages that turn
+ \item \textbf{Proof:} On the edge in
+ Equation~\eqref{eq:edge-application-pesat}, $\pi_{{\rm app},1}$ carries the
+ PIOP messages that turn
  ideal-membership constraints into field equations.
  \item \textbf{Result:} the verifier derives $K_{\rm app}$,
  $\psi_{\rm app}$, $\widehat{\bm x}$, and $\widehat{\bm p}$; $O$ is unchanged.
@@ -104,18 +115,23 @@ relation retains the original bounded witness:
    \quad(\forall i)\Bigr\}.
  \label{eq:rel-pesat-app}
 \end{align}
+Equation~\eqref{eq:rel-pesat-app} is the source relation for the application
+linearization below.
 
 \paragraph{Direct reductions.}
 \begin{itemize}
 
 \item \textbf{Reduction 1: Linearize the application PESAT claim.}
-\[
+\begin{equation}
  \RPESAT^{\rm app}
  \xRightarrow{\Pi_{{\rm app},2}}
  \RLMFB.
-\]
+ \label{eq:edge-application-linearize}
+\end{equation}
 \begin{itemize}
- \item \textbf{Proof:} $\pi_{{\rm app},2}$ carries the application reduction
+ \item \textbf{Proof:} On the edge in
+ Equation~\eqref{eq:edge-application-linearize}, $\pi_{{\rm app},2}$ carries
+ the application reduction
  from the projected constraints to one scalar linear claim.
  \item \textbf{Result:} the verifier derives $(\bm v,\mu)$ and $\psi$; the
  same witness and $O$ pass to $\RLMFB$.
@@ -135,12 +151,14 @@ Lin-ModFieldBin; no extra message is needed.
 Let $(\gamma_j)_{j<D_M}$ be the fixed basis of $M$, and assume a
 statement-bound bijection
 $\bits:\mathcal W_B\leftrightarrow\bitsset^n$ with fixed reconstruction:
-\[
+\begin{equation}
  f_i=\sum_{k<B}\sum_{j<D_M}b_{i,k,j}2^k\gamma_j,
  \qquad b_{i,k,j}\in\bitsset,
  \qquad \bm b=\bits(\bm f).
-\]
-At this seam a higher-rank target has already been expanded into scalar
+ \label{eq:module-bit-reconstruction}
+\end{equation}
+Equation~\eqref{eq:module-bit-reconstruction} fixes both reconstruction and bit
+order.  At this seam a higher-rank target has already been expanded into scalar
 coordinates; write $\psi:M\to R$ for the resulting $\varphi$-semilinear map.
 \Needspace{7\baselineskip}
 The module relation is
@@ -154,21 +172,24 @@ The module relation is
  &\sum_i v_i\psi(f_i)=\mu\quad\text{in }R\Bigr\}.
  \label{eq:rel-lmfb}
 \end{align}
+Equation~\eqref{eq:rel-lmfb} is the exact application-to-core seam relation.
 
 \paragraph{Direct reductions.}
 \begin{itemize}
 
 \item \textbf{Reduction 1: Deterministic Bitify.}
 
-\[
+\begin{equation}
  \RLMFB
  \equiv_{\mathsf{Bitify}}
  \RLBD,
  \qquad
  u_{i,k,j}:=
  v_i\,\varphi(\iota_{R_M}(2^k))\,\psi(\gamma_j).
-\]
-The witness is retyped as $\bm b:=\bits(\bm f)$; the same encoded oracle $O$
+ \label{eq:edge-bitify}
+\end{equation}
+Under Equation~\eqref{eq:edge-bitify}, the witness is retyped as
+$\bm b:=\bits(\bm f)$; the same encoded oracle $O$
 remains bound to it.  Bitify transmits nothing and performs no new Booleanity
 test.
 
@@ -196,31 +217,38 @@ Suppose the public coefficient has the paper's tensor form
 $\bm u=\bm u^{(1)}\otimes\bm u^{(2)}$, and reshape the committed bits as
 $\Bbit[c,i]$.  With canonical integer representatives
 $\gamma_i$ of $u_i^{(1)}$, the prover exposes column values
-\[
+\begin{equation}
  \mu_c:=\sum_i\gamma_i\Bbit[c,i]\in\Z.
-\]
-The verifier immediately checks the tensor reconstruction
+ \label{eq:paper-column-values}
+\end{equation}
+For the values in Equation~\eqref{eq:paper-column-values}, the verifier
+immediately checks the tensor reconstruction
 \begin{equation}
  \sum_c u_c^{(2)}\,\iota_R(\mu_c)=\mu.
  \label{eq:pi1-paper-reconstruction}
 \end{equation}
 It then derives $y_i:=g^{\gamma_i}$ and $\nu_c:=g^{\mu_c}$, obtaining
-\[
+\begin{equation}
  \prod_i\bigl(1+(y_i-1)\Bbit[c,i]\bigr)=\nu_c
  \qquad(\forall c).
-\]
+ \label{eq:paper-grand-product}
+\end{equation}
+Equation~\eqref{eq:paper-grand-product} is the product claim reduced by
+$\Pi_1$ below.
 
 \paragraph{Direct reductions.}
 \begin{itemize}
 
 \item \textbf{Reduction 1: Produce the F2Z encoded PESAT claim.}
-\[
+\begin{equation}
  \RLBD
  \xRightarrow{\Pi_1}
  \RPESAT(\K,Q_{\Ftwo\!\Z},\mathcal C,\Pack).
-\]
+ \label{eq:edge-pi1}
+\end{equation}
 \begin{itemize}
- \item \textbf{Proof:} the paper sends $\pi_1=(\mu_c)_c$.  The verifier checks
+ \item \textbf{Proof:} On the edge in Equation~\eqref{eq:edge-pi1}, the paper
+ sends $\pi_1=(\mu_c)_c$.  The verifier checks
  Equation~\eqref{eq:pi1-paper-reconstruction} before accepting the successor.
  \item \textbf{Result:} the verifier derives $\bm y=(g^{\gamma_i})_i$,
  $\bm\nu=(g^{\mu_c})_c$, and the PESAT instance; the bit witness and $O$
@@ -230,12 +258,14 @@ It then derives $y_i:=g^{\gamma_i}$ and $\nu_c:=g^{\mu_c}$, obtaining
 
 \item \textbf{Profile restriction: weighted coefficient shape.}
 The chunked mod-$q$ profile requires
-\[
+\begin{equation}
  u_{c,b,j}=\pi_q(w_b2^j)w'_c,
  \qquad
  0\le w_b<2^{q_{\rm bits}},\qquad w'_c\in\Fq.
-\]
-This restricts the public coefficient; it does not define another relation.
+ \label{eq:weighted-coefficient-shape}
+\end{equation}
+Equation~\eqref{eq:weighted-coefficient-shape} restricts the public
+coefficient; it does not define another relation.
 
 \end{itemize}
 
@@ -243,12 +273,14 @@ This restricts the public coefficient; it does not define another relation.
   \texorpdfstring{$\Pi_1$}{Pi1}}
 
 For the admitted weighted shape, write
-\[
+\begin{equation}
  w_b=\sum_{\ell=0}^{L-1}2^{c_w\ell}\omega_b^{(\ell)},
  \qquad
  u_c^{(\ell)}:=\sum_b\omega_b^{(\ell)}\INT(D(b,c)).
-\]
-The proof fragment is
+ \label{eq:active-chunk-values}
+\end{equation}
+The values in Equation~\eqref{eq:active-chunk-values} determine the proof
+fragment
 \begin{equation}
  \pi_1^{\rm chunk}
  :=\bigl(\nu^{(\ell)},u^{(\ell)}\bigr)_{
@@ -260,6 +292,7 @@ The proof fragment is
  \end{aligned}
  \label{eq:pi1-chunk-proof}
 \end{equation}
+Equation~\eqref{eq:pi1-chunk-proof} lists the transmitted chunk proof fields.
 For each active chunk in increasing $\ell$, $\nu^{(\ell)}$ is a NARG record
 and $u^{(\ell)}$ is a checked, non-absorbed hint.  Inactive chunks have the
 derived value $u^{(\ell)}=0$.  The verifier rejects a missing, duplicate,
@@ -274,38 +307,47 @@ unique.  The checked values reconstruct the paper's column messages:
  =\sum_b w_b\INT(D(b,c)).
  \label{eq:chunk-reconstructs-mu}
 \end{equation}
-Inside $\Pi_1$, immediately after receiving the final active vector, the
+Equation~\eqref{eq:chunk-reconstructs-mu} reconstructs the paper's column
+message from the accepted chunk hints.  Inside $\Pi_1$, immediately after
+receiving the final active vector, the
 verifier checks
 \begin{equation}
  \sum_c w'_c\,\pi_q(\mu_c)=y.
  \label{eq:pi1-weighted-reconstruction}
 \end{equation}
-This is the tensor-reconstruction check of
+Equation~\eqref{eq:pi1-weighted-reconstruction} is the tensor-reconstruction
+check of
 Equation~\eqref{eq:pi1-paper-reconstruction}; it creates no named successor
 relation and leaves no public scalar obligation for the opening phase.
 
 For each active $\ell$, the verifier also derives
-\[
+\begin{equation}
 i=(b\ll w)\mid j,\qquad
 \omega_i^{(\ell)}=\omega_b^{(\ell)}2^j,\qquad
  y_i^{(\ell)}=g^{\omega_i^{(\ell)}}.
-\]
-Thus the single paper target is realized by the profile family
+ \label{eq:chunk-exponent-data}
+\end{equation}
+Using Equation~\eqref{eq:chunk-exponent-data}, the single paper target is
+realized by the profile family
 \begin{equation}
  \bigwedge_{\ell\in\mathcal A}
  \RPESAT(\K,Q_{\Ftwo\!\Z}^{(\ell)},\mathcal C,\Pack).
  \label{eq:chunk-pesat-family}
 \end{equation}
+Equation~\eqref{eq:chunk-pesat-family} is the profile's chunked realization
+of that target.
 
 \subsection{The encoded F2Z PESAT relation}
 
 For one active profile chunk, define
-\[
+\begin{equation}
  Q_c^{(\ell)}(\Bbit)
  :=\prod_i\left(1+(y_i^{(\ell)}-1)\Bbit[c,i]\right)
    -\nu_c^{(\ell)}.
-\]
-The corresponding named paper relation is the encoded PESAT instance
+ \label{eq:chunk-pesat-polynomial}
+\end{equation}
+Using the polynomial in Equation~\eqref{eq:chunk-pesat-polynomial}, the
+corresponding named paper relation is the encoded PESAT instance
 \begin{align}
  &\RPESAT(\K,Q_{\Ftwo\!\Z}^{(\ell)},\mathcal C,\Pack)
  \notag\\[-2pt]
@@ -316,6 +358,7 @@ The corresponding named paper relation is the encoded PESAT instance
  Q_c^{(\ell)}(\Bbit)=0\ (\forall c)\Bigr\}.
  \label{eq:rel-gp}
 \end{align}
+Equation~\eqref{eq:rel-gp} names the resulting encoded PESAT relation.
 Omitting $\ell$ gives the paper's unchunked notation
 $\RPESAT(\K,Q_{\Ftwo\!\Z},\mathcal C,\Pack)$.  The profile's ``grand
 product'' is this PESAT relation, not a distinct formal relation.
@@ -324,38 +367,44 @@ product'' is this PESAT relation, not a distinct formal relation.
 \begin{itemize}
 
 \item \textbf{Reduction 1: Linearize with GKR.}
-\[
+\begin{equation}
  \RPESAT(\K,Q_{\Ftwo\!\Z},\mathcal C,\Pack)
  \xRightarrow{\Pi_{\rm red}}
  \RLin(\K,\mathcal C,\Pack).
-\]
-For the chunked family, $\Pi_{\rm red}$ is applied once per
+ \label{eq:edge-gkr-reduction}
+\end{equation}
+For the chunked family, the reduction in
+Equation~\eqref{eq:edge-gkr-reduction} is applied once per
 $\ell\in\mathcal A$.
 \begin{itemize}
  \item \textbf{Input:} the chunk's PESAT instance, the unchanged root
  $\rho=\Root(O)$, and the transcript after $\zeta^{(\ell)}$ and
  $e_0^{(\ell)}$; call this bundle $\mathcal I_{\rm GKR}^{(\ell)}$.
  \item \textbf{Proof:}
- \[
+ \begin{equation}
   (\tr',\mathit{pt}_\ell,\mu_\ell)
   \leftarrow
   \mathsf{GKR.Verify}
   (\mathsf{pp}_{\rm GKR},\mathcal I_{\rm GKR}^{(\ell)},
    \pi_{\rm red}^{(\ell)};\tr).
- \]
- $\pi_{\rm red}^{(\ell)}$ is one canonical GKR fragment.  Its profile fixes the
+  \label{eq:gkr-verifier-contract}
+ \end{equation}
+ Equation~\eqref{eq:gkr-verifier-contract} consumes one canonical GKR
+ fragment $\pi_{\rm red}^{(\ell)}$.  Its profile fixes the
  messages, challenge order, encodings, tags, and rejection rules; the call
  consumes the whole fragment and returns $\tr'$.
  \item \textbf{Result:} the verifier derives $(\bm a_\ell,\mu_\ell)$ for
  $\RLin(\K,\mathcal C,\Pack)$, retaining the same $O$ and bit witness.  In the
  current profile, with
  $B_{\mathrm{bit},\K}:=\iota_{2\to\K}(\Bbit)$ coordinatewise,
- \[
+ \begin{equation}
   \bm a_\ell[z]=\eq(z,\mathit{pt}_\ell),
   \qquad
   \MLE{B_{\mathrm{bit},\K}}(\mathit{pt}_\ell)=\mu_\ell.
- \]
- This equation defines the LIN successor; it is not another paper relation.
+  \label{eq:gkr-lin-successor}
+ \end{equation}
+ Equation~\eqref{eq:gkr-lin-successor} defines the LIN successor; it is not
+ another paper relation.
  \item \textbf{Scope:} this edge is solid once the GKR profile fixes a
  byte-exact transcript and proves the reduction.  Its error is
  $\varepsilon_{\rm red}^{(\ell)}$ per active chunk.
@@ -382,19 +431,23 @@ $\bm b_{\K}:=\iota_{2\to\K}(\pi_2(\bm b))$.  The paper's linear target is
  \quad\langle\bm a,\bm b_{\K}\rangle_{\K}=\mu\Bigr\}.
  \label{eq:rel-lin-pack}
 \end{align}
+Equation~\eqref{eq:rel-lin-pack} is the linear target consumed by the opening
+IOP.
 
 \paragraph{Direct reductions.}
 \begin{itemize}
 
 \item \textbf{Reduction 1: Run the linear-relation IOP.}
-\[
+\begin{equation}
  \RLin(\K,\mathcal C,\Pack)
  \xRightarrow{\Pi_{\rm iopp}}
  \mathcal R_{\rm triv}.
-\]
+ \label{eq:edge-iopp}
+\end{equation}
 \begin{itemize}
- \item \textbf{Proof:} $\pi_{\rm iopp}$ proves the derived $(\bm a,\mu)$ claim
- against the public root $\rho=\Root(O)$.
+ \item \textbf{Proof:} In Equation~\eqref{eq:edge-iopp}, $\pi_{\rm iopp}$
+ proves the derived $(\bm a,\mu)$ claim against the public root
+ $\rho=\Root(O)$.
  \item \textbf{Result:} acceptance or rejection; no public relation remains.
  \item \textbf{Scope:} the final solid paper-level edge.  The profile below
  gives one concrete implementation.
@@ -413,32 +466,36 @@ relation graph.
 
 \item \textbf{Per-claim ring switch.}
 For each active $\ell$, the prover transmits
-\[
+\begin{equation}
  s^{(\ell)}=(s_v^{(\ell)})_{v<128},
  \qquad
  s_v^{(\ell)}:=\MLE{B_{\mathrm{bit},v}}(r_{\hi}^{(\ell)}).
-\]
-After all such vectors are absorbed, the verifier squeezes one shared $r''$
-and derives a packed claim
+ \label{eq:ring-switch-message}
+\end{equation}
+After all vectors in Equation~\eqref{eq:ring-switch-message} are absorbed,
+the verifier squeezes one shared $r''$ and derives a packed claim
 \begin{equation}
  O=\Enc_{\mathcal C}(P),
  \qquad
  \langle B_\ell,P\rangle_{\K}=\beta_\ell.
  \label{eq:profile-packed-claim}
 \end{equation}
-The witness is $P=\Pack(\pi_2(\bm b))$ and $\rho=\Root(O)$ is unchanged.  This step
+In Equation~\eqref{eq:profile-packed-claim}, the witness is
+$P=\Pack(\pi_2(\bm b))$ and $\rho=\Root(O)$ is unchanged.  This step
 has error $\varepsilon_{\rm ring}^{(\ell)}$ on the admitted MLE-shaped source;
 it does not specify a general ring switch for arbitrary LIN coefficients.
 
 \item \textbf{Batch.}
 The verifier squeezes fresh
 $\bm\eta\in\K^{|\mathcal A|}$ and derives, without a proof field,
-\[
+\begin{equation}
  B:=\sum_{\ell\in\mathcal A}\eta_\ell B_\ell,
  \qquad
  \beta:=\sum_{\ell\in\mathcal A}\eta_\ell\beta_\ell.
-\]
-The resulting internal claim is
+ \label{eq:batch-packed-claim}
+\end{equation}
+The batch values in Equation~\eqref{eq:batch-packed-claim} define the
+resulting internal claim
 $O=\Enc_{\mathcal C}(P)$ and
 $\langle B,P\rangle_{\K}=\beta$, with batching error
 $\varepsilon_{\rm batch}$.
@@ -475,19 +532,23 @@ $\bar h=h_0+T(\pi_2(\bm b))$.  Define
  =\mu\Bigr\}.
  \label{eq:rel-lbd-virtual}
 \end{align}
+Equation~\eqref{eq:rel-lbd-virtual} defines the virtual source relation.
 
 \paragraph{Direct reductions.}
 \begin{itemize}
 
 \item \textbf{Conditional virtual reduction.}
-\[
+\begin{equation}
  \RLBD^{\virt}
  \overset{\Pi_{\rm partial\text{-}core}}{\dashrightarrow}
  \mathcal R_{h\text{-}{\rm Lin}}^{\virt}.
-\]
+ \label{eq:edge-virtual-partial-core}
+\end{equation}
 \begin{itemize}
- \item \textbf{Proof:} $\pi_{\rm virtual}$ carries the chosen partial-core and
- GKR messages; the virtual table is not transmitted.
+ \item \textbf{Proof:} For the conditional edge in
+ Equation~\eqref{eq:edge-virtual-partial-core}, $\pi_{\rm virtual}$ carries
+ the chosen partial-core and GKR messages; the virtual table is not
+ transmitted.
  \item \textbf{Result:} the verifier derives $(\bm a_{\K},\mu')$.
  \item \textbf{Scope:} available only after a virtual profile defines the
  proof format, transcript, verifier, and error bound.
@@ -508,21 +569,23 @@ of $T$.  Only $\bm b$ is committed.  The virtual linear seam is
  =\mu'\Bigr\}.
  \label{eq:rel-virtual-lin}
 \end{align}
+Equation~\eqref{eq:rel-virtual-lin} is the partial core's required successor.
 Its public adjoint rewrite transmits nothing:
-\[
- \mathcal R_{h\text{-}{\rm Lin}}^{\virt}
- \equiv_{\mathsf{Adj}_{T_{\K}^{*}}}
- \RLin(\K,\mathcal C,\Pack),
-\]
-\[
- \bm a_b:=T_{\K}^{*}(\bm a_{\K}),
- \qquad
- \mu_b:=\mu'-\langle\bm a_{\K},h_{0,\K}\rangle_{\K}.
-\]
-This exact rewrite need not preserve the MLE coefficient shape admitted by the
-current internal ring switch.  A virtual profile must therefore supply a
-compatible $\Pi_{\rm iopp}$ adapter or opening; the direct profile rejects the
-virtual source.
+\begin{equation}
+ \begin{aligned}
+  \mathcal R_{h\text{-}{\rm Lin}}^{\virt}
+  &\equiv_{\mathsf{Adj}_{T_{\K}^{*}}}
+  \RLin(\K,\mathcal C,\Pack),\\
+  \bm a_b&:=T_{\K}^{*}(\bm a_{\K}),&
+  \mu_b&:=\mu'-\langle\bm a_{\K},h_{0,\K}\rangle_{\K}.
+ \end{aligned}
+ \label{eq:virtual-adjoint-rewrite}
+\end{equation}
+The exact rewrite in Equation~\eqref{eq:virtual-adjoint-rewrite} need not
+preserve the MLE coefficient shape admitted by the current internal ring
+switch.  A virtual profile must therefore supply a compatible
+$\Pi_{\rm iopp}$ adapter or opening; the direct profile rejects the virtual
+source.
 
 \subsection{The complete relation graph and proof object}
 
@@ -567,7 +630,8 @@ refine the displayed edges.  The semantic proof object is
  \right).
  \label{eq:proof-object}
 \end{equation}
-Its replay schedule is specified in Section~\ref{sec:interaction}.  Public
+The fields in Equation~\eqref{eq:proof-object} are replayed according to
+Section~\ref{sec:interaction}.  Public
 inputs are external to the proof; other omitted values are derived.  The v1
 byte profile partitions transmitted fields, in replay order, as
 \begin{equation}
@@ -588,13 +652,16 @@ counts and exhaustion rules.
 With edge errors $\varepsilon_{{\rm app},1}$, $\varepsilon_{{\rm app},2}$,
 $\varepsilon_{\rm red}^{(\ell)}$, $\varepsilon_{\rm ring}^{(\ell)}$,
 $\varepsilon_{\rm batch}$, and $\varepsilon_{\rm open}$,
-\[
+\begin{equation}
  \varepsilon_{\rm F2Z}
  \le \varepsilon_{{\rm app},1}+\varepsilon_{{\rm app},2}
     +\sum_{\ell\in\mathcal A}
        \bigl(\varepsilon_{\rm red}^{(\ell)}
              +\varepsilon_{\rm ring}^{(\ell)}\bigr)
     +\varepsilon_{\rm batch}+\varepsilon_{\rm open}.
-\]
+ \label{eq:composed-soundness}
+\end{equation}
+Equation~\eqref{eq:composed-soundness} is the profile's composed soundness
+bound.
 
 \endgroup

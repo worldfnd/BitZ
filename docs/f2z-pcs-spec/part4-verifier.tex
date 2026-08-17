@@ -26,12 +26,12 @@
 \newcommand{\VReadNarg}{\VNargOp{\mathsf{ReadNarg}}}
 \newcommand{\VReadHint}{\VHintOp{\mathsf{ReadHint}}}
 \newcommand{\VAbsorb}{\VNargOp{\Absorb}}
-\newcommand{\VGroup}[2]{%
-  \textbf{\textcolor{specnavy}{Group~#1: #2}}}
+\newcommand{\PVStep}[2]{%
+  \textbf{\textcolor{specnavy}{P#1/V#1: #2}}}
 The verifier rejects on any failed gate or helper, malformed or unsupported
 value, or cursor mismatch.  NARG and hint cursors are independent; a hint stays
 pending until its predicate succeeds, and every squeeze requires
-\(\mathsf{NoPendingHint}\).  Records and groups are processed in increasing
+\(\mathsf{NoPendingHint}\).  Records and prover/verifier steps are processed in increasing
 order.  The labels below remain meaningful without color.
 
 \begingroup\scriptsize
@@ -47,10 +47,10 @@ order.  The labels below remain meaningful without color.
 \textcolor{verifierCall}{\textbf{[CALL]}} subprotocol\\[-1pt]
 \end{tabularx}
 \begin{tabularx}{\linewidth}{@{}*{4}{>{\centering\arraybackslash}X}@{}}
-\textbf{G1--G3} statement&
-\textbf{G4--G5} per chunk&
-\textbf{G6--G7} reconstruction&
-\textbf{G8--G10} opening\\
+\textbf{P1/V1--P3/V3} statement&
+\textbf{P4/V4--P5/V5} per chunk&
+\textbf{P6/V6--P7/V7} reconstruction&
+\textbf{P8/V8--P10/V10} opening\\
 \end{tabularx}
 \endgroup
 
@@ -61,7 +61,7 @@ order.  The labels below remain meaningful without color.
 \Ensure \(\mathsf{true}\) or \(\mathsf{false}\)
 
 \Statex
-\Statex \VGroup{1}{Validate and bind the commitment}
+\Statex \PVStep{1}{Validate and bind the commitment}
 \Statex \hspace{\algorithmicindent}
   \(\RPIMSAT^{\rm app}
     \xRightarrow{\mathsf{Encode}}\RPIMSAT^{\rm enc}\)
@@ -100,7 +100,7 @@ order.  The labels below remain meaningful without color.
   \(\mathsf{code\_profile\_id}\)
 
 \Statex
-\Statex \VGroup{2}{Verify the application PIOP}
+\Statex \PVStep{2}{Verify the application PIOP}
 \Statex \hspace{\algorithmicindent}
   \(\RPIMSAT^{\rm enc}
     \xRightarrow{\Pi_{{\rm app},1}}\RPESAT^{\rm app}
@@ -112,7 +112,7 @@ order.  The labels below remain meaningful without color.
   \land 0\le w_b<2^{100}\land w'_c,y\in\Fq]\)
 
 \Statex
-\Statex \VGroup{3}{Apply deterministic Bitify}
+\Statex \PVStep{3}{Apply deterministic Bitify}
 \Statex \hspace{\algorithmicindent}
   \(\RLMFB\equiv_{\mathsf{Bitify}}\RLBD\)
 \State \(\VDerive\mathcal I_{\rm LBD}\gets
@@ -140,7 +140,7 @@ order.  The labels below remain meaningful without color.
 
 \For{\(\ell\in\mathcal A\) in increasing order}
   \Statex
-  \Statex \VGroup{4}{Verify chunk \(\ell\) of \(\Pi_1\)}
+  \Statex \PVStep{4}{Verify chunk \(\ell\) of \(\Pi_1\)}
   \Statex \hspace{\algorithmicindent}
     \(\RLBD\xRightarrow{\Pi_1^{(\ell)}}
       \RPESAT(\K,Q_{\Ftwo\!\Z}^{(\ell)},\mathcal C,\Pack)\)
@@ -163,7 +163,7 @@ order.  The labels below remain meaningful without color.
       \MLE{\bm\nu^{(\ell)}}(\zeta^{(\ell)})\)
 
   \Statex
-  \Statex \VGroup{5}{Verify the GKR reduction}
+  \Statex \PVStep{5}{Verify the GKR reduction}
   \Statex \hspace{\algorithmicindent}
     \(\RPESAT(\K,Q_{\Ftwo\!\Z}^{(\ell)},\mathcal C,\Pack)
       \xRightarrow{\Pi_{\rm red}^{(\ell)}}
@@ -178,13 +178,13 @@ order.  The labels below remain meaningful without color.
   \State \(\VCheckOp[\mathsf{ok}_{\rm GKR}=1]\)
 \EndFor
 
-\Statex \VGroup{6}{Complete the \(\Pi_1\) reconstruction}
+\Statex \PVStep{6}{Complete the \(\Pi_1\) reconstruction}
 \State \(\VDerive\mu_c\gets
   \sum_{\ell=0}^{L-1}2^{c_w\ell}u_c^{(\ell)}\) over \(\mathbb Z\)
 \State \(\VCheckOp
   [\sum_cw'_c\pi_q(\mu_c)=y]\)
 
-\Statex \VGroup{7}{Normalize the optional virtual source}
+\Statex \PVStep{7}{Normalize the optional virtual source}
 \Statex \hspace{\algorithmicindent}
   \(\mathcal R_{h\text{-}{\rm Lin}}^{\virt}
     \equiv_{\mathsf{Adj}_{T_\K^*}}
@@ -194,7 +194,7 @@ order.  The labels below remain meaningful without color.
   \textit{Virtual profiles use a specified partial-core, adjoint, and compatible
   ring adapter.}
 
-\Statex \VGroup{8}{Verify the ring switch}
+\Statex \PVStep{8}{Verify the ring switch}
 \Statex \hspace{\algorithmicindent}
   internal expansion of \(\Pi_{\mathsf{iopp}}\)
 \For{\(\ell\in\mathcal A\) in increasing order}
@@ -219,7 +219,7 @@ order.  The labels below remain meaningful without color.
     \(B_\ell(Y)\gets\Phi_{r''}(\eq(r_{\hi}^{(\ell)},Y))\)
 \EndFor
 
-\Statex \VGroup{9}{Batch the packed LIN claims}
+\Statex \PVStep{9}{Batch the packed LIN claims}
 \Statex \hspace{\algorithmicindent}
   internal expansion of \(\Pi_{\mathsf{iopp}}\)
 \For{\(\ell\in\mathcal A\) in increasing order}
@@ -230,7 +230,7 @@ order.  The labels below remain meaningful without color.
 \State \(\VDerive B\gets\sum_{\ell\in\mathcal A}\eta_\ell B_\ell\),
   \(\beta\gets\sum_{\ell\in\mathcal A}\eta_\ell\beta_\ell\)
 
-\Statex \VGroup{10}{Open the batched claim}
+\Statex \PVStep{10}{Open the batched claim}
 \Statex \hspace{\algorithmicindent}
   profile-selected polynomial opening (Ligerito in the current profile)
 \State \(\VCheckOp[B=\mathsf{DerivedCoefficient}(x_{\rm app},\tr)
@@ -251,7 +251,7 @@ The helper verifiers own the checks, absorptions, and challenges specified in
 Section~\ref{sec:interaction}; they do not introduce additional paper-level
 relation nodes.  They also own their subordinate channel ledgers: every NARG
 read advances only $c_N$, every hint read advances only $c_H$, and a helper
-\mustnot{} return success with an unchecked hint.  Group~4's
+\mustnot{} return success with an unchecked hint.  P4/V4's
 $\Nbadge{\nu^{(\ell)}}$, $\Hbadge{u^{(\ell)}}$ order is realized by tags
 \code{2001} and \code{2081}.  Every read, absorb, squeeze, PoW check, and EOF
 condition uses the byte rules in Section~\ref{sec:wire-profile}; no helper may
