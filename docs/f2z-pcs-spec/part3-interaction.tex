@@ -1,0 +1,555 @@
+\section{Prover--verifier interaction}
+\label{sec:interaction}
+
+\definecolor{pvnavy}{HTML}{17365D}
+\definecolor{pvtraffic}{HTML}{F3F4F6}
+\definecolor{pvhint}{HTML}{A15C00}
+
+\newcommand{\Nbadge}[1]{\textcolor{specblue}{\chN[#1]}}
+\newcommand{\Hbadge}[1]{\textcolor{pvhint}{\chH[#1]}}
+\newcommand{\Dbadge}[1]{\textcolor{specmuted}{\chD[#1]}}
+\newcommand{\Splitbadge}[1]{%
+  \textcolor{specblue}{\chN}\!/
+  \textcolor{pvhint}{\chH}[#1]}
+
+\newcommand{\idPIMSAT}{$\mathsf{PIMSAT}$}
+\newcommand{\idLMFB}{$\mathsf{LMFB}$}
+\newcommand{\idLBD}{$\mathsf{LBD}$}
+\newcommand{\idPESAT}{$\mathsf{PESAT}^{(\ell)}$}
+\newcommand{\idLINPACK}{$\mathsf{LIN}[\Pack]$}
+\newcommand{\idLINIDFAM}{$\mathsf{LIN}[\mathsf{id}]^{\mathcal A}$}
+\newcommand{\idLINID}{$\mathsf{LIN}[\mathsf{id}]$}
+
+\newcolumntype{L}{>{\raggedright\arraybackslash}p{2.04in}}
+\newcolumntype{T}{>{\centering\arraybackslash\columncolor{pvtraffic}}p{0.50in}}
+\newcolumntype{R}{>{\raggedright\arraybackslash}p{2.24in}}
+
+\newenvironment{pvexchange}
+  {\par\scriptsize
+   \setlength{\tabcolsep}{3pt}%
+   \setlength{\abovedisplayskip}{2pt}%
+   \setlength{\belowdisplayskip}{2pt}%
+   \renewcommand{\arraystretch}{1.02}%
+   \begin{tabular}{@{}LTR@{}}
+   \rowcolor{pvnavy}
+   \multicolumn{1}{c}{\color{white}\bfseries Prover $\mathsf P$}
+   &\multicolumn{1}{c}{\color{white}\bfseries Traffic}
+   &\multicolumn{1}{c}{\color{white}\bfseries Verifier $\mathsf V$}
+   \\
+   \addlinespace[1pt]}
+  {\end{tabular}\par}
+
+\newenvironment{pvlongexchange}
+  {\par\scriptsize
+   \setlength{\LTleft}{0pt}\setlength{\LTright}{\fill}%
+   \setlength{\LTpre}{0pt}\setlength{\LTpost}{0pt}%
+   \setlength{\tabcolsep}{3pt}%
+   \setlength{\abovedisplayskip}{2pt}%
+   \setlength{\belowdisplayskip}{2pt}%
+   \renewcommand{\arraystretch}{1.02}%
+   \begin{longtable}{@{}LTR@{}}
+   \rowcolor{pvnavy}
+   \multicolumn{1}{c}{\color{white}\bfseries Prover $\mathsf P$}
+   &\multicolumn{1}{c}{\color{white}\bfseries Traffic}
+   &\multicolumn{1}{c}{\color{white}\bfseries Verifier $\mathsf V$}
+   \\
+   \addlinespace[1pt]
+   \endfirsthead
+   \rowcolor{pvnavy}
+   \multicolumn{1}{c}{\color{white}\bfseries Prover $\mathsf P$}
+   &\multicolumn{1}{c}{\color{white}\bfseries Traffic}
+   &\multicolumn{1}{c}{\color{white}\bfseries Verifier $\mathsf V$}
+   \\
+   \addlinespace[1pt]
+   \endhead}
+  {\end{longtable}\par}
+
+\newcommand{\Pmsg}[1]{\(\xrightarrow{\;\scriptstyle #1\;}\)}
+\newcommand{\Vmsg}[1]{\(\xleftarrow{\;\scriptstyle #1\;}\)}
+\newcommand{\Pturn}[1]{#1 & & \\[1pt]}
+\newcommand{\Vturn}[1]{& & #1 \\[1pt]}
+\newcommand{\Psend}[1]{& \Pmsg{#1} & \\[-1pt]}
+\newcommand{\Vsend}[1]{& \Vmsg{#1} & \\[-1pt]}
+
+\newenvironment{pvstep}[3][2.0in]
+  {\Needspace{#1}%
+   \par\addvspace{0.45\baselineskip}%
+   \refstepcounter{clgstep}%
+   \clgmarkstart
+   \noindent
+   {\normalsize\bfseries\sffamily\textcolor{clgtitlec}%
+     {Group \theclgstep.}~#2}%
+   \nopagebreak\par\vspace{0.08\baselineskip}%
+   #3%
+   \clgboard%
+   \nopagebreak}
+  {\clgreserve\par\addvspace{0.12\baselineskip}}
+
+\subsection{Transcript channels and schedule}
+\label{sec:transcript-channels}
+
+Equation~\eqref{eq:proof-channel-lengths} defines the two proof streams; these
+badges remain normative without color.
+
+\begingroup\footnotesize
+\renewcommand{\arraystretch}{1.05}
+\begin{tabularx}{\linewidth}{@{}p{0.48in}p{0.67in}X@{}}
+\toprule
+\textbf{Badge}&\textbf{Bytes}&\textbf{Verifier action}\\
+\midrule
+$\Nbadge{x}$&NARG&Consume a canonical typed record and absorb that same encoding
+before any dependent squeeze; PoW alone uses the checked-deferred read in
+Section~\ref{sec:wire-transcript}.\\
+$\Hbadge{x}$&Hint&Consume, never absorb, and check against the bound prefix
+before the next squeeze.\\
+$\Dbadge{x}$&None&Public, verifier-derived, or challenge value; no proof bytes,
+with the exact framing and squeeze transition of
+Section~\ref{sec:wire-transcript}.\\
+$\Splitbadge{\pi}$&Both&The subordinate ledger fixes each field's channel and
+both replay orders.\\
+\bottomrule
+\end{tabularx}
+\endgroup
+
+Object notation $\mathsf{Verify}(\ldots,\pi;\tr)$ denotes the equivalent
+$\mathsf{VerifyStream}(\ldots;\tr,c_N,c_H)$.  It follows the subordinate ledger
+over the closed profile's bounded input slices, performs the same checks and events,
+and succeeds only at both declared cursor endpoints.
+
+Given public data and bound NARG prefix $A$, a hint $h$ is admissible only
+if its accepted value is computationally unique:
+\begin{equation}
+ \Pr\!\left[\exists h\ne h':
+   \mathsf{CheckHint}_i(A,h)=
+   \mathsf{CheckHint}_i(A,h')=1\right]
+ \le \operatorname{negl}(\lambda).
+ \label{eq:hint-single-valued}
+\end{equation}
+The check \must{} finish before the next $\Squeeze$.  Acceptance requires no
+pending hint and exact exhaustion of both cursors; missing, misordered, or
+trailing records reject.
+
+Let $\Frame(\tau,\ell,k,i;z)$ be the byte frame of
+Equation~\eqref{eq:event-frame-v1}.
+Before the first proof challenge,
+\begin{equation}
+ \tr_0:=\Absorb\!\left(
+   \Absorb\!\left(
+    \tr_{\rm init},
+    \Frame(\mathtt{0x0001},\bot_{32},\bot_{32},\bot_{32};
+      \mathsf{ProfileV1})\right),
+   \Frame(\mathtt{0x0002},\bot_{32},\bot_{32},\bot_{32};
+      \mathsf{StatementV1})
+ \right).
+ \label{eq:bind-statement}
+\end{equation}
+The payloads in Equation~\eqref{eq:bind-statement} are fixed by
+Equation~\eqref{eq:profile-statement-payloads}.  Later absorbs are
+domain-separated by their numeric tag and fixed $(\ell,k,i)$ scope fields.
+A squeeze updates $\tr$ and yields a derived, non-transmitted value; each
+populated interaction row denotes one event.
+
+The tables realize Equation~\eqref{eq:solid-reduction-graph} in this exact order:
+\begin{equation}
+ G_1;G_2;G_3;\quad
+ \mathbf{for}\ \ell\in\mathcal A\ \text{in increasing order}:\
+ (G_4^{(\ell)};G_5^{(\ell)});\quad
+ G_6;G_7;G_8;G_9;G_{10}.
+ \label{eq:group-order}
+\end{equation}
+Right ledgers contain post-group claims; \emph{internal} claims and
+superscript-$(\ell)$ copies add no paper relation.
+
+\setlength{\textwidth}{5.63in}
+\setlength{\columnwidth}{5.63in}
+\setlength{\linewidth}{5.63in}
+\setlength{\hsize}{5.63in}
+\setlength{\marginparwidth}{1.72in}
+\setlength{\marginparsep}{0.10in}
+
+% --------------------------------------------------------------------------
+\begin{pvstep}{Commit and bind the application statement}{%
+  \clgedge[initialization]{$\mathsf{Encode}$}
+    {$\RPIMSAT^{\rm app}$}
+    {$\RPIMSAT^{\rm enc}$}%
+  \clgnewrel{\idPIMSAT}{%
+    $\begin{gathered}
+       p_j^{(a)}(\bm x,\bm f)\in I_a\\[-2pt]
+       (\forall a,j)
+     \end{gathered}$}%
+  \clgdef{$\rho$}{$\rho=\Root(O)$}%
+}
+\begin{pvexchange}
+\Pturn{Construct
+\[
+ \begin{aligned}
+ \bm b&:=\bits(\bm f),\\
+ P&:=\Pack(\pi_2(\bm b)),\\
+ O&:=\Enc_{\mathcal C}(P),\qquad \rho:=\Root(O).
+ \end{aligned}
+\]}
+\Psend{\Dbadge{\mathsf{com}}}
+\Vturn{Validate the profile, statement, shape, code, and root type; then set
+\[
+ \tr\leftarrow\Absorb_{\mathsf{statement}}
+   (\tr,(\mathsf{pp},x_{\rm app},\mathsf{com})).
+\]}
+\end{pvexchange}
+\end{pvstep}
+
+% --------------------------------------------------------------------------
+\begin{pvstep}{Run the application PIOP}{%
+  \clgedge[relation reduction]{$\Pi_{\rm PIOP}$}
+    {$\RPIMSAT^{\rm enc}$}
+    {$\RLMFB$}%
+  \clgdone{\idPIMSAT}%
+  \clgnewrel{\idLMFB}{$\langle\bm v,\psi(\bm f)\rangle_R=y$}%
+}
+The displayed edge abbreviates the paper's application-PESAT stage followed by
+its linear reduction; both retain the same encoded oracle.
+\begin{pvexchange}
+\Pturn{Construct
+\[
+ (\tr,\pi_{\rm PIOP})\leftarrow
+ \mathsf{PIOP.Prove}(\mathsf{pp},x_{\rm app},\bm f;\tr).
+\]}
+\Psend{\Splitbadge{\pi_{\rm PIOP}}}
+\Vturn{Compute
+\[
+ \begin{aligned}
+ (\tr,\bm v,y,\bm w,\bm w')&\leftarrow\mathsf{VerifyPIOP}\\[-2pt]
+ &\quad(x_{\rm app},\rho,\pi_{\rm PIOP};\tr),
+ \end{aligned}
+\]
+require $v_{b,c}=\pi_q(w_b)w'_c$ and all public bounds, and bind the
+derived core instance before its first challenge.}
+\end{pvexchange}
+\end{pvstep}
+
+% --------------------------------------------------------------------------
+\begin{pvstep}[1.45in]{Bitify the weighted linear relation}{%
+  \clgedge[deterministic rewrite]{$\mathsf{Bitify}$}
+    {$\RLMFB$}
+    {$\RLBD$}%
+  \clgdone{\idLMFB}%
+  \clgnewrel{\idLBD}{$\langle\bm u,\iota_R(\bm b)\rangle_R=y$}%
+}
+\begin{pvexchange}
+\Pturn{Retain $\bm b=\bits(\bm f)$ and its matrix form $\Bbit$.}
+\Vturn{Derive, without a message or challenge,
+\[
+ u_{c,b,j}:=v_{b,c}\pi_q(2^j)
+             =\pi_q(w_b2^j)w'_c.
+\]
+This is retyping by semilinearity, not a Booleanity round.}
+\Vturn{Encode $\mathsf{CoreSeamV1}$ by
+Equation~\eqref{eq:core-seam-payload} and absorb its tag-\code{0003} frame at
+scope $(\bot_{32},\bot_{32},\bot_{32})$ before the first chunk record.}
+\end{pvexchange}
+\end{pvstep}
+
+% --------------------------------------------------------------------------
+\begin{pvstep}[2.35in]{Run chunk $\ell$ of $\Pi_1$}{%
+  \clgedge[paper-edge fragment]{$\Pi_1^{(\ell)}$}
+    {$\RLBD$}
+    {$\RPESAT(\K,Q_{\Ftwo\!\Z}^{(\ell)},\mathcal C,\Pack)$}%
+  \clgtouch{\idLBD}%
+  \clgnewrel{\idPESAT}{$Q_c^{(\ell)}(\Bbit)=0\ (\forall c)$}%
+  \clgdef{$P$}{$P=\Pack(\pi_2(\bm b))$}%
+}
+\begin{pvexchange}
+\Pturn{Before sending anything, compute
+\[
+ u_c^{(\ell)}=\sum_i\omega_i^{(\ell)}\Bbit[c,i],\qquad
+ \nu_c^{(\ell)}=g^{u_c^{(\ell)}}.
+\]}
+\Psend{\Nbadge{\nu^{(\ell)}}}
+\Vturn{Read and absorb the canonical typed vector $\nu^{(\ell)}$.}
+\Psend{\Hbadge{u^{(\ell)}}}
+\Vturn{Before any later squeeze, require
+\[
+ |u^{(\ell)}|=2^s,\qquad 0\le u_c^{(\ell)}<2^{127},
+\]
+and $g^{u_c^{(\ell)}}=\nu_c^{(\ell)}$ for every $c$.  The order of $g$ and the
+range bound make this accepted exponent unique.  Then set
+\[
+ \begin{aligned}
+ \zeta^{(\ell)}&\leftarrow\Squeeze_{\K}^{s}(\tr),\\
+ e_0^{(\ell)}&:=\MLE{\nu^{(\ell)}}(\zeta^{(\ell)}).
+ \end{aligned}
+\]}
+\Vsend{\Dbadge{\zeta^{(\ell)}}}
+\end{pvexchange}
+\end{pvstep}
+
+% --------------------------------------------------------------------------
+\begin{pvstep}[2.35in]{Run the GKR reduction for chunk $\ell$}{%
+  \clgedge[GKR subprotocol]{$\Pi_{\rm red}^{(\ell)}$}
+    {$\RPESAT(\K,Q_{\Ftwo\!\Z}^{(\ell)},\mathcal C,\Pack)$}
+    {$\RLin^{(\ell)}(\K,\mathcal C,\Pack)$}%
+  \clgdone{\idPESAT}%
+  \clgnewrel{\idLINPACK}
+    {$\begin{gathered}
+       \MLE{B_{\mathrm{bit},\K}}(\mathit{pt}_r)=\mu_r\\[-2pt]
+       (r\in\mathcal A,\ r\le\ell)
+     \end{gathered}$}%
+}
+The PCS-level schedule treats $\Pi_{\rm red}^{(\ell)}$ as the named GKR
+subprotocol.  Its input is the current PESAT claim, its unchanged commitment
+$\rho=\Root(O)$, and the transcript state after $\zeta^{(\ell)}$ and
+$e_0^{(\ell)}$ are derived.
+Denote this typed input bundle by $\mathcal I_{\rm GKR}^{(\ell)}$.
+Its output must have the MLE-shaped coefficient
+$\bm a_\ell[z]=\eq(z,\mathit{pt}_\ell)$ and satisfy
+$\MLE{B_{\mathrm{bit},\K}}(\mathit{pt}_\ell)=\mu_\ell$ against the same root.
+
+\begin{pvexchange}
+\Pturn{Construct the selected GKR profile's canonical proof fragment
+\[
+ \pi_{\rm red}^{(\ell)}\leftarrow
+ \mathsf{GKR.Prove}
+ (\mathsf{pp}_{\rm GKR},\mathcal I_{\rm GKR}^{(\ell)},\Bbit;\tr).
+\]}
+\Psend{\Splitbadge{\pi_{\rm red}^{(\ell)}}}
+\Vturn{Compute
+\[
+ \begin{aligned}
+ (\tr',\mathit{pt}_\ell,\mu_\ell)&\leftarrow\mathsf{GKR.Verify}\\
+ &\quad(\mathsf{pp}_{\rm GKR},\mathcal I_{\rm GKR}^{(\ell)},
+        \pi_{\rm red}^{(\ell)};\tr),
+ \end{aligned}
+\]
+require success and complete consumption of the GKR fragment, then set
+$\tr\leftarrow\tr'$.}
+\Pturn{Retain the witness value
+$\MLE{B_{\mathrm{bit},\K}}(\mathit{pt}_\ell)$.}
+\end{pvexchange}
+All internal GKR messages and challenges are owned by the selected GKR
+profile and use its versioned domain namespace.  Treating GKR atomically here
+does not permit an implementation to omit that subordinate transcript and
+encoding specification.
+
+For a conforming merged-forest subordinate profile, the repeated phase-$x$ value
+$\Hbadge{S_{x,k}^{(\ell)}}$ is a valid hint because the prefix already fixes
+$e_k^{(\ell)}$ and the verifier immediately requires
+$S_{x,k}^{(\ell)}=e_k^{(\ell)}$ before any following squeeze.  A canonical
+profile \should{} omit that redundant field and mark it $\Dbadge{e_k^{(\ell)}}$
+instead.  The phase-$c$ claimed sums, sumcheck messages, and terminal child
+pairs remain $\Nbadge{\mathrm{GKR\ messages}}$: their consistency checks do not
+uniquely determine them and later challenges must bind them.
+
+The outer encoded field
+$\mathtt{presums}[\ell]\mathtt{.claimed\_sums}$ is distinct from those phase-$c$
+claims.  Wire profile v1 omits it and supplies the derived value
+$\Dbadge{[e_d^{(\ell)}+1]}$ to the MultiDegree pre-sumcheck.  A decoder that
+encounters the reserved legacy tag \code{3081} \must{} reject.
+\end{pvstep}
+
+% --------------------------------------------------------------------------
+\begin{pvstep}[1.65in]{Complete $\Pi_1$'s reconstruction check}{%
+  \clgedge[paper composition]{$\Pi_1;\Pi_{\rm red}$}
+    {$\RLBD$}
+    {$\displaystyle\bigwedge_{\ell\in\mathcal A}
+       \RLin^{(\ell)}(\K,\mathcal C,\Pack)$}%
+  \clgdone{\idLBD}%
+  \clgupd{\idLINPACK}{%
+    $\begin{gathered}
+       \MLE{B_{\mathrm{bit},\K}}(\mathit{pt}_\ell)=\mu_\ell\\[-2pt]
+       (\ell\in\mathcal A)
+     \end{gathered}$}%
+  \clgundef{$P$}%
+}
+\begin{pvexchange}
+\Vturn{After all active chunks, set inactive $u^{(\ell)}:=0$, reconstruct
+\[
+ \mu_c^{\rm col}:=\sum_{\ell=0}^{L-1}2^{c_w\ell}u_c^{(\ell)}\in\Z,
+\]
+and require the paper's tensor reconstruction equality
+\[
+ \boxed{\displaystyle
+   \sum_c w'_c\,\pi_q(\mu_c^{\rm col})=y.}
+\]
+This check has no message, absorb, or challenge.}
+\end{pvexchange}
+\end{pvstep}
+
+% --------------------------------------------------------------------------
+\begin{pvstep}[1.70in]{Apply the virtual adjoint when needed}{%
+  \clgedge[optional zero-message branch]
+    {$\mathsf{Adj}_{T_K^*}$}
+    {$\mathcal R_{h\text{-}{\rm Lin}}^{\virt}$}
+    {$\RLin(\K,\mathcal C,\Pack)$}%
+  \clgtouch{\idLINPACK}%
+}
+The direct profile skips this optional group and carries its current LIN
+family unchanged.  A virtual profile substitutes its specified partial core
+for Groups $G_4$--$G_6$, producing
+$h=h_{0,\K}+T_K(b_K)$ and $\langle a_h,h\rangle_{\K}=\mu_h$ by the
+proof-carrying conditional edge
+\[
+ \RLBD^{\virt}
+ \overset{\Pi_{\rm partial\text{-}core}}{\dashrightarrow}
+ \mathcal R_{h\text{-}{\rm Lin}}^{\virt}.
+\]
+Only the following adjoint rewrite is zero-message:
+\begin{equation}
+ a_b:=T_K^*a_h,\qquad
+ \mu_b:=\mu_h-\langle a_h,h_{0,\K}\rangle_{\K},\qquad
+ \langle a_b,b_K\rangle_{\K}=\mu_b.
+ \label{eq:interaction-virtual-adjoint}
+\end{equation}
+No message or challenge is generated.  A profile without this predecessor and
+a compatible ring adapter rejects virtual inputs.
+\end{pvstep}
+
+% --------------------------------------------------------------------------
+\begin{pvstep}[2.35in]{Ring-switch each active linear claim}{%
+  \clgedge[$\Pi_{\rm iopp}$ internal]{$\Pi_{\rm ring}^{\mathcal A}$}
+    {$\displaystyle\bigwedge_{\ell\in\mathcal A}
+       \RLin^{(\ell)}(\K,\mathcal C,\Pack)$}
+    {$\displaystyle\bigwedge_{\ell\in\mathcal A}
+       \RLin^{(\ell)}(\K,\mathcal C,\mathsf{id})$}%
+  \clgdone{\idLINPACK}%
+  \clgnewrel{\idLINIDFAM}
+    {$\begin{gathered}
+       \langle B_\ell,P\rangle_{\K}=\beta_\ell\\[-2pt]
+       (\ell\in\mathcal A)
+     \end{gathered}$}%
+  \clgdef{$P$}{$P=\Pack(\pi_2(\bm b))$}%
+}
+For the direct MLE-structured profile, split
+$\mathit{pt}_\ell=(r_{\lo}^{(\ell)},r_{\hi}^{(\ell)})$ with
+$|r_{\lo}^{(\ell)}|=7$.
+After the shared challenge $r''$, the successor coefficients are
+\begin{align}
+ \bar s_u^{(\ell)}&:=\sum_v[s_v^{(\ell)}]_u\beta_v,&
+ \Phi_{r''}(z)&:=\sum_u\eq(u,r'')[z]_u,\notag\\[-2pt]
+ \beta_\ell&:=\sum_u\eq(u,r'')\bar s_u^{(\ell)},&
+ B_\ell(Y)&:=\Phi_{r''}(\eq(r_{\hi}^{(\ell)},Y)).
+ \label{eq:ring-successor}
+\end{align}
+\begin{pvlongexchange}
+\Pturn{For every $\ell\in\mathcal A$ and $0\le v<128$, compute
+\[
+ s_v^{(\ell)}:=\MLE{B_{\rm bit,v}}(r_{\hi}^{(\ell)}).
+\]}
+\Psend{\Nbadge{s^{(\ell)}}}
+\Vturn{For each $\ell$, validate and absorb the canonical $s^{(\ell)}$ frame,
+then require
+\[
+ \sum_{v=0}^{127}\eq(v,r_{\lo}^{(\ell)})s_v^{(\ell)}=\mu_\ell,
+\]
+before any squeeze.  After the last vector squeeze
+$r''\leftarrow\Squeeze_{\K}^{7}(\tr)$.}
+\Vsend{\Dbadge{r''}}
+\Pturn{With $[z]_u$ denoting coordinate $u$ in the fixed $\K/\Ftwo$ basis,
+derive $(B_\ell,\beta_\ell)$ by Equation~\eqref{eq:ring-successor}.}
+\Vturn{Independently derive the same
+$(B_\ell,\beta_\ell)_{\ell\in\mathcal A}$.}
+\end{pvlongexchange}
+\end{pvstep}
+
+% --------------------------------------------------------------------------
+\begin{pvstep}[1.55in]{Batch the packed linear relations}{%
+  \clgedge[$\Pi_{\rm iopp}$ internal]{$\mathsf{Batch}_{\bm\eta}$}
+    {$\displaystyle\bigwedge_{\ell\in\mathcal A}
+       \RLin^{(\ell)}(\K,\mathcal C,\mathsf{id})$}
+    {$\RLin(\K,\mathcal C,\mathsf{id})$}%
+  \clgdone{\idLINIDFAM}%
+  \clgnewrel{\idLINID}{$\langle B,P\rangle_{\K}=\beta$}%
+}
+\begin{pvexchange}
+\Vturn{For each active $\ell$ in increasing order, squeeze $\eta_\ell\in\K$
+under tag \code{4102} and scope $(\ell,\bot_{32},\bot_{32})$.}
+\Vsend{\Dbadge{\bm\eta}}
+\Pturn{Form
+\[
+ B:=\sum_{\ell\in\mathcal A}\eta_\ell B_\ell,
+ \qquad
+ \beta:=\sum_{\ell\in\mathcal A}\eta_\ell\beta_\ell.
+\]}
+\Vturn{Independently derive the same $(B,\beta)$.}
+\end{pvexchange}
+\end{pvstep}
+
+% --------------------------------------------------------------------------
+\begin{pvstep}[1.55in]{Open the batched claim}{%
+  \clgedge[$\Pi_{\rm iopp}$ internal]{$\Pi_{\rm open}$}
+    {$\RLin(\K,\mathcal C,\mathsf{id})$}
+    {$\mathcal R_{\rm triv}$}%
+  \clgdone{\idLINID}%
+  \clgundef{$P$}%
+  \clgundef{$\rho$}%
+}
+\begin{pvexchange}
+\Pturn{Run the profile-selected polynomial opening protocol---Ligerito in the
+current profile---for the batched claim $(\rho,B,\beta)$, producing
+$\pi_{\rm open}$.}
+\Psend{\Splitbadge{\pi_{\rm open}}}
+\Vturn{Accept only if $\pi_{\rm open}$ verifies against $(\rho,B,\beta)$.
+This authenticates $O=\Enc_{\mathcal C}(P)$ and discharges the batched claim.}
+\end{pvexchange}
+\end{pvstep}
+
+\setlength{\textwidth}{7.45in}
+\setlength{\columnwidth}{7.45in}
+\setlength{\linewidth}{7.45in}
+\setlength{\hsize}{7.45in}
+
+\paragraph{Recursive-opening channel ledger.}
+For the recursive Ligerito profile, the following partition is normative at
+the field level.  The NARG records are replayed in verifier-event order, not
+Rust structure-field order; hint records are consumed at the opening level
+where their checks appear.
+
+\begingroup\scriptsize
+\renewcommand{\arraystretch}{1.08}
+\begin{tabularx}{\linewidth}{@{}p{0.40in}p{1.58in}X@{}}
+\toprule
+\textbf{Class}&\textbf{Fields}&\textbf{Binding and verification deadline}\\
+\midrule
+$\Nbadge{\cdot}$&
+Initial and recursive roots; sumcheck messages; OOD values;
+$\code{final\_proof.yr}$; query- and fold-grinding nonces.&
+Each is observed or checked-and-absorbed before a dependent challenge.  PoW
+nonces remain NARG because multiple values may satisfy the predicate;
+Section~\ref{sec:wire-pow} fixes their tags and schedule.\\
+$\Hbadge{\mathrm{open}_0}$&
+$\code{initial\_proof.opened\_rows}$ and
+$\code{initial\_proof.merkle\_proof}$.&
+The prior initial root and sampled query positions bind the rows and path.
+Merkle verification must succeed before the next sumcheck-introduction
+challenge.\\
+$\Hbadge{\mathrm{open}_i}$&
+Each recursive proof's $\code{opened\_rows}$ and
+$\code{merkle\_proof}$.&
+Verify against the already absorbed preceding-level root and sampled queries
+before the next batching challenge.  Consume levels in increasing recursive
+order.\\
+$\Hbadge{\mathrm{open}_{\rm fin}}$&
+$\code{final\_proof.opened\_rows}$ and
+$\code{final\_proof.merkle\_proof}$.&
+Verify against the preceding root after the final queries are fixed and before
+the final batching challenge or acceptance.\\
+\bottomrule
+\end{tabularx}
+\endgroup
+
+The authenticated rows are hints because the earlier Merkle root
+computationally fixes their accepted contents; the authentication nodes only
+certify that fixed opening.  The whole $\pi_{\rm open}$ \mustnot{} be placed on
+the hint channel.  A recursive-opening implementation must reject before any
+later squeeze on a failed row-length or Merkle check and must exhaust both
+substreams before returning success.  Section~\ref{sec:wire-recursive-ledger}
+fixes the byte payload, scope, cardinality, and exact replay position of every
+field summarized in this table.
+
+The Rust type $\code{FlockCommitHint}$ is unrelated terminology: it is a
+prover-local commitment cache/key, not an $H_{\rm F2Z}$ record.  Its rows,
+packed columns, message, and prover data are not proof bytes; only the public
+commitment/root enters the verifier-facing protocol.
+
+Groups $G_8$--$G_{10}$ are the concrete recursive-opening profile's internal
+expansion of the paper edge $\Pi_{\rm iopp}$.  The verifier accepts iff every
+displayed check succeeds and the proof parser consumes exactly the fields
+specified by these groups.

@@ -1,0 +1,54 @@
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{f2zspec}[2026/08/13 Notation for the general F2Z PCS specification]
+
+\RequirePackage{amsmath,amssymb,mathtools,bm}
+
+\newcommand{\Ftwo}{\mathbb F_2}
+\newcommand{\Fbin}{\mathbb F_{\mathrm{bin}}}
+\newcommand{\Fq}{\mathbb F_q}
+\newcommand{\K}{\mathbb K}
+\newcommand{\Z}{\mathbb Z}
+\newcommand{\bitsset}{\{0,1\}}
+\newcommand{\Enc}{\operatorname{Enc}}
+\newcommand{\Pack}{\operatorname{Pack}}
+\newcommand{\Root}{\operatorname{Root}}
+\newcommand{\Com}{\operatorname{Com}}
+\newcommand{\bits}{\operatorname{bits}}
+\newcommand{\INT}{\operatorname{INT}}
+\newcommand{\eq}{\operatorname{eq}}
+\newcommand{\Absorb}{\mathsf{Absorb}}
+\newcommand{\Squeeze}{\mathsf{Squeeze}}
+\newcommand{\tr}{\mathsf{tr}}
+\newcommand{\Frame}{\operatorname{Frame}_{\rm v1}}
+\newcommand{\HostEncode}{\operatorname{HostEncode}_{\rm v1}}
+\newcommand{\ProfileID}{\mathsf{profile\_id}}
+\newcommand{\ByteLen}{\operatorname{bytelen}}
+\newcommand{\LE}[2]{\operatorname{LE}_{#1}(#2)}
+\newcommand{\LZ}{\operatorname{LZ}}
+\newcommand{\MLE}[1]{\widetilde{#1}}
+\newcommand{\hi}{\mathrm{hi}}
+\newcommand{\lo}{\mathrm{lo}}
+\newcommand{\virt}{\mathrm{virt}}
+\newcommand{\Bbit}{B_{\mathrm{bit}}}
+
+\newcommand{\RPIMSAT}{\mathcal R_{\mathrm{PIMSAT}}}
+\newcommand{\RLMFB}{\mathcal R_{\mathrm{Lin\text{-}ModFieldBin}}}
+\newcommand{\RLBD}{\mathcal R_{\mathrm{Lin\text{-}BitsDual}}}
+\newcommand{\RPESAT}{\mathcal R_{\mathrm{PESAT}}}
+\newcommand{\RLin}{\mathcal R_{\mathrm{Lin}}}
+
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\must}{\textsc{must}}
+\newcommand{\mustnot}{\textsc{must not}}
+\newcommand{\should}{\textsc{should}}
+\newcommand{\may}{\textsc{may}}
+
+% Logical proof-channel notation.  These are semantic labels; the selected
+% byte profile owns their concrete framing and colors are applied at use sites.
+\newcommand{\chN}{\mathsf{N}}
+\newcommand{\chH}{\mathsf{H}}
+\newcommand{\chD}{\mathsf{D}}
+\newcommand{\NargLen}{\operatorname{narglen}}
+\newcommand{\HintLen}{\operatorname{hintlen}}
+\newcommand{\PayloadLen}{\operatorname{payloadlen}}
+\newcommand{\WireLen}{\operatorname{wirelen}}

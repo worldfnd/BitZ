@@ -1,0 +1,87 @@
+\documentclass[9pt,letterpaper]{extarticle}
+
+\usepackage[letterpaper,
+            left=0.70in,right=0.35in,top=0.42in,bottom=0.45in,
+            headheight=10pt,headsep=8pt]{geometry}
+\usepackage{amsmath,amssymb,mathtools,bm}
+\allowdisplaybreaks
+\usepackage{booktabs,array,longtable,tabularx,multirow}
+\usepackage{needspace}
+\usepackage{enumitem}
+\usepackage{listings}
+\usepackage{algpseudocode}
+\usepackage[compact]{titlesec}
+\usepackage{microtype}
+\usepackage[table]{xcolor}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern,anyfontsize}
+\usepackage[colorlinks=true,linkcolor=blue!50!black,urlcolor=blue!50!black]{hyperref}
+\usepackage{fancyhdr}
+\usepackage{claimledger}
+\usepackage{f2zspec}
+
+\definecolor{specnavy}{HTML}{17365D}
+\definecolor{specblue}{HTML}{315B7D}
+\definecolor{specmuted}{HTML}{667085}
+\definecolor{specpale}{HTML}{F3F4F6}
+
+\setlength{\parindent}{0pt}
+\linespread{0.96}
+\setlength{\parskip}{1pt}
+\setlength{\abovedisplayskip}{2pt}
+\setlength{\belowdisplayskip}{2pt}
+\setlength{\jot}{1pt}
+\setlength{\emergencystretch}{2em}
+\tolerance=1700
+\setlist{nosep,leftmargin=1.35em}
+\titlespacing*{\section}{0pt}{0.48\baselineskip}{0.18\baselineskip}
+\titlespacing*{\subsection}{0pt}{0.30\baselineskip}{0.08\baselineskip}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\footnotesize\sffamily\color{specmuted}F2Z PCS general specification}
+\fancyhead[R]{\footnotesize\sffamily\color{specmuted}chunked mod-$q$ / recursive Ligerito}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0.25pt}
+
+\renewcommand{\clgboardtitle}{Reduction ledger}
+
+\lstdefinestyle{wire}{
+  basicstyle=\ttfamily\scriptsize,
+  columns=fullflexible,
+  keepspaces=true,
+  frame=single,
+  rulecolor=\color{specmuted!35},
+  backgroundcolor=\color{specpale},
+  xleftmargin=0.35em,
+  framexleftmargin=0.35em,
+  aboveskip=3pt,
+  belowskip=3pt
+}
+
+\newenvironment{normative}
+  {\par\smallskip\begingroup
+   \setlength{\leftskip}{0.7em}\setlength{\rightskip}{0.7em}%
+   \color{specnavy}\noindent\textbf{Normative v1 profile.}\ }
+  {\par\endgroup\smallskip}
+
+\begin{document}
+\clgreset
+
+\begin{center}
+  {\Large\bfseries\color{specnavy}The F2Z polynomial commitment scheme}\\[2pt]
+  {\small Relations, reductions, and a normative prover--verifier specification}
+\end{center}
+
+\begin{normative}
+This document discusses the general step by step process for the F2Z polynomial commitment scheme (PCS) as well as using the PIMSAT relation and reducing it to the F2Z PCS. We will first discuss the general definitions along with the relations used in the F2Z PCS along ways to directly reduction the relations to simpler claims. 
+\end{normative}
+
+\input{part1-instance}
+\input{part2-encoding}
+\input{part3-interaction}
+\input{part4-verifier}
+\input{part5-wire-profile}
+\input{part5-gaps}
+
+\end{document}

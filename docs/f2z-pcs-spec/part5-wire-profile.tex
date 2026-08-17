@@ -1,0 +1,629 @@
+\section{Wire and transcript profile v1}
+\label{sec:wire-profile}
+
+\begingroup\small
+
+\begin{normative}
+This section fixes the bytes consumed by a conforming prover and verifier.
+The profile has two physical proof streams, prefix-free typed records, a
+BLAKE3 transcript, SHA-256 Merkle roots, and the recursive Ligerito and
+proof-of-work parameters below.  A proof using the legacy positional/bincode
+codec is not a v1 proof.  End-to-end use additionally requires the three
+statement-bound subordinate identifiers to resolve as specified below.
+\end{normative}
+
+\subsection{Profile identity and fixed algorithms}
+\label{sec:wire-profile-id}
+
+The eight-byte container magic is the ASCII string \code{F2ZPCS\textbackslash0\textbackslash0},
+the wire version is one, and the 32-byte profile identifier is
+\begin{equation}
+ \ProfileID=\operatorname{ASCII}
+   (\code{F2ZPCS-v1-B3-SHA256-CORE-0000001}).
+ \label{eq:wire-profile-id}
+\end{equation}
+The literal in Equation~\eqref{eq:wire-profile-id} has exactly 32 bytes and
+hex encoding
+\code{46325a5043532d76312d42332d5348413235362d434f52452d30303030303031}.
+Changing any normative rule in this section requires a new profile identifier.
+
+The transcript and its XOF are unkeyed BLAKE3; Merkle nodes and roots use
+SHA-256; PoW uses unkeyed BLAKE3-256.  The field basis is the polynomial basis
+of Equation~\eqref{eq:concrete-domains}.  An application PIOP, a GKR
+implementation, and the constrained-code construction each supply a distinct
+32-byte subordinate profile identifier.  The public statement binds all three
+identifiers.  An unknown identifier, an application/GKR profile without a
+byte-exact event ledger, or a code profile without a canonical codeword
+construction and root vectors is unsupported and \must{} be rejected.
+
+For the deployed range $22\le m\le35$, let $J_m$ be the number of recursive
+opening levels.  The level shapes and all parameters except the base fold
+difficulties are fixed by
+\begin{equation}
+ \begin{aligned}
+  h_i&:=m-11-3i,&
+  J_m&:=\min\{J\ge1:h_{J-1}\in\{3,4,5\}\},\\
+  r_i&:=1+i,&
+  k_i&:=\begin{cases}4,&i=0,\\3,&i>0,\end{cases}\\
+  Q_i&:=(183,90,60,45,36,31,27,24)_i,&
+  g_i&:=16,\\
+  o_i&:=\begin{cases}0,&i=0,\\1,&i>0.\end{cases}
+ \end{aligned}
+ \label{eq:ligerito-v1-shape}
+\end{equation}
+Here $h_i$ is the message-column exponent, $r_i$ the inverse-rate exponent,
+$k_i$ the fold count, $Q_i$ the query count, $g_i$ the query-grinding
+difficulty, and $o_i$ the OOD sample count.  Implementations \must{} use the
+integers in Equation~\eqref{eq:ligerito-v1-shape}, not a floating-point
+recomputation.
+
+The remaining base fold difficulties $f_i$ are the following literal table.
+Only the first $J_m$ entries of the row for $m$ exist.
+
+\begingroup\footnotesize
+\renewcommand{\arraystretch}{1.02}
+\begin{longtable}{@{}c@{\quad}l@{}}
+\toprule
+$m$&$(f_0,\ldots,f_{J_m-1})$\\
+\midrule
+22&$(9,6,3)$\\
+23&$(10,7,4,1)$\\
+24&$(11,8,5,2)$\\
+25&$(12,9,6,3)$\\
+26&$(13,10,7,4,2)$\\
+27&$(14,11,8,5,3)$\\
+28&$(15,12,9,6,4)$\\
+29&$(16,13,10,7,5,3)$\\
+30&$(17,14,11,8,6,4)$\\
+31&$(18,15,12,9,7,5)$\\
+32&$(19,16,13,10,8,6,3)$\\
+33&$(20,17,14,11,9,7,4)$\\
+34&$(21,18,15,12,10,8,5)$\\
+35&$(22,19,16,13,11,9,6,6)$\\
+\bottomrule
+\end{longtable}
+\endgroup
+
+\subsection{Primitive canonical encodings}
+\label{sec:wire-primitives}
+
+All unsigned integers are fixed-width little-endian.  Decoders \mustnot{}
+reduce, truncate, ignore high bits, or convert to a host-sized integer before
+checking that the value fits.  The following encodings are the only canonical
+ones.
+
+\begingroup\footnotesize
+\renewcommand{\arraystretch}{1.05}
+\begin{tabularx}{\linewidth}{@{}p{1.25in}p{1.35in}X@{}}
+\toprule
+\textbf{Type}&\textbf{Bytes}&\textbf{Canonicality rule}\\
+\midrule
+$u_8,u_{16},u_{32},u_{64},u_{128}$&1, 2, 4, 8, 16&Unsigned
+little-endian of exactly the named width.\\
+$a\in\K$&16&$\LE{64}{a_{\lo}}\parallel\LE{64}{a_{\hi}}$ in the fixed
+polynomial basis; coefficient bit $j$ is bit $j$ of the resulting 128-bit
+word.\\
+$a\in\Fq$&16&$\LE{128}{\operatorname{can}_q(a)}$; reject an integer at least
+$q=2^{100}-15$.\\
+Chunk exponent $u$&16&$\LE{128}{u}$; require $u<2^{127}$.\\
+Nonce&8&$\LE{64}{n}$.\\
+Merkle value&32&Raw SHA-256 digest bytes, in digest output order.\\
+Vector $[x_0,\ldots,x_{n-1}]$&4 plus elements&$\LE{32}{n}$ followed by
+canonical elements in index order; $n$ must equal the profile-derived expected
+count.\\
+Opened rows and path&nested&Vector of rows, each a vector of $\K$ elements,
+followed by a vector of 32-byte Merkle values.  Expected row, width, and path
+counts are derived before allocation.\\
+\bottomrule
+\end{tabularx}
+\endgroup
+
+Every composite is concatenation without padding.  Options, Rust enums,
+\code{usize}, varints, serde defaults, and bincode layouts are not wire types.
+For every accepted primitive or composite $x$, decoding its encoding must
+consume the whole bounded slice and re-encoding the result must reproduce the
+same bytes.
+
+\subsection{Merkle rows and canonical multiproofs}
+\label{sec:wire-merkle}
+
+For opening level $0\le k<J_m$, define the message dimension, tree depth,
+leaf count, and row width by
+\begin{equation}
+ n_k:=h_k+k_k,\qquad D_k:=h_k+r_k,\qquad
+ \Lambda_k:=2^{D_k},\qquad I_k:=2^{k_k}.
+ \label{eq:merkle-level-geometry}
+\end{equation}
+Thus $n_0=m-7$, $n_k=h_{k-1}$ for $k>0$, $D_k=m-10-2k$,
+$I_0=16$, and $I_k=8$ for $k>0$.  Let
+$C_k\in\K^{\Lambda_k\times I_k}$ be the level-$k$ codeword matrix, with
+leaves and lanes in increasing integer order.  Its exact row and tree bytes
+are
+\begin{equation}
+ \begin{aligned}
+  \mathsf{RowBytes}_k(q)
+   &:=\operatorname{Enc}_{\K}(C_k[q,0])\parallel\cdots\parallel
+      \operatorname{Enc}_{\K}(C_k[q,I_k-1]),\\
+  H_{k,0,q}&:=\operatorname{SHA256}(\mathsf{RowBytes}_k(q)),\\
+  H_{k,d+1,j}&:=\operatorname{SHA256}
+      (H_{k,d,2j}\parallel H_{k,d,2j+1}),\\
+  \mathsf{root}_k&:=H_{k,D_k,0}.
+ \end{aligned}
+ \label{eq:merkle-v1-tree}
+\end{equation}
+Here $\operatorname{Enc}_{\K}$ is the 16-byte encoding in
+Section~\ref{sec:wire-primitives}.  Equation~\eqref{eq:merkle-v1-tree} uses
+no native-memory cast, row-length prefix, row index, level tag, padding, or
+leaf/internal-node domain byte.  Adding such a byte changes every root and
+requires a new profile identifier.  The constrained-code profile defines
+how $C_k$ is generated; this section fixes its portable row and tree encoding.
+
+Let the already-derived query set be
+$A_0=(q_0<\cdots<q_{Q_k-1})$.  At depth $d$, scan the active positions $A_d$
+in increasing order.  If both siblings are active, combine the pair once and
+emit no digest.  Otherwise emit the digest at position
+$p\mathbin{\mathsf{xor}}1$, using $p$'s parity to place it on the left or
+right.  Then set
+$A_{d+1}:=\operatorname{sortuniq}\{\lfloor p/2\rfloor:p\in A_d\}$.
+The canonical multiproof is the concatenation of emitted digests, bottom-up
+and in that scan order, and its exact count is
+\begin{equation}
+ M_k:=\sum_{d=0}^{D_k-1}
+ \left|\{p\in A_d:(p\mathbin{\mathsf{xor}}1)\notin A_d\}\right|.
+ \label{eq:merkle-proof-count}
+\end{equation}
+The level-$k$ opening payload is exactly
+\begin{equation}
+ \LE{32}{Q_k}\parallel
+ \prod_{j=0}^{Q_k-1}
+   \bigl(\LE{32}{I_k}\parallel\mathsf{RowBytes}_k(q_j)\bigr)
+ \parallel\LE{32}{M_k}\parallel
+ \prod_{u=0}^{M_k-1}\mathsf{path}_k[u],
+ \label{eq:merkle-opening-payload}
+\end{equation}
+with byte length
+\begin{equation}
+ 8+Q_k(4+16I_k)+32M_k.
+ \label{eq:merkle-opening-length}
+\end{equation}
+The verifier derives $A_d$, $M_k$, and
+Equation~\eqref{eq:merkle-opening-length} from the sampled queries before
+allocating or reading the bounded Hint record, requires rows in $q_j$ order,
+reconstructs Equation~\eqref{eq:merkle-v1-tree}, and rejects unused path
+digests or payload bytes.
+
+\subsection{Outer two-stream container}
+\label{sec:wire-container}
+
+The 72-byte header is fixed as follows.  Offsets and sizes are decimal; all
+multibyte integers use Section~\ref{sec:wire-primitives}.
+
+\begin{lstlisting}[style=wire]
+offset  size  field
+0       8     magic = 46 32 5a 50 43 53 00 00
+8       2     wire_version = 01 00
+10      2     header_len = 48 00                 (72)
+12      4     flags = 00 00 00 00
+16      32    profile_id
+48      4     narg_record_count
+52      4     hint_record_count
+56      8     narg_byte_len
+64      8     hint_byte_len
+72      ...   NARG records, then Hint records
+\end{lstlisting}
+
+Writing $\mathsf{Hdr}_{72}$ for those exact header bytes, the only v1 host
+encoding is
+\begin{equation}
+ \HostEncode(N,H)
+ :=\mathsf{Hdr}_{72}\parallel N\parallel H,
+ \qquad
+ \ByteLen(\HostEncode(N,H))=72+\ByteLen(N)+\ByteLen(H).
+ \label{eq:host-encoding-v1}
+\end{equation}
+Equation~\eqref{eq:host-encoding-v1} implies the four benchmark metrics
+\begin{equation}
+ \begin{aligned}
+  \NargLen(\pi)&=\ByteLen(N),&
+  \HintLen(\pi)&=\ByteLen(H),\\
+  \PayloadLen(\pi)&=\ByteLen(N)+\ByteLen(H),&
+  \WireLen(\pi)&=72+\PayloadLen(\pi).
+ \end{aligned}
+ \label{eq:wire-lengths-v1}
+\end{equation}
+The decoder \must{} verify Equation~\eqref{eq:wire-lengths-v1} with checked
+arithmetic before allocating, enforce statement-derived upper bounds, and
+require input length exactly $72+\mathtt{narg\_byte\_len}+
+\mathtt{hint\_byte\_len}$.  The two declared record counts must match the
+records actually consumed.  Header count and length fields are transport
+metadata and are not transcript input.
+
+\subsection{Typed event frames and registry}
+\label{sec:wire-events}
+
+Every NARG record, Hint record, public absorb, and squeeze event uses the same
+prefix-free frame header:
+
+\begin{lstlisting}[style=wire]
+offset  size  field
+0       2     event_tag                         u16-le
+2       2     reserved = 0                     u16-le
+4       4     chunk                            u32-le
+8       4     level                            u32-le
+12      4     round_or_index                   u32-le
+16      8     payload_len                      u64-le
+24      ...   payload[payload_len]
+\end{lstlisting}
+
+Let $\bot_{32}:=\mathtt{0xffffffff}$ denote an inapplicable scope coordinate.
+For tag $\tau$, scope $(\ell,k,i)$, and payload $z$, the frame is exactly
+\begin{equation}
+ \Frame(\tau,\ell,k,i;z):=
+ \LE{16}{\tau}\parallel\LE{16}{0}\parallel
+ \LE{32}{\ell}\parallel\LE{32}{k}\parallel\LE{32}{i}\parallel
+ \LE{64}{\ByteLen(z)}\parallel z.
+ \label{eq:event-frame-v1}
+\end{equation}
+Thus Equation~\eqref{eq:event-frame-v1} has length $24+\ByteLen(z)$.  A stream
+record with a reserved nonzero word, an inapplicable coordinate other than
+$\bot_{32}$, a wrong channel, a wrong expected scope, or an unknown tag is
+malformed.
+
+The base-tag registry is below.  \textsf{D} events are public or derived,
+have no proof record, and are absorbed at their ledger position;
+\textsf{N} records occur only in $N$ and are absorbed;
+\textsf{H} records occur only in $H$ and are checked but never absorbed;
+\textsf{S} tags are squeeze requests.  For an \textsf{S} base tag $\tau$, the
+squeeze-result tag is $\tau\mathbin{\mathrm{OR}}\mathtt{0x8000}$ and is derived,
+never transmitted.  For an \textsf{S} row, the last column describes the
+derived result; its request payload is always $\LE{32}{n}\parallel a$ as fixed
+by Equation~\eqref{eq:transcript-v1}.
+
+\begingroup\scriptsize
+\renewcommand{\arraystretch}{1.04}
+\setlength{\tabcolsep}{2pt}
+\begin{longtable}{@{}p{0.52in}p{0.30in}p{1.62in}p{4.72in}@{}}
+\toprule
+\textbf{Tag}&\textbf{Class}&\textbf{Event}&\textbf{Scope; proof payload or squeeze result}\\
+\midrule
+\endfirsthead
+\toprule
+\textbf{Tag}&\textbf{Class}&\textbf{Event}&\textbf{Scope; proof payload or squeeze result}\\
+\midrule
+\endhead
+\code{0001}&D&profile/domain&$(\bot,\bot,\bot)$; $\mathsf{ProfileV1}$ from
+Equation~\eqref{eq:profile-statement-payloads}.\\
+\code{0002}&D&statement&$(\bot,\bot,\bot)$; $\mathsf{StatementV1}$ from
+Equation~\eqref{eq:profile-statement-payloads}.\\
+\code{0003}&D&core seam&$(\bot,\bot,\bot)$;
+$\mathsf{CoreSeamV1}$ from Equation~\eqref{eq:core-seam-payload}.\\
+\code{1000--1fff}&profile&application PIOP&The selected application profile
+owns a disjoint, byte-exact ledger within this range.\\
+\code{2001}&N&chunk $\nu$&$(\ell,\bot,\bot)$; vector of $2^s$ elements of
+$\K$.\\
+\code{2081}&H&chunk $u$&$(\ell,\bot,\bot)$; vector of $2^s$ canonical
+$u_{128}<2^{127}$.\\
+\code{2101}&S&chunk $\zeta$&$(\ell,\bot,i)$ for $0\le i<s$; one $\K$
+challenge.\\
+\code{3001}&N&GKR phase-$c$ sum&$(\ell,k,\bot)$; one $\K$ element, absorbed
+after the phase-link check and before the first phase-$c$ round.\\
+\code{3002--30ff}&profile&GKR messages&The selected GKR profile owns exact
+message tags, codecs, and checks in this range.\\
+\code{3100--31ff}&profile&GKR squeezes&The selected GKR profile owns exact
+squeeze tags and result types in this range.\\
+\code{4001}&N&ring $s$ vector&$(\ell,\bot,\bot)$; vector of exactly 128
+elements of $\K$.\\
+\code{4101}&S&shared $r''$&$(\bot,\bot,i)$ for $0\le i<7$; one $\K$
+challenge.\\
+\code{4102}&S&batch $\eta$&$(\ell,\bot,\bot)$ in increasing active-chunk
+order; one $\K$ challenge.\\
+\code{5001}&D&opening target&$(\bot,\bot,\bot)$;
+$\LE{32}{m_p}\parallel\operatorname{Enc}_{\K}(\beta)$.  $B$ is recomputed.\\
+\code{5002}&N&initial root&$(\bot,0,\bot)$; one 32-byte SHA-256 digest.\\
+\code{5003}&N&recursive root&$(\bot,k,\bot)$, $1\le k<J_m$; one digest.\\
+\code{5004}&N&sumcheck message&scope by kind below; $\mathsf{kind}:u_8$
+followed by $\operatorname{Enc}_{\K}(u_0)\parallel
+\operatorname{Enc}_{\K}(u_2)$.\\
+\code{5005}&N&OOD value&$(a,k,\bot)$; one $\K$ element for sample $a$.\\
+\code{5006}&N&final $y_r$&$(\bot,J_m-1,\bot)$; vector of exactly
+$2^{h_{J_m-1}}$ elements of $\K$.\\
+\code{5007}&N&fold-PoW nonce&$(\bot,k,i)$; one $u_{64}$.\\
+\code{5008}&N&query-PoW nonce&$(\bot,k,\bot)$; one $u_{64}$.\\
+\code{5080}&H&initial opening&$(\bot,0,\bot)$;
+Equation~\eqref{eq:merkle-opening-payload}.\\
+\code{5081}&H&recursive opening&$(\bot,k,\bot)$, $1\le k<J_m-1$;
+Equation~\eqref{eq:merkle-opening-payload}.\\
+\code{5082}&H&final opening&$(\bot,J_m-1,\bot)$;
+Equation~\eqref{eq:merkle-opening-payload}.\\
+\code{5101}&S&fold challenge&$(\bot,k,i)$; one $\K$ challenge.\\
+\code{5102}&S&OOD point&$(a,k,c)$; one $\K$ coordinate, with $c$ increasing.\\
+\code{5103}&S&glue challenge&$(\bot,k,i)$ as fixed below; one $\K$ challenge.\\
+\code{5104}&S&PoW seed&$(\bot,k,i)$; 16 bytes; request auxiliary payload $C$.\\
+\code{5105}&S&query draw&$(\bot,k,a)$; one $\K$ challenge for attempt $a$.\\
+\code{5106}&S&query alpha&$(\bot,k,c)$; one $\K$ challenge.\\
+\bottomrule
+\end{longtable}
+\endgroup
+
+The application and GKR ranges are black-box namespaces, not permission to
+use implementation-defined bytes.  Their profile identifiers must select
+published ledgers with the same columns as this table.  The fixed
+\code{3001} event resolves the PCS-level phase-$c$ placement ambiguity in
+Gap~G1; the rest of that gap remains subordinate-profile work and no profile
+may reassign the tag.  The v1 outer pre-sumcheck
+omits the redundant \code{presums[ell].claimed\_sums} field and derives
+$[e_d^{(\ell)}+1]$, so tag \code{3081} is reserved and \mustnot{} occur.
+
+\subsection{Transcript transitions and replay}
+\label{sec:wire-transcript}
+
+Model the transcript state as the byte string hashed by an unkeyed BLAKE3
+hasher.  It starts empty.  The profile frame \code{0001} and statement frame
+\code{0002} are absorbed, in that order, before any proof-dependent squeeze.
+The application statement digest is
+\begin{equation}
+ d_{\rm app}:=\operatorname{BLAKE3}_{256}
+ \bigl(\operatorname{hex}^{-1}
+   (\code{46325a2d5043532f6170702d73746174656d656e742f763100})
+ \parallel\mathsf{app\_profile\_id}\parallel
+ \mathsf{app\_statement\_bytes}\bigr).
+ \label{eq:app-statement-digest}
+\end{equation}
+The hex prefix in Equation~\eqref{eq:app-statement-digest} is the ASCII
+literal \code{F2Z-PCS/app-statement/v1} followed by one NUL byte.  The two
+initial frame payloads are exactly
+\begin{equation}
+ \begin{aligned}
+  \mathsf{ProfileV1}:={}&
+    \operatorname{hex}^{-1}(\code{46325a5043530000})
+    \parallel\LE{16}{1}\parallel\ProfileID,\\
+  \mathsf{StatementV1}:={}&
+    \mathsf{app\_profile\_id}[32]\parallel
+    \mathsf{gkr\_profile\_id}[32]\parallel
+    \mathsf{code\_profile\_id}[32]\parallel d_{\rm app}[32]
+    \parallel\LE{32}{t}\parallel\LE{32}{s}\parallel\LE{32}{W}\\
+    &\parallel\operatorname{Enc}_{\K}(g)\parallel\rho[32].
+ \end{aligned}
+ \label{eq:profile-statement-payloads}
+\end{equation}
+Thus $\mathsf{ProfileV1}$ and $\mathsf{StatementV1}$ have 42 and 188 bytes,
+respectively.  The application profile must make its final byte string in
+Equation~\eqref{eq:app-statement-digest} canonical.
+
+The derived core-seam payload is
+\begin{equation}
+ \mathsf{CoreSeamV1}:=
+  \LE{32}{2^t}\parallel\prod_{b=0}^{2^t-1}\LE{128}{w_b}
+  \parallel\LE{32}{2^s}\parallel
+    \prod_{c=0}^{2^s-1}\LE{128}{\operatorname{can}_q(w'_c)}
+  \parallel\LE{128}{\operatorname{can}_q(y)},
+ \label{eq:core-seam-payload}
+\end{equation}
+with exactly $24+16(2^t+2^s)$ bytes.  It is absorbed under tag \code{0003}
+after deterministic Bitify and before the first tag-\code{2001} record.
+
+For a canonical frame $F$, absorption appends the exact frame bytes.  A
+squeeze under base tag $\tau<\mathtt{0x8000}$, scope $(\ell,k,i)$, output
+length $n$, and auxiliary request payload $a$ is the transition
+\begin{equation}
+ \begin{aligned}
+  R&:=\Frame(\tau,\ell,k,i;\LE{32}{n}\parallel a),\\
+  \tr'&:=\tr\parallel R,\\
+  z&:=\operatorname{BLAKE3\text{-}XOF}(\tr')[0\mathbin{..}n],\\
+  \tr''&:=\tr'\parallel
+    \Frame(\tau\mathbin{\mathrm{OR}}\mathtt{0x8000},\ell,k,i;z).
+ \end{aligned}
+ \label{eq:transcript-v1}
+\end{equation}
+Equation~\eqref{eq:transcript-v1} uses a clone/finalize-XOF of the incremental
+hasher after $R$; it does not reset or key the hasher.  A $\K$ challenge has
+$n=16$ and decodes by Section~\ref{sec:wire-primitives}.  A vector challenge
+is a sequence of scalar squeezes, not one long squeeze.  Unless its registry
+row says otherwise, the scalars use consecutive $i$ values and the auxiliary
+request payload $a$ is empty.  Tag \code{4102} instead uses
+$(\ell,\bot,\bot)$ for each active $\ell$ in increasing order.  Tag
+\code{5103} uses its one-byte glue kind, and tag \code{5104} uses the PoW
+context $C$; these are the only nonempty core auxiliary payloads.
+
+On a normal NARG read, the verifier validates the expected tag, scope, payload
+length, and canonical payload, then immediately appends the complete frame
+from Equation~\eqref{eq:event-frame-v1}.  A PoW nonce is the sole deferred
+NARG read: the verifier parses its expected canonical frame, permits no
+intervening event, checks Equation~\eqref{eq:pow-predicate-v1}, and appends the
+frame only on success.  On a Hint read, it validates the same framing but
+never appends those bytes.  It must complete the hint predicate before the
+next squeeze.  In particular, it reads and absorbs \code{2001}, then reads
+\code{2081} and verifies the exponent bounds and $g^u=\nu$ before the first
+\code{2101} event.  NARG replay follows verifier-event order, never Rust
+structure-field order.  Acceptance requires no deferred record or pending
+hint and exact logical and byte exhaustion of both streams and every nested
+slice.
+
+\subsection{Grinding and query derivation}
+\label{sec:wire-pow}
+
+Let kind byte zero denote a fold grind and kind byte one a query grind.  For
+kind $K_{\rm pow}$, level $k$, round $i$, and derived difficulty $d$, define
+the exact PoW context
+\begin{equation}
+ C:=\operatorname{ASCII}(\code{F2Z-PCS/PoW/v1})\parallel
+ \LE{8}{K_{\rm pow}}\parallel\LE{32}{k}\parallel
+ \LE{32}{i}\parallel\LE{16}{d}.
+ \label{eq:pow-context-v1}
+\end{equation}
+In Equation~\eqref{eq:pow-context-v1}, $i=\bot_{32}$ for a query grind.  The seed is the 16-byte output of
+Equation~\eqref{eq:transcript-v1} under tag \code{5104}, the same scope, and
+auxiliary request payload $C$.  After obtaining the seed, the verifier reads
+the expected \code{5007} or \code{5008} NARG frame without absorbing it and
+requires, for the scheduled positive difficulty $d$,
+\begin{equation}
+ \LZ\!\left(\operatorname{BLAKE3}_{256}
+   (C\parallel\mathsf{seed}_{16}\parallel\LE{64}{n})\right)\ge d,
+ \qquad d>0.
+ \label{eq:pow-predicate-v1}
+\end{equation}
+$\LZ$ in Equation~\eqref{eq:pow-predicate-v1} counts zero bits from the
+most-significant bit of digest byte zero, then proceeds toward the
+least-significant bit and subsequent bytes.  Any satisfying nonce is accepted;
+minimality is not checked.  Only after the predicate succeeds does
+the verifier absorb the complete nonce frame, before any dependent squeeze.
+Difficulty zero has no predicate invocation, seed squeeze, or nonce record in
+this profile.
+
+The exact scheduled difficulties are
+\begin{equation}
+ d^{\rm query}_k:=g_k=16,
+ \qquad
+ d^{\rm fold}_{k,i}:=\max(f_k-i,0).
+ \label{eq:pow-difficulties-v1}
+\end{equation}
+Equation~\eqref{eq:pow-difficulties-v1} is evaluated with ordinary
+nonnegative integers.  After the preceding sumcheck message and immediately
+before fold challenge $(k,i)$, perform both the tag-\code{5104} seed squeeze
+and tag-\code{5007} nonce record if $d^{\rm fold}_{k,i}>0$; if the difficulty
+is zero, perform neither event.  For $0\le k<J_m-1$, query event $k$ occurs after the
+tag-\code{5003} commitment root for level $k+1$, all $o_{k+1}$ OOD bindings
+for that root, and their glue challenges, and immediately before the tag-\code{5105}
+draws that open level $k$.  Query event $J_m-1$ instead occurs after the
+tag-\code{5006} final $y_r$, with no new root or OOD binding, and immediately
+before the final-level draws.  There is exactly one query nonce at every level.
+Consequently the exact number of nonce records is
+\begin{equation}
+ N_{\rm pow}=J_m+\sum_{k=0}^{J_m-1}\min(k_k,f_k).
+ \label{eq:pow-count-v1}
+\end{equation}
+Missing, extra, reordered, or trailing nonces violate
+Equation~\eqref{eq:pow-count-v1} and reject.
+
+For level $k$, each \code{5105} event yields $r\in\K$ and proposes
+\begin{equation}
+ q:=r_{\lo}\bmod 2^{h_k+r_k}.
+ \label{eq:query-position-v1}
+\end{equation}
+The verifier repeats Equation~\eqref{eq:query-position-v1} until $Q_k$
+distinct positions exist, discarding duplicates, and then sorts the positions
+in increasing order.  It then derives the tag-\code{5106} alphas before
+reading and checking the opening.
+
+\subsection{Recursive-opening replay ledger}
+\label{sec:wire-recursive-ledger}
+
+This subsection fixes the complete replay order for the recursive opening.
+The four canonical tag-\code{5004} message kinds and scopes are
+\begin{equation}
+ \begin{array}{ccll}
+  \mathtt{0x00}&\mathsf{Start}&(\bot,0,\bot)&\text{exactly once},\\
+  \mathtt{0x01}&\mathsf{FoldNext}&(\bot,k,j)&0\le j<k_k,\\
+  \mathtt{0x02}&\mathsf{OodIntro}&(a,k,\bot)&1\le k<J_m, 0\le a<o_k,\\
+  \mathtt{0x03}&\mathsf{QueryIntro}&(\bot,k,\bot)&0\le k<J_m-1.
+ \end{array}
+ \label{eq:sumcheck-message-kinds}
+\end{equation}
+Each payload is the one-byte kind followed by the two canonical $\K$
+elements in the registry.  Any other kind/scope pair rejects.
+
+The outer $\mathsf{VerifyF2Z}$ caller first requires that $B$ is the
+deterministic coefficient function derived in Group~9, with domain size
+$2^{m_p}$; $B$ is never densely serialized.  The caller alone absorbs tag
+\code{5001} with payload
+$\LE{32}{m_p}\parallel\operatorname{Enc}_{\K}(\beta)$ and then invokes
+$\mathsf{RecVerifyStream}$.  That helper starts after tag \code{5001}: its
+first event reads tag \code{5002}, requires the root to equal $\rho$, absorbs
+it, and then reads and absorbs the $\mathsf{Start}$ tag-\code{5004} message.
+
+For each $k=0,\ldots,J_m-1$ in increasing order, it then performs the
+following ledger without interleaving another event.
+\begin{enumerate}
+ \item For $j=0,\ldots,k_k-1$, perform the optional fold grind exactly as in
+ Section~\ref{sec:wire-pow}, squeeze tag \code{5101} at
+ $(\bot,k,j)$, then read, validate, and absorb the $\mathsf{FoldNext}$
+ tag-\code{5004} message at the same scope.
+
+ \item If $k<J_m-1$, read and absorb the tag-\code{5003} root at
+ $(\bot,k+1,\bot)$.  For each $a=0,\ldots,o_{k+1}-1$, squeeze the
+ $n_{k+1}$ tag-\code{5102} coordinates at scopes $(a,k+1,c)$ for
+ $c=0,\ldots,n_{k+1}-1$; read and absorb tag \code{5005} at
+ $(a,k+1,\bot)$; read and absorb the $\mathsf{OodIntro}$ tag-\code{5004}
+ message at that scope; and squeeze tag \code{5103} at
+ $(\bot,k+1,a)$ with the one-byte auxiliary kind \code{00}.
+
+ If instead $k=J_m-1$, read and absorb tag \code{5006} at
+ $(\bot,k,\bot)$, requiring exactly $2^{h_k}$ canonical $\K$ elements.
+
+ \item Perform the query grind at $(\bot,k,\bot)$ with difficulty 16 and
+ absorb its validated tag-\code{5008} nonce.  Starting with attempt $a=0$,
+ squeeze tag \code{5105} at $(\bot,k,a)$ and increment $a$ after every
+ squeeze, including a duplicate, until $Q_k$ distinct positions have been
+ obtained.  Reject rather than wrap if the next attempt would exceed
+ $2^{32}-1$.  Sort the positions, then squeeze exactly
+ $\lceil\log_2Q_k\rceil$ tag-\code{5106} alphas at $(\bot,k,c)$ for
+ consecutive $c$.
+
+ Read exactly one opening Hint using tag \code{5080} for $k=0$, tag
+ \code{5081} for $0<k<J_m-1$, or tag \code{5082} for $k=J_m-1$.  Check
+ Equations~\eqref{eq:merkle-opening-payload}--\eqref{eq:merkle-opening-length}
+ and the root before any later event.  For $k<J_m-1$, next read and absorb
+ the $\mathsf{QueryIntro}$ tag-\code{5004} message.  At every level,
+ including the final level where no such message exists, squeeze the query
+ glue tag \code{5103} at $(\bot,k,o_k)$ with one-byte auxiliary kind
+ \code{01}.  At the final level this challenge is used directly in the
+ residual check.
+\end{enumerate}
+
+The fixed record/event cardinalities are therefore
+\begin{equation}
+ \begin{aligned}
+  \#5002&=1,& \#5003&=J_m-1,& \#5005&=\sum_{k=1}^{J_m-1}o_k,\\
+  \#5004&=1+\sum_{k=0}^{J_m-1}k_k
+     +\sum_{k=1}^{J_m-1}o_k+(J_m-1),&
+  \#5006&=1,& \#508{*}&=J_m,\\
+  \#5101&=\sum_{k=0}^{J_m-1}k_k,&
+  \#5102&=\sum_{k=1}^{J_m-1}o_kn_k,&
+  \#5103&=J_m+\sum_{k=1}^{J_m-1}o_k,\\
+  \#5106&=\sum_{k=0}^{J_m-1}\lceil\log_2Q_k\rceil.
+ \end{aligned}
+ \label{eq:recursive-event-counts}
+\end{equation}
+Here $\#508{*}$ is one opening Hint per level.  Tag-\code{5105} count is the
+transcript-derived number of attempts, all of which appear in the audit log.
+Nonce counts remain Equation~\eqref{eq:pow-count-v1}.  A different order,
+scope, kind, cardinality, or unread field rejects.
+
+\subsection{Parser, implementation, and conformance requirements}
+\label{sec:wire-conformance}
+
+A v1 implementation \must{}:
+\begin{enumerate}
+ \item validate magic, version, flags, profile and subordinate profile
+ identifiers, all profile-, statement-, and transcript-derived bounds, and all
+ reserved fields before allocating or doing proof work;
+ \item use checked arithmetic and checked conversion for every length and
+ index, reject noncanonical field values, and return a decoding error rather
+ than panic on adversarial bytes;
+ \item encode the NARG stream in the exact absorb order and the Hint stream in
+ its exact check order, with independent cursors;
+ \item replace opaque recursive-proof serialization with the field records and
+ exact order in Sections~\ref{sec:wire-events}
+ and~\ref{sec:wire-recursive-ledger}; and
+ \item reject unless every outer, subordinate, recursive, row, and Merkle-path
+ slice is exactly exhausted.
+\end{enumerate}
+
+Conformance fixtures \must{} include canonical primitive and frame hex, one
+complete $N/H/\HostEncode$ proof, the ordered transcript audit log, every
+squeezed challenge, PoW seeds/nonces and query positions, and all four lengths
+from Equation~\eqref{eq:wire-lengths-v1}.  Negative fixtures \must{} cover an
+unknown version/profile/tag, a reserved bit, wrong endian or channel, record
+reordering, truncation and suffix bytes, noncanonical scalars, count overflow,
+a failed or late $u/\nu$ hint, altered PoW scope/difficulty/nonce, and missing
+or extra recursive fields.  Native, recursive, and independent reference
+verifiers must produce byte-identical transcript audit logs.
+
+The repository file \code{wire-v1-vectors.txt} is the normative initial
+known-answer set for the profile identifier, primitive container/frame codec,
+Merkle row/tree/multiproof codec, and PoW predicate at difficulties 1, 7, 8,
+and 16.  A conforming implementation must reproduce it exactly and add a
+complete proof/transcript
+fixture before claiming end-to-end v1 interoperability.
+
+\endgroup

@@ -1,0 +1,90 @@
+F2Z-PCS wire/transcript profile v1 known-answer vectors
+=======================================================
+
+All hex is lowercase and contains no separators. These vectors are normative
+for the primitive container/frame, Merkle codec, and positive-difficulty PoW
+predicate. The fixtures are codec tests, not a complete proof accepted by
+VerifyF2Z.
+
+Profile identifier
+------------------
+ASCII: F2ZPCS-v1-B3-SHA256-CORE-0000001
+hex:   46325a5043532d76312d42332d5348413235362d434f52452d30303030303031
+
+Outer container and one NARG frame
+----------------------------------
+The NARG record is tag 0x2001, chunk=2, level=round=0xffffffff. Its
+payload is Vec<K>([1]): count u32-le followed by K(1) as lo-u64-le,
+hi-u64-le. There are no Hint records.
+
+header_len_dec: 72
+header_hex:
+46325a5043530000010048000000000046325a5043532d76312d42332d5348413235362d434f52452d3030303030303101000000000000002c000000000000000000000000000000
+
+narg_frame_len_dec: 44
+narg_frame_hex:
+0120000002000000ffffffffffffffff14000000000000000100000001000000000000000000000000000000
+
+host_len_dec: 116
+host_hex:
+46325a5043530000010048000000000046325a5043532d76312d42332d5348413235362d434f52452d3030303030303101000000000000002c0000000000000000000000000000000120000002000000ffffffffffffffff14000000000000000100000001000000000000000000000000000000
+
+Merkle primitive micro-vector
+-----------------------------
+This tests the row/tree/multiproof codec independently of the deployed level
+geometry; it is not an accepted profile proof. There are four leaves of one K
+element each, C[q,0]=q for q=0,1,2,3, with each K element encoded as a
+16-byte little-endian word. The opened query set is [0,1,3]. At depth zero,
+0 and 1 are an active sibling pair and emit nothing; query 3 emits sibling
+leaf 2. At depth one both parents are active. Thus M=1 and the only proof
+digest is leaf_hash[2].
+
+leaf_hash[0]=374708fff7719dd5979ec875d56cd2286f6d3cf7ec317a3b25632aab28ec37bb
+leaf_hash[1]=4cbbd8ca5215b8d161aec181a74b694f4e24b001d5b081dc0030ed797a8973e0
+leaf_hash[2]=b1535c7783ea8829b6b0cf67704539798b4d16c39bf0bfe09494c5d9f12eee30
+leaf_hash[3]=59d5966c96af7ecad5c9d2918d6582d102b2c67f6b765ea28ac24371ab4f93be
+parent[0,1]=6bc568b1058856c944f5511ffec5416726c61b5a01f6c31cdcb415d9c7de053d
+parent[2,3]=2cf3c578bcc27512b1bc67a0b4cde977a1ae8e7c8836c50e97d63e62b11892d0
+root=91fd32cd83c2e5f903e3a1668af1a7423f22be1ca90e5ad46b1e518b68175c5a
+proof_count_dec=1
+proof_hex=b1535c7783ea8829b6b0cf67704539798b4d16c39bf0bfe09494c5d9f12eee30
+opening_payload_len_dec=100
+opening_payload_hex:
+0300000001000000000000000000000000000000000000000100000001000000000000000000000000000000010000000300000000000000000000000000000001000000b1535c7783ea8829b6b0cf67704539798b4d16c39bf0bfe09494c5d9f12eee30
+
+PoW predicate vectors
+---------------------
+kind=query (1), level=2, round=0xffffffff
+seed=000102030405060708090a0b0c0d0e0f
+
+d=1
+context=46325a2d5043532f506f572f76310102000000ffffffff0100
+nonce_dec=1
+nonce_le=0100000000000000
+digest=3be8397793d4cb1bfeda5e5d371717bbcd53edf190ea844510a90efb76322384
+leading_zero_bits=2
+expected=accept
+
+d=7
+context=46325a2d5043532f506f572f76310102000000ffffffff0700
+nonce_dec=403
+nonce_le=9301000000000000
+digest=01db734c181b7a6f0e70197f9be398d88c63628e9a551cfc7b2f1cddf5dd2573
+leading_zero_bits=7
+expected=accept
+
+d=8
+context=46325a2d5043532f506f572f76310102000000ffffffff0800
+nonce_dec=71
+nonce_le=4700000000000000
+digest=00b41974e9644d2d1679d5ef3c714c8fc94fa65ec7a92e6ad178bc84e2766a99
+leading_zero_bits=8
+expected=accept
+
+d=16
+context=46325a2d5043532f506f572f76310102000000ffffffff1000
+nonce_dec=139582
+nonce_le=3e21020000000000
+digest=00008d136d5734b803ce8b9039d45a9061c3e6ba875379a53d0873a74f1204f2
+leading_zero_bits=16
+expected=accept
