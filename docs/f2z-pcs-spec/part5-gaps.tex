@@ -4,10 +4,10 @@
 \begingroup\scriptsize
 \linespread{0.96}\selectfont
 
-A gap is not permission to infer a rule.  Unless the selected profile supplies
+A gap is not permission to infer a rule.  Unless the fixed proof system supplies
 the closure named below, the verifier \must{} reject the affected instance.
 Rows carrying a closure qualifier distinguish a fixed core rule from
-remaining subordinate-profile, implementation, fixture, or provenance work.
+remaining subprotocol, implementation, fixture, or provenance work.
 
 \renewcommand{\arraystretch}{1.02}
 \setlength{\tabcolsep}{3pt}
@@ -34,15 +34,15 @@ transcript treatment.  If
 \(\eq(r_{x,k}^{(\ell)},z_{x,k}^{(\ell)})=0\), the phase link does not determine
 that sum.  The current Rust merged-forest verifier uses the claimed sum only
 after its phase-\(c\) challenges and does not absorb it.&
-The PCS-level schedule treats GKR atomically.  The selected GKR profile must
+The PCS-level schedule treats GKR atomically.  The fixed GKR protocol must
 absorb the tag-\code{3001} frame fixed by
 Section~\ref{sec:wire-events} for \(S_{c,k}^{(\ell)}\) after the phase-link
 check and before the first phase-\(c\) round message.  Its already-known
 \(S_{x,k}^{(\ell)}=e_k^{(\ell)}\) field is either omitted or carried as a
 checked, non-absorbed hint.&
-An interoperable GKR profile must pin its remaining events in the reserved
+An interoperable GKR protocol must pin its remaining events in the reserved
 \code{3002--31ff} ranges, and the current verifier must insert the
-tag-\code{3001} absorb at the stated deadline; alternatively the profile must
+tag-\code{3001} absorb at the stated deadline; alternatively the protocol must
 specify a canonical degenerate-branch rejection rule with its stated error
 bound.\\
 \addlinespace
@@ -54,15 +54,15 @@ The paper-level edges are
 \to\mathcal R_{\rm triv}\).
 The concrete path exposes an MLE-specialized LIN claim before changing its
 representation.&
-The current profile delegates \(\Pi_{\rm red}\) to the selected GKR reduction,
+The proof system delegates \(\Pi_{\rm red}\) to the fixed GKR reduction,
 whose contract returns the MLE-shaped LIN claim.  Ring switching, batching,
 and recursive opening are only the internal expansion of
 \(\Pi_{\mathsf{iopp}}\), with error
 $\sum_{\ell\in\mathcal A}
  (\varepsilon_{\rm red}^{(\ell)}+\varepsilon_{\rm ring}^{(\ell)})
  +\varepsilon_{\rm LC}+\varepsilon_{\rm batch}+\varepsilon_{\rm open}$,
-where the direct profile sets $\varepsilon_{\rm LC}=0$.&
-No runtime closure is missing for the direct profile.  A profile claiming the
+where the direct mode sets $\varepsilon_{\rm LC}=0$.&
+No runtime closure is missing for the direct mode.  A proof system claiming the
 abstract theorem must fix coordinate order and prove both that its concrete
 \(\Pi_{\rm red}\) realizes the named LIN successor and that its internal
 opening path realizes \(\Pi_{\mathsf{iopp}}\) from that LIN relation to
@@ -72,7 +72,7 @@ opening path realizes \(\Pi_{\mathsf{iopp}}\) from that LIN relation to
 \textbf{G3}&
 A virtual seam may yield the general coefficient
 \(T_{\K}^{*}(\bm a_{\K})\), whereas the concrete ring switch accepts only its
-declared LIN source family (MLE-shaped in the core profile).&
+declared LIN source family (MLE-shaped in the direct mode).&
 The direct verifier rejects virtual inputs.  A virtual extension may apply the
 public adjoint without a message only after verifying its own partial-core
 predecessor.  It then runs exactly one degree-two LinCheck on the resulting
@@ -81,25 +81,25 @@ first inherited ring vector, and reuses that vector for ring switching.  No
 multi-evaluation ring adapter is required.&
 The extension must type \(T,T^*\), specify the virtual partial-core seam, prove
 its on-demand adjoint-coefficient evaluator equivalent to the full transpose,
-enable the fixed \code{4002/4103} LinCheck ledger under a new top-level profile,
+enable the fixed \code{4002/4103} LinCheck ledger in the virtual mode,
 and supply its verifier, implementation, fixtures, and composed error.\\
 \addlinespace
 \textbf{G4}&
 The general relation permits a zero functional, while the active-chunk core
 has \(\mathcal A=\varnothing\) and therefore no PESAT grand-product or
 LIN-to-\(\mathcal R_{\rm triv}\) path.&
-The core profile requires \(\mathcal A\ne\varnothing\) and rejects otherwise.&
-A zero-functional profile must still define how \(\rho\) is validated and
+The core protocol requires \(\mathcal A\ne\varnothing\) and rejects otherwise.&
+A zero-functional extension must still define how \(\rho\) is validated and
 must give its own proof object, transcript, and acceptance predicate.\\
 \addlinespace
 \textbf{G5}&
-An application PIOP may output an arbitrary scalar Lin-ModFieldBin
+ZeroCheck may output an arbitrary scalar Lin-ModFieldBin
 coefficient, while the Lin-BitsDual core requires the separable tensor
 \(u_{c,b,j}=\pi_q(w_b2^j)w'_c\).&
 The end-to-end verifier accepts only
-\(\mathsf{VerifyPIOP}\) outputs whose deterministic bitification equals
+\(\mathsf{VerifyZeroCheck}\) outputs whose deterministic bitification equals
 the declared weighted tensor; the same root must cross the handoff.&
-The application profile must specify the PIOP proof and transcript handoff plus
+The ZeroCheck protocol must specify its proof and transcript handoff plus
 a weighted-shape adapter, and prove that its Lin-ModFieldBin successor bitifies
 to either a weighted instance of \(\RLBD\) or its declared weighted virtual
 Lin-BitsDual source,
@@ -111,25 +111,25 @@ two-stream container, a recursive-opening configuration, or a proof-of-work
 predicate and difficulty.  The current one-stream codec writes \(u\) but
 absorbs its derived image \(g^u\), which cannot be represented by the selected
 two-stream wrapper's write-and-absorb NARG operation.&
-Section~\ref{sec:wire-profile} fixes the wire/transcript question: it gives the
-profile identifier; primitive, vector, record, and outer encodings; numeric
+Section~\ref{sec:wire-format} fixes the wire/transcript question: it gives the
+primitive, vector, record, and outer encodings; numeric
 event registry; transcript transition; NARG/hint replay; recursive Ligerito
 integer tables and event ledger; Merkle row and multiproof bytes; PoW context,
 nonce, predicate, schedule, and difficulty; all four length metrics; and exact
 nested and outer exhaustion.  It sends and absorbs
 \(\nu^{(\ell)}=g^{u^{(\ell)}}\) under tag \code{2001}, then checks the
 tag-\code{2081} \(u^{(\ell)}\) hint before tag \code{2101}.  A missing or
-unknown application/GKR event ledger or constrained-code construction is a
+unknown ZeroCheck/GKR event ledger or constrained-code construction is a
 hard reject, not an inferred encoding.  It also fixes conditional LinCheck
 tags \code{4002/4103}, their alternation, terminal deadline, and reuse of the
-tag-\code{4001} ring vector; the direct profile permits none of those events.&
-\textbf{Owner: John Wu.}  Port Section~\ref{sec:wire-profile} to the host and
+tag-\code{4001} ring vector; the direct mode permits none of those events.&
+\textbf{Owner: John Wu.}  Port Section~\ref{sec:wire-format} to the host and
 recursive verifiers, remove the opaque bincode payload, and publish the
 required complete proof, transcript, Merkle, PoW, and negative fixtures.  The
 current Rust codec remains nonconforming and its legacy bytes are not v1.
-End-to-end interoperability may be claimed only after the selected application
-and GKR identifiers resolve to published byte ledgers and the statement-bound
-code identifier resolves to a complete canonical RS/LCH construction
+End-to-end interoperability may be claimed only after the fixed ZeroCheck and
+GKR protocols have published byte ledgers and the fixed code specification gives a
+complete canonical RS/LCH construction
 (including domain, basis, padding, and coordinate order) with independent
 commitment/root vectors.  The wire namespaces and PoW rules themselves are not
 left to implementation inference.\\
@@ -139,7 +139,7 @@ The current encoded outer pre-sumcheck includes
 \(\mathtt{presums}[\ell]\mathtt{.claimed\_sums}\), and current recursive/host decoders may
 accept unused roots, nonces, recursive proofs, or suffix bytes.  The presum is
 currently checked only after the MultiDegree challenges.&
-Wire profile v1 omits that redundant field and derives
+Wire format v1 omits that redundant field and derives
 \([e_d^{(\ell)}+1]\); the reserved legacy tag \code{3081} rejects.
 Sections~\ref{sec:wire-merkle}, \ref{sec:wire-events},
 \ref{sec:wire-recursive-ledger}, and~\ref{sec:wire-conformance} derive the

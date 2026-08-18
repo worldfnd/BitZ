@@ -56,58 +56,57 @@ order.  The labels below remain meaningful without color.
 
 \paragraph{Procedure \(\mathsf{VerifyF2Z}\).}
 \begin{algorithmic}[1]
-\Require \(\mathsf{pp},x_{\rm app},\mathsf{com}=(\rho),
+\Require \(\mathsf{pp},x_{\rm src},\mathsf{com}=(\rho),
   \pi_{\rm host}\)
 \Ensure \(\mathsf{true}\) or \(\mathsf{false}\)
 
 \Statex
 \Statex \PVStep{1}{Validate and bind the commitment}
 \Statex \hspace{\algorithmicindent}
-  \(\RPIMSAT^{\rm app}
-    \xRightarrow{\mathsf{Encode}}\RPIMSAT^{\rm enc}\)
+  \(\mathcal R_{\rm src}
+    \xrightarrow{\mathsf{Encode}}\mathcal R_{\rm src}^{\rm enc}\)
 \State \((N_{\rm F2Z},H_{\rm F2Z},n_N,n_H,b_N,b_H)
   \gets\mathsf{DecodeHostV1}(\pi_{\rm host})\)
 \State \(\VCheckOp[\mathsf{HeaderV1}=1\land
-  \ProfileID=\operatorname{ASCII}
-  (\code{F2ZPCS-v1-B3-SHA256-CORE-0000001})]\)
+  \mathsf{wire\_version}=1]\)
 \State \(\VCheckOp[\mathsf{ValidatePublic}
-  (\mathsf{pp},x_{\rm app},\rho)=1]\)
-\State \(\VCheckOp[\mathsf{ResolveAppProfile}
-  \land\mathsf{ResolveGKRProfile}\land\mathsf{ResolveCodeProfile}]\)
-\State Read \((t,s,W,g)\) from \(x_{\rm app}\);
+  (\mathsf{pp},x_{\rm src},\rho)=1]\)
+\State Read \((t,s,W,g)\) from \(x_{\rm src}\);
   \(\VCheckOp[t,s\in\mathbb N\land W\in2^{\mathbb N}]\)
 \State \(\VDerive w\gets\log_2W\), \(d\gets t+w\), \(m\gets d+s\),
   \(m_p\gets m-7\), \(c_w\gets127-t-W\)
 \State \(\VCheckOp[d\ge7\land t+W\le126\land
   22\le m\le35\land c_w>0]\)
 \State \(\VCheckOp[\operatorname{ord}(g)=2^{128}-1]\)
-\State \(\VCheckOp[\theta_2,\theta_3\in\K\setminus\{0,1\}
-  \land\theta_2\ne\theta_3]\)
 \State \(\tr\gets\VAbsorb
   (\tr_{\mathsf{init}},\Frame(\mathtt{0x0001},\bot_{32},\bot_{32},
-    \bot_{32};\mathsf{ProfileV1}))\)
-  using Equation~\eqref{eq:profile-statement-payloads}
+    \bot_{32};\mathsf{DomainV1}))\)
+  using Equation~\eqref{eq:domain-statement-payloads}
 \State \(\tr\gets\VAbsorb
   (\tr,\Frame(\mathtt{0x0002},\bot_{32},\bot_{32},
     \bot_{32};\mathsf{StatementV1}))\)
-  using Equation~\eqref{eq:profile-statement-payloads}
+  using Equation~\eqref{eq:domain-statement-payloads}
 \State Initialize independent cursors
   \(\VDerive c_N\gets\mathsf{Cursor}(N_{\rm F2Z},n_N,b_N)\),
   \(c_H\gets\mathsf{Cursor}(H_{\rm F2Z},n_H,b_H)\), and
   \(\mathsf{PendingHint}\gets0\)
-\State Load the application PIOP and GKR subordinate event ledgers and the
-  canonical constrained-code construction selected by
-  \(\mathsf{code\_profile\_id}\)
+\State Load the fixed ZeroCheck and GKR event ledgers and the canonical
+  constrained-code construction from \(\mathsf{pp}\)
 
 \Statex
-\Statex \PVStep{2}{Verify the application PIOP}
+\Statex \PVStep{2}{Verify ZeroCheck}
 \Statex \hspace{\algorithmicindent}
-  \(\RPIMSAT^{\rm enc}
-    \xRightarrow{\Pi_{{\rm app},1}}\RPESAT^{\rm app}
-    \xRightarrow{\Pi_{{\rm app},2}}\RLMFB\)
-\State \((\tr,\mathcal I_{\rm LMFB},\bm w,\bm w',y)
-  \gets\VCall{VerifyPIOPStream}
-  (\mathsf{pp},x_{\rm app},\rho;\tr,c_N,c_H)\)
+  \(\mathcal R_{\rm src}^{\rm enc}
+    \xRightarrow{\Pi_{\rm ZC}}\RLMFB\)
+\State \((\tr,\mathcal I_{\rm LMFB},\bm w,\bm w')
+  \gets\VCall{VerifyZeroCheckStream}
+  (\mathsf{pp},x_{\rm src},\rho;\tr,c_N,c_H)\)
+\State \(\VDerive(\psi,\bm v,\mu)\gets
+  \mathsf{Claim}(\mathcal I_{\rm LMFB})\)
+\State \(\VCheckOp[\mathsf{SameRoot}(\mathcal I_{\rm LMFB},\rho)=1
+  \land\psi=\pi_q
+  \land\mathsf{ConcreteLMFBShape}(\mathcal I_{\rm LMFB},t,s,W)=1]\)
+\State \(\VDerive y\gets\mu\)
 \State \(\VCheckOp[|\bm w|=2^t\land|\bm w'|=2^s
   \land 0\le w_b<2^{100}\land w'_c,y\in\Fq]\)
 
@@ -190,16 +189,16 @@ order.  The labels below remain meaningful without color.
   \(\mathcal R_{h\text{-}{\rm Lin}}^{\virt}
     \equiv_{\mathsf{Adj}_{T_\K^*}}
     \RLin(\K,\mathcal C,\Pack)\)
-\State \(\VCheckOp[\mathsf{profile}=\mathsf{direct}]\)
+\State \(\VCheckOp[\mathsf{core\_mode}=\mathsf{direct}]\)
 \Statex \hspace{\algorithmicindent}
-  \textit{Virtual profiles use a specified partial-core, adjoint, and the
+  \textit{The virtual mode uses a specified partial-core, adjoint, and the
   one-LinCheck adapter below.}
 
 \Statex \PVStep{8}{LinCheck a general coefficient when required}
-\State \(\VCheckOp[\mathsf{profile}=\mathsf{direct}
+\State \(\VCheckOp[\mathsf{core\_mode}=\mathsf{direct}
   \Longrightarrow \pi_{\rm LC}=()\land\varepsilon_{\rm LC}=0]\)
 \Statex \hspace{\algorithmicindent}
-  \textit{A virtual profile alternates tag-\code{4002} degree-two messages and
+  \textit{The virtual mode alternates tag-\code{4002} degree-two messages and
   tag-\code{4103} challenges, then checks its terminal gate with the first
   tag-\code{4001} vector.}
 
@@ -241,8 +240,8 @@ order.  The labels below remain meaningful without color.
 
 \Statex \PVStep{11}{Open the batched claim}
 \Statex \hspace{\algorithmicindent}
-  profile-selected polynomial opening (Ligerito in the current profile)
-\State \(\VCheckOp[B=\mathsf{DerivedCoefficient}(x_{\rm app},\tr)
+  fixed polynomial opening (Ligerito in this proof system)
+\State \(\VCheckOp[B=\mathsf{DerivedCoefficient}(x_{\rm src},\tr)
   \land\operatorname{dom}(B)=\{0,1\}^{m_p}]\)
 \State \(\tr\gets\VAbsorb
   (\tr,\Frame(\mathtt{0x5001},\bot_{32},\bot_{32},\bot_{32};
@@ -263,7 +262,7 @@ read advances only $c_N$, every hint read advances only $c_H$, and a helper
 \mustnot{} return success with an unchecked hint.  P4/V4's
 $\Nbadge{\nu^{(\ell)}}$, $\Hbadge{u^{(\ell)}}$ order is realized by tags
 \code{2001} and \code{2081}.  Every read, absorb, squeeze, PoW check, and EOF
-condition uses the byte rules in Section~\ref{sec:wire-profile}; no helper may
+condition uses the byte rules in Section~\ref{sec:wire-format}; no helper may
 fall back to structure-field order or an opaque serialization.
 
 \endgroup

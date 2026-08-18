@@ -1,40 +1,30 @@
-\section{Wire and transcript profile v1}
-\label{sec:wire-profile}
+\section{Wire and transcript format v1}
+\label{sec:wire-format}
 
 \begingroup\small
 
 \begin{normative}
 This section fixes the bytes consumed by a conforming prover and verifier.
-The profile has two physical proof streams, prefix-free typed records, a
+The proof system has two physical proof streams, prefix-free typed records, a
 BLAKE3 transcript, SHA-256 Merkle roots, and the recursive Ligerito and
 proof-of-work parameters below.  A proof using the legacy positional/bincode
-codec is not a v1 proof.  End-to-end use additionally requires the three
-statement-bound subordinate identifiers to resolve as specified below.
+codec is not a v1 proof.
 \end{normative}
 
-\subsection{Profile identity and fixed algorithms}
-\label{sec:wire-profile-id}
+\subsection{Version and fixed algorithms}
+\label{sec:wire-version}
 
 The eight-byte container magic is the ASCII string \code{F2ZPCS\textbackslash0\textbackslash0},
-the wire version is one, and the 32-byte profile identifier is
-\begin{equation}
- \ProfileID=\operatorname{ASCII}
-   (\code{F2ZPCS-v1-B3-SHA256-CORE-0000001}).
- \label{eq:wire-profile-id}
-\end{equation}
-The literal in Equation~\eqref{eq:wire-profile-id} has exactly 32 bytes and
-hex encoding
-\code{46325a5043532d76312d42332d5348413235362d434f52452d30303030303031}.
-Changing any normative rule in this section requires a new profile identifier.
+and the wire version is one.  Changing any normative rule in this section
+requires a new wire version.
 
 The transcript and its XOF are unkeyed BLAKE3; Merkle nodes and roots use
 SHA-256; PoW uses unkeyed BLAKE3-256.  The field basis is the polynomial basis
-of Equation~\eqref{eq:concrete-domains}.  An application PIOP, a GKR
-implementation, and the constrained-code construction each supply a distinct
-32-byte subordinate profile identifier.  The public statement binds all three
-identifiers.  An unknown identifier, an application/GKR profile without a
-byte-exact event ledger, or a code profile without a canonical codeword
-construction and root vectors is unsupported and \must{} be rejected.
+of Equation~\eqref{eq:concrete-domains}.  The public parameters fix the
+ZeroCheck protocol, GKR protocol, constrained-code construction, transcript,
+and opening protocol.  None is selected or negotiated by proof bytes.  A proof system
+without byte-exact ZeroCheck and GKR ledgers or without a canonical codeword
+construction and root vectors is incomplete and \mustnot{} accept proofs.
 
 For the deployed range $22\le m\le35$, let $J_m$ be the number of recursive
 opening levels.  The level shapes and all parameters except the base fold
@@ -109,7 +99,7 @@ Chunk exponent $u$&16&$\LE{128}{u}$; require $u<2^{127}$.\\
 Nonce&8&$\LE{64}{n}$.\\
 Merkle value&32&Raw SHA-256 digest bytes, in digest output order.\\
 Vector $[x_0,\ldots,x_{n-1}]$&4 plus elements&$\LE{32}{n}$ followed by
-canonical elements in index order; $n$ must equal the profile-derived expected
+canonical elements in index order; $n$ must equal the protocol-derived expected
 count.\\
 Opened rows and path&nested&Vector of rows, each a vector of $\K$ elements,
 followed by a vector of 32-byte Merkle values.  Expected row, width, and path
@@ -156,7 +146,7 @@ Here $\operatorname{Enc}_{\K}$ is the 16-byte encoding in
 Section~\ref{sec:wire-primitives}.  Equation~\eqref{eq:merkle-v1-tree} uses
 no native-memory cast, row-length prefix, row index, level tag, padding, or
 leaf/internal-node domain byte.  Adding such a byte changes every root and
-requires a new profile identifier.  The constrained-code profile defines
+requires a new wire version.  The fixed code specification defines
 how $C_k$ is generated; this section fixes its portable row and tree encoding.
 
 Let the already-derived query set be
@@ -197,30 +187,29 @@ digests or payload bytes.
 \subsection{Outer two-stream container}
 \label{sec:wire-container}
 
-The 72-byte header is fixed as follows.  Offsets and sizes are decimal; all
+The 40-byte header is fixed as follows.  Offsets and sizes are decimal; all
 multibyte integers use Section~\ref{sec:wire-primitives}.
 
 \begin{lstlisting}[style=wire]
 offset  size  field
 0       8     magic = 46 32 5a 50 43 53 00 00
 8       2     wire_version = 01 00
-10      2     header_len = 48 00                 (72)
+10      2     header_len = 28 00                 (40)
 12      4     flags = 00 00 00 00
-16      32    profile_id
-48      4     narg_record_count
-52      4     hint_record_count
-56      8     narg_byte_len
-64      8     hint_byte_len
-72      ...   NARG records, then Hint records
+16      4     narg_record_count
+20      4     hint_record_count
+24      8     narg_byte_len
+32      8     hint_byte_len
+40      ...   NARG records, then Hint records
 \end{lstlisting}
 
-Writing $\mathsf{Hdr}_{72}$ for those exact header bytes, the only v1 host
+Writing $\mathsf{Hdr}_{40}$ for those exact header bytes, the only v1 host
 encoding is
 \begin{equation}
  \HostEncode(N,H)
- :=\mathsf{Hdr}_{72}\parallel N\parallel H,
+ :=\mathsf{Hdr}_{40}\parallel N\parallel H,
  \qquad
- \ByteLen(\HostEncode(N,H))=72+\ByteLen(N)+\ByteLen(H).
+ \ByteLen(\HostEncode(N,H))=40+\ByteLen(N)+\ByteLen(H).
  \label{eq:host-encoding-v1}
 \end{equation}
 Equation~\eqref{eq:host-encoding-v1} implies the four benchmark metrics
@@ -229,13 +218,13 @@ Equation~\eqref{eq:host-encoding-v1} implies the four benchmark metrics
   \NargLen(\pi)&=\ByteLen(N),&
   \HintLen(\pi)&=\ByteLen(H),\\
   \PayloadLen(\pi)&=\ByteLen(N)+\ByteLen(H),&
-  \WireLen(\pi)&=72+\PayloadLen(\pi).
+  \WireLen(\pi)&=40+\PayloadLen(\pi).
  \end{aligned}
  \label{eq:wire-lengths-v1}
 \end{equation}
 The decoder \must{} verify Equation~\eqref{eq:wire-lengths-v1} with checked
 arithmetic before allocating, enforce statement-derived upper bounds, and
-require input length exactly $72+\mathtt{narg\_byte\_len}+
+require input length exactly $40+\mathtt{narg\_byte\_len}+
 \mathtt{hint\_byte\_len}$.  The two declared record counts must match the
 records actually consumed.  Header count and length fields are transport
 metadata and are not transcript input.
@@ -293,14 +282,14 @@ by Equation~\eqref{eq:transcript-v1}.
 \textbf{Tag}&\textbf{Class}&\textbf{Event}&\textbf{Scope; proof payload or squeeze result}\\
 \midrule
 \endhead
-\code{0001}&D&profile/domain&$(\bot,\bot,\bot)$; $\mathsf{ProfileV1}$ from
-Equation~\eqref{eq:profile-statement-payloads}.\\
+\code{0001}&D&domain/version&$(\bot,\bot,\bot)$; $\mathsf{DomainV1}$ from
+Equation~\eqref{eq:domain-statement-payloads}.\\
 \code{0002}&D&statement&$(\bot,\bot,\bot)$; $\mathsf{StatementV1}$ from
-Equation~\eqref{eq:profile-statement-payloads}.\\
+Equation~\eqref{eq:domain-statement-payloads}.\\
 \code{0003}&D&core seam&$(\bot,\bot,\bot)$;
 $\mathsf{CoreSeamV1}$ from Equation~\eqref{eq:core-seam-payload}.\\
-\code{1000--1fff}&profile&application PIOP&The selected application profile
-owns a disjoint, byte-exact ledger within this range.\\
+\code{1000--1fff}&ZC&ZeroCheck&The fixed ZeroCheck protocol owns a
+disjoint, byte-exact ledger within this range.\\
 \code{2001}&N&chunk $\nu$&$(\ell,\bot,\bot)$; vector of $2^s$ elements of
 $\K$.\\
 \code{2081}&H&chunk $u$&$(\ell,\bot,\bot)$; vector of $2^s$ canonical
@@ -309,9 +298,9 @@ $u_{128}<2^{127}$.\\
 challenge.\\
 \code{3001}&N&GKR phase-$c$ sum&$(\ell,k,\bot)$; one $\K$ element, absorbed
 after the phase-link check and before the first phase-$c$ round.\\
-\code{3002--30ff}&profile&GKR messages&The selected GKR profile owns exact
+\code{3002--30ff}&GKR&GKR messages&The fixed GKR protocol owns exact
 message tags, codecs, and checks in this range.\\
-\code{3100--31ff}&profile&GKR squeezes&The selected GKR profile owns exact
+\code{3100--31ff}&GKR&GKR squeezes&The fixed GKR protocol owns exact
 squeeze tags and result types in this range.\\
 \code{4001}&N&ring $s$ vector&$(\ell,\bot,\bot)$; vector of exactly 128
 elements of $\K$.\\
@@ -354,11 +343,11 @@ Equation~\eqref{eq:merkle-opening-payload}.\\
 \end{longtable}
 \endgroup
 
-The application and GKR ranges are black-box namespaces, not permission to
-use implementation-defined bytes.  Their profile identifiers must select
-published ledgers with the same columns as this table.  The fixed
+The ZeroCheck and GKR ranges are black-box namespaces, not permission to use
+implementation-defined bytes.  The fixed protocols must publish ledgers with
+the same columns as this table.  The fixed
 \code{3001} event resolves the PCS-level phase-$c$ placement ambiguity in
-Gap~G1; the rest of that gap remains subordinate-profile work and no profile
+Gap~G1; the rest of that gap remains GKR-protocol work and no protocol
 may reassign the tag.  The v1 outer pre-sumcheck
 omits the redundant \code{presums[ell].claimed\_sums} field and derives
 $[e_d^{(\ell)}+1]$, so tag \code{3081} is reserved and \mustnot{} occur.
@@ -367,37 +356,35 @@ $[e_d^{(\ell)}+1]$, so tag \code{3081} is reserved and \mustnot{} occur.
 \label{sec:wire-transcript}
 
 Model the transcript state as the byte string hashed by an unkeyed BLAKE3
-hasher.  It starts empty.  The profile frame \code{0001} and statement frame
+hasher.  It starts empty.  The domain/version frame \code{0001} and statement frame
 \code{0002} are absorbed, in that order, before any proof-dependent squeeze.
-The application statement digest is
+The source-statement digest is
 \begin{equation}
- d_{\rm app}:=\operatorname{BLAKE3}_{256}
+ d_{\rm src}:=\operatorname{BLAKE3}_{256}
  \bigl(\operatorname{hex}^{-1}
    (\code{46325a2d5043532f6170702d73746174656d656e742f763100})
- \parallel\mathsf{app\_profile\_id}\parallel
- \mathsf{app\_statement\_bytes}\bigr).
- \label{eq:app-statement-digest}
+ \parallel\mathsf{source\_statement\_bytes}\bigr).
+ \label{eq:source-statement-digest}
 \end{equation}
-The hex prefix in Equation~\eqref{eq:app-statement-digest} is the ASCII
-literal \code{F2Z-PCS/app-statement/v1} followed by one NUL byte.  The two
-initial frame payloads are exactly
+For v1 byte compatibility, Equation~\eqref{eq:source-statement-digest} retains
+the legacy ASCII domain literal \code{F2Z-PCS/app-statement/v1} followed by one
+NUL byte.  Changing that literal requires a new wire version.  The two initial
+frame payloads are exactly
 \begin{equation}
  \begin{aligned}
-  \mathsf{ProfileV1}:={}&
+  \mathsf{DomainV1}:={}&
     \operatorname{hex}^{-1}(\code{46325a5043530000})
-    \parallel\LE{16}{1}\parallel\ProfileID,\\
+    \parallel\LE{16}{1},\\
   \mathsf{StatementV1}:={}&
-    \mathsf{app\_profile\_id}[32]\parallel
-    \mathsf{gkr\_profile\_id}[32]\parallel
-    \mathsf{code\_profile\_id}[32]\parallel d_{\rm app}[32]
+    d_{\rm src}[32]
     \parallel\LE{32}{t}\parallel\LE{32}{s}\parallel\LE{32}{W}\\
     &\parallel\operatorname{Enc}_{\K}(g)\parallel\rho[32].
  \end{aligned}
- \label{eq:profile-statement-payloads}
+ \label{eq:domain-statement-payloads}
 \end{equation}
-Thus $\mathsf{ProfileV1}$ and $\mathsf{StatementV1}$ have 42 and 188 bytes,
-respectively.  The application profile must make its final byte string in
-Equation~\eqref{eq:app-statement-digest} canonical.
+Thus $\mathsf{DomainV1}$ and $\mathsf{StatementV1}$ have 10 and 92 bytes,
+respectively.  ZeroCheck must make the source-statement byte string in
+Equation~\eqref{eq:source-statement-digest} canonical.
 
 The derived core-seam payload is
 \begin{equation}
@@ -448,9 +435,9 @@ structure-field order.  Acceptance requires no deferred record or pending
 hint and exact logical and byte exhaustion of both streams and every nested
 slice.
 
-Tags \code{4002} and \code{4103} are enabled only by a top-level profile that
-declares a general-coefficient LinCheck; the direct v1 profile requires zero
-such events.  An enabled profile alternates, for $i=0,\ldots,m-1$, one
+Tags \code{4002} and \code{4103} are enabled only when the fixed core mode
+declares a general-coefficient LinCheck; the direct mode requires zero such
+events.  The virtual mode alternates, for $i=0,\ldots,m-1$, one
 tag-\code{4002} read-and-absorb, the check
 $g_i(0)+g_i(1)=\sigma_{i-1}$, and one tag-\code{4103} squeeze at the same
 scope.  No event may intervene within a round.  It then reads and absorbs the
@@ -490,7 +477,7 @@ least-significant bit and subsequent bytes.  Any satisfying nonce is accepted;
 minimality is not checked.  Only after the predicate succeeds does
 the verifier absorb the complete nonce frame, before any dependent squeeze.
 Difficulty zero has no predicate invocation, seed squeeze, or nonce record in
-this profile.
+this wire format.
 
 The exact scheduled difficulties are
 \begin{equation}
@@ -619,8 +606,8 @@ scope, kind, cardinality, or unread field rejects.
 
 A v1 implementation \must{}:
 \begin{enumerate}
- \item validate magic, version, flags, profile and subordinate profile
- identifiers, all profile-, statement-, and transcript-derived bounds, and all
+ \item validate magic, version, flags, all public-parameter-, statement-, and
+ transcript-derived bounds, and all
  reserved fields before allocating or doing proof work;
  \item use checked arithmetic and checked conversion for every length and
  index, reject noncanonical field values, and return a decoding error rather
@@ -638,7 +625,7 @@ Conformance fixtures \must{} include canonical primitive and frame hex, one
 complete $N/H/\HostEncode$ proof, the ordered transcript audit log, every
 squeezed challenge, PoW seeds/nonces and query positions, and all four lengths
 from Equation~\eqref{eq:wire-lengths-v1}.  Negative fixtures \must{} cover an
-unknown version/profile/tag, a reserved bit, wrong endian or channel, record
+unknown version or tag, a reserved bit, wrong endian or channel, record
 reordering, truncation and suffix bytes, noncanonical scalars, count overflow,
 a failed or late $u/\nu$ hint, altered PoW scope/difficulty/nonce, and missing
 or extra recursive fields.  A LinCheck-enabled fixture must additionally
@@ -647,7 +634,7 @@ terminal coefficient, and failed terminal gate.  Native, recursive, and independ
 verifiers must produce byte-identical transcript audit logs.
 
 The repository file \code{wire-v1-vectors.txt} is the normative initial
-known-answer set for the profile identifier, primitive container/frame codec,
+known-answer set for the primitive container/frame codec,
 Merkle row/tree/multiproof codec, and PoW predicate at difficulties 1, 7, 8,
 and 16.  A conforming implementation must reproduce it exactly and add a
 complete proof/transcript

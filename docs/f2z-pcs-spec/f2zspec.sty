@@ -1,7 +1,17 @@
 \NeedsTeXFormat{LaTeX2e}
 \ProvidesPackage{f2zspec}[2026/08/13 Notation for the general F2Z PCS specification]
 
-\RequirePackage{amsmath,amssymb,mathtools,bm}
+\RequirePackage{amsmath,amssymb,mathtools,bm,xcolor}
+
+% Author review comments.  Keep comments visible while reviewing and switch to
+% \showjohncommentsfalse for a clean PDF without deleting them from the source.
+\newif\ifshowjohncomments
+\showjohncommentstrue
+\DeclareRobustCommand{\john}[1]{%
+  \ifshowjohncomments
+    {\color{red!75!black}\textbf{[John:} #1\textbf{]}}%
+  \fi
+}
 
 \newcommand{\Ftwo}{\mathbb F_2}
 \newcommand{\Fbin}{\mathbb F_{\mathrm{bin}}}
@@ -21,7 +31,6 @@
 \newcommand{\tr}{\mathsf{tr}}
 \newcommand{\Frame}{\operatorname{Frame}_{\rm v1}}
 \newcommand{\HostEncode}{\operatorname{HostEncode}_{\rm v1}}
-\newcommand{\ProfileID}{\mathsf{profile\_id}}
 \newcommand{\ByteLen}{\operatorname{bytelen}}
 \newcommand{\LE}[2]{\operatorname{LE}_{#1}(#2)}
 \newcommand{\LZ}{\operatorname{LZ}}
@@ -43,8 +52,8 @@
 \newcommand{\should}{\textsc{should}}
 \newcommand{\may}{\textsc{may}}
 
-% Logical proof-channel notation.  These are semantic labels; the selected
-% byte profile owns their concrete framing and colors are applied at use sites.
+% Logical proof-channel notation.  These are semantic labels; the fixed wire
+% format owns their concrete framing and colors are applied at use sites.
 \newcommand{\chN}{\mathsf{N}}
 \newcommand{\chH}{\mathsf{H}}
 \newcommand{\chD}{\mathsf{D}}

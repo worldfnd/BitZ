@@ -12,7 +12,7 @@
   \textcolor{specblue}{\chN}\!/
   \textcolor{pvhint}{\chH}[#1]}
 
-\newcommand{\idPIMSAT}{$\mathsf{PIMSAT}$}
+\newcommand{\idSRC}{$\mathsf{SRC}$}
 \newcommand{\idLMFB}{$\mathsf{LMFB}$}
 \newcommand{\idLBD}{$\mathsf{LBD}$}
 \newcommand{\idPESAT}{$\mathsf{PESAT}^{(\ell)}$}
@@ -111,12 +111,12 @@ both replay orders.\\
 \end{tabularx}
 \endgroup
 
-Object notation $\mathsf{Verify}(\ldots,\pi;\tr)$ denotes the equivalent
+\john{WTF is a verifyStream? Do we really need that. It's not defined on the overleaf.} Object notation $\mathsf{Verify}(\ldots,\pi;\tr)$ denotes the equivalent
 $\mathsf{VerifyStream}(\ldots;\tr,c_N,c_H)$.  It follows the subordinate ledger
-over the closed profile's bounded input slices, performs the same checks and events,
+over the fixed proof system's bounded input slices, performs the same checks and events,
 and succeeds only at both declared cursor endpoints.
 
-Given public data and bound NARG prefix $A$, a hint $h$ is admissible only
+\john{WTF is this relation of CheckHint? Is it really needed?} Given public data and bound NARG prefix $A$, a hint $h$ is admissible only
 if its accepted value is computationally unique:
 \begin{equation}
  \Pr\!\left[\exists h\ne h':
@@ -130,7 +130,7 @@ checked before the next $\Squeeze$.  Acceptance requires no
 pending hint and exact exhaustion of both cursors; missing, misordered, or
 trailing records reject.
 
-Let $\Frame(\tau,\ell,k,i;z)$ be the byte frame of
+\john{This mother fucking thing can just be said more simply of how we are doing a transcript absorb. It can simply be absorb(domain|length of bytes |bytes) and then we can use squeeze. Just define the goddamm transcript as a sponge} Let $\Frame(\tau,\ell,k,i;z)$ be the byte frame of
 Equation~\eqref{eq:event-frame-v1}.
 Before the first proof challenge,
 \begin{equation}
@@ -138,14 +138,14 @@ Before the first proof challenge,
    \Absorb\!\left(
     \tr_{\rm init},
     \Frame(\mathtt{0x0001},\bot_{32},\bot_{32},\bot_{32};
-      \mathsf{ProfileV1})\right),
+      \mathsf{DomainV1})\right),
    \Frame(\mathtt{0x0002},\bot_{32},\bot_{32},\bot_{32};
       \mathsf{StatementV1})
  \right).
  \label{eq:bind-statement}
 \end{equation}
 The payloads in Equation~\eqref{eq:bind-statement} are fixed by
-Equation~\eqref{eq:profile-statement-payloads}.  Later absorbs are
+Equation~\eqref{eq:domain-statement-payloads}.  Later absorbs are
 domain-separated by their numeric tag and fixed $(\ell,k,i)$ scope fields.
 A squeeze updates $\tr$ and yields a derived, non-transmitted value; each
 populated interaction row denotes one event.
@@ -174,15 +174,11 @@ superscript-$(\ell)$ copies add no paper relation.
 \setlength{\marginparsep}{0.10in}
 
 % --------------------------------------------------------------------------
-\begin{pvstep}{Commit and bind the application statement}{%
+\begin{pvstep}{Commit and bind the source statement}{%
   \clgedge[initialization]{$\mathsf{Encode}$}
-    {$\RPIMSAT^{\rm app}$}
-    {$\RPIMSAT^{\rm enc}$}%
-  \clgnewrel{\idPIMSAT}{%
-    $\begin{gathered}
-       p_j^{(a)}(\bm x,\bm f)\in I_a\\[-2pt]
-       (\forall a,j)
-     \end{gathered}$}%
+    {$\mathcal R_{\rm src}$}
+    {$\mathcal R_{\rm src}^{\rm enc}$}%
+  \clgnewrel{\idSRC}{$\mathcal R_{\rm src}^{\rm enc}(x_{\rm src},O;\bm f)$}%
   \clgdef{$\rho$}{$\rho=\Root(O)$}%
 }
 \begin{pvexchange}
@@ -193,36 +189,42 @@ superscript-$(\ell)$ copies add no paper relation.
  O&:=\Enc_{\mathcal C}(P),\qquad \rho:=\Root(O).
 \end{aligned}\).}
 \Psend{\Dbadge{\mathsf{com}}}
-\Vturn{Validate the profile, statement, shape, code, and root type; then set
+\Vturn{Validate the public parameters, statement, shape, code, and root type; then set
 \(\displaystyle
  \tr\leftarrow\Absorb_{\mathsf{statement}}
-   (\tr,(\mathsf{pp},x_{\rm app},\mathsf{com}))\).}
+   (\tr,(\mathsf{pp},x_{\rm src},\mathsf{com}))\).}
 \end{pvexchange}
 \end{pvstep}
 
 % --------------------------------------------------------------------------
-\begin{pvstep}{Run the application PIOP}{%
-  \clgedge[relation reduction]{$\Pi_{\rm PIOP}$}
-    {$\RPIMSAT^{\rm enc}$}
+\begin{pvstep}{Run ZeroCheck}{%
+  \clgedge[relation reduction]{$\Pi_{\rm ZC}$}
+    {$\mathcal R_{\rm src}^{\rm enc}$}
     {$\RLMFB$}%
-  \clgdone{\idPIMSAT}%
-  \clgnewrel{\idLMFB}{$\langle\bm v,\psi(\bm f)\rangle_R=y$}%
+  \clgdone{\idSRC}%
+  \clgnewrel{\idLMFB}{$\langle\bm v,\psi(\bm f)\rangle_R=\mu$}%
 }
-The displayed edge abbreviates the paper's application-PESAT stage followed by
-its linear reduction; both retain the same encoded oracle.
+The fixed ZeroCheck protocol owns this entire reduction and retains the
+same encoded oracle.
 \begin{pvexchange}
 \Pturn{Construct
 \(\displaystyle
- (\tr,\pi_{\rm PIOP})\leftarrow
- \mathsf{PIOP.Prove}(\mathsf{pp},x_{\rm app},\bm f;\tr)\).}
-\Psend{\Splitbadge{\pi_{\rm PIOP}}}
+ (\tr,\pi_{\rm ZC})\leftarrow
+ \mathsf{ZeroCheck.Prove}(\mathsf{pp},x_{\rm src},\bm f;\tr)\).}
+\Psend{\Splitbadge{\pi_{\rm ZC}}}
 \Vturn{Compute
 \(\begin{aligned}
- (\tr,\bm v,y,\bm w,\bm w')&\leftarrow\mathsf{VerifyPIOP}\\[-2pt]
- &\quad(x_{\rm app},\rho,\pi_{\rm PIOP};\tr),
+ (\tr,\mathcal I_{\rm LMFB},\bm w,\bm w')
+   &\leftarrow\mathsf{VerifyZeroCheck}\\[-2pt]
+ &\quad(x_{\rm src},\rho,\pi_{\rm ZC};\tr),
 \end{aligned}\)
-require $v_{b,c}=\pi_q(w_b)w'_c$ and all public bounds, and bind the
-derived core instance before its first challenge.}
+derive $(\psi,\bm v,\mu):=\mathsf{Claim}(\mathcal I_{\rm LMFB})$,
+set $y:=\mu$, require
+$\mathsf{SameRoot}(\mathcal I_{\rm LMFB},\rho)=1$,
+$\psi=\pi_q$, the concrete adapter of
+Equation~\eqref{eq:concrete-lmfb-specialization},
+$v_{c,b}=\pi_q(w_b)w'_c$, and all public bounds; then bind the derived core
+instance before its first challenge.}
 \end{pvexchange}
 \end{pvstep}
 
@@ -232,13 +234,13 @@ derived core instance before its first challenge.}
     {$\RLMFB$}
     {$\RLBD$}%
   \clgdone{\idLMFB}%
-  \clgnewrel{\idLBD}{$\langle\bm u,\iota_R(\bm b)\rangle_R=y$}%
+  \clgnewrel{\idLBD}{$\langle\pi_q(\bm b),\bm u\rangle_R=y$}%
 }
 \begin{pvexchange}
 \Pturn{Retain $\bm b=\bits(\bm f)$ and its matrix form $\Bbit$.}
 \Vturn{Derive, without a message or challenge,
 \(\displaystyle
- u_{c,b,j}:=v_{b,c}\pi_q(2^j)
+ u_{c,b,j}:=v_{c,b}\pi_q(2^j)
              =\pi_q(w_b2^j)w'_c\).
 This is retyping by semilinearity, not a Booleanity round.}
 \Vturn{Encode $\mathsf{CoreSeamV1}$ by
@@ -300,7 +302,7 @@ $\bm a_\ell[z]=\eq(z,\mathit{pt}_\ell)$ and satisfy
 $\MLE{B_{\mathrm{bit},\K}}(\mathit{pt}_\ell)=\mu_\ell$ against the same root.
 
 \begin{pvexchange}
-\Pturn{Construct the selected GKR profile's canonical proof fragment
+\Pturn{Construct the fixed GKR protocol's canonical proof fragment
 \(\displaystyle
  \pi_{\rm red}^{(\ell)}\leftarrow
  \mathsf{GKR.Prove}
@@ -317,23 +319,23 @@ $\tr\leftarrow\tr'$.}
 \Pturn{Retain the witness value
 $\MLE{B_{\mathrm{bit},\K}}(\mathit{pt}_\ell)$.}
 \end{pvexchange}
-All internal GKR messages and challenges are owned by the selected GKR
-profile and use its versioned domain namespace.  Treating GKR atomically here
+All internal GKR messages and challenges are owned by the fixed GKR
+protocol and use its domain namespace.  Treating GKR atomically here
 does not permit an implementation to omit that subordinate transcript and
 encoding specification.
 
-For a conforming merged-forest subordinate profile, the repeated phase-$x$ value
+For the merged-forest GKR protocol, the repeated phase-$x$ value
 $\Hbadge{S_{x,k}^{(\ell)}}$ is a valid hint because the prefix already fixes
 $e_k^{(\ell)}$ and the verifier immediately requires
 $S_{x,k}^{(\ell)}=e_k^{(\ell)}$ before any following squeeze.  A canonical
-profile \should{} omit that redundant field and mark it $\Dbadge{e_k^{(\ell)}}$
+implementation \should{} omit that redundant field and mark it $\Dbadge{e_k^{(\ell)}}$
 instead.  The phase-$c$ claimed sums, sumcheck messages, and terminal child
 pairs remain $\Nbadge{\mathrm{GKR\ messages}}$: their consistency checks do not
 uniquely determine them and later challenges must bind them.
 
 The outer encoded field
 $\mathtt{presums}[\ell]\mathtt{.claimed\_sums}$ is distinct from those phase-$c$
-claims.  Wire profile v1 omits it and supplies the derived value
+claims.  Wire format v1 omits it and supplies the derived value
 $\Dbadge{[e_d^{(\ell)}+1]}$ to the MultiDegree pre-sumcheck.  A decoder that
 encounters the reserved legacy tag \code{3081} \must{} reject.
 \end{pvstep}
@@ -372,8 +374,8 @@ This check has no message, absorb, or challenge.}
     {$\RLin(\K,\mathcal C,\Pack)$}%
   \clgtouch{\idLINPACK}%
 }
-The direct profile skips this optional P7/V7 step and carries its current LIN
-family unchanged.  A virtual profile substitutes its specified partial core
+The direct mode skips this optional P7/V7 step and carries its current LIN
+family unchanged.  The virtual mode substitutes its specified partial core
 for P4/V4 through P6/V6, producing
 $h=h_{0,\K}+T_K(b_K)$ and $\langle a_h,h\rangle_{\K}=\mu_h$ by the
 proof-carrying conditional edge
@@ -393,7 +395,7 @@ zero-message:
  \label{eq:interaction-virtual-adjoint}
 \end{equation}
 Equation~\eqref{eq:interaction-virtual-adjoint} generates no message or
-challenge.  A profile without this predecessor and the LinCheck evaluator of
+challenge.  A virtual-mode implementation without this predecessor and the LinCheck evaluator of
 Equation~\eqref{eq:virtual-adjoint-evaluator} rejects virtual inputs.
 \end{pvstep}
 
@@ -404,8 +406,8 @@ Equation~\eqref{eq:virtual-adjoint-evaluator} rejects virtual inputs.
     {$\mathsf{EvalGate}(\K,\mathcal C,\Pack)$}%
   \clgtouch{\idLINPACK}%
 }
-The direct profile skips P8/V8 because every GKR successor is already
-MLE-shaped.  A virtual profile runs exactly one degree-two LinCheck on the
+The direct mode skips P8/V8 because every GKR successor is already
+MLE-shaped.  The virtual mode runs exactly one degree-two LinCheck on the
 general claim produced by P7/V7.  Write
 $g_i(X)=\gamma_{i,0}+\gamma_{i,1}X+\gamma_{i,2}X^2$.  For
 $i=0,\ldots,m-1$, P8 sends its three canonical coefficients under NARG tag
@@ -449,7 +451,7 @@ $(r,\sigma_{m-1})$ and the public evaluator $r\mapsto\widetilde a_b(r)$.}
      \end{gathered}$}%
   \clgdef{$P$}{$P=\Pack(\pi_2(\bm b))$}%
 }
-For the direct MLE-structured profile, split
+For the direct mode, split
 $\mathit{pt}_\ell=(r_{\lo}^{(\ell)},r_{\hi}^{(\ell)})$ with
 $|r_{\lo}^{(\ell)}|=7$.
 For the virtual singleton, use $\ell=0$ and the LinCheck point $r$ instead.
@@ -523,8 +525,8 @@ under tag \code{4102} and scope $(\ell,\bot_{32},\bot_{32})$.}
   \clgundef{$\rho$}%
 }
 \begin{pvexchange}
-\Pturn{Run the profile-selected polynomial opening protocol---Ligerito in the
-current profile---for the batched claim $(\rho,B,\beta)$, producing
+\Pturn{Run the fixed polynomial opening protocol---Ligerito in this proof
+system---for the batched claim $(\rho,B,\beta)$, producing
 $\pi_{\rm open}$.}
 \Psend{\Splitbadge{\pi_{\rm open}}}
 \Vturn{Accept only if $\pi_{\rm open}$ verifies against $(\rho,B,\beta)$.
@@ -538,7 +540,7 @@ This authenticates $O=\Enc_{\mathcal C}(P)$ and discharges the batched claim.}
 \setlength{\hsize}{7.45in}
 
 \paragraph{Recursive-opening channel ledger.}
-For the recursive Ligerito profile, the following partition is normative at
+For the recursive Ligerito protocol, the following partition is normative at
 the field level.  The NARG records are replayed in verifier-event order, not
 Rust structure-field order; hint records are consumed at the opening level
 where their checks appear.
@@ -590,7 +592,7 @@ prover-local commitment cache/key, not an $H_{\rm F2Z}$ record.  Its rows,
 packed columns, message, and prover data are not proof bytes; only the public
 commitment/root enters the verifier-facing protocol.
 
-Steps P8/V8 through P11/V11 are the concrete recursive-opening profile's internal
+Steps P8/V8 through P11/V11 are the fixed recursive-opening protocol's internal
 expansion of the paper edge $\Pi_{\rm iopp}$.  The verifier accepts iff every
 displayed check succeeds and the proof parser consumes exactly the fields
 specified by these steps.

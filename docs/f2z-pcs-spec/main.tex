@@ -62,7 +62,7 @@
 \newenvironment{normative}
   {\par\smallskip\begingroup
    \setlength{\leftskip}{0.7em}\setlength{\rightskip}{0.7em}%
-   \color{specnavy}\noindent\textbf{Normative v1 profile.}\ }
+   \color{specnavy}\noindent\textbf{Normative v1 proof system.}\ }
   {\par\endgroup\smallskip}
 
 \begin{document}
@@ -74,13 +74,26 @@
 \end{center}
 
 \begin{normative}
-This document discusses the general step by step process for the F2Z polynomial commitment scheme (PCS) as well as using the PIMSAT relation and reducing it to the F2Z PCS. We will first discuss the general definitions along with the relations used in the F2Z PCS along ways to directly reduction the relations to simpler claims. 
+F2Z is the polynomial-commitment layer for scalar linear claims about bounded
+integer or polynomial witnesses whose canonical bits are committed over a
+binary extension field.  A profile-selected ZeroCheck protocol for PESAT or
+PIMSAT is treated as a black box: it outputs an inner-product claim
+$\langle\bm v,\psi(\bm f)\rangle_R=\mu$, where $\psi$ maps a native witness
+entry into the scalar evaluation domain.  F2Z then
+\begin{enumerate}[label=\arabic*.,leftmargin=1.4em]
+ \item rewrites the linear claim over the committed bits;
+ \item converts bounded integer sums into binary-field grand products;
+ \item uses GKR to reduce those products to a linear opening claim; and
+ \item verifies that opening against the original commitment.
+\end{enumerate}
+This document specifies that PCS reduction, its prover--verifier interaction,
+its verifier algorithm, and its concrete encoding rules.
 \end{normative}
 
 \input{part1-instance}
 \input{part2-encoding}
 \input{part3-interaction}
 \input{part4-verifier}
-\input{part5-wire-profile}
+\input{part5-wire-format}
 
 \end{document}

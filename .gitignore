@@ -20,13 +20,26 @@ target
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-# Generated artifacts for the SHA-256 F2Z LaTeX note
-/docs/sha256-f2z-note/*.aux
-/docs/sha256-f2z-note/*.fdb_latexmk
-/docs/sha256-f2z-note/*.fls
-/docs/sha256-f2z-note/*.log
-/docs/sha256-f2z-note/*.out
-/docs/sha256-f2z-note/*.synctex.gz
-/docs/sha256-f2z-note/*.toc
-/docs/sha256-f2z-note/main.pdf
-/docs/sha256-f2z-note/tmp/
+# Generated artifacts for the SHA-256 F2Z protocol specification
+/docs/sha256-f2z-spec/*.aux
+/docs/sha256-f2z-spec/*.fdb_latexmk
+/docs/sha256-f2z-spec/*.fls
+/docs/sha256-f2z-spec/*.log
+/docs/sha256-f2z-spec/*.out
+/docs/sha256-f2z-spec/*.synctex.gz
+/docs/sha256-f2z-spec/*.toc
+/docs/sha256-f2z-spec/main.pdf
+/docs/sha256-f2z-spec/tmp/
+
+# Generated artifacts for the F2Z PCS specification (the named PDF is tracked)
+/docs/f2z-pcs-spec/*.aux
+/docs/f2z-pcs-spec/*.fdb_latexmk
+/docs/f2z-pcs-spec/*.fls
+/docs/f2z-pcs-spec/*.log
+/docs/f2z-pcs-spec/*.out
+/docs/f2z-pcs-spec/*.synctex.gz
+/docs/f2z-pcs-spec/main.pdf
+
+# Local editor and document-rendering scratch files
+/.history/
+/tmp/

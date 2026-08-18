@@ -1,15 +1,10 @@
-F2Z-PCS wire/transcript profile v1 known-answer vectors
-=======================================================
+F2Z-PCS wire/transcript v1 known-answer vectors
+=================================================
 
 All hex is lowercase and contains no separators. These vectors are normative
 for the primitive container/frame, Merkle codec, and positive-difficulty PoW
 predicate. The fixtures are codec tests, not a complete proof accepted by
 VerifyF2Z.
-
-Profile identifier
-------------------
-ASCII: F2ZPCS-v1-B3-SHA256-CORE-0000001
-hex:   46325a5043532d76312d42332d5348413235362d434f52452d30303030303031
 
 Outer container and one NARG frame
 ----------------------------------
@@ -17,22 +12,22 @@ The NARG record is tag 0x2001, chunk=2, level=round=0xffffffff. Its
 payload is Vec<K>([1]): count u32-le followed by K(1) as lo-u64-le,
 hi-u64-le. There are no Hint records.
 
-header_len_dec: 72
+header_len_dec: 40
 header_hex:
-46325a5043530000010048000000000046325a5043532d76312d42332d5348413235362d434f52452d3030303030303101000000000000002c000000000000000000000000000000
+46325a5043530000010028000000000001000000000000002c000000000000000000000000000000
 
 narg_frame_len_dec: 44
 narg_frame_hex:
 0120000002000000ffffffffffffffff14000000000000000100000001000000000000000000000000000000
 
-host_len_dec: 116
+host_len_dec: 84
 host_hex:
-46325a5043530000010048000000000046325a5043532d76312d42332d5348413235362d434f52452d3030303030303101000000000000002c0000000000000000000000000000000120000002000000ffffffffffffffff14000000000000000100000001000000000000000000000000000000
+46325a5043530000010028000000000001000000000000002c0000000000000000000000000000000120000002000000ffffffffffffffff14000000000000000100000001000000000000000000000000000000
 
 Merkle primitive micro-vector
 -----------------------------
 This tests the row/tree/multiproof codec independently of the deployed level
-geometry; it is not an accepted profile proof. There are four leaves of one K
+geometry; it is not an accepted protocol proof. There are four leaves of one K
 element each, C[q,0]=q for q=0,1,2,3, with each K element encoded as a
 16-byte little-endian word. The opened query set is [0,1,3]. At depth zero,
 0 and 1 are an active sibling pair and emit nothing; query 3 emits sibling

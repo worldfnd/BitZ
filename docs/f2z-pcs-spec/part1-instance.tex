@@ -1,71 +1,201 @@
-\section{Instance, parameters, and constraints}
+\section{Overview and interfaces}
+\label{sec:overview}
+
+\begingroup\small
+
+\subsection{The ZeroCheck-to-PCS boundary}
+\label{sec:public-objects}
+
+Let $\bm x$ be the public input and let $\bm f$ be a bounded witness.  An
+admitted source relation expresses its constraints as polynomial equations
+(PESAT) or as polynomial ideal-membership statements (PIMSAT):
+\begin{equation}
+ \begin{aligned}
+  \mathsf{PESAT}:&\quad p_i(\bm x,\bm f)=0 &&(\forall i),\\
+  \mathsf{PIMSAT}:&\quad p_j^{(a)}(\bm x,\bm f)\in I_a
+    &&(\forall a,j).
+ \end{aligned}
+ \label{eq:source-relations}
+\end{equation}
+The polynomial ring, bounded witness domain, and ideals in
+Equation~\eqref{eq:source-relations} belong to the source relation.  The fixed
+profile selects that relation and supplies the black-box ZeroCheck contract
+below.  Here ``ZeroCheck'' names the source-to-linear interface; a PIMSAT
+instantiation may perform ideal-membership checks internally.
+
+Let $M$ be the native domain of one witness entry and let $R$ be the scalar
+evaluation domain.  ZeroCheck declares how the verifier derives
+an additive map
+\begin{equation}
+ \psi:M\longrightarrow R,
+ \qquad \psi(x+x')=\psi(x)+\psi(x').
+ \label{eq:evaluation-map}
+\end{equation}
+For an integer witness, $\psi$ may be reduction into $R$; for a polynomial
+witness, it may combine coefficient reduction with evaluation at a public or
+transcript-derived point.  In either case, $\psi(\bm f)$ means that $\psi$ is
+applied entry by entry.
+
+ZeroCheck must reduce its source claim to
+\begin{equation}
+ \left\langle\bm v,\psi(\bm f)\right\rangle_R
+ :=\sum_{i=0}^{r-1}v_i\psi(f_i)=\mu,
+ \qquad \bm v\in R^r,\quad \mu\in R.
+ \label{eq:zerocheck-linear-claim}
+\end{equation}
+The verifier derives $\psi$, $\bm v$, and $\mu$ from the ZeroCheck transcript.
+The same witness $\bm f$ is retained.  Equation~
+\eqref{eq:zerocheck-linear-claim} is the only source claim consumed by
+the F2Z core.
+
+\subsection{Committing the witness as bits}
+\label{sec:bit-basis}
+
+The ZeroCheck protocol fixes an ordered basis
+$(\gamma_0,\ldots,\gamma_{D_M-1})$ for the native witness domain $M$.  Each
+$\gamma_j$ is the $j$-th public basis element: every accepted $f_i$ has unique
+coordinates in these elements, and the order of the indices $j$ fixes how
+those coordinates are serialized.  The basis is not computed from the witness
+or sampled during the protocol.  For the concrete integer case, $M=\Z$ and
+the basis is simply $D_M=1$, $\gamma_0=1$.  For a polynomial case with
+$M=\Z[X]_{<d}$, the usual choice is $D_M=d$ and $\gamma_j=X^j$, ordered from
+the constant term through $X^{d-1}$.  Every accepted entry then has a
+canonical, fixed-width decomposition
+\begin{equation}
+ f_i=\sum_{k=0}^{B-1}\sum_{j=0}^{D_M-1}
+       b_{i,k,j}\,(2^k\gamma_j),
+ \qquad b_{i,k,j}\in\bitsset,
+ \qquad \bm b:=\bits(\bm f).
+ \label{eq:overview-bit-reconstruction}
+\end{equation}
+The statement fixes the valid bit strings and the order in which the triples
+$(i,k,j)$ are flattened.  Every coefficient vector below uses that same order.
+
+F2Z commits to these bits before the first ZeroCheck challenge.  Consecutive
+blocks are packed in an ordered basis of a binary extension field, encoded by
+the proof system's linear code, and Merkle committed:
+\begin{equation}
+ P:=\Pack(\pi_2(\bm b)),\qquad
+ O:=\Enc_{\mathcal C}(P),\qquad
+ \rho:=\Root(O).
+ \label{eq:overview-commitment}
+\end{equation}
+The oracle and root in Equation~\eqref{eq:overview-commitment} are carried
+through ZeroCheck and the F2Z proof.  The equality in
+Equation~\eqref{eq:zerocheck-linear-claim}
+remains an equality in $R$; only the committed representation of the witness
+lives over the binary field.
+
+\subsection{Bitify and the role of GKR}
+
+Bitify rewrites the ZeroCheck output directly in terms of the committed
+bits.  The bit $b_{i,k,j}$ inherits the coefficient
+\begin{equation}
+ u_{i,k,j}:=v_i\,\psi(2^k\gamma_j).
+ \label{eq:overview-bitify-coefficient}
+\end{equation}
+
+Substituting the decomposition in
+Equation~\eqref{eq:overview-bit-reconstruction} into the linear claim gives
+the following identity.  In the concrete proof system, $R=\Fq$ and bits enter $R$
+through $\pi_q$ coordinatewise:
+\begin{equation}
+ \left\langle\bm v,\psi(\bm f)\right\rangle_R=\mu
+ \quad\Longleftrightarrow\quad
+ \left\langle\pi_q(\bm b),\bm u\right\rangle_R=\mu.
+ \label{eq:overview-bitify}
+\end{equation}
+This Bitify step sends no message and creates no new commitment.
+
+The remaining problem is to prove the claim in Equation~
+\eqref{eq:overview-bitify}, which is evaluated in $R$, using bits
+committed over a different field.  F2Z tensors the bit vector and lifts one
+coefficient factor to bounded nonnegative integers $\lambda_i$.  For a bit
+matrix $\Bbit$, a column sum has the form
+\begin{equation}
+ \mu_c:=\sum_i\lambda_i\Bbit[c,i]\in\Z.
+ \label{eq:overview-column-sum}
+\end{equation}
+If the sum in Equation~\eqref{eq:overview-column-sum} lies in an accepted range
+narrower than the order of $g\in\K^\times$, then exponentiation is injective on
+that range and
+\begin{equation}
+ g^{\mu_c}
+  =\prod_i g^{\lambda_i\Bbit[c,i]}
+  =\prod_i\bigl(1+(g^{\lambda_i}-1)\Bbit[c,i]\bigr)
+ \qquad\text{in }\K.
+ \label{eq:overview-grand-product}
+\end{equation}
+Equation~\eqref{eq:overview-grand-product} turns the exact column sums into
+grand-product claims over the binary field.  GKR reduces the batched product
+computation to a linear opening claim on the same committed bits---an MLE
+evaluation in the proof system's fixed specialization.  The binary-field opening
+protocol then checks that terminal claim against $O$.
+
+\endgroup
+
+\section{Instance and parameters}
 \label{sec:instance}
 
 \begingroup\small
 
-\subsection{Typed objects and algebraic domains}
-\label{sec:public-objects}
+\subsection{MLE handoff and concrete proof system}
+\label{sec:opening-statements}
 
-An execution is determined by public parameters, an application statement, a
-derived PCS statement, a commitment, and local prover state:
+The concrete proof system first flattens the source witness into bounded
+integer cells.  At the PCS boundary it specializes the generic interface as
 \begin{equation}
  \begin{aligned}
- \mathsf{pp}
-   &:=(\mathsf{domains},\varphi,\psi,\mathcal C,\mathsf{hash},
-       \mathsf{transcript},\mathsf{profile}),\\
- x_{\rm app}&:=(\bm x,\bm p,\bm I,(t,s,W),g),
- &x_{\rm core}&:=((t,s,W),\mathsf{claim},g),\\
- \mathsf{com}&:=(\rho),\\
- \mathsf{st}_P&:=(\bm f,D,\bm b,\Bbit,P,O,\mathsf{tree}).
+  r&=2^{t+s},& M&=\Z,& \psi&=\pi_q,& D_M&=1,& \gamma_0&=1,& B&=W,\\
+  f_{c,b}&:=\INT(D(b,c)),&&
+  \bm f&:=\bigl(f_{c,b}\bigr)_{c\in\bitsset^s,\,b\in\bitsset^t}.
  \end{aligned}
- \label{eq:public-objects}
+ \label{eq:concrete-lmfb-specialization}
 \end{equation}
-Equation~\eqref{eq:public-objects} fixes the public and local objects used
-throughout the protocol.  Here $(\bm x,\bm p,\bm I)$ specifies the public
-PIMSAT instance of
-Section~\ref{sec:encoding}.  The application PIOP derives
-$\mathsf{claim}$ and hence $x_{\rm core}$; neither is trusted as an independent
-prover input.  The commitment is public before the first PIOP challenge, and
-$\mathsf{st}_P$ is never transmitted.
+The order in Equation~\eqref{eq:concrete-lmfb-specialization} is $c$-major,
+then $b$-major; the bit order is $(c,b,j)$.  The coefficient at position
+$(c,b)$ is denoted $v_{c,b}$.  This adapter is part of ZeroCheck
+and must preserve the root from Equation~\eqref{eq:overview-commitment}.
 
-Abstractly, $R_M$ and $R$ are commutative unital rings, $M$ is a finite free
-$R_M$-module, and $N$ is an $R$-module.  Write
-$\iota_A:\Z\to A$ for the canonical integer map of any unital ring $A$;
-in particular, $\iota_R(b)=b1_R$ for $b\in\bitsset$.  Whenever $N$ is
-scalarized, it is finite free with a
-fixed basis, or the profile supplies a separating family of $R$-linear
-functionals.  A public unital ring homomorphism $\varphi$ and a
-$\varphi$-semilinear public map $\psi$ satisfy
+For $z\in\bitsset^a$ and $\bm r\in\Fq^a$, define the equality polynomial
 \begin{equation}
- \varphi:R_M\to R,\qquad \psi:M\to N,\qquad
- \psi(ax+by)=\varphi(a)\psi(x)+\varphi(b)\psi(y)
- \label{eq:semilinear-domain-maps}
+ \eq(z,\bm r):=\prod_{h=0}^{a-1}
+   \bigl((1-z_h)(1-\bm r_h)+z_h\bm r_h\bigr).
+ \label{eq:equality-polynomial}
 \end{equation}
-The maps in Equation~\eqref{eq:semilinear-domain-maps} connect the witness and
-evaluation domains.  Packing uses
-$\Fbin\cong\mathbb F_{2^\kappa}$ with an ordered $\Ftwo$-basis
-$(\beta_v)_{v<\kappa}$ and a linear code $\mathcal C$ over $\Fbin$; any
-padding to a multiple of $\kappa$ is canonical and statement-bound.
+The coordinate order in Equation~\eqref{eq:equality-polynomial} is the order
+fixed by the tensor layout below.
 
-The concrete mod-$q$ profile fixes
+The concrete proof system instantiates the scalar handoff with an MLE evaluation.
+Let $D:\bitsset^t\times\bitsset^s\to[0,2^W)$ be the committed witness tensor,
+and let $r_1\in\Fq^t$ and $r_2\in\Fq^s$ be transcript-derived.  Set
 \begin{equation}
- R=\Fq,\quad q=2^{100}-15,\qquad
- \Fbin=\K=
- \Ftwo[X]/(X^{128}+X^7+X^2+X+1)
- \cong\mathbb F_{2^{128}}.
- \label{eq:concrete-domains}
+ \begin{aligned}
+  y&:=\MLE{\pi_q\circ\INT(D)}(r_1,r_2),\\
+  w_b&:=\operatorname{can}_q(\eq(b,r_1)),
+  &w'_c&:=\eq(c,r_2).
+ \end{aligned}
+ \label{eq:mle-opening}
 \end{equation}
-Write $\pi_2:\Z\to\Ftwo$, $\pi_q:\Z\to\Fq$, and
-$\operatorname{can}_q:\Fq\to[0,q)$.  Linear evaluations are in $\Fq$;
-packing, product reductions, and commitment openings are in $\K$.
-Its wire identifier, canonical encodings, transcript and Merkle algorithms,
-recursive-opening configuration, and PoW schedule are fixed by
-Section~\ref{sec:wire-profile}; they are not runtime-selected proof fields.
-The exact constrained-code transform that produces the committed matrices is
-selected by the statement-bound $\mathsf{code\_profile\_id}$ and is unsupported
-unless that identifier resolves to a published canonical construction.
+Expanding the MLE in Equation~\eqref{eq:mle-opening} gives the separable form
+used by this proof system:
+\begin{equation}
+ y=\sum_{c\in\bitsset^s}w'_c\,
+   \pi_q\!\left(\sum_{b\in\bitsset^t}
+      w_b\,\INT(D(b,c))\right).
+ \label{eq:weighted-opening}
+\end{equation}
+This expansion also fixes the coefficient of each committed bit:
+\begin{equation}
+ u_{c,b,j}:=\pi_q(w_b2^j)w'_c,
+ \qquad i:=(b\ll w)\mid j.
+ \label{eq:weighted-bit-coeff}
+\end{equation}
+Equations~\eqref{eq:mle-opening}--\eqref{eq:weighted-bit-coeff} give the tensor
+expansion of a single MLE claim.  The table records the resulting notation and
+concrete proof-system bounds.
 
-\subsection{Tensor witness, packing, and commitment}
+\subsection{Definition table}
 \label{sec:tensor-instance}
 
 \newcommand{\InstanceTopic}[1]{\textbf{#1}}
@@ -78,9 +208,9 @@ unless that identifier resolves to a published canonical construction.
   \color{white}\bfseries Exact definition &
   \color{white}\bfseries Type and rule\\
   \midrule}
-
-Every entry is normative; only the shape/interface, fixed-scalar, and generator
-requirements are pre-transcript checks.
+\newcommand{\InstanceGroup}[1]{%
+  \rowcolor{specpale}\multicolumn{3}{@{}l@{}}{\textbf{#1}}\\
+  \midrule}
 
 \begingroup
 \scriptsize
@@ -95,10 +225,79 @@ requirements are pre-transcript checks.
 \InstanceTableHead
 \endfirsthead
 \InstanceTableHead
+\rowcolor{specpale}\multicolumn{3}{@{}l@{}}{\textbf{Definition table (continued)}}\\
+\midrule
 \endhead
 \endfoot
 \bottomrule
 \endlastfoot
+\InstanceGroup{Domains and ZeroCheck handoff}
+\InstanceEqTopic{eq:concrete-domains}{Concrete fields} &
+  \(\displaystyle
+    R=\Fq,\quad q=2^{100}-15,\qquad
+    \Fbin=\K=\Ftwo[X]/(X^{128}+X^7+X^2+X+1)
+      \cong\mathbb F_{2^{128}}.
+  \) &
+  Linear claims are evaluated in $\Fq$.  Packing, grand products, and
+  commitment openings use $\K$.
+  \\
+\midrule
+\InstanceTopic{Witness map} &
+  $\bm f\in\mathcal W_B\subseteq M^r$ and
+  $\psi:M\to R$, with $\psi$ additive as in
+  Equation~\eqref{eq:evaluation-map}. &
+  $M$ is the native witness domain; $\mathcal W_B$ fixes canonical bounds and
+  encodings.  ZeroCheck fixes the derivation rule; its verifier
+  derives the instantiated $\psi$.
+  \\
+\midrule
+\InstanceTopic{ZeroCheck output} &
+  $\psi:M\to R$, $\bm v\in R^r$, $\mu\in R$, and
+  $\langle\bm v,\psi(\bm f)\rangle_R=\mu$. &
+  The verifier derives $(\psi,\bm v,\mu)$ through the black-box ZeroCheck
+  protocol.  See Equation~\eqref{eq:zerocheck-linear-claim}.
+  \\
+\midrule
+\InstanceTopic{Concrete adapter} &
+  $M=\Z$, $\psi=\pi_q$, $D_M=1$, $\gamma_0=1$, $B=W$, and
+  $f_{c,b}=\INT(D(b,c))$. &
+  Equation~\eqref{eq:concrete-lmfb-specialization} fixes the $c$-major
+  $(c,b,j)$ order and ties the generic witness to the committed tensor.
+  \\
+\midrule
+\InstanceTopic{Public objects} &
+  \(\displaystyle
+  \begin{aligned}
+   \mathsf{pp}&:=(R,M,\mathcal C,\Pi_{\rm ZC},\Pi_{\rm GKR},
+     \Pi_{\rm open},\mathsf{transcript},\mathsf{hash},\mathsf{core\_mode}),\\
+   x_{\rm src}&:=(\mathsf{source\_statement},(t,s,W),g),\\
+   x_{\rm core}&:=((t,s,W),(\bm w,\bm w',y),g),
+   &\mathsf{com}&:=(\rho).
+  \end{aligned}
+  \) &
+  These public parameters fix ZeroCheck, GKR, wire, transcript, code, and
+  opening algorithms.  The ZeroCheck verifier derives $x_{\rm core}$; it is not an
+  independent prover input.
+  \\
+\midrule
+\InstanceTopic{Canonical bits} &
+  $(\gamma_j)_{j<D_M}$, bit width $B$, and
+  $\bm b:=\bits(\bm f)$ as in
+  Equation~\eqref{eq:overview-bit-reconstruction}. &
+  The proof system fixes the valid bit strings and a single flattening order shared
+  by $\bm b$ and its coefficient vector.
+  \\
+\midrule
+\InstanceTopic{Canonical maps} &
+  $\pi_2:\Z\to\Ftwo$, $\pi_q:\Z\to\Fq$, and
+  $\operatorname{can}_q:\Fq\to[0,q)$; for $0\le v<128$,
+  $\beta_v:=X^v\bmod(X^{128}+X^7+X^2+X+1)$. &
+  $\operatorname{can}_q$ returns the unique integer representative used for
+  bounded exponent lifts.  $(\beta_v)_{v<128}$ is the ordered polynomial basis
+  used by $\Pack$.
+  \\
+\midrule
+\InstanceGroup{Tensor layout and commitment}
 \InstanceTopic{Shape and cells} &
   $\bm b:=\bits(\bm f)$,
   $W=2^w$, and
@@ -136,92 +335,25 @@ requirements are pre-transcript checks.
   $P\in\K^{2^{m_p}}$.  The seven low index bits select the 128 coefficients of
   the fixed ordered $\Ftwo$-basis of $\K$.
   \\
-\end{longtable}
-\endgroup
-
-\subsection{Weighted and MLE successor forms}
-\label{sec:opening-statements}
-
-\begingroup
-\scriptsize
-\linespread{0.95}\selectfont
-\setlength{\tabcolsep}{3pt}
-\setlength{\LTpre}{2pt}
-\setlength{\LTpost}{2pt}
-\renewcommand{\arraystretch}{0.98}
-\begin{longtable}{@{}>{\raggedright\arraybackslash}p{0.95in}
-                       >{\raggedright\arraybackslash}p{4.65in}
-                       >{\raggedright\arraybackslash}p{1.65in}@{}}
-\toprule
-\endfirsthead
-\InstanceTableHead
-\endhead
-\endfoot
-\bottomrule
-\endlastfoot
-\InstanceTopic{Weighted claim} &
+\InstanceGroup{MLE-derived core claim}
+\InstanceTopic{Core tuple} &
   \(\displaystyle
-    \mathsf{claim}_{\rm wt}=(\bm w,\bm w',y),\qquad
-    |\bm w|=2^t,\quad |\bm w'|=2^s.
+    (\bm w,\bm w',y),\qquad
+    |\bm w|=2^t,\quad |\bm w'|=2^s,\quad y=\mu.
   \) &
   $0\le w_b<2^{q_{\rm bits}}$ is an integer;
-  $w'_c,y\in\Fq$.
+  $w'_c,y\in\Fq$.  This is the separable tensor form of one linear claim.
   \\
 \midrule
-\InstanceEqTopic{eq:weighted-opening}{Target equality} &
-  \(\displaystyle
-    y=\sum_{c\in\bitsset^s}w'_c\,
-      \pi_q\!\left(\sum_{b\in\bitsset^t}
-        w_b\,\INT(D(b,c))\right).
-  \) &
-  The equality is in $\Fq$.
-  \\
-\midrule
-\InstanceEqTopic{eq:weighted-bit-coeff}{Bit coefficient} &
+\InstanceTopic{Bit coefficient} &
   \(\displaystyle
     u_{c,b,j}:=\pi_q(w_b2^j)w'_c,\qquad
     i:=(b\ll w)\mid j.
   \) &
-  $0\le i<2^d$ and $u_{c,b,j}\in\Fq$.  This coefficient is derived, not
-  supplied.
+  $0\le i<2^d$ and $u_{c,b,j}\in\Fq$.  The verifier derives this coefficient
+  using Equation~\eqref{eq:weighted-bit-coeff}; it is never supplied.
   \\
-\midrule
-\InstanceEqTopic{eq:mle-opening}{MLE specialization} &
-  If the application PIOP exposes transcript-derived
-  $r_1\in\Fq^t$ and $r_2\in\Fq^s$, its successor may use
-  \(\displaystyle
-  \begin{aligned}
-    w_b&:=\operatorname{can}_q(\eq(b,r_1)),&
-    w'_c&:=\eq(c,r_2),\\
-    y&:=\MLE{\pi_q\circ\INT(D)}(r_1,r_2).
-  \end{aligned}
-  \) &
-  The verifier derives these weights and the bit coefficients above; the core
-  still receives $(\bm w,\bm w',y)$.
-  \\
-\end{longtable}
-\endgroup
-
-\subsection{Chunking and admissibility}
-\label{sec:admissibility}
-
-\begingroup
-\scriptsize
-\linespread{0.95}\selectfont
-\setlength{\tabcolsep}{3pt}
-\setlength{\LTpre}{2pt}
-\setlength{\LTpost}{2pt}
-\renewcommand{\arraystretch}{0.98}
-\begin{longtable}{@{}>{\raggedright\arraybackslash}p{0.95in}
-                       >{\raggedright\arraybackslash}p{4.65in}
-                       >{\raggedright\arraybackslash}p{1.65in}@{}}
-\toprule
-\endfirsthead
-\InstanceTableHead
-\endhead
-\endfoot
-\bottomrule
-\endlastfoot
+\InstanceGroup{Chunking and admissibility}
 \multirow[t]{3}{0.95in}{%
   \InstanceEqTopic{eq:chunking}{Chunk decomposition}} &
   \textbf{Parameters.}\enspace
@@ -252,15 +384,6 @@ requirements are pre-transcript checks.
   $0\le u_c^{(\ell)}<2^{c_w+t+W}=2^{127}$.
   \\
 \midrule
-\InstanceEqTopic{eq:active-chunks}{Active set} &
-  \(\displaystyle
-    \mathcal A:=\{\ell<L:\exists b,\ \omega_b^{(\ell)}\ne0\}.
-  \) &
-  $\mathcal A$ is public and derived only from $\bm w$.  Transmit only active
-  chunks, in increasing order; set $u_c^{(\ell)}:=0$ for
-  $\ell\notin\mathcal A$; require $\mathcal A\ne\varnothing$.
-  \\
-\midrule
 \InstanceEqTopic{eq:shape-admissibility}{Shape and interface} &
   \(\displaystyle
     W\in2^{\mathbb N},\qquad d\ge7,\qquad t+W\le126,
@@ -268,14 +391,6 @@ requirements are pre-transcript checks.
   \) &
   Require every implied dimension, canonical public values, and the correct
   claim variant.
-  \\
-\midrule
-\InstanceTopic{Fixed scalars} &
-  \(\displaystyle
-    \theta_2,\theta_3\in\K\setminus\{0,1\},
-    \qquad \theta_2\ne\theta_3.
-  \) &
-  These values are fixed by the selected profile.
   \\
 \midrule
 \InstanceEqTopic{eq:generator-condition}{Generator} &
@@ -292,5 +407,10 @@ requirements are pre-transcript checks.
   \\
 \end{longtable}
 \endgroup
+
+Equations~\eqref{eq:tensor-layout} and~\eqref{eq:packed-commitment} fix the
+committed coordinate order.  Equations~\eqref{eq:chunking}--
+\eqref{eq:generator-condition} fix the admitted chunk schedule and the range
+on which exponentiation is injective.
 
 \endgroup
