@@ -3,9 +3,9 @@
 //! Commitment steps:
 //! 1. Require the configured number of witness bits.
 //! 2. Pack each 128-bit witness block into one binary-field element.
-//! 3. Commit the packed witness with FLoCK.
+//! 3. Commit the packed witness with Flock.
 //! 4. Expose the Merkle root as the public commitment.
-//! 5. Retain the packed witness and FLoCK prover data for one opening.
+//! 5. Retain the packed witness and Flock prover data for one opening.
 
 use crate::CommitError;
 use flock_core::field::F128 as FlockF128;
@@ -14,7 +14,7 @@ use flock_core::pcs::Commitment as FlockCommitment;
 use flock_core::pcs::ligerito::LigeritoProfile;
 use flock_core::pcs::{PcsParams, ProverData as FlockProverData, pack_witness};
 
-/// Initial Ligerito fold size required by FLoCK's registered security profiles.
+/// Initial Ligerito fold size required by Flock's registered security profiles.
 /// The value `6` selects 64 lanes
 /// See: https://github.com/succinctlabs/flock/blob/879072249e52b8b9054bf0c6a034cec20f8f6fc7/crates/flock-core/src/pcs/ligerito.rs#L1245
 const LIGERITO_INITIAL_K: usize = 6;

@@ -1,10 +1,10 @@
-//! Standard multilinear openings over the FLoCK commitment.
+//! Standard multilinear openings over the Flock commitment.
 //!
 //! Prover steps:
 //! 1. Validate the prover data and require `query.point.len() == params.m`.
 //! 2. Bind the commitment root, trusted parameters, point, and target to the transcript.
 //! 3. Split the point into seven low coordinates and `m - 7` high coordinates.
-//! 4. Build the low and high equality tables with FLoCK's `build_eq_split`.
+//! 4. Build the low and high equality tables with Flock's `build_eq_split`.
 //! 5. Compute the 128 partial evaluations with `fold_1b_rows_naive`.
 //! 6. Check the target against the low-coordinate equality table.
 //! 7. Absorb the ring-switch domain label and all partial evaluations.

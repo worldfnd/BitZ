@@ -1,4 +1,4 @@
-//! Standard multilinear verification over the FLoCK commitment.
+//! Standard multilinear verification over the Flock commitment.
 //!
 //! Verifier steps:
 //! 1. Validate the evaluation point and derive the Ligerito verifier configuration.
@@ -11,7 +11,7 @@
 //! 8. Sample seven ring-switch challenges and compute the packed target `beta0`.
 //! 9. Build the succinct Ligerito basis evaluator from the high coordinates.
 //! 10. Call `recursive_verifier_with_basis_succinct` against the commitment root.
-//! 11. Reject FLoCK failures and transcript mismatches.
+//! 11. Reject Flock failures and transcript mismatches.
 //!
 //! The verifier checks `target = Σ_v eq(r_lo, v) · s_v`.
 //! It samples `r_dprime` and computes `beta0 = Σ_u eq(r_dprime, u) · s_u`.
