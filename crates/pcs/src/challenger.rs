@@ -121,7 +121,8 @@ impl Challenger for VerifierChallenger<'_, '_> {
     }
 
     fn observe_f128_slice(&mut self, values: &[FlockF128]) {
-        if self.read::<u32>() != Some(values.len() as u32) {
+        let len = u32::try_from(values.len()).expect("observed field slice exceeds u32");
+        if self.read::<u32>() != Some(len) {
             self.failed = true;
         }
         for &value in values {
@@ -130,7 +131,8 @@ impl Challenger for VerifierChallenger<'_, '_> {
     }
 
     fn observe_bytes(&mut self, bytes: &[u8]) {
-        if self.read::<u32>() != Some(bytes.len() as u32) {
+        let len = u32::try_from(bytes.len()).expect("observed byte slice exceeds u32");
+        if self.read::<u32>() != Some(len) {
             self.failed = true;
         }
         for &byte in bytes {
