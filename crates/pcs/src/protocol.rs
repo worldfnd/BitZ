@@ -44,11 +44,7 @@ pub(crate) fn bind_statement_prover(
 ) {
     transcript.public_message(STATEMENT_LABEL);
     transcript.public_message(root);
-
-    for tag in pcs.statement_tags() {
-        transcript.public_message(&tag);
-    }
-
+    transcript.public_message(pcs);
     transcript.public_message(&(query.point.len() as u64));
     for coordinate in &query.point {
         transcript.public_message(coordinate);
@@ -65,11 +61,7 @@ pub(crate) fn bind_statement_verifier(
 ) {
     transcript.public_message(STATEMENT_LABEL);
     transcript.public_message(root);
-
-    for tag in pcs.statement_tags() {
-        transcript.public_message(&tag);
-    }
-
+    transcript.public_message(pcs);
     transcript.public_message(&(query.point.len() as u64));
     for coordinate in &query.point {
         transcript.public_message(coordinate);
