@@ -7,12 +7,15 @@
 //! 4. Expose the Merkle root as the public commitment.
 //! 5. Retain the packed witness and Flock prover data for one opening.
 
+use core::mem::size_of;
+
 use crate::CommitError;
 use flock_core::field::F128 as FlockF128;
 pub use flock_core::hash::HashKind;
 use flock_core::pcs::Commitment as FlockCommitment;
 use flock_core::pcs::ligerito::LigeritoProfile;
 use flock_core::pcs::{PcsParams, ProverData as FlockProverData, pack_witness};
+use transcript::Encoding;
 
 /// Initial Ligerito fold size required by Flock's registered security profiles.
 /// The value `6` selects 64 lanes
@@ -90,8 +93,10 @@ impl Pcs {
     pub(crate) fn params(&self) -> &PcsParams {
         &self.params
     }
+}
 
-    pub(crate) fn statement_tags(&self) -> [u64; 5] {
+impl Encoding<[u8]> for Pcs {
+    fn encode(&self) -> impl AsRef<[u8]> {
         let profile_tag = match self.params.profile {
             LigeritoProfile::Fast => 0,
             LigeritoProfile::Slim => 1,
@@ -102,13 +107,18 @@ impl Pcs {
             HashKind::Blake3 => 1,
         };
 
-        [
+        let tags = [
             self.params.m as u64,
             self.params.log_inv_rate as u64,
             self.params.log_batch_size as u64,
             profile_tag,
             hash_tag,
-        ]
+        ];
+        let mut encoded = [0u8; 5 * size_of::<u64>()];
+        for (chunk, tag) in encoded.chunks_exact_mut(size_of::<u64>()).zip(tags) {
+            chunk.copy_from_slice(&tag.to_le_bytes());
+        }
+        encoded
     }
 }
 
@@ -174,7 +184,7 @@ mod tests {
     }
 
     #[test]
-    fn statement_tags_cover_every_profile_and_hash() {
+    fn encoding_covers_every_profile_and_hash() {
         for (profile, profile_tag) in [
             (LigeritoProfile::Fast, 0),
             (LigeritoProfile::Slim, 1),
@@ -182,16 +192,19 @@ mod tests {
         ] {
             for (hash, hash_tag) in [(HashKind::Sha256, 0), (HashKind::Blake3, 1)] {
                 let pcs = Pcs::new(22, profile, hash);
-                assert_eq!(
-                    pcs.statement_tags(),
-                    [
-                        22,
-                        profile.log_inv_rate() as u64,
-                        LIGERITO_INITIAL_K as u64,
-                        profile_tag,
-                        hash_tag,
-                    ]
-                );
+                let expected_tags = [
+                    22,
+                    profile.log_inv_rate() as u64,
+                    LIGERITO_INITIAL_K as u64,
+                    profile_tag,
+                    hash_tag,
+                ];
+                let encoded = pcs.encode();
+                let encoded = encoded.as_ref();
+                assert_eq!(encoded.len(), 5 * size_of::<u64>());
+                for (chunk, tag) in encoded.chunks_exact(size_of::<u64>()).zip(expected_tags) {
+                    assert_eq!(chunk, tag.to_le_bytes());
+                }
             }
         }
     }
