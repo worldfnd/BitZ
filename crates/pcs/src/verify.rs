@@ -32,7 +32,7 @@ use transcript::VerifierState;
 
 use crate::bridge::as_flock_f128s;
 use crate::challenger::VerifierChallenger;
-use crate::protocol::{RING_SWITCH_LABEL, bind_statement_verifier, read_opening_proof};
+use crate::protocol::{RING_SWITCH_LABEL, bind_statement, read_opening_proof};
 use crate::{CommitError, Commitment, OpeningQuery, Pcs};
 
 pub(crate) fn verify(
@@ -58,7 +58,7 @@ pub(crate) fn verify(
     let final_log_n = validate_config(&ligerito_config, log_n, pcs.params().log_batch_size)?;
 
     // 2. Bind Statement
-    bind_statement_verifier(pcs, commitment.root(), query, transcript);
+    bind_statement(pcs, commitment.root(), query, transcript);
 
     // 3. Read Opening Proof
     let proof = read_opening_proof(transcript)?;
