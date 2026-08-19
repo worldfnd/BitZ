@@ -337,7 +337,7 @@ fn validate_proof_shape(
         || proof.ring_switches[0].s_hat_v.len() != 1usize << LOG_PACKING
         || &proof.ligerito.initial_root != expected_root
     {
-        return Err(CommitError::MalformedProof);
+        return Err(CommitError::VerificationFailed);
     }
 
     let lig = &proof.ligerito;
@@ -346,7 +346,7 @@ fn validate_proof_shape(
         || lig.recursive_proofs.len() != r - 1
         || lig.grinding_nonces.len() != r + 1
     {
-        return Err(CommitError::MalformedProof);
+        return Err(CommitError::VerificationFailed);
     }
 
     let expected_ood = config
@@ -376,7 +376,7 @@ fn validate_proof_shape(
         || lig.fold_grinding_nonces.len() != expected_fold_nonces
         || lig.sumcheck_transcript.len() != expected_sumchecks
     {
-        return Err(CommitError::MalformedProof);
+        return Err(CommitError::VerificationFailed);
     }
 
     let initial_width = checked_pow2(config.initial_k).ok_or_else(|| {
@@ -390,7 +390,7 @@ fn validate_proof_shape(
         config.queries[0],
         initial_width,
     ) {
-        return Err(CommitError::MalformedProof);
+        return Err(CommitError::VerificationFailed);
     }
     for (level, recursive) in lig.recursive_proofs.iter().enumerate() {
         let width = checked_pow2(config.recursive_ks[level]).ok_or_else(|| {
@@ -400,7 +400,7 @@ fn validate_proof_shape(
             ))
         })?;
         if !rows_match(&recursive.opened_rows, config.queries[level + 1], width) {
-            return Err(CommitError::MalformedProof);
+            return Err(CommitError::VerificationFailed);
         }
     }
 
@@ -421,7 +421,7 @@ fn validate_proof_shape(
     if !rows_match(&lig.final_proof.opened_rows, config.queries[r], final_width)
         || lig.final_proof.yr.len() != final_yr_len
     {
-        return Err(CommitError::MalformedProof);
+        return Err(CommitError::VerificationFailed);
     }
     Ok(())
 }
