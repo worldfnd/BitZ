@@ -1,4 +1,4 @@
-//! Zero-copy conversion between the local field and FLoCK's field.
+//! Zero-copy conversion between the local field and Flock's field.
 
 use core::mem::{align_of, offset_of, size_of};
 
@@ -20,7 +20,7 @@ const _: () = {
     assert!(offset_of!(FlockF128, hi) == 8);
 };
 
-/// Views local field elements as FLoCK field elements without copying.
+/// Views local field elements as Flock field elements without copying.
 ///
 /// The field differential tests verify the common polynomial basis.
 #[inline(always)]

@@ -13,7 +13,7 @@
 //!
 //! The commit phase packs the seven low Boolean coordinates into one `F128` element:
 //! `q_pkd(y) = Σ_{v ∈ {0,1}^7} q(y, v) · basis[v]`.
-//! FLoCK Reed–Solomon-encodes `q_pkd` and commits to its codeword with a Merkle root.
+//! Flock Reed–Solomon-encodes `q_pkd` and commits to its codeword with a Merkle root.
 //!
 //! The opening splits `r` into `r_lo = r[0..7]` and `r_hi = r[7..m]`.
 //! It computes `s_v = q̂(r_hi, v)` and checks
@@ -24,7 +24,7 @@
 //!
 //! # Interface
 //!
-//! - [`Pcs`] stores trusted FLoCK parameters and the expected bit length.
+//! - [`Pcs`] stores trusted Flock parameters and the expected bit length.
 //! - [`Commitment`] contains the public Merkle root.
 //! - [`ProverData`] retains the packed witness, codeword, and Merkle tree after commit.
 //! - [`OpeningQuery`] contains one evaluation point and its claimed value.
@@ -95,11 +95,11 @@ pub enum CommitError {
     InvalidBitLength,
     /// The evaluation point does not match the committed polynomial.
     PointLengthMismatch,
-    /// The scheme configuration is not valid for FLoCK.
+    /// The scheme configuration is not valid for Flock.
     InvalidConfiguration,
     /// The transcript does not contain a complete canonical proof.
     MalformedProof,
-    /// FLoCK rejected an operation.
+    /// Flock rejected an operation.
     Flock,
     /// The linear-query proof did not verify.
     VerificationFailed,

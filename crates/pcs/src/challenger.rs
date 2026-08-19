@@ -1,4 +1,4 @@
-//! FLoCK challenger adapters over the project transcript.
+//! Flock challenger adapters over the project transcript.
 
 use field::F128 as LocalF128;
 use flock_core::challenger::Challenger;
