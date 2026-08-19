@@ -22,7 +22,7 @@
 
 use crate::bridge::as_flock_f128s;
 use crate::challenger::ProverChallenger;
-use crate::protocol::{RING_SWITCH_LABEL, bind_statement_prover, write_opening_proof};
+use crate::protocol::{RING_SWITCH_LABEL, bind_statement, write_opening_proof};
 use crate::{CommitError, OpeningQuery, Pcs, ProverData};
 use flock_core::challenger::Challenger;
 use flock_core::pcs::ligerito::recursive_prover_with_basis;
@@ -58,7 +58,7 @@ pub(crate) fn open(
         .map_err(CommitError::InvalidConfiguration)?;
 
     // 2. Bind Statement
-    bind_statement_prover(pcs, &data.commitment().root, query, transcript);
+    bind_statement(pcs, &data.commitment().root, query, transcript);
     let (packed_witness, flock_data) = data.into_opening_parts();
 
     // 3. Split Point

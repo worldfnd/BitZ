@@ -2,7 +2,7 @@
 
 use bincode::Options;
 use flock_core::pcs::BatchOpeningProofLigerito;
-use transcript::{ProverState, VerifierState};
+use transcript::{Encoding, ProverState, VerifierState};
 
 use crate::{CommitError, OpeningQuery, Pcs};
 
@@ -35,29 +35,28 @@ pub(crate) fn read_opening_proof(
         .map_err(|_| CommitError::MalformedProof)
 }
 
-/// Absorbs the public statement in the prover transcript.
-pub(crate) fn bind_statement_prover(
-    pcs: &Pcs,
-    root: &[u8; 32],
-    query: &OpeningQuery,
-    transcript: &mut ProverState,
-) {
-    transcript.public_message(STATEMENT_LABEL);
-    transcript.public_message(root);
-    transcript.public_message(pcs);
-    transcript.public_message(&(query.point.len() as u64));
-    for coordinate in &query.point {
-        transcript.public_message(coordinate);
-    }
-    transcript.public_message(&query.target);
+pub(crate) trait PublicTranscript {
+    fn public_message<T: Encoding<[u8]> + ?Sized>(&mut self, message: &T);
 }
 
-/// Absorbs the public statement in the verifier transcript.
-pub(crate) fn bind_statement_verifier(
+impl PublicTranscript for ProverState {
+    fn public_message<T: Encoding<[u8]> + ?Sized>(&mut self, message: &T) {
+        ProverState::public_message(self, message);
+    }
+}
+
+impl PublicTranscript for VerifierState<'_> {
+    fn public_message<T: Encoding<[u8]> + ?Sized>(&mut self, message: &T) {
+        VerifierState::public_message(self, message);
+    }
+}
+
+/// Absorbs the public statement in either transcript.
+pub(crate) fn bind_statement(
     pcs: &Pcs,
     root: &[u8; 32],
     query: &OpeningQuery,
-    transcript: &mut VerifierState<'_>,
+    transcript: &mut impl PublicTranscript,
 ) {
     transcript.public_message(STATEMENT_LABEL);
     transcript.public_message(root);
@@ -132,7 +131,7 @@ mod tests {
             };
 
             let mut prover = build_prover(b"pcs-protocol-test", b"statement-binding");
-            bind_statement_prover(&pcs, &root, &query, &mut prover);
+            bind_statement(&pcs, &root, &query, &mut prover);
             let expected = prover.verifier_message::<F128>();
             let proof = prover.finish();
 
@@ -141,7 +140,7 @@ mod tests {
                 b"statement-binding",
                 &proof,
             );
-            bind_statement_verifier(&pcs, &root, &query, &mut verifier);
+            bind_statement(&pcs, &root, &query, &mut verifier);
             prop_assert_eq!(verifier.verifier_message::<F128>(), expected);
             prop_assert!(verifier.check_eof().is_ok());
         }
