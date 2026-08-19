@@ -20,6 +20,16 @@ const _: () = {
     assert!(offset_of!(FlockF128, hi) == 8);
 };
 
+#[inline(always)]
+pub(crate) fn as_flock_f128(value: LocalF128) -> FlockF128 {
+    FlockF128::new(value.lo, value.hi)
+}
+
+#[inline(always)]
+pub(crate) fn from_flock_f128(value: FlockF128) -> LocalF128 {
+    LocalF128::new(value.lo, value.hi)
+}
+
 /// Views local field elements as Flock field elements without copying.
 ///
 /// The field differential tests verify the common polynomial basis.
