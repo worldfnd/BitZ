@@ -46,12 +46,16 @@ pub(crate) fn open(
         return Err(CommitError::PointLengthMismatch);
     }
     if !params_match(pcs, &data) {
-        return Err(CommitError::InvalidConfiguration);
+        return Err(CommitError::invalid_configuration(format!(
+            "prover data parameters do not match the active PCS: expected {:?}, got {:?}",
+            pcs.params(),
+            data.commitment().params,
+        )));
     }
     let ligerito_config = pcs
         .params()
         .ligerito_prover_config()
-        .map_err(|_| CommitError::InvalidConfiguration)?;
+        .map_err(CommitError::InvalidConfiguration)?;
 
     // 2. Bind Statement
     bind_statement_prover(pcs, &data.commitment().root, query, transcript);

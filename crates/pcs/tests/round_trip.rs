@@ -115,10 +115,11 @@ fn real_pcs_rejects_mismatched_prover_parameters() {
     };
     let mut prover = build_prover(SESSION, b"mismatched-parameters");
 
-    assert_eq!(
+    assert!(matches!(
         other.prove_lin(data, &query, &mut prover),
-        Err(CommitError::InvalidConfiguration)
-    );
+        Err(CommitError::InvalidConfiguration(description))
+            if description.starts_with("prover data parameters do not match the active PCS")
+    ));
 }
 
 #[test]
