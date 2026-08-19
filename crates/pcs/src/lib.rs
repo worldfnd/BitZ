@@ -88,7 +88,7 @@ pub struct OpeningQuery {
 }
 
 /// Errors from commitment and linear-query operations.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum CommitError {
     /// The bit vector has no supported commitment shape.
@@ -96,13 +96,19 @@ pub enum CommitError {
     /// The evaluation point does not match the committed polynomial.
     PointLengthMismatch,
     /// The scheme configuration is not valid for Flock.
-    InvalidConfiguration,
+    InvalidConfiguration(String),
     /// The transcript does not contain a complete canonical proof.
     MalformedProof,
     /// Flock rejected an operation.
     Flock,
     /// The linear-query proof did not verify.
     VerificationFailed,
+}
+
+impl CommitError {
+    pub(crate) fn invalid_configuration(description: impl Into<String>) -> Self {
+        Self::InvalidConfiguration(description.into())
+    }
 }
 
 /// A polynomial commitment scheme for multilinear extensions of bit tables.

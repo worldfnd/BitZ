@@ -46,13 +46,15 @@ pub(crate) fn verify(
     if query.point.len() != m {
         return Err(CommitError::PointLengthMismatch);
     }
-    let log_n = m
-        .checked_sub(LOG_PACKING)
-        .ok_or(CommitError::InvalidConfiguration)?;
+    let log_n = m.checked_sub(LOG_PACKING).ok_or_else(|| {
+        CommitError::invalid_configuration(format!(
+            "PCS variable count {m} is smaller than the packing width {LOG_PACKING}"
+        ))
+    })?;
     let ligerito_config = pcs
         .params()
         .ligerito_verifier_config()
-        .map_err(|_| CommitError::InvalidConfiguration)?;
+        .map_err(CommitError::InvalidConfiguration)?;
     let final_log_n = validate_config(&ligerito_config, log_n, pcs.params().log_batch_size)?;
 
     // 2. Bind Statement
@@ -141,59 +143,172 @@ fn validate_config(
     expected_initial_k: usize,
 ) -> Result<usize, CommitError> {
     let r = config.recursive_steps;
-    let level_count = r.checked_add(1).ok_or(CommitError::InvalidConfiguration)?;
-    if r == 0
-        || config.recursive_ks.len() != r
-        || config.recursive_log_msg_cols.len() != r
-        || config.log_inv_rates.len() != level_count
-        || config.queries.len() != level_count
-        || config.grinding_bits.len() != level_count
-        || config.fold_grinding_bits.len() != level_count
-        || config.ood_samples.len() != level_count
-        || config.initial_k != expected_initial_k
-        || config.initial_log_num_interleaved != config.initial_k
-        || config.ood_samples[0] != 0
-        || config.log_inv_rates.contains(&0)
-        || config
-            .grinding_bits
-            .iter()
-            .chain(&config.fold_grinding_bits)
-            .any(|&bits| u32::try_from(bits).is_err())
+    let level_count = r.checked_add(1).ok_or_else(|| {
+        CommitError::invalid_configuration("recursive step count overflows the level count")
+    })?;
+    if r == 0 {
+        return Err(CommitError::invalid_configuration(
+            "verifier configuration has no recursive steps",
+        ));
+    }
+    if config.recursive_ks.len() != r {
+        return Err(CommitError::invalid_configuration(format!(
+            "recursive_ks length {} does not match recursive_steps {r}",
+            config.recursive_ks.len(),
+        )));
+    }
+    if config.recursive_log_msg_cols.len() != r {
+        return Err(CommitError::invalid_configuration(format!(
+            "recursive_log_msg_cols length {} does not match recursive_steps {r}",
+            config.recursive_log_msg_cols.len(),
+        )));
+    }
+    if config.log_inv_rates.len() != level_count {
+        return Err(CommitError::invalid_configuration(format!(
+            "log_inv_rates length {} does not match level count {level_count}",
+            config.log_inv_rates.len(),
+        )));
+    }
+    if config.queries.len() != level_count {
+        return Err(CommitError::invalid_configuration(format!(
+            "queries length {} does not match level count {level_count}",
+            config.queries.len(),
+        )));
+    }
+    if config.grinding_bits.len() != level_count {
+        return Err(CommitError::invalid_configuration(format!(
+            "grinding_bits length {} does not match level count {level_count}",
+            config.grinding_bits.len(),
+        )));
+    }
+    if config.fold_grinding_bits.len() != level_count {
+        return Err(CommitError::invalid_configuration(format!(
+            "fold_grinding_bits length {} does not match level count {level_count}",
+            config.fold_grinding_bits.len(),
+        )));
+    }
+    if config.ood_samples.len() != level_count {
+        return Err(CommitError::invalid_configuration(format!(
+            "ood_samples length {} does not match level count {level_count}",
+            config.ood_samples.len(),
+        )));
+    }
+    if config.initial_k != expected_initial_k {
+        return Err(CommitError::invalid_configuration(format!(
+            "initial_k {} does not match expected value {expected_initial_k}",
+            config.initial_k,
+        )));
+    }
+    if config.initial_log_num_interleaved != config.initial_k {
+        return Err(CommitError::invalid_configuration(format!(
+            "initial_log_num_interleaved {} does not match initial_k {}",
+            config.initial_log_num_interleaved, config.initial_k,
+        )));
+    }
+    if config.ood_samples[0] != 0 {
+        return Err(CommitError::invalid_configuration(format!(
+            "initial OOD sample count must be zero, got {}",
+            config.ood_samples[0],
+        )));
+    }
+    if let Some(level) = config.log_inv_rates.iter().position(|&rate| rate == 0) {
+        return Err(CommitError::invalid_configuration(format!(
+            "log_inv_rate at level {level} must be positive"
+        )));
+    }
+    if let Some((level, bits)) = config
+        .grinding_bits
+        .iter()
+        .copied()
+        .enumerate()
+        .find(|&(_, bits)| u32::try_from(bits).is_err())
     {
-        return Err(CommitError::InvalidConfiguration);
+        return Err(CommitError::invalid_configuration(format!(
+            "grinding_bits at level {level} exceeds u32: {bits}"
+        )));
+    }
+    if let Some((level, bits)) = config
+        .fold_grinding_bits
+        .iter()
+        .copied()
+        .enumerate()
+        .find(|&(_, bits)| u32::try_from(bits).is_err())
+    {
+        return Err(CommitError::invalid_configuration(format!(
+            "fold_grinding_bits at level {level} exceeds u32: {bits}"
+        )));
     }
 
-    let mut remaining = log_n
-        .checked_sub(config.initial_k)
-        .ok_or(CommitError::InvalidConfiguration)?;
-    if config.initial_log_msg_cols != remaining
-        || checked_pow2(config.initial_k).is_none()
-        || !valid_query_shape(remaining, config.log_inv_rates[0], config.queries[0])
-    {
-        return Err(CommitError::InvalidConfiguration);
+    let mut remaining = log_n.checked_sub(config.initial_k).ok_or_else(|| {
+        CommitError::invalid_configuration(format!(
+            "initial_k {} exceeds log message length {log_n}",
+            config.initial_k,
+        ))
+    })?;
+    if config.initial_log_msg_cols != remaining {
+        return Err(CommitError::invalid_configuration(format!(
+            "initial_log_msg_cols {} does not match expected value {remaining}",
+            config.initial_log_msg_cols,
+        )));
+    }
+    if checked_pow2(config.initial_k).is_none() {
+        return Err(CommitError::invalid_configuration(format!(
+            "initial_k {} cannot be represented as a usize power of two",
+            config.initial_k,
+        )));
+    }
+    if !valid_query_shape(remaining, config.log_inv_rates[0], config.queries[0]) {
+        return Err(CommitError::invalid_configuration(format!(
+            "initial query shape is invalid: log_columns={remaining}, log_inv_rate={}, queries={}",
+            config.log_inv_rates[0], config.queries[0],
+        )));
     }
 
     for level in 0..r {
         let k = config.recursive_ks[level];
-        if k == 0 || checked_pow2(k).is_none() {
-            return Err(CommitError::InvalidConfiguration);
+        if k == 0 {
+            return Err(CommitError::invalid_configuration(format!(
+                "recursive_k at level {level} must be positive"
+            )));
         }
-        remaining = remaining
-            .checked_sub(k)
-            .ok_or(CommitError::InvalidConfiguration)?;
-        if config.recursive_log_msg_cols[level] != remaining
-            || !valid_query_shape(
-                remaining,
+        if checked_pow2(k).is_none() {
+            return Err(CommitError::invalid_configuration(format!(
+                "recursive_k at level {level} cannot be represented as a usize power of two: {k}"
+            )));
+        }
+        remaining = remaining.checked_sub(k).ok_or_else(|| {
+            CommitError::invalid_configuration(format!(
+                "recursive_k at level {level} exceeds the remaining log columns: {k} > {remaining}"
+            ))
+        })?;
+        if config.recursive_log_msg_cols[level] != remaining {
+            return Err(CommitError::invalid_configuration(format!(
+                "recursive_log_msg_cols at level {level} is {}, expected {remaining}",
+                config.recursive_log_msg_cols[level],
+            )));
+        }
+        if !valid_query_shape(
+            remaining,
+            config.log_inv_rates[level + 1],
+            config.queries[level + 1],
+        ) {
+            return Err(CommitError::invalid_configuration(format!(
+                "query shape at recursive level {level} is invalid: log_columns={remaining}, log_inv_rate={}, queries={}",
                 config.log_inv_rates[level + 1],
                 config.queries[level + 1],
-            )
-        {
-            return Err(CommitError::InvalidConfiguration);
+            )));
         }
     }
 
-    if remaining > 32 || checked_pow2(remaining).is_none() {
-        return Err(CommitError::InvalidConfiguration);
+    if remaining > 32 {
+        return Err(CommitError::invalid_configuration(format!(
+            "final log message columns {remaining} exceed the supported maximum 32"
+        )));
+    }
+    if checked_pow2(remaining).is_none() {
+        return Err(CommitError::invalid_configuration(format!(
+            "final log message columns {remaining} cannot be represented as a usize power of two"
+        )));
     }
     Ok(remaining)
 }
@@ -239,15 +354,24 @@ fn validate_proof_shape(
         .iter()
         .skip(1)
         .try_fold(0usize, |sum, &count| sum.checked_add(count))
-        .ok_or(CommitError::InvalidConfiguration)?;
+        .ok_or_else(|| {
+            CommitError::invalid_configuration("sum of ood_samples[1..] overflows usize")
+        })?;
     let expected_fold_nonces = positive_fold_nonce_count(config)?;
+    let initial_sumchecks = 1usize.checked_add(config.initial_k).ok_or_else(|| {
+        CommitError::invalid_configuration("initial sumcheck transcript length overflows usize")
+    })?;
     let expected_sumchecks = config
         .recursive_ks
         .iter()
-        .try_fold(1usize + config.initial_k, |sum, &k| sum.checked_add(k))
+        .try_fold(initial_sumchecks, |sum, &k| sum.checked_add(k))
         .and_then(|sum| sum.checked_add(r))
         .and_then(|sum| sum.checked_add(expected_ood))
-        .ok_or(CommitError::InvalidConfiguration)?;
+        .ok_or_else(|| {
+            CommitError::invalid_configuration(
+                "expected sumcheck transcript length overflows usize",
+            )
+        })?;
     if lig.ood_values.len() != expected_ood
         || lig.fold_grinding_nonces.len() != expected_fold_nonces
         || lig.sumcheck_transcript.len() != expected_sumchecks
@@ -255,7 +379,12 @@ fn validate_proof_shape(
         return Err(CommitError::MalformedProof);
     }
 
-    let initial_width = checked_pow2(config.initial_k).ok_or(CommitError::InvalidConfiguration)?;
+    let initial_width = checked_pow2(config.initial_k).ok_or_else(|| {
+        CommitError::invalid_configuration(format!(
+            "initial_k {} cannot be represented as a usize power of two",
+            config.initial_k,
+        ))
+    })?;
     if !rows_match(
         &lig.initial_proof.opened_rows,
         config.queries[0],
@@ -264,8 +393,12 @@ fn validate_proof_shape(
         return Err(CommitError::MalformedProof);
     }
     for (level, recursive) in lig.recursive_proofs.iter().enumerate() {
-        let width =
-            checked_pow2(config.recursive_ks[level]).ok_or(CommitError::InvalidConfiguration)?;
+        let width = checked_pow2(config.recursive_ks[level]).ok_or_else(|| {
+            CommitError::invalid_configuration(format!(
+                "recursive_k at level {level} cannot be represented as a usize power of two: {}",
+                config.recursive_ks[level],
+            ))
+        })?;
         if !rows_match(&recursive.opened_rows, config.queries[level + 1], width) {
             return Err(CommitError::MalformedProof);
         }
@@ -274,9 +407,17 @@ fn validate_proof_shape(
     let last_k = *config
         .recursive_ks
         .last()
-        .ok_or(CommitError::InvalidConfiguration)?;
-    let final_width = checked_pow2(last_k).ok_or(CommitError::InvalidConfiguration)?;
-    let final_yr_len = checked_pow2(final_log_n).ok_or(CommitError::InvalidConfiguration)?;
+        .ok_or_else(|| CommitError::invalid_configuration("recursive_ks is empty"))?;
+    let final_width = checked_pow2(last_k).ok_or_else(|| {
+        CommitError::invalid_configuration(format!(
+            "last recursive_k cannot be represented as a usize power of two: {last_k}"
+        ))
+    })?;
+    let final_yr_len = checked_pow2(final_log_n).ok_or_else(|| {
+        CommitError::invalid_configuration(format!(
+            "final_log_n cannot be represented as a usize power of two: {final_log_n}"
+        ))
+    })?;
     if !rows_match(&lig.final_proof.opened_rows, config.queries[r], final_width)
         || lig.final_proof.yr.len() != final_yr_len
     {
@@ -292,7 +433,9 @@ fn positive_fold_nonce_count(config: &VerifierConfig) -> Result<usize, CommitErr
         .iter()
         .zip(config.fold_grinding_bits.iter().skip(1))
         .try_fold(initial, |sum, (&k, &bits)| sum.checked_add(k.min(bits)))
-        .ok_or(CommitError::InvalidConfiguration)
+        .ok_or_else(|| {
+            CommitError::invalid_configuration("expected fold grinding nonce count overflows usize")
+        })
 }
 
 fn rows_match(rows: &[Vec<FlockF128>], expected_rows: usize, expected_width: usize) -> bool {
@@ -326,37 +469,54 @@ mod tests {
 
         let mut config = valid.clone();
         config.log_inv_rates.pop();
+        let expected_levels = config.recursive_steps + 1;
         assert_eq!(
             validate_config(&config, log_n, initial_k),
-            Err(CommitError::InvalidConfiguration)
+            Err(CommitError::invalid_configuration(format!(
+                "log_inv_rates length {} does not match level count {expected_levels}",
+                config.log_inv_rates.len(),
+            )))
         );
 
         let mut config = valid.clone();
         config.log_inv_rates[0] = 0;
         assert_eq!(
             validate_config(&config, log_n, initial_k),
-            Err(CommitError::InvalidConfiguration)
+            Err(CommitError::invalid_configuration(
+                "log_inv_rate at level 0 must be positive"
+            ))
         );
 
         let mut config = valid.clone();
         config.queries[0] = 0;
+        let initial_log_columns = log_n - config.initial_k;
         assert_eq!(
             validate_config(&config, log_n, initial_k),
-            Err(CommitError::InvalidConfiguration)
+            Err(CommitError::invalid_configuration(format!(
+                "initial query shape is invalid: log_columns={initial_log_columns}, log_inv_rate={}, queries=0",
+                config.log_inv_rates[0],
+            )))
         );
 
         let mut config = valid.clone();
         config.recursive_ks[0] = 0;
         assert_eq!(
             validate_config(&config, log_n, initial_k),
-            Err(CommitError::InvalidConfiguration)
+            Err(CommitError::invalid_configuration(
+                "recursive_k at level 0 must be positive"
+            ))
         );
 
         let mut config = valid;
         config.queries[0] = usize::MAX;
+        let initial_log_columns = log_n - config.initial_k;
         assert_eq!(
             validate_config(&config, log_n, initial_k),
-            Err(CommitError::InvalidConfiguration)
+            Err(CommitError::invalid_configuration(format!(
+                "initial query shape is invalid: log_columns={initial_log_columns}, log_inv_rate={}, queries={}",
+                config.log_inv_rates[0],
+                usize::MAX,
+            )))
         );
     }
 
