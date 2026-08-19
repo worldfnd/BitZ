@@ -1,9 +1,15 @@
 //! Shared encoding and transcript rules for multilinear openings.
+//!
+//! The complete opening proof uses one bounded hint because Flock verifies an in-memory proof.
+//! Fiat–Shamir values also use NARG and are checked against the hint during replay.
 
 use bincode::Options;
-use flock_core::pcs::BatchOpeningProofLigerito;
+use flock_core::challenger::Challenger;
+use flock_core::field::F128 as FlockF128;
+use flock_core::pcs::{BatchOpeningProofLigerito, LOG_PACKING};
 use transcript::{Encoding, ProverState, VerifierState};
 
+use crate::challenger::ScopedChallenger;
 use crate::{CommitError, Pcs, ScopedOpeningQuery};
 
 pub(crate) const PROOF_HINT_LIMIT: usize = 64 * 1024 * 1024;
@@ -11,6 +17,29 @@ pub(crate) const STATEMENT_LABEL: &[u8] = b"f2z/pcs/mle-opening/v3";
 pub(crate) const RING_SWITCH_LABEL: &[u8] = b"f2z/pcs/group-8/ring-switch/v1";
 pub(crate) const RING_SWITCH_CLAIM_LABEL: &[u8] = b"f2z/pcs/group-8/claim/v1";
 pub(crate) const ETA_SQUEEZE_LABEL: &[u8] = b"f2z/pcs/group-9/eta/v1";
+
+/// Absorbs every scoped ring-switch message, then samples the shared point.
+pub(crate) fn sample_shared_ring_switch_point<'a>(
+    challenger: &mut impl ScopedChallenger,
+    claims: impl IntoIterator<Item = (u64, &'a [FlockF128])>,
+) -> Vec<FlockF128> {
+    challenger.observe_label(RING_SWITCH_LABEL);
+    for (scope, s_hat_v) in claims {
+        challenger.observe_label(RING_SWITCH_CLAIM_LABEL);
+        challenger.observe_scope(scope);
+        challenger.observe_f128_slice(s_hat_v);
+    }
+    challenger.sample_f128_vec(LOG_PACKING)
+}
+
+/// Samples one batching scalar per claim after the shared point.
+pub(crate) fn sample_batching_scalars(
+    challenger: &mut impl Challenger,
+    claim_count: usize,
+) -> Vec<FlockF128> {
+    challenger.observe_label(ETA_SQUEEZE_LABEL);
+    challenger.sample_f128_vec(claim_count)
+}
 
 pub(crate) fn write_opening_proof(
     proof: &BatchOpeningProofLigerito,
@@ -119,6 +148,7 @@ mod tests {
     use transcript::{NargSerialize, Proof, build_prover, build_verifier};
 
     use super::*;
+    use crate::challenger::ProverChallenger;
     use crate::{HashKind, LigeritoProfile, OpeningQuery, ScopedOpeningQuery};
 
     #[test]
@@ -243,6 +273,30 @@ mod tests {
         assert_ne!(ordered, reversed);
         assert_ne!(ordered, changed_scope);
         assert_ne!(ordered, prefix);
+    }
+
+    fn ring_switch_challenges(last_value: FlockF128) -> (Vec<FlockF128>, Vec<FlockF128>) {
+        let first = [FlockF128::new(3, 5); 1 << LOG_PACKING];
+        let mut last = [FlockF128::new(7, 11); 1 << LOG_PACKING];
+        last[1 << (LOG_PACKING - 1)] = last_value;
+        let mut prover = build_prover(b"pcs-protocol-test", b"ring-switch-schedule");
+        let mut challenger = ProverChallenger::new(&mut prover);
+
+        let r_dprime = sample_shared_ring_switch_point(
+            &mut challenger,
+            [(0, first.as_slice()), (2, last.as_slice())],
+        );
+        let etas = sample_batching_scalars(&mut challenger, 2);
+        (r_dprime, etas)
+    }
+
+    #[test]
+    fn last_ring_switch_message_changes_shared_point_and_later_etas() {
+        let original = ring_switch_challenges(FlockF128::new(13, 17));
+        let changed = ring_switch_challenges(FlockF128::new(19, 23));
+
+        assert_ne!(original.0, changed.0);
+        assert_ne!(original.1, changed.1);
     }
 
     #[test]

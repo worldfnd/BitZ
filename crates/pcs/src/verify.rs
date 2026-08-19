@@ -15,7 +15,6 @@
 //! The verifier combines these claims with independent batching scalars.
 //! Ligerito verifies the resulting claim against the commitment root.
 
-use flock_core::challenger::Challenger;
 use flock_core::field::F128 as FlockF128;
 use flock_core::pcs::ligerito::{VerifierConfig, recursive_verifier_with_basis_succinct};
 use flock_core::pcs::ring_switch::{
@@ -29,8 +28,8 @@ use transcript::VerifierState;
 use crate::bridge::as_flock_f128s;
 use crate::challenger::VerifierChallenger;
 use crate::protocol::{
-    ETA_SQUEEZE_LABEL, RING_SWITCH_CLAIM_LABEL, RING_SWITCH_LABEL, bind_statement,
-    read_opening_proof, validate_batch,
+    bind_statement, read_opening_proof, sample_batching_scalars, sample_shared_ring_switch_point,
+    validate_batch,
 };
 use crate::{CommitError, Commitment, Pcs, ScopedOpeningQuery, StatementBinding};
 
@@ -75,15 +74,10 @@ pub(crate) fn verify_batch(
     // 5. Replay Ring-Switch Messages and Check Targets
     let mut challenger = VerifierChallenger::new(transcript);
     let mut r_his = Vec::with_capacity(queries.len());
-    challenger.observe_label(RING_SWITCH_LABEL);
     for (scoped_query, ring_switch) in queries.iter().zip(&proof.ring_switches) {
         let query = scoped_query.query;
         let (r_lo, r_hi) = query.point.split_at(LOG_PACKING);
         r_his.push(as_flock_f128s(r_hi));
-
-        challenger.observe_label(RING_SWITCH_CLAIM_LABEL);
-        challenger.public_message(&scoped_query.scope);
-        challenger.observe_f128_slice(&ring_switch.s_hat_v);
 
         // query.target = Σ_v eq(r_lo, v) · s_hat_v[v].
         let eq_lo = build_eq(as_flock_f128s(r_lo));
@@ -92,15 +86,22 @@ pub(crate) fn verify_batch(
             return Err(CommitError::VerificationFailed);
         }
     }
+    let r_dprime = sample_shared_ring_switch_point(
+        &mut challenger,
+        queries
+            .iter()
+            .zip(&proof.ring_switches)
+            .map(|(scoped_query, ring_switch)| {
+                (scoped_query.scope, ring_switch.s_hat_v.as_slice())
+            }),
+    );
     if challenger.failed() {
         return Err(CommitError::MalformedProof);
     }
 
     // 6. Compute the Batched Ligerito Target
-    let r_dprime = challenger.sample_f128_vec(LOG_PACKING);
     let eq_r_dprime = build_eq(&r_dprime);
-    challenger.observe_label(ETA_SQUEEZE_LABEL);
-    let etas = challenger.sample_f128_vec(queries.len());
+    let etas = sample_batching_scalars(&mut challenger, queries.len());
     let beta =
         proof
             .ring_switches

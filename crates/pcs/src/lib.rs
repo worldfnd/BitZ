@@ -37,6 +37,16 @@
 //! The caller must use matching transcript session and instance labels.
 //! The caller must also call `VerifierState::check_eof` after successful verification.
 //!
+//! # Transcript transport
+//!
+//! Flock currently requires the complete opening proof before verifier replay.
+//! This crate therefore serializes that proof into one hint, bounded at 64 MiB.
+//! Fiat–Shamir values also appear in NARG and determine all later challenges.
+//! The verifier checks each duplicated proof value against its NARG value during replay.
+//! Opened rows and Merkle paths appear only in the hint.
+//! This accepted deviation avoids a Flock fork but differs from the specification's channel layout.
+//! Exact channel compliance requires a streaming Flock verifier.
+//!
 //! # Example
 //!
 //! This example uses the zero polynomial, so its evaluation is zero at every point.

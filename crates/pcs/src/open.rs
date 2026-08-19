@@ -19,12 +19,11 @@
 use crate::bridge::{as_flock_f128s, into_flock_f128s};
 use crate::challenger::ProverChallenger;
 use crate::protocol::{
-    ETA_SQUEEZE_LABEL, RING_SWITCH_CLAIM_LABEL, RING_SWITCH_LABEL, bind_statement, validate_batch,
+    bind_statement, sample_batching_scalars, sample_shared_ring_switch_point, validate_batch,
     write_opening_proof,
 };
 use crate::{CommitError, Pcs, ProverData, ScopedOpeningQuery, StatementBinding};
 use field::F128;
-use flock_core::challenger::Challenger;
 use flock_core::field::F128 as FlockF128;
 use flock_core::pcs::ligerito::recursive_prover_with_basis;
 use flock_core::pcs::ring_switch::{
@@ -108,13 +107,13 @@ pub(crate) fn open_batch(
 
     // 4. Record Ring-Switch Messages and Sample the Shared Challenge
     let mut challenger = ProverChallenger::new(transcript);
-    challenger.observe_label(RING_SWITCH_LABEL);
-    for (scoped_query, s_hat_v) in queries.iter().zip(&s_hat_vs) {
-        challenger.observe_label(RING_SWITCH_CLAIM_LABEL);
-        challenger.public_message(&scoped_query.scope);
-        challenger.observe_f128_slice(s_hat_v);
-    }
-    let r_dprime = challenger.sample_f128_vec(LOG_PACKING);
+    let r_dprime = sample_shared_ring_switch_point(
+        &mut challenger,
+        queries
+            .iter()
+            .zip(&s_hat_vs)
+            .map(|(scoped_query, s_hat_v)| (scoped_query.scope, s_hat_v.as_slice())),
+    );
     let eq_r_dprime = build_eq(&r_dprime);
     debug_assert_eq!(eq_r_dprime.len(), 1 << LOG_PACKING);
 
@@ -123,8 +122,7 @@ pub(crate) fn open_batch(
         let s_hat_u = tensor_algebra_transpose(s_hat_v);
         inner_product(&s_hat_u, &eq_r_dprime)
     });
-    challenger.observe_label(ETA_SQUEEZE_LABEL);
-    let etas = challenger.sample_f128_vec(queries.len());
+    let etas = sample_batching_scalars(&mut challenger, queries.len());
     let beta0 = betas
         .zip(&etas)
         .fold(FlockF128::ZERO, |sum, (beta, eta)| sum + beta * *eta);
