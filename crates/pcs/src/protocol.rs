@@ -7,7 +7,7 @@ use transcript::{Encoding, ProverState, VerifierState};
 use crate::{CommitError, OpeningQuery, Pcs};
 
 pub(crate) const PROOF_HINT_LIMIT: usize = 64 * 1024 * 1024;
-pub(crate) const STATEMENT_LABEL: &[u8] = b"f2z/pcs/mle-opening/v1";
+pub(crate) const STATEMENT_LABEL: &[u8] = b"f2z/pcs/mle-opening/v2";
 pub(crate) const RING_SWITCH_LABEL: &[u8] = b"flock-ring-switch-v0";
 
 pub(crate) fn write_opening_proof(
@@ -63,17 +63,20 @@ impl PublicTranscript for VerifierState<'_> {
 pub(crate) fn bind_statement(
     pcs: &Pcs,
     root: &[u8; 32],
-    query: &OpeningQuery,
+    queries: &[OpeningQuery],
     transcript: &mut impl PublicTranscript,
 ) {
     transcript.public_message(STATEMENT_LABEL);
     transcript.public_message(root);
     transcript.public_message(pcs);
-    transcript.public_message(&(query.point.len() as u64));
-    for coordinate in &query.point {
-        transcript.public_message(coordinate);
+    transcript.public_message(&(queries.len() as u64));
+    for query in queries {
+        transcript.public_message(&(query.point.len() as u64));
+        for coordinate in &query.point {
+            transcript.public_message(coordinate);
+        }
+        transcript.public_message(&query.target);
     }
-    transcript.public_message(&query.target);
 }
 
 fn proof_options() -> impl Options {
@@ -153,7 +156,12 @@ mod tests {
             };
 
             let mut prover = build_prover(b"pcs-protocol-test", b"statement-binding");
-            bind_statement(&pcs, &root, &query, &mut prover);
+            bind_statement(
+                &pcs,
+                &root,
+                core::slice::from_ref(&query),
+                &mut prover,
+            );
             let expected = prover.verifier_message::<F128>();
             let proof = prover.finish();
 
@@ -162,9 +170,40 @@ mod tests {
                 b"statement-binding",
                 &proof,
             );
-            bind_statement(&pcs, &root, &query, &mut verifier);
+            bind_statement(
+                &pcs,
+                &root,
+                core::slice::from_ref(&query),
+                &mut verifier,
+            );
             prop_assert_eq!(verifier.verifier_message::<F128>(), expected);
             prop_assert!(verifier.check_eof().is_ok());
         }
+    }
+
+    fn statement_challenge(queries: &[OpeningQuery]) -> F128 {
+        let pcs = Pcs::new(22, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
+        let mut prover = build_prover(b"pcs-protocol-test", b"batch-binding");
+        bind_statement(&pcs, &[7; 32], queries, &mut prover);
+        prover.verifier_message::<F128>()
+    }
+
+    #[test]
+    fn statement_binding_commits_to_batch_order_and_count() {
+        let first = OpeningQuery {
+            point: vec![F128::from(1u64), F128::from(2u64)],
+            target: F128::from(3u64),
+        };
+        let second = OpeningQuery {
+            point: vec![F128::from(4u64), F128::from(5u64)],
+            target: F128::from(6u64),
+        };
+
+        let ordered = statement_challenge(&[first.clone(), second.clone()]);
+        let reversed = statement_challenge(&[second, first.clone()]);
+        let prefix = statement_challenge(&[first]);
+
+        assert_ne!(ordered, reversed);
+        assert_ne!(ordered, prefix);
     }
 }

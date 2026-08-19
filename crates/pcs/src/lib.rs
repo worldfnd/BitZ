@@ -31,7 +31,7 @@
 //! - [`CommitScheme`] connects commitment, proving, and verification to project transcripts.
 //!
 //! The caller packs and retains the witness after [`CommitScheme::commit`].
-//! [`CommitScheme::prove_lin`] consumes the packed witness and [`ProverData`] for one opening.
+//! [`CommitScheme::prove_lin_batch`] consumes the packed witness and [`ProverData`] once.
 //! The caller must use matching transcript session and instance labels.
 //! The caller must also call `VerifierState::check_eof` after successful verification.
 //!
@@ -95,6 +95,8 @@ pub struct OpeningQuery {
 pub enum CommitError {
     /// The packed witness represents an unsupported bit length.
     InvalidBitLength,
+    /// A batched opening contains no queries.
+    EmptyBatch,
     /// The evaluation point does not match the committed polynomial.
     PointLengthMismatch,
     /// The scheme configuration is not valid for Flock, with a description of the failed check.
@@ -135,22 +137,48 @@ pub trait CommitScheme {
         packed_witness: &[F128],
     ) -> Result<(Self::Commitment, Self::ProverData), CommitError>;
 
-    /// Consumes the exact packed witness passed to [`Self::commit`] and proves the claim.
+    /// Consumes the exact packed witness and proves an ordered batch of claims.
+    fn prove_lin_batch(
+        &self,
+        data: Self::ProverData,
+        packed_witness: Vec<F128>,
+        queries: &[OpeningQuery],
+        transcript: &mut ProverState,
+    ) -> Result<(), CommitError>;
+
+    /// Proves one multilinear claim.
     fn prove_lin(
         &self,
         data: Self::ProverData,
         packed_witness: Vec<F128>,
         query: &OpeningQuery,
         transcript: &mut ProverState,
+    ) -> Result<(), CommitError> {
+        self.prove_lin_batch(
+            data,
+            packed_witness,
+            core::slice::from_ref(query),
+            transcript,
+        )
+    }
+
+    /// Verifies an ordered batch of multilinear claims against `commitment`.
+    fn verify_lin_batch(
+        &self,
+        commitment: &Self::Commitment,
+        queries: &[OpeningQuery],
+        transcript: &mut VerifierState<'_>,
     ) -> Result<(), CommitError>;
 
-    /// Verifies the same multilinear claim against `commitment`.
+    /// Verifies one multilinear claim against `commitment`.
     fn verify_lin(
         &self,
         commitment: &Self::Commitment,
         query: &OpeningQuery,
         transcript: &mut VerifierState<'_>,
-    ) -> Result<(), CommitError>;
+    ) -> Result<(), CommitError> {
+        self.verify_lin_batch(commitment, core::slice::from_ref(query), transcript)
+    }
 }
 
 impl CommitScheme for Pcs {
@@ -164,22 +192,22 @@ impl CommitScheme for Pcs {
         Pcs::commit(self, packed_witness)
     }
 
-    fn prove_lin(
+    fn prove_lin_batch(
         &self,
         data: Self::ProverData,
         packed_witness: Vec<F128>,
-        query: &OpeningQuery,
+        queries: &[OpeningQuery],
         transcript: &mut ProverState,
     ) -> Result<(), CommitError> {
-        open::open(self, data, packed_witness, query, transcript)
+        open::open_batch(self, data, packed_witness, queries, transcript)
     }
 
-    fn verify_lin(
+    fn verify_lin_batch(
         &self,
         commitment: &Self::Commitment,
-        query: &OpeningQuery,
+        queries: &[OpeningQuery],
         transcript: &mut VerifierState<'_>,
     ) -> Result<(), CommitError> {
-        verify::verify(self, commitment, query, transcript)
+        verify::verify_batch(self, commitment, queries, transcript)
     }
 }

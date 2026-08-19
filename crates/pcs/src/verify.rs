@@ -1,23 +1,19 @@
-//! Standard multilinear verification over the Flock commitment.
+//! Batched multilinear verification over the Flock commitment.
 //!
 //! Verifier steps:
-//! 1. Validate the evaluation point and derive the Ligerito verifier configuration.
-//! 2. Bind the commitment root, trusted parameters, point, and target to the transcript.
+//! 1. Validate every evaluation point and derive the Ligerito verifier configuration.
+//! 2. Bind the commitment root, trusted parameters, and queries to the transcript.
 //! 3. Read and deserialize the bounded opening proof.
 //! 4. Validate the proof shape and require its initial root to match the commitment.
-//! 5. Extract one ring-switch proof and split the point into low and high coordinates.
-//! 6. Replay the ring-switch label and partial evaluations through `VerifierChallenger`.
-//! 7. Check the target against the low-coordinate equality table.
-//! 8. Sample seven ring-switch challenges and compute the packed target `beta0`.
-//! 9. Build the succinct Ligerito basis evaluator from the high coordinates.
-//! 10. Call `recursive_verifier_with_basis_succinct` against the commitment root.
-//! 11. Reject Flock failures and transcript mismatches.
+//! 5. Replay and check every ring-switch message before sampling challenges.
+//! 6. Sample one shared ring-switch point and one batching scalar per query.
+//! 7. Combine the targets and succinct basis evaluators.
+//! 8. Call `recursive_verifier_with_basis_succinct` against the commitment root.
+//! 9. Reject Flock failures and transcript mismatches.
 //!
-//! The verifier checks `target = Σ_v eq(r_lo, v) · s_v`.
-//! It samples `r_dprime` and computes `beta0 = Σ_u eq(r_dprime, u) · s_u`.
-//! The succinct basis evaluates `B_hat`, where
-//! `B(y) = Σ_u eq(r_dprime, u) · A(y, u)`.
-//! Ligerito then verifies `Σ_y B(y) · q_pkd(y) = beta0` against the root.
+//! Each query produces one packed claim under the shared ring-switch point.
+//! The verifier combines these claims with independent batching scalars.
+//! Ligerito verifies the resulting claim against the commitment root.
 
 use flock_core::challenger::Challenger;
 use flock_core::field::F128 as FlockF128;
@@ -35,15 +31,18 @@ use crate::challenger::VerifierChallenger;
 use crate::protocol::{RING_SWITCH_LABEL, bind_statement, read_opening_proof};
 use crate::{CommitError, Commitment, OpeningQuery, Pcs};
 
-pub(crate) fn verify(
+pub(crate) fn verify_batch(
     pcs: &Pcs,
     commitment: &Commitment,
-    query: &OpeningQuery,
+    queries: &[OpeningQuery],
     transcript: &mut VerifierState<'_>,
 ) -> Result<(), CommitError> {
     // 1. Input Validation
+    if queries.is_empty() {
+        return Err(CommitError::EmptyBatch);
+    }
     let m = pcs.params().m;
-    if query.point.len() != m {
+    if queries.iter().any(|query| query.point.len() != m) {
         return Err(CommitError::PointLengthMismatch);
     }
     let log_n = m.checked_sub(LOG_PACKING).ok_or_else(|| {
@@ -58,76 +57,98 @@ pub(crate) fn verify(
     let final_log_n = validate_config(&ligerito_config, log_n, pcs.params().log_batch_size)?;
 
     // 2. Bind Statement
-    bind_statement(pcs, commitment.root(), query, transcript);
+    bind_statement(pcs, commitment.root(), queries, transcript);
 
     // 3. Read Opening Proof
     let proof = read_opening_proof(transcript)?;
 
     // 4. Validate Proof Shape
-    validate_proof_shape(&proof, &ligerito_config, final_log_n, commitment.root())?;
+    validate_proof_shape(
+        &proof,
+        &ligerito_config,
+        final_log_n,
+        commitment.root(),
+        queries.len(),
+    )?;
 
-    // 5. Extract Ring-Switch Claim
-    let ring_switch = proof
-        .ring_switches
-        .first()
-        .ok_or(CommitError::MalformedProof)?;
-    let (r_lo, r_hi) = query.point.split_at(LOG_PACKING);
-    let r_hi = as_flock_f128s(r_hi);
-
-    // 6. Replay Ring-Switch Message
+    // 5. Replay Ring-Switch Messages and Check Targets
     let mut challenger = VerifierChallenger::new(transcript);
+    let mut r_his = Vec::with_capacity(queries.len());
     challenger.observe_label(RING_SWITCH_LABEL);
-    challenger.observe_f128_slice(&ring_switch.s_hat_v);
+    for (query, ring_switch) in queries.iter().zip(&proof.ring_switches) {
+        let (r_lo, r_hi) = query.point.split_at(LOG_PACKING);
+        r_his.push(as_flock_f128s(r_hi));
+
+        challenger.observe_f128_slice(&ring_switch.s_hat_v);
+
+        // query.target = Σ_v eq(r_lo, v) · s_hat_v[v].
+        let eq_lo = build_eq(as_flock_f128s(r_lo));
+        let target = as_flock_f128s(core::slice::from_ref(&query.target))[0];
+        if claim_check(&eq_lo, &ring_switch.s_hat_v) != target {
+            return Err(CommitError::VerificationFailed);
+        }
+    }
     if challenger.failed() {
         return Err(CommitError::MalformedProof);
     }
 
-    // 7. Check Target
-    // query.target = Σ_v eq(r_lo, v) · s_hat_v[v].
-    let eq_lo = build_eq(as_flock_f128s(r_lo));
-    let target = as_flock_f128s(core::slice::from_ref(&query.target))[0];
-    if claim_check(&eq_lo, &ring_switch.s_hat_v) != target {
-        return Err(CommitError::VerificationFailed);
-    }
-
-    // 8. Compute the Ligerito Target
-    // beta0 = Σ_u eq(r_dprime, u) · s_hat_u[u].
+    // 6. Compute the Batched Ligerito Target
     let r_dprime = challenger.sample_f128_vec(LOG_PACKING);
     let eq_r_dprime = build_eq(&r_dprime);
-    let s_hat_u = tensor_algebra_transpose(&ring_switch.s_hat_v);
-    let beta0 = inner_product(&s_hat_u, &eq_r_dprime);
+    let etas: Vec<_> = (0..queries.len())
+        .map(|_| challenger.sample_f128())
+        .collect();
+    let beta =
+        proof
+            .ring_switches
+            .iter()
+            .zip(&etas)
+            .fold(FlockF128::ZERO, |sum, (ring_switch, &eta)| {
+                let s_hat_u = tensor_algebra_transpose(&ring_switch.s_hat_v);
+                sum + eta * inner_product(&s_hat_u, &eq_r_dprime)
+            });
 
-    // 9. Build the Succinct Basis Evaluator
-    // result[y] = B_hat(ris || bits(y)).
+    // 7. Build the Batched Succinct Basis Evaluator
     let eval_b_residual = |ris: &[FlockF128], yr_log_n: usize| {
-        if yr_log_n > 32 || ris.len().checked_add(yr_log_n) != Some(r_hi.len()) {
+        if yr_log_n > 32
+            || r_his
+                .iter()
+                .any(|r_hi| ris.len().checked_add(yr_log_n) != Some(r_hi.len()))
+        {
             return Vec::new();
         }
         let Some(yr_len) = 1usize.checked_shl(yr_log_n as u32) else {
             return Vec::new();
         };
-        let prefix = eval_rs_eq_prefix(r_hi, ris);
-        let suffix = &r_hi[ris.len()..];
-        (0..yr_len)
-            .map(|y| {
-                eval_rs_eq_finish_from_prefix_binary_q(&prefix, suffix, y as u32, &eq_r_dprime)
-            })
-            .collect()
+        let mut result = vec![FlockF128::ZERO; yr_len];
+        for (r_hi, &eta) in r_his.iter().zip(&etas) {
+            let prefix = eval_rs_eq_prefix(r_hi, ris);
+            let suffix = &r_hi[ris.len()..];
+            for (y, value) in result.iter_mut().enumerate() {
+                *value += eta
+                    * eval_rs_eq_finish_from_prefix_binary_q(
+                        &prefix,
+                        suffix,
+                        y as u32,
+                        &eq_r_dprime,
+                    );
+            }
+        }
+        result
     };
 
-    // 10. Verify the Ligerito Claim
-    // Verify Σ_y B(y) · q_pkd(y) = beta0 without materializing B.
+    // 8. Verify the Batched Ligerito Claim
     let valid = recursive_verifier_with_basis_succinct(
         &ligerito_config,
         &proof.ligerito,
         log_n,
-        beta0,
+        beta,
         commitment.root(),
         eval_b_residual,
         &mut challenger,
     );
 
-    // 11. Check Verification Results
+    // 9. Check Verification Results
     if challenger.failed() {
         return Err(CommitError::MalformedProof);
     }
@@ -332,9 +353,13 @@ fn validate_proof_shape(
     config: &VerifierConfig,
     final_log_n: usize,
     expected_root: &[u8; 32],
+    expected_ring_switches: usize,
 ) -> Result<(), CommitError> {
-    if proof.ring_switches.len() != 1
-        || proof.ring_switches[0].s_hat_v.len() != 1usize << LOG_PACKING
+    if proof.ring_switches.len() != expected_ring_switches
+        || proof
+            .ring_switches
+            .iter()
+            .any(|ring_switch| ring_switch.s_hat_v.len() != 1usize << LOG_PACKING)
         || &proof.ligerito.initial_root != expected_root
     {
         return Err(CommitError::VerificationFailed);
