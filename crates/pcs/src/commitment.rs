@@ -54,19 +54,19 @@ impl Pcs {
         merkle_hash: HashKind,
     ) -> Result<Self, CommitError> {
         if !(MIN_LIGERITO_M..=MAX_LIGERITO_M).contains(&m) {
-            return Err(CommitError::invalid_configuration(format!(
-                "m ({m}) must be in the supported range [{MIN_LIGERITO_M}, {MAX_LIGERITO_M}]"
-            )));
+            return Err(CommitError::invalid_configuration(
+                "m outside supported range",
+            ));
         }
         if matches!(merkle_hash, HashKind::Sha256) {
             return Err(CommitError::invalid_configuration(
-                "SHA-256 Merkle hashing is unsupported because Flock does not separate leaf and parent domains",
+                "unsupported merkle_hash: SHA-256",
             ));
         }
 
-        let bit_len = 1usize.checked_shl(m as u32).ok_or_else(|| {
-            CommitError::invalid_configuration(format!("bit length 2^{m} does not fit usize"))
-        })?;
+        let bit_len = 1usize
+            .checked_shl(m as u32)
+            .ok_or_else(|| CommitError::invalid_configuration("bit_len is too large"))?;
         let params = PcsParams {
             m,
             log_inv_rate: security_profile.log_inv_rate(),
@@ -246,9 +246,7 @@ mod tests {
     fn constructor_rejects_sha256_merkle_hashing() {
         assert_eq!(
             Pcs::new(22, LigeritoProfile::Fast, HashKind::Sha256).unwrap_err(),
-            CommitError::invalid_configuration(
-                "SHA-256 Merkle hashing is unsupported because Flock does not separate leaf and parent domains"
-            )
+            CommitError::invalid_configuration("unsupported merkle_hash: SHA-256")
         );
     }
 
@@ -264,9 +262,7 @@ mod tests {
         for m in [0, MIN_LIGERITO_M - 1, MAX_LIGERITO_M + 1, usize::MAX] {
             assert_eq!(
                 Pcs::new(m, LigeritoProfile::Fast, HashKind::Blake3).unwrap_err(),
-                CommitError::invalid_configuration(format!(
-                    "m ({m}) must be in the supported range [{MIN_LIGERITO_M}, {MAX_LIGERITO_M}]"
-                ))
+                CommitError::invalid_configuration("m outside supported range")
             );
         }
     }

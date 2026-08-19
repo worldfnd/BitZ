@@ -8,36 +8,90 @@ use transcript::{ProverState, VerifierState};
 
 const VECTOR_SQUEEZE_TAG: &[u8] = b"pcs/flock/sample-vector/v1";
 const POW_TAG: &[u8] = b"pcs/flock/pow/v1";
+const LIGERITO_BASIS_LABEL: &[u8] = b"flock-ligerito-basis-v0";
 
-pub(crate) trait ScopedChallenger: Challenger {
-    fn observe_scope(&mut self, scope: u64);
+// F2Z binds beta under tag 0x5001 before Ligerito. Flock always observes its own
+// entry label and target, so the adapter validates and suppresses that duplicate prefix.
+#[derive(Clone, Copy)]
+struct OpeningTargetPrefix {
+    expected_ligerito_target: FlockF128,
+    label_seen: bool,
 }
 
 pub(crate) struct ProverChallenger<'a> {
     transcript: &'a mut ProverState,
+    failed: bool,
+    opening_target: Option<OpeningTargetPrefix>,
 }
 
 impl<'a> ProverChallenger<'a> {
+    #[cfg(test)]
     pub(crate) fn new(transcript: &'a mut ProverState) -> Self {
-        Self { transcript }
+        Self {
+            transcript,
+            failed: false,
+            opening_target: None,
+        }
+    }
+
+    /// Creates the Ligerito adapter after PCS derives and binds `beta0` under tag 5001.
+    /// The expected target lets the adapter check and omit Flock's duplicate entry pair.
+    pub(crate) fn new_ligerito(
+        transcript: &'a mut ProverState,
+        expected_ligerito_target: FlockF128,
+    ) -> Self {
+        // Tag 5001 already binds the derived target. Suppress Flock's legacy entry pair.
+        Self {
+            transcript,
+            failed: false,
+            opening_target: Some(OpeningTargetPrefix {
+                expected_ligerito_target,
+                label_seen: false,
+            }),
+        }
+    }
+
+    pub(crate) fn failed(&self) -> bool {
+        // A pending target means Flock returned before consuming its required entry prefix.
+        self.failed || self.opening_target.is_some()
     }
 }
 
 pub(crate) struct VerifierChallenger<'a, 'proof> {
     transcript: &'a mut VerifierState<'proof>,
     failed: bool,
+    opening_target: Option<OpeningTargetPrefix>,
 }
 
 impl<'a, 'proof> VerifierChallenger<'a, 'proof> {
+    #[cfg(test)]
     pub(crate) fn new(transcript: &'a mut VerifierState<'proof>) -> Self {
         Self {
             transcript,
             failed: false,
+            opening_target: None,
+        }
+    }
+
+    /// Creates the verifier counterpart with the same derived `beta0` expectation.
+    pub(crate) fn new_ligerito(
+        transcript: &'a mut VerifierState<'proof>,
+        expected_ligerito_target: FlockF128,
+    ) -> Self {
+        // Tag 5001 already binds the derived target. Suppress Flock's legacy entry pair.
+        Self {
+            transcript,
+            failed: false,
+            opening_target: Some(OpeningTargetPrefix {
+                expected_ligerito_target,
+                label_seen: false,
+            }),
         }
     }
 
     pub(crate) fn failed(&self) -> bool {
-        self.failed
+        // A pending target means Flock returned before consuming its required entry prefix.
+        self.failed || self.opening_target.is_some()
     }
 
     fn read<T>(&mut self) -> Option<T>
@@ -54,24 +108,29 @@ impl<'a, 'proof> VerifierChallenger<'a, 'proof> {
     }
 }
 
-impl ScopedChallenger for ProverChallenger<'_> {
-    fn observe_scope(&mut self, scope: u64) {
-        self.transcript.public_message(&scope);
-    }
-}
-
-impl ScopedChallenger for VerifierChallenger<'_, '_> {
-    fn observe_scope(&mut self, scope: u64) {
-        self.transcript.public_message(&scope);
-    }
-}
-
 impl Challenger for ProverChallenger<'_> {
     fn observe_label(&mut self, label: &[u8]) {
+        // After the prefix, the branch predictor consistently sees `None`.
+        if let Some(prefix) = &mut self.opening_target
+            && !prefix.label_seen
+        {
+            if label != LIGERITO_BASIS_LABEL {
+                self.failed = true;
+            }
+            prefix.label_seen = true;
+            return;
+        }
         self.transcript.public_message(label);
     }
 
     fn observe_f128(&mut self, value: FlockF128) {
+        // After the prefix, the branch predictor consistently sees `None`.
+        if let Some(prefix) = self.opening_target.take() {
+            if !prefix.label_seen || value != prefix.expected_ligerito_target {
+                self.failed = true;
+            }
+            return;
+        }
         self.transcript.prover_message(&from_flock_f128(value));
     }
 
@@ -118,10 +177,25 @@ impl Challenger for ProverChallenger<'_> {
 
 impl Challenger for VerifierChallenger<'_, '_> {
     fn observe_label(&mut self, label: &[u8]) {
+        if let Some(prefix) = &mut self.opening_target
+            && !prefix.label_seen
+        {
+            if label != LIGERITO_BASIS_LABEL {
+                self.failed = true;
+            }
+            prefix.label_seen = true;
+            return;
+        }
         self.transcript.public_message(label);
     }
 
     fn observe_f128(&mut self, value: FlockF128) {
+        if let Some(prefix) = self.opening_target.take() {
+            if !prefix.label_seen || value != prefix.expected_ligerito_target {
+                self.failed = true;
+            }
+            return;
+        }
         if self.read::<LocalF128>() != Some(from_flock_f128(value)) {
             self.failed = true;
         }
@@ -238,6 +312,32 @@ mod tests {
             changed = changed.wrapping_add(1);
         }
         assert!(!pow_valid(&seed, changed, 8));
+    }
+
+    #[test]
+    fn ligerito_public_target_prefix_adds_no_narg_bytes() {
+        let target = FlockF128::new(1, 2);
+        let next_message = FlockF128::new(3, 4);
+        let mut prover = build_prover(b"pcs-challenger-test", b"public-opening-target");
+        {
+            let mut challenger = ProverChallenger::new_ligerito(&mut prover, target);
+            challenger.observe_label(LIGERITO_BASIS_LABEL);
+            challenger.observe_f128(target);
+            challenger.observe_f128(next_message);
+            assert!(!challenger.failed());
+        }
+        let proof = prover.finish();
+        assert_eq!(proof.narg_string, from_flock_f128(next_message).to_bytes());
+
+        let mut verifier = build_verifier(b"pcs-challenger-test", b"public-opening-target", &proof);
+        {
+            let mut challenger = VerifierChallenger::new_ligerito(&mut verifier, target);
+            challenger.observe_label(LIGERITO_BASIS_LABEL);
+            challenger.observe_f128(target);
+            challenger.observe_f128(next_message);
+            assert!(!challenger.failed());
+        }
+        verifier.check_eof().unwrap();
     }
 
     proptest! {

@@ -45,7 +45,11 @@
 //! The verifier checks each duplicated proof value against its NARG value during replay.
 //! Opened rows and Merkle paths appear only in the hint.
 //! This accepted deviation avoids a Flock fork but differs from the specification's channel layout.
-//! Exact channel compliance requires a streaming Flock verifier.
+//! The ring-switch, batching, and opening-target events use canonical numeric frames.
+//! Full wire-v1 compliance also requires the BLAKE3 transcript backend and a streaming Flock verifier.
+//! See the normative [recursive-opening channel ledger].
+//!
+//! [recursive-opening channel ledger]: https://github.com/worldfnd/f2z-benchmark/blob/5014c717e88ab5e54e70e7a1099caaca5c41a926/docs/f2z-pcs-spec/part3-interaction.tex#L542-L588
 //!
 //! # Example
 //!
@@ -108,14 +112,14 @@ pub struct OpeningQuery {
 /// The outer protocol must provide the complete expected scope list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ScopedOpeningQuery<'a> {
-    /// The caller-defined protocol scope.
-    pub scope: u64,
+    /// The caller-defined protocol scope. `u32::MAX` is reserved by the wire format.
+    pub scope: u32,
     /// The multilinear claim in this scope.
     pub query: &'a OpeningQuery,
 }
 
 impl<'a> ScopedOpeningQuery<'a> {
-    pub const fn new(scope: u64, query: &'a OpeningQuery) -> Self {
+    pub const fn new(scope: u32, query: &'a OpeningQuery) -> Self {
         Self { scope, query }
     }
 }
@@ -142,6 +146,8 @@ pub enum CommitError {
     EmptyBatch,
     /// Batched claim scopes are not strictly increasing.
     InvalidClaimScopeOrder,
+    /// A batched claim uses the reserved `u32::MAX` wire scope.
+    InvalidClaimScope,
     /// The evaluation point does not match the committed polynomial.
     PointLengthMismatch,
     /// The scheme configuration is not valid for Flock, with a description of the failed check.

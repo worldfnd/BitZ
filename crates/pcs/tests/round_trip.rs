@@ -213,15 +213,39 @@ fn real_pcs_batch_rejects_changed_scopes() {
     verifier.public_message(&fixture.pcs);
     verifier.public_message(fixture.commitment.root());
 
-    assert!(matches!(
+    assert_eq!(
         fixture.pcs.verify_lin_batch(
             &fixture.commitment,
             &changed_scopes,
             StatementBinding::AlreadyBound,
             &mut verifier,
         ),
-        Err(CommitError::VerificationFailed | CommitError::MalformedProof)
-    ));
+        Err(CommitError::MalformedProof)
+    );
+}
+
+#[test]
+fn real_pcs_batch_rejects_a_changed_later_ring_message() {
+    const RING_FRAME_LEN: usize = 24 + 4 + 128 * 16;
+
+    let fixture = batch_fixture();
+    let mut changed_proof = fixture.proof.clone();
+    changed_proof.narg_string[RING_FRAME_LEN + 28] ^= 1;
+    let scoped_queries = scoped_batch(&fixture.queries);
+    let mut verifier = build_verifier(SESSION, BATCH_INSTANCE, &changed_proof);
+    verifier.public_message(OUTER_STATEMENT_LABEL);
+    verifier.public_message(&fixture.pcs);
+    verifier.public_message(fixture.commitment.root());
+
+    assert_eq!(
+        fixture.pcs.verify_lin_batch(
+            &fixture.commitment,
+            &scoped_queries,
+            StatementBinding::AlreadyBound,
+            &mut verifier,
+        ),
+        Err(CommitError::MalformedProof)
+    );
 }
 
 #[test]
@@ -377,7 +401,7 @@ fn real_pcs_rejects_mismatched_prover_parameters() {
     assert!(matches!(
         other.prove_lin(data, packed_witness, &query, &mut prover),
         Err(CommitError::InvalidConfiguration(description))
-            if description.starts_with("prover data parameters do not match the active PCS")
+            if description == "prover data parameters mismatch"
     ));
 }
 
@@ -477,6 +501,23 @@ fn real_pcs_rejects_malformed_transcript_streams() {
     let mut changed_hint = fixture.proof.clone();
     *changed_hint.hints.last_mut().unwrap() ^= 1;
     let mut verifier = build_verifier(SESSION, INSTANCE, &changed_hint);
+    assert_eq!(
+        fixture
+            .pcs
+            .verify_lin(&fixture.commitment, &fixture.query, &mut verifier),
+        Err(CommitError::MalformedProof)
+    );
+}
+
+#[test]
+fn real_pcs_rejects_trailing_bytes_inside_opening_hint() {
+    let fixture = fixture();
+    let mut changed_hint = fixture.proof.clone();
+    let encoded_len = u32::from_le_bytes(changed_hint.hints[..4].try_into().unwrap());
+    changed_hint.hints[..4].copy_from_slice(&(encoded_len + 1).to_le_bytes());
+    changed_hint.hints.push(0);
+    let mut verifier = build_verifier(SESSION, INSTANCE, &changed_hint);
+
     assert_eq!(
         fixture
             .pcs

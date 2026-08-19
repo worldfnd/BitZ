@@ -19,8 +19,8 @@
 use crate::bridge::{as_flock_f128s, into_flock_f128s};
 use crate::challenger::ProverChallenger;
 use crate::protocol::{
-    bind_statement, sample_batching_scalars, sample_shared_ring_switch_point, validate_batch,
-    write_opening_proof,
+    bind_ring_switch_message, bind_statement, observe_opening_target, sample_batching_scalars,
+    sample_shared_ring_switch_point, validate_batch, write_opening_proof,
 };
 use crate::{CommitError, Pcs, ProverData, ScopedOpeningQuery, StatementBinding};
 use field::F128;
@@ -48,15 +48,16 @@ pub(crate) fn open_batch(
     // 1. Input Validation
     let expected_m = pcs.params().m;
     validate_batch(queries, expected_m)?;
+    let m_p = expected_m
+        .checked_sub(LOG_PACKING)
+        .ok_or_else(|| CommitError::invalid_configuration("m is below LOG_PACKING"))?;
     if packed_witness.len() != pcs.packed_len() {
         return Err(CommitError::InvalidBitLength);
     }
     if !params_match(pcs, &data) {
-        return Err(CommitError::invalid_configuration(format!(
-            "prover data parameters do not match the active PCS: expected {:?}, got {:?}",
-            pcs.params(),
-            data.commitment().params,
-        )));
+        return Err(CommitError::invalid_configuration(
+            "prover data parameters mismatch",
+        ));
     }
     let ligerito_config = pcs
         .params()
@@ -106,14 +107,12 @@ pub(crate) fn open_batch(
     }
 
     // 4. Record Ring-Switch Messages and Sample the Shared Challenge
-    let mut challenger = ProverChallenger::new(transcript);
-    let r_dprime = sample_shared_ring_switch_point(
-        &mut challenger,
-        queries
-            .iter()
-            .zip(&s_hat_vs)
-            .map(|(scoped_query, s_hat_v)| (scoped_query.scope, s_hat_v.as_slice())),
-    );
+    // Normative ring-switch, batching, and opening schedule:
+    // https://github.com/worldfnd/f2z-benchmark/blob/5014c717e88ab5e54e70e7a1099caaca5c41a926/docs/f2z-pcs-spec/part3-interaction.tex#L454-L534
+    for (scoped_query, s_hat_v) in queries.iter().zip(&s_hat_vs) {
+        bind_ring_switch_message(transcript, scoped_query.scope, s_hat_v)?;
+    }
+    let r_dprime = sample_shared_ring_switch_point(transcript);
     let eq_r_dprime = build_eq(&r_dprime);
     debug_assert_eq!(eq_r_dprime.len(), 1 << LOG_PACKING);
 
@@ -122,7 +121,7 @@ pub(crate) fn open_batch(
         let s_hat_u = tensor_algebra_transpose(s_hat_v);
         inner_product(&s_hat_u, &eq_r_dprime)
     });
-    let etas = sample_batching_scalars(&mut challenger, queries.len());
+    let etas = sample_batching_scalars(transcript, queries.iter().map(|query| query.scope));
     let beta0 = betas
         .zip(&etas)
         .fold(FlockF128::ZERO, |sum, (beta, eta)| sum + beta * *eta);
@@ -146,6 +145,8 @@ pub(crate) fn open_batch(
 
     // 7. Prove the Ligerito Claim
     // Prove Σ_y b_initial[y] · packed_witness[y] = beta0.
+    observe_opening_target(transcript, m_p, beta0)?;
+    let mut challenger = ProverChallenger::new_ligerito(transcript, beta0);
     let ligerito_proof = recursive_prover_with_basis(
         &ligerito_config,
         packed_witness,
@@ -155,6 +156,11 @@ pub(crate) fn open_batch(
         &flock_data.merkle_tree,
         &mut challenger,
     );
+    if challenger.failed() {
+        return Err(CommitError::invalid_configuration(
+            "missing Ligerito opening-target prefix",
+        ));
+    }
 
     // 8. Write the Bounded Opening Proof
     let opening_proof = BatchOpeningProofLigerito {
