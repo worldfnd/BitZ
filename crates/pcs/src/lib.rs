@@ -57,7 +57,10 @@
 //!
 //! ```
 //! use field::F128;
-//! use pcs::{CommitScheme, HashKind, LigeritoProfile, OpeningQuery, Pcs};
+//! use pcs::{
+//!     CommitScheme, HashKind, LigeritoProfile, OpeningQuery, Pcs, ScopedOpeningQuery,
+//!     StatementBinding,
+//! };
 //! use transcript::{build_prover, build_verifier};
 //!
 //! const M: usize = 22;
@@ -70,15 +73,27 @@
 //!     point,
 //!     target: F128::from(0u64),
 //! };
+//! let queries = [ScopedOpeningQuery::new(0, &query)];
 //!
 //! let (commitment, prover_data) = pcs.commit(&packed_witness).unwrap();
 //! let mut prover = build_prover(b"pcs-example", b"zero-polynomial");
-//! pcs.prove_lin(prover_data, packed_witness, &query, &mut prover)
+//! pcs.prove_lin_batch(
+//!     prover_data,
+//!     packed_witness,
+//!     &queries,
+//!     StatementBinding::Bind,
+//!     &mut prover,
+//! )
 //!     .unwrap();
 //! let proof = prover.finish();
 //!
 //! let mut verifier = build_verifier(b"pcs-example", b"zero-polynomial", &proof);
-//! pcs.verify_lin(&commitment, &query, &mut verifier)
+//! pcs.verify_lin_batch(
+//!     &commitment,
+//!     &queries,
+//!     StatementBinding::Bind,
+//!     &mut verifier,
+//! )
 //!     .unwrap();
 //! verifier.check_eof().unwrap();
 //! ```
@@ -198,24 +213,6 @@ pub trait CommitScheme {
         transcript: &mut ProverState,
     ) -> Result<(), CommitError>;
 
-    /// Proves one multilinear claim.
-    fn prove_lin(
-        &self,
-        data: Self::ProverData,
-        packed_witness: Vec<F128>,
-        query: &OpeningQuery,
-        transcript: &mut ProverState,
-    ) -> Result<(), CommitError> {
-        let scoped_query = ScopedOpeningQuery::new(0, query);
-        self.prove_lin_batch(
-            data,
-            packed_witness,
-            &[scoped_query],
-            StatementBinding::Bind,
-            transcript,
-        )
-    }
-
     /// Verifies an ordered batch of multilinear claims against `commitment`.
     fn verify_lin_batch(
         &self,
@@ -224,22 +221,6 @@ pub trait CommitScheme {
         statement_binding: StatementBinding,
         transcript: &mut VerifierState<'_>,
     ) -> Result<(), CommitError>;
-
-    /// Verifies one multilinear claim against `commitment`.
-    fn verify_lin(
-        &self,
-        commitment: &Self::Commitment,
-        query: &OpeningQuery,
-        transcript: &mut VerifierState<'_>,
-    ) -> Result<(), CommitError> {
-        let scoped_query = ScopedOpeningQuery::new(0, query);
-        self.verify_lin_batch(
-            commitment,
-            &[scoped_query],
-            StatementBinding::Bind,
-            transcript,
-        )
-    }
 }
 
 impl CommitScheme for Pcs {
