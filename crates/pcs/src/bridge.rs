@@ -1,6 +1,6 @@
 //! Zero-copy conversion between the local field and Flock's field.
 
-use core::mem::{align_of, offset_of, size_of};
+use core::mem::{ManuallyDrop, align_of, offset_of, size_of};
 
 use field::F128 as LocalF128;
 use flock_core::field::F128 as FlockF128;
@@ -31,6 +31,19 @@ pub(crate) fn as_flock_f128s(values: &[LocalF128]) -> &[FlockF128] {
     unsafe { core::slice::from_raw_parts(values.as_ptr().cast(), values.len()) }
 }
 
+/// Transfers ownership of local field elements to Flock without copying.
+#[inline(always)]
+pub(crate) fn into_flock_f128s(values: Vec<LocalF128>) -> Vec<FlockF128> {
+    let mut values = ManuallyDrop::new(values);
+    let pointer = values.as_mut_ptr().cast();
+    let length = values.len();
+    let capacity = values.capacity();
+
+    // SAFETY: The compile-time checks prove equal allocation layouts.
+    // Both types contain only `u64` fields, so every bit pattern is valid.
+    unsafe { Vec::from_raw_parts(pointer, length, capacity) }
+}
+
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
@@ -56,6 +69,19 @@ mod tests {
     #[test]
     fn cast_accepts_an_empty_slice() {
         assert!(as_flock_f128s(&[]).is_empty());
+    }
+
+    #[test]
+    fn owned_cast_preserves_allocation_and_words() {
+        let values = vec![LocalF128::new(1, 2), LocalF128::new(3, 4)];
+        let pointer = values.as_ptr();
+
+        let cast = into_flock_f128s(values);
+
+        assert_eq!(cast.as_ptr().cast::<LocalF128>(), pointer);
+        assert_eq!(cast.len(), 2);
+        assert_eq!((cast[0].lo, cast[0].hi), (1, 2));
+        assert_eq!((cast[1].lo, cast[1].hi), (3, 4));
     }
 
     proptest! {
