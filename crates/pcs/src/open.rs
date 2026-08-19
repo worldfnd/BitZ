@@ -28,11 +28,14 @@ use flock_core::challenger::Challenger;
 use flock_core::field::F128 as FlockF128;
 use flock_core::pcs::ligerito::recursive_prover_with_basis;
 use flock_core::pcs::ring_switch::{
-    build_eq_split, claim_check, fold_1b_rows_naive, fold_b128_elems, inner_product,
-    tensor_algebra_transpose,
+    build_eq_split, claim_check, fold_1b_rows_split, fold_1b_rows_split_2way,
+    fold_b128_elems_split, inner_product, split_n_lo, tensor_algebra_transpose,
 };
 use flock_core::pcs::{BatchOpeningProofLigerito, RingSwitchProof};
-use flock_core::{pcs::LOG_PACKING, zerocheck::univariate_skip::build_eq};
+use flock_core::{
+    pcs::LOG_PACKING,
+    zerocheck::{PaddingSpec, univariate_skip::build_eq},
+};
 use transcript::ProverState;
 
 pub(crate) fn open_batch(
@@ -69,26 +72,38 @@ pub(crate) fn open_batch(
     let flock_data = data.into_flock_data();
 
     // 3. Compute and Check Partial Evaluations
-    let mut s_hat_vs = Vec::with_capacity(queries.len());
-    for scoped_query in queries {
-        let query = scoped_query.query;
-        let (r_lo, r_hi) = query.point.split_at(LOG_PACKING);
-        let (eq_lo, eq_hi) = build_eq_split(as_flock_f128s(&query.point), r_lo.len());
-        debug_assert_eq!(eq_lo.len(), 1 << r_lo.len());
-        debug_assert_eq!(eq_hi.len(), 1 << r_hi.len());
-        debug_assert_eq!(eq_hi.len(), packed_witness.len());
+    let padding = PaddingSpec::dense(expected_m);
+    // Retain balanced equality factors for both folding phases.
+    // At m=35, each factor pair uses 512 KiB. A dense table uses 4 GiB.
+    let r_hi_eq_factors = queries
+        .iter()
+        .map(|scoped_query| {
+            let r_hi = &scoped_query.query.point[LOG_PACKING..];
+            build_eq_split(as_flock_f128s(r_hi), split_n_lo(r_hi.len()))
+        })
+        .collect::<Vec<_>>();
 
+    #[cfg(debug_assertions)]
+    for (eq_lo, eq_hi) in &r_hi_eq_factors {
+        assert_eq!(eq_lo.len() * eq_hi.len(), packed_witness.len());
+    }
+
+    let s_hat_vs = fold_partial_evaluations(&packed_witness, &r_hi_eq_factors, &padding);
+
+    for (scoped_query, s_hat_v) in queries.iter().zip(&s_hat_vs) {
+        let query = scoped_query.query;
+        let r_lo = &query.point[..LOG_PACKING];
+        let eq_lo = build_eq(as_flock_f128s(r_lo));
+        debug_assert_eq!(eq_lo.len(), 1 << r_lo.len());
         // s_hat_v[v] = Σ_y eq(r_hi, y) · q(y, v) = q̂(r_hi, v).
-        let s_hat_v = fold_1b_rows_naive(&packed_witness, &eq_hi);
         debug_assert_eq!(s_hat_v.len(), 1 << LOG_PACKING);
 
         // query.target = Σ_v eq(r_lo, v) · s_hat_v[v].
-        let evaluation = claim_check(&eq_lo, &s_hat_v);
+        let evaluation = claim_check(&eq_lo, s_hat_v);
         let target = as_flock_f128s(core::slice::from_ref(&query.target))[0];
         if evaluation != target {
             return Err(CommitError::VerificationFailed);
         }
-        s_hat_vs.push(s_hat_v);
     }
 
     // 4. Record Ring-Switch Messages and Sample the Shared Challenge
@@ -115,17 +130,21 @@ pub(crate) fn open_batch(
         .fold(FlockF128::ZERO, |sum, (beta, eta)| sum + beta * *eta);
 
     // 6. Build and Combine the Ligerito Bases
-    let mut b_initial = vec![FlockF128::ZERO; packed_witness.len()];
-    for (scoped_query, eta) in queries.iter().zip(&etas) {
-        let query = scoped_query.query;
-        let r_hi = &query.point[LOG_PACKING..];
-        let eq_hi = build_eq(as_flock_f128s(r_hi));
-        let basis = fold_b128_elems(&eq_hi, &eq_r_dprime);
+    let mut factors_and_etas = r_hi_eq_factors.iter().zip(&etas);
+    let ((first_eq_lo, first_eq_hi), &first_eta) = factors_and_etas
+        .next()
+        .expect("validated batch is nonempty");
+    let mut b_initial = fold_scaled_basis(first_eq_lo, first_eq_hi, &eq_r_dprime, first_eta);
+    for ((eq_lo, eq_hi), &eta) in factors_and_etas {
+        let basis = fold_scaled_basis(eq_lo, eq_hi, &eq_r_dprime, eta);
         debug_assert_eq!(basis.len(), b_initial.len());
-        for (combined, value) in b_initial.iter_mut().zip(basis) {
-            *combined += *eta * value;
+        for (combined, &value) in b_initial.iter_mut().zip(&basis) {
+            *combined += value;
         }
+        flock_core::scratch::give_f128(basis);
     }
+    // Release the equality factors before Ligerito allocates its working buffers.
+    drop(r_hi_eq_factors);
 
     // 7. Prove the Ligerito Claim
     // Prove Σ_y b_initial[y] · packed_witness[y] = beta0.
@@ -150,6 +169,56 @@ pub(crate) fn open_batch(
     write_opening_proof(&opening_proof, transcript)?;
 
     Ok(())
+}
+
+/// Folds split equality tensors against the witness, with one scan for each claim pair.
+fn fold_partial_evaluations(
+    packed_witness: &[FlockF128],
+    eq_factors: &[(Vec<FlockF128>, Vec<FlockF128>)],
+    padding: &PaddingSpec,
+) -> Vec<Vec<FlockF128>> {
+    let mut results = Vec::with_capacity(eq_factors.len());
+    let mut pairs = eq_factors.chunks_exact(2);
+    for pair in &mut pairs {
+        let [first, second] = pair else {
+            unreachable!("chunks_exact returned a non-pair")
+        };
+        let (first_result, second_result) = fold_1b_rows_split_2way(
+            packed_witness,
+            &first.0,
+            &first.1,
+            &second.0,
+            &second.1,
+            padding,
+        );
+        results.push(first_result);
+        results.push(second_result);
+    }
+    if let [last] = pairs.remainder() {
+        results.push(fold_1b_rows_split(
+            packed_witness,
+            &last.0,
+            &last.1,
+            padding,
+        ));
+    }
+    results
+}
+
+/// Builds one eta-scaled Ligerito basis without materializing a dense equality tensor.
+fn fold_scaled_basis(
+    eq_lo: &[FlockF128],
+    eq_hi: &[FlockF128],
+    eq_r_dprime: &[FlockF128],
+    eta: FlockF128,
+) -> Vec<FlockF128> {
+    // The fold is F128-linear in eq_r_dprime, but not in the equality tensor.
+    // Therefore, scale eq_r_dprime instead of either equality factor.
+    let scaled_eq_r_dprime = eq_r_dprime
+        .iter()
+        .map(|&value| eta * value)
+        .collect::<Vec<_>>();
+    fold_b128_elems_split(eq_lo, eq_hi, &scaled_eq_r_dprime)
 }
 
 fn params_match(pcs: &Pcs, data: &ProverData) -> bool {
