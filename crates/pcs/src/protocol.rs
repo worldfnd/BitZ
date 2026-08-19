@@ -143,7 +143,7 @@ mod tests {
             point_words in prop::collection::vec((any::<u64>(), any::<u64>()), 0..32),
             target_words in (any::<u64>(), any::<u64>()),
         ) {
-            let pcs = Pcs::new(22, LigeritoProfile::Fast, HashKind::Blake3);
+            let pcs = Pcs::new(22, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
             let query = OpeningQuery {
                 point: point_words
                     .iter()

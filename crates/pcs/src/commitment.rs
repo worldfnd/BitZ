@@ -10,6 +10,7 @@ use core::mem::size_of;
 
 use crate::CommitError;
 use crate::bridge::as_flock_f128s;
+use crate::verify::validate_config;
 use field::F128;
 pub use flock_core::hash::HashKind;
 use flock_core::pcs::Commitment as FlockCommitment;
@@ -21,6 +22,8 @@ use transcript::Encoding;
 /// The value `6` selects 64 lanes
 /// See: https://github.com/succinctlabs/flock/blob/879072249e52b8b9054bf0c6a034cec20f8f6fc7/crates/flock-core/src/pcs/ligerito.rs#L1245
 const LIGERITO_INITIAL_K: usize = 6;
+const MIN_LIGERITO_M: usize = 22;
+const MAX_LIGERITO_M: usize = 35;
 
 #[derive(Clone, Debug)]
 pub struct Pcs {
@@ -42,17 +45,33 @@ pub struct ProverData {
 }
 
 impl Pcs {
-    pub fn new(m: usize, security_profile: LigeritoProfile, merkle_hash: HashKind) -> Self {
-        Self {
-            params: PcsParams {
-                m,
-                log_inv_rate: security_profile.log_inv_rate(),
-                log_batch_size: LIGERITO_INITIAL_K,
-                profile: security_profile,
-                merkle_hash,
-            },
-            bit_len: 1 << m,
+    pub fn new(
+        m: usize,
+        security_profile: LigeritoProfile,
+        merkle_hash: HashKind,
+    ) -> Result<Self, CommitError> {
+        if !(MIN_LIGERITO_M..=MAX_LIGERITO_M).contains(&m) {
+            return Err(CommitError::invalid_configuration(format!(
+                "m ({m}) must be in the supported range [{MIN_LIGERITO_M}, {MAX_LIGERITO_M}]"
+            )));
         }
+
+        let bit_len = 1usize.checked_shl(m as u32).ok_or_else(|| {
+            CommitError::invalid_configuration(format!("bit length 2^{m} does not fit usize"))
+        })?;
+        let params = PcsParams {
+            m,
+            log_inv_rate: security_profile.log_inv_rate(),
+            log_batch_size: LIGERITO_INITIAL_K,
+            profile: security_profile,
+            merkle_hash,
+        };
+        let config = params
+            .ligerito_verifier_config()
+            .map_err(CommitError::InvalidConfiguration)?;
+        validate_config(&config, params.log_msg_len(), params.log_batch_size)?;
+
+        Ok(Self { params, bit_len })
     }
 
     /// Commits to the exact configured number of packed field elements.
@@ -156,7 +175,7 @@ mod tests {
 
     #[test]
     fn commitment_is_deterministic_for_packed_boundary_bits() {
-        let scheme = Pcs::new(22, LigeritoProfile::Fast, HashKind::Blake3);
+        let scheme = Pcs::new(22, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
         let mut packed_witness = vec![F128::default(); scheme.packed_len()];
         packed_witness[0] = F128::new(1 | (1 << 1) | (1 << 63), 1 | (1 << 63));
         packed_witness[1] = F128::new(1, 0);
@@ -175,7 +194,7 @@ mod tests {
 
     #[test]
     fn caller_packing_layout_matches_flock() {
-        let scheme = Pcs::new(22, LigeritoProfile::Fast, HashKind::Blake3);
+        let scheme = Pcs::new(22, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
         let mut bits = vec![false; scheme.bit_len()];
         for index in [0, 63, 64, 127, 128, bits.len() - 1] {
             bits[index] = true;
@@ -199,7 +218,7 @@ mod tests {
             (LigeritoProfile::Secure, 2),
         ] {
             for (hash, hash_tag) in [(HashKind::Sha256, 0), (HashKind::Blake3, 1)] {
-                let pcs = Pcs::new(22, profile, hash);
+                let pcs = Pcs::new(22, profile, hash).unwrap();
                 let expected_tags = [
                     22,
                     profile.log_inv_rate() as u64,
@@ -217,12 +236,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn constructor_accepts_supported_m_boundaries() {
+        for m in [MIN_LIGERITO_M, MAX_LIGERITO_M] {
+            assert!(Pcs::new(m, LigeritoProfile::Fast, HashKind::Blake3).is_ok());
+        }
+    }
+
+    #[test]
+    fn constructor_rejects_unsupported_m_before_shifting() {
+        for m in [0, MIN_LIGERITO_M - 1, MAX_LIGERITO_M + 1, usize::MAX] {
+            assert_eq!(
+                Pcs::new(m, LigeritoProfile::Fast, HashKind::Blake3).unwrap_err(),
+                CommitError::invalid_configuration(format!(
+                    "m ({m}) must be in the supported range [{MIN_LIGERITO_M}, {MAX_LIGERITO_M}]"
+                ))
+            );
+        }
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(64))]
 
         #[test]
         fn rejects_arbitrary_short_packed_witnesses(len in 0usize..4096) {
-            let pcs = Pcs::new(22, LigeritoProfile::Fast, HashKind::Blake3);
+            let pcs = Pcs::new(22, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
             let packed_witness = vec![F128::default(); len];
 
             prop_assert!(matches!(
