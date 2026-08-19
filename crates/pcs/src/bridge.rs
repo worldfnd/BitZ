@@ -24,7 +24,6 @@ const _: () = {
 ///
 /// The field differential tests verify the common polynomial basis.
 #[inline(always)]
-#[allow(dead_code, reason = "used by the linear-opening implementation")]
 pub(crate) fn as_flock_f128s(values: &[LocalF128]) -> &[FlockF128] {
     // SAFETY: The compile-time checks prove equal size, alignment, and offsets.
     // Both types contain only `u64` fields, so every bit pattern is valid.
