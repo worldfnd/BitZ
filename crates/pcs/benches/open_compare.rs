@@ -19,6 +19,10 @@ use transcript::build_prover;
 
 const SESSION: &[u8] = b"pcs-open-comparison-v1";
 const INSTANCE: &[u8] = b"full-opening";
+// Bit i is one exactly when the six-bit integer i has odd parity.
+// Bits 0..7 are 0,1,1,0,1,0,0,1, so their little-endian byte is 0x96.
+// Bit 6 flips parity in packed positions 64..127, so the high word is `!lo`.
+// Odd parity in the packed-row index also complements the low-word table.
 const PARITY_BITS: u64 = 0x6996_9669_9669_6996;
 const CASES: &[Case] = &[
     Case { m: 22, claims: 1 },
