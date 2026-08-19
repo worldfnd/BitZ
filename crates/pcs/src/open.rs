@@ -45,7 +45,7 @@ pub(crate) fn open(
     if query.point.len() != expected_m {
         return Err(CommitError::PointLengthMismatch);
     }
-    if data.bit_len() != pcs.bit_len() || !params_match(pcs, &data) {
+    if !params_match(pcs, &data) {
         return Err(CommitError::InvalidConfiguration);
     }
     let ligerito_config = pcs

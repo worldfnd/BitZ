@@ -34,8 +34,6 @@ pub struct Commitment {
 
 /// Private state retained between commitment and one opening.
 pub struct ProverData {
-    // length of witness before packing
-    bit_len: usize,
     commitment: FlockCommitment,
     packed_witness: Vec<FlockF128>,
     flock_prover_data: FlockProverData,
@@ -78,7 +76,6 @@ impl Pcs {
         Ok((
             commitment,
             ProverData {
-                bit_len: self.bit_len,
                 commitment: flock_commitment,
                 packed_witness,
                 flock_prover_data,
@@ -116,10 +113,6 @@ impl Pcs {
 }
 
 impl ProverData {
-    pub fn bit_len(&self) -> usize {
-        self.bit_len
-    }
-
     pub fn packed_len(&self) -> usize {
         self.packed_witness.len()
     }
@@ -170,7 +163,6 @@ mod tests {
 
         assert_eq!(commitment, second_commitment);
         assert_ne!(commitment, changed_commitment);
-        assert_eq!(data.bit_len(), bits.len());
         assert_eq!(data.packed_len(), bits.len() / 128);
         assert!(data.codeword_len() > 0);
         assert_eq!(data.packed_witness[0].lo, 1 | (1 << 1) | (1 << 63));
