@@ -103,6 +103,8 @@ pub(crate) fn open(
     // b_initial[y] = B(y) = Σ_u eq(r_dprime, u) · A(y, u).
     let b_initial = fold_b128_elems(&eq_hi, &eq_r_dprime);
     debug_assert_eq!(b_initial.len(), packed_witness.len());
+    drop(eq_hi);
+    drop(eq_lo);
 
     // 11. Prove the Ligerito Claim
     // Prove Σ_y b_initial[y] · packed_witness[y] = beta0.
