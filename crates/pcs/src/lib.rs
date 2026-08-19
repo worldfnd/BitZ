@@ -95,7 +95,7 @@ pub enum CommitError {
     InvalidBitLength,
     /// The evaluation point does not match the committed polynomial.
     PointLengthMismatch,
-    /// The scheme configuration is not valid for Flock.
+    /// The scheme configuration is not valid for Flock, with a description of the failed check.
     InvalidConfiguration(String),
     /// The transcript does not contain a complete canonical proof.
     MalformedProof,

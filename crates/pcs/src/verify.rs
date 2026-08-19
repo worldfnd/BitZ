@@ -207,13 +207,13 @@ fn validate_config(
     }
     if config.ood_samples[0] != 0 {
         return Err(CommitError::invalid_configuration(format!(
-            "initial OOD sample count must be zero, got {}",
+            "ood_samples[0] must be zero, got {}",
             config.ood_samples[0],
         )));
     }
     if let Some(level) = config.log_inv_rates.iter().position(|&rate| rate == 0) {
         return Err(CommitError::invalid_configuration(format!(
-            "log_inv_rate at level {level} must be positive"
+            "log_inv_rates[{level}] must be positive"
         )));
     }
     if let Some((level, bits)) = config
@@ -268,22 +268,22 @@ fn validate_config(
         let k = config.recursive_ks[level];
         if k == 0 {
             return Err(CommitError::invalid_configuration(format!(
-                "recursive_k at level {level} must be positive"
+                "recursive_ks[{level}] must be positive"
             )));
         }
         if checked_pow2(k).is_none() {
             return Err(CommitError::invalid_configuration(format!(
-                "recursive_k at level {level} cannot be represented as a usize power of two: {k}"
+                "recursive_ks[{level}] cannot be represented as a usize power of two: {k}"
             )));
         }
         remaining = remaining.checked_sub(k).ok_or_else(|| {
             CommitError::invalid_configuration(format!(
-                "recursive_k at level {level} exceeds the remaining log columns: {k} > {remaining}"
+                "recursive_ks[{level}] exceeds the remaining log columns: {k} > {remaining}"
             ))
         })?;
         if config.recursive_log_msg_cols[level] != remaining {
             return Err(CommitError::invalid_configuration(format!(
-                "recursive_log_msg_cols at level {level} is {}, expected {remaining}",
+                "recursive_log_msg_cols[{level}] is {}, expected {remaining}",
                 config.recursive_log_msg_cols[level],
             )));
         }
@@ -395,7 +395,7 @@ fn validate_proof_shape(
     for (level, recursive) in lig.recursive_proofs.iter().enumerate() {
         let width = checked_pow2(config.recursive_ks[level]).ok_or_else(|| {
             CommitError::invalid_configuration(format!(
-                "recursive_k at level {level} cannot be represented as a usize power of two: {}",
+                "recursive_ks[{level}] cannot be represented as a usize power of two: {}",
                 config.recursive_ks[level],
             ))
         })?;
@@ -410,7 +410,7 @@ fn validate_proof_shape(
         .ok_or_else(|| CommitError::invalid_configuration("recursive_ks is empty"))?;
     let final_width = checked_pow2(last_k).ok_or_else(|| {
         CommitError::invalid_configuration(format!(
-            "last recursive_k cannot be represented as a usize power of two: {last_k}"
+            "last recursive_ks value cannot be represented as a usize power of two: {last_k}"
         ))
     })?;
     let final_yr_len = checked_pow2(final_log_n).ok_or_else(|| {
@@ -444,6 +444,9 @@ fn rows_match(rows: &[Vec<FlockF128>], expected_rows: usize, expected_width: usi
 
 #[cfg(test)]
 mod tests {
+    use field::F128;
+    use transcript::{Proof, build_verifier};
+
     use super::*;
     use crate::{HashKind, LigeritoProfile};
 
@@ -461,6 +464,25 @@ mod tests {
     fn registered_verifier_config_passes_local_validation() {
         let (config, log_n, initial_k) = registered_config();
         assert!(validate_config(&config, log_n, initial_k).is_ok());
+    }
+
+    #[test]
+    fn verification_preserves_flock_configuration_errors() {
+        let pcs = Pcs::new(21, LigeritoProfile::Fast, HashKind::Blake3);
+        let description = pcs.params().ligerito_verifier_config().unwrap_err();
+        assert!(description.contains("m=21"));
+        let commitment = Commitment::from_root([0u8; 32]);
+        let query = OpeningQuery {
+            point: vec![F128::from(0u64); 21],
+            target: F128::from(0u64),
+        };
+        let proof = Proof::default();
+        let mut transcript = build_verifier(b"config-error", b"unsupported-m", &proof);
+
+        assert_eq!(
+            verify(&pcs, &commitment, &query, &mut transcript),
+            Err(CommitError::InvalidConfiguration(description))
+        );
     }
 
     #[test]
@@ -483,7 +505,7 @@ mod tests {
         assert_eq!(
             validate_config(&config, log_n, initial_k),
             Err(CommitError::invalid_configuration(
-                "log_inv_rate at level 0 must be positive"
+                "log_inv_rates[0] must be positive"
             ))
         );
 
@@ -503,7 +525,7 @@ mod tests {
         assert_eq!(
             validate_config(&config, log_n, initial_k),
             Err(CommitError::invalid_configuration(
-                "recursive_k at level 0 must be positive"
+                "recursive_ks[0] must be positive"
             ))
         );
 
