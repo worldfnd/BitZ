@@ -1,5 +1,6 @@
 //! Flock challenger adapters over the project transcript.
 
+use crate::bridge::{as_flock_f128, from_flock_f128};
 use field::F128 as LocalF128;
 use flock_core::challenger::Challenger;
 use flock_core::field::F128 as FlockF128;
@@ -49,23 +50,13 @@ impl<'a, 'proof> VerifierChallenger<'a, 'proof> {
     }
 }
 
-#[inline]
-fn local(value: FlockF128) -> LocalF128 {
-    LocalF128::new(value.lo, value.hi)
-}
-
-#[inline]
-fn flock(value: LocalF128) -> FlockF128 {
-    FlockF128::new(value.lo, value.hi)
-}
-
 impl Challenger for ProverChallenger<'_> {
     fn observe_label(&mut self, label: &[u8]) {
         self.transcript.public_message(label);
     }
 
     fn observe_f128(&mut self, value: FlockF128) {
-        self.transcript.prover_message(&local(value));
+        self.transcript.prover_message(&from_flock_f128(value));
     }
 
     fn observe_f128_slice(&mut self, values: &[FlockF128]) {
@@ -86,7 +77,7 @@ impl Challenger for ProverChallenger<'_> {
     }
 
     fn sample_f128(&mut self) -> FlockF128 {
-        flock(self.transcript.verifier_message::<LocalF128>())
+        as_flock_f128(self.transcript.verifier_message::<LocalF128>())
     }
 
     fn sample_f128_vec(&mut self, n: usize) -> Vec<FlockF128> {
@@ -115,7 +106,7 @@ impl Challenger for VerifierChallenger<'_, '_> {
     }
 
     fn observe_f128(&mut self, value: FlockF128) {
-        if self.read::<LocalF128>() != Some(local(value)) {
+        if self.read::<LocalF128>() != Some(from_flock_f128(value)) {
             self.failed = true;
         }
     }
@@ -143,7 +134,7 @@ impl Challenger for VerifierChallenger<'_, '_> {
     }
 
     fn sample_f128(&mut self) -> FlockF128 {
-        flock(self.transcript.verifier_message::<LocalF128>())
+        as_flock_f128(self.transcript.verifier_message::<LocalF128>())
     }
 
     fn sample_f128_vec(&mut self, n: usize) -> Vec<FlockF128> {
