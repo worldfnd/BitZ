@@ -137,7 +137,7 @@ pub(crate) fn verify(
     Ok(())
 }
 
-fn validate_config(
+pub(crate) fn validate_config(
     config: &VerifierConfig,
     log_n: usize,
     expected_initial_k: usize,
@@ -444,14 +444,11 @@ fn rows_match(rows: &[Vec<FlockF128>], expected_rows: usize, expected_width: usi
 
 #[cfg(test)]
 mod tests {
-    use field::F128;
-    use transcript::{Proof, build_verifier};
-
     use super::*;
     use crate::{HashKind, LigeritoProfile};
 
     fn registered_config() -> (VerifierConfig, usize, usize) {
-        let pcs = Pcs::new(22, LigeritoProfile::Fast, HashKind::Blake3);
+        let pcs = Pcs::new(22, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
         let config = pcs.params().ligerito_verifier_config().unwrap();
         (
             config,
@@ -464,25 +461,6 @@ mod tests {
     fn registered_verifier_config_passes_local_validation() {
         let (config, log_n, initial_k) = registered_config();
         assert!(validate_config(&config, log_n, initial_k).is_ok());
-    }
-
-    #[test]
-    fn verification_preserves_flock_configuration_errors() {
-        let pcs = Pcs::new(21, LigeritoProfile::Fast, HashKind::Blake3);
-        let description = pcs.params().ligerito_verifier_config().unwrap_err();
-        assert!(description.contains("m=21"));
-        let commitment = Commitment::from_root([0u8; 32]);
-        let query = OpeningQuery {
-            point: vec![F128::from(0u64); 21],
-            target: F128::from(0u64),
-        };
-        let proof = Proof::default();
-        let mut transcript = build_verifier(b"config-error", b"unsupported-m", &proof);
-
-        assert_eq!(
-            verify(&pcs, &commitment, &query, &mut transcript),
-            Err(CommitError::InvalidConfiguration(description))
-        );
     }
 
     #[test]
