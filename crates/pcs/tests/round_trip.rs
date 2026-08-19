@@ -1,7 +1,10 @@
 use std::sync::OnceLock;
 
 use field::F128;
-use pcs::{CommitError, CommitScheme, Commitment, HashKind, LigeritoProfile, OpeningQuery, Pcs};
+use pcs::{
+    CommitError, CommitScheme, Commitment, HashKind, LigeritoProfile, OpeningQuery, Pcs,
+    ScopedOpeningQuery, StatementBinding,
+};
 use transcript::{Proof, build_prover, build_verifier};
 
 const M: usize = 22;
@@ -9,6 +12,7 @@ const SINGLETON: usize = (1 << 21) | (1 << 7) | 0b101_0101;
 const SESSION: &[u8] = b"pcs-interface-test";
 const INSTANCE: &[u8] = b"m22-singleton-opening";
 const BATCH_INSTANCE: &[u8] = b"m22-two-query-opening";
+const OUTER_STATEMENT_LABEL: &[u8] = b"pcs-test/already-bound-statement/v1";
 
 struct RealFixture {
     pcs: Pcs,
@@ -87,9 +91,19 @@ impl BatchFixture {
         });
 
         let (commitment, data) = pcs.commit(&packed_witness).unwrap();
+        let scoped_queries = scoped_batch(&queries);
         let mut prover = build_prover(SESSION, BATCH_INSTANCE);
-        pcs.prove_lin_batch(data, packed_witness, &queries, &mut prover)
-            .unwrap();
+        prover.public_message(OUTER_STATEMENT_LABEL);
+        prover.public_message(&pcs);
+        prover.public_message(commitment.root());
+        pcs.prove_lin_batch(
+            data,
+            packed_witness,
+            &scoped_queries,
+            StatementBinding::AlreadyBound,
+            &mut prover,
+        )
+        .unwrap();
 
         Self {
             pcs,
@@ -98,6 +112,13 @@ impl BatchFixture {
             proof: prover.finish(),
         }
     }
+}
+
+fn scoped_batch(queries: &[OpeningQuery; 2]) -> [ScopedOpeningQuery<'_>; 2] {
+    [
+        ScopedOpeningQuery::new(0, &queries[0]),
+        ScopedOpeningQuery::new(2, &queries[1]),
+    ]
 }
 
 fn batch_fixture() -> &'static BatchFixture {
@@ -136,11 +157,20 @@ fn real_pcs_opening_round_trip_succeeds() {
 #[test]
 fn real_pcs_batch_opening_round_trip_succeeds() {
     let fixture = batch_fixture();
+    let scoped_queries = scoped_batch(&fixture.queries);
     let mut verifier = build_verifier(SESSION, BATCH_INSTANCE, &fixture.proof);
+    verifier.public_message(OUTER_STATEMENT_LABEL);
+    verifier.public_message(&fixture.pcs);
+    verifier.public_message(fixture.commitment.root());
 
     fixture
         .pcs
-        .verify_lin_batch(&fixture.commitment, &fixture.queries, &mut verifier)
+        .verify_lin_batch(
+            &fixture.commitment,
+            &scoped_queries,
+            StatementBinding::AlreadyBound,
+            &mut verifier,
+        )
         .unwrap();
     verifier.check_eof().unwrap();
 }
@@ -148,15 +178,67 @@ fn real_pcs_batch_opening_round_trip_succeeds() {
 #[test]
 fn real_pcs_batch_rejects_query_reordering() {
     let fixture = batch_fixture();
-    let reversed = [fixture.queries[1].clone(), fixture.queries[0].clone()];
+    let reordered = [
+        ScopedOpeningQuery::new(0, &fixture.queries[1]),
+        ScopedOpeningQuery::new(2, &fixture.queries[0]),
+    ];
     let mut verifier = build_verifier(SESSION, BATCH_INSTANCE, &fixture.proof);
+    verifier.public_message(OUTER_STATEMENT_LABEL);
+    verifier.public_message(&fixture.pcs);
+    verifier.public_message(fixture.commitment.root());
 
     assert!(matches!(
-        fixture
-            .pcs
-            .verify_lin_batch(&fixture.commitment, &reversed, &mut verifier),
+        fixture.pcs.verify_lin_batch(
+            &fixture.commitment,
+            &reordered,
+            StatementBinding::AlreadyBound,
+            &mut verifier,
+        ),
         Err(CommitError::VerificationFailed | CommitError::MalformedProof)
     ));
+}
+
+#[test]
+fn real_pcs_batch_rejects_changed_scopes() {
+    let fixture = batch_fixture();
+    let changed_scopes = [
+        ScopedOpeningQuery::new(0, &fixture.queries[0]),
+        ScopedOpeningQuery::new(3, &fixture.queries[1]),
+    ];
+    let mut verifier = build_verifier(SESSION, BATCH_INSTANCE, &fixture.proof);
+    verifier.public_message(OUTER_STATEMENT_LABEL);
+    verifier.public_message(&fixture.pcs);
+    verifier.public_message(fixture.commitment.root());
+
+    assert!(matches!(
+        fixture.pcs.verify_lin_batch(
+            &fixture.commitment,
+            &changed_scopes,
+            StatementBinding::AlreadyBound,
+            &mut verifier,
+        ),
+        Err(CommitError::VerificationFailed | CommitError::MalformedProof)
+    ));
+}
+
+#[test]
+fn real_pcs_batch_rejects_non_increasing_scopes() {
+    let fixture = batch_fixture();
+    let invalid_scopes = [
+        ScopedOpeningQuery::new(2, &fixture.queries[0]),
+        ScopedOpeningQuery::new(0, &fixture.queries[1]),
+    ];
+    let mut verifier = build_verifier(SESSION, BATCH_INSTANCE, &fixture.proof);
+
+    assert_eq!(
+        fixture.pcs.verify_lin_batch(
+            &fixture.commitment,
+            &invalid_scopes,
+            StatementBinding::AlreadyBound,
+            &mut verifier,
+        ),
+        Err(CommitError::InvalidClaimScopeOrder)
+    );
 }
 
 #[test]
@@ -167,14 +249,20 @@ fn real_pcs_rejects_empty_batches() {
     let mut prover = build_prover(SESSION, b"empty-batch");
 
     assert_eq!(
-        pcs.prove_lin_batch(data, packed_witness, &[], &mut prover),
+        pcs.prove_lin_batch(
+            data,
+            packed_witness,
+            &[],
+            StatementBinding::Bind,
+            &mut prover,
+        ),
         Err(CommitError::EmptyBatch)
     );
 
     let proof = Proof::default();
     let mut verifier = build_verifier(SESSION, b"empty-batch", &proof);
     assert_eq!(
-        pcs.verify_lin_batch(&commitment, &[], &mut verifier),
+        pcs.verify_lin_batch(&commitment, &[], StatementBinding::Bind, &mut verifier,),
         Err(CommitError::EmptyBatch)
     );
 }

@@ -28,10 +28,12 @@
 //! - [`Commitment`] contains the public Merkle root.
 //! - [`ProverData`] retains the codeword and Merkle tree after commitment.
 //! - [`OpeningQuery`] contains one evaluation point and its claimed value.
+//! - [`ScopedOpeningQuery`] assigns an ordered protocol scope to a batched claim.
 //! - [`CommitScheme`] connects commitment, proving, and verification to project transcripts.
 //!
 //! The caller packs and retains the witness after [`CommitScheme::commit`].
 //! [`CommitScheme::prove_lin_batch`] consumes the packed witness and [`ProverData`] once.
+//! Batch callers select standalone or outer-protocol binding with [`StatementBinding`].
 //! The caller must use matching transcript session and instance labels.
 //! The caller must also call `VerifierState::check_eof` after successful verification.
 //!
@@ -89,6 +91,37 @@ pub struct OpeningQuery {
     pub target: F128,
 }
 
+/// A batched opening claim with an opaque protocol scope.
+///
+/// Callers must provide scopes in strictly increasing order. The F2Z protocol
+/// uses its active chunk index `ell` as this scope.
+/// The outer protocol must provide the complete expected scope list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScopedOpeningQuery<'a> {
+    /// The caller-defined protocol scope.
+    pub scope: u64,
+    /// The multilinear claim in this scope.
+    pub query: &'a OpeningQuery,
+}
+
+impl<'a> ScopedOpeningQuery<'a> {
+    pub const fn new(scope: u64, query: &'a OpeningQuery) -> Self {
+        Self { scope, query }
+    }
+}
+
+/// Controls statement binding for a batched opening.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StatementBinding {
+    /// Bind the PCS parameters, commitment, points, targets, and scopes.
+    Bind,
+    /// Use an outer statement that the caller already bound.
+    ///
+    /// The caller must bind the commitment before its first protocol challenge.
+    /// The caller must derive each query from the same transcript.
+    AlreadyBound,
+}
+
 /// Errors from commitment and linear-query operations.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -97,6 +130,8 @@ pub enum CommitError {
     InvalidBitLength,
     /// A batched opening contains no queries.
     EmptyBatch,
+    /// Batched claim scopes are not strictly increasing.
+    InvalidClaimScopeOrder,
     /// The evaluation point does not match the committed polynomial.
     PointLengthMismatch,
     /// The scheme configuration is not valid for Flock, with a description of the failed check.
@@ -142,7 +177,8 @@ pub trait CommitScheme {
         &self,
         data: Self::ProverData,
         packed_witness: Vec<F128>,
-        queries: &[OpeningQuery],
+        queries: &[ScopedOpeningQuery<'_>],
+        statement_binding: StatementBinding,
         transcript: &mut ProverState,
     ) -> Result<(), CommitError>;
 
@@ -154,10 +190,12 @@ pub trait CommitScheme {
         query: &OpeningQuery,
         transcript: &mut ProverState,
     ) -> Result<(), CommitError> {
+        let scoped_query = ScopedOpeningQuery::new(0, query);
         self.prove_lin_batch(
             data,
             packed_witness,
-            core::slice::from_ref(query),
+            &[scoped_query],
+            StatementBinding::Bind,
             transcript,
         )
     }
@@ -166,7 +204,8 @@ pub trait CommitScheme {
     fn verify_lin_batch(
         &self,
         commitment: &Self::Commitment,
-        queries: &[OpeningQuery],
+        queries: &[ScopedOpeningQuery<'_>],
+        statement_binding: StatementBinding,
         transcript: &mut VerifierState<'_>,
     ) -> Result<(), CommitError>;
 
@@ -177,7 +216,13 @@ pub trait CommitScheme {
         query: &OpeningQuery,
         transcript: &mut VerifierState<'_>,
     ) -> Result<(), CommitError> {
-        self.verify_lin_batch(commitment, core::slice::from_ref(query), transcript)
+        let scoped_query = ScopedOpeningQuery::new(0, query);
+        self.verify_lin_batch(
+            commitment,
+            &[scoped_query],
+            StatementBinding::Bind,
+            transcript,
+        )
     }
 }
 
@@ -196,18 +241,27 @@ impl CommitScheme for Pcs {
         &self,
         data: Self::ProverData,
         packed_witness: Vec<F128>,
-        queries: &[OpeningQuery],
+        queries: &[ScopedOpeningQuery<'_>],
+        statement_binding: StatementBinding,
         transcript: &mut ProverState,
     ) -> Result<(), CommitError> {
-        open::open_batch(self, data, packed_witness, queries, transcript)
+        open::open_batch(
+            self,
+            data,
+            packed_witness,
+            queries,
+            statement_binding,
+            transcript,
+        )
     }
 
     fn verify_lin_batch(
         &self,
         commitment: &Self::Commitment,
-        queries: &[OpeningQuery],
+        queries: &[ScopedOpeningQuery<'_>],
+        statement_binding: StatementBinding,
         transcript: &mut VerifierState<'_>,
     ) -> Result<(), CommitError> {
-        verify::verify_batch(self, commitment, queries, transcript)
+        verify::verify_batch(self, commitment, queries, statement_binding, transcript)
     }
 }

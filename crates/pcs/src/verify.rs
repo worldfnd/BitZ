@@ -28,23 +28,22 @@ use transcript::VerifierState;
 
 use crate::bridge::as_flock_f128s;
 use crate::challenger::VerifierChallenger;
-use crate::protocol::{RING_SWITCH_LABEL, bind_statement, read_opening_proof};
-use crate::{CommitError, Commitment, OpeningQuery, Pcs};
+use crate::protocol::{
+    ETA_SQUEEZE_LABEL, RING_SWITCH_CLAIM_LABEL, RING_SWITCH_LABEL, bind_statement,
+    read_opening_proof, validate_batch,
+};
+use crate::{CommitError, Commitment, Pcs, ScopedOpeningQuery, StatementBinding};
 
 pub(crate) fn verify_batch(
     pcs: &Pcs,
     commitment: &Commitment,
-    queries: &[OpeningQuery],
+    queries: &[ScopedOpeningQuery<'_>],
+    statement_binding: StatementBinding,
     transcript: &mut VerifierState<'_>,
 ) -> Result<(), CommitError> {
     // 1. Input Validation
-    if queries.is_empty() {
-        return Err(CommitError::EmptyBatch);
-    }
     let m = pcs.params().m;
-    if queries.iter().any(|query| query.point.len() != m) {
-        return Err(CommitError::PointLengthMismatch);
-    }
+    validate_batch(queries, m)?;
     let log_n = m.checked_sub(LOG_PACKING).ok_or_else(|| {
         CommitError::invalid_configuration(format!(
             "PCS variable count {m} is smaller than the packing width {LOG_PACKING}"
@@ -57,7 +56,9 @@ pub(crate) fn verify_batch(
     let final_log_n = validate_config(&ligerito_config, log_n, pcs.params().log_batch_size)?;
 
     // 2. Bind Statement
-    bind_statement(pcs, commitment.root(), queries, transcript);
+    if statement_binding == StatementBinding::Bind {
+        bind_statement(pcs, commitment.root(), queries, transcript);
+    }
 
     // 3. Read Opening Proof
     let proof = read_opening_proof(transcript)?;
@@ -75,10 +76,13 @@ pub(crate) fn verify_batch(
     let mut challenger = VerifierChallenger::new(transcript);
     let mut r_his = Vec::with_capacity(queries.len());
     challenger.observe_label(RING_SWITCH_LABEL);
-    for (query, ring_switch) in queries.iter().zip(&proof.ring_switches) {
+    for (scoped_query, ring_switch) in queries.iter().zip(&proof.ring_switches) {
+        let query = scoped_query.query;
         let (r_lo, r_hi) = query.point.split_at(LOG_PACKING);
         r_his.push(as_flock_f128s(r_hi));
 
+        challenger.observe_label(RING_SWITCH_CLAIM_LABEL);
+        challenger.public_message(&scoped_query.scope);
         challenger.observe_f128_slice(&ring_switch.s_hat_v);
 
         // query.target = Σ_v eq(r_lo, v) · s_hat_v[v].
@@ -95,9 +99,8 @@ pub(crate) fn verify_batch(
     // 6. Compute the Batched Ligerito Target
     let r_dprime = challenger.sample_f128_vec(LOG_PACKING);
     let eq_r_dprime = build_eq(&r_dprime);
-    let etas: Vec<_> = (0..queries.len())
-        .map(|_| challenger.sample_f128())
-        .collect();
+    challenger.observe_label(ETA_SQUEEZE_LABEL);
+    let etas = challenger.sample_f128_vec(queries.len());
     let beta =
         proof
             .ring_switches

@@ -45,6 +45,9 @@ pub struct ProverData {
 }
 
 impl Pcs {
+    /// Creates a checked PCS configuration.
+    ///
+    /// The current policy accepts only [`HashKind::Blake3`].
     pub fn new(
         m: usize,
         security_profile: LigeritoProfile,
@@ -54,6 +57,11 @@ impl Pcs {
             return Err(CommitError::invalid_configuration(format!(
                 "m ({m}) must be in the supported range [{MIN_LIGERITO_M}, {MAX_LIGERITO_M}]"
             )));
+        }
+        if matches!(merkle_hash, HashKind::Sha256) {
+            return Err(CommitError::invalid_configuration(
+                "SHA-256 Merkle hashing is unsupported because Flock does not separate leaf and parent domains",
+            ));
         }
 
         let bit_len = 1usize.checked_shl(m as u32).ok_or_else(|| {
@@ -211,29 +219,37 @@ mod tests {
     }
 
     #[test]
-    fn encoding_covers_every_profile_and_hash() {
+    fn encoding_covers_every_profile() {
         for (profile, profile_tag) in [
             (LigeritoProfile::Fast, 0),
             (LigeritoProfile::Slim, 1),
             (LigeritoProfile::Secure, 2),
         ] {
-            for (hash, hash_tag) in [(HashKind::Sha256, 0), (HashKind::Blake3, 1)] {
-                let pcs = Pcs::new(22, profile, hash).unwrap();
-                let expected_tags = [
-                    22,
-                    profile.log_inv_rate() as u64,
-                    LIGERITO_INITIAL_K as u64,
-                    profile_tag,
-                    hash_tag,
-                ];
-                let encoded = pcs.encode();
-                let encoded = encoded.as_ref();
-                assert_eq!(encoded.len(), 5 * size_of::<u64>());
-                for (chunk, tag) in encoded.chunks_exact(size_of::<u64>()).zip(expected_tags) {
-                    assert_eq!(chunk, tag.to_le_bytes());
-                }
+            let pcs = Pcs::new(22, profile, HashKind::Blake3).unwrap();
+            let expected_tags = [
+                22,
+                profile.log_inv_rate() as u64,
+                LIGERITO_INITIAL_K as u64,
+                profile_tag,
+                1,
+            ];
+            let encoded = pcs.encode();
+            let encoded = encoded.as_ref();
+            assert_eq!(encoded.len(), 5 * size_of::<u64>());
+            for (chunk, tag) in encoded.chunks_exact(size_of::<u64>()).zip(expected_tags) {
+                assert_eq!(chunk, tag.to_le_bytes());
             }
         }
+    }
+
+    #[test]
+    fn constructor_rejects_sha256_merkle_hashing() {
+        assert_eq!(
+            Pcs::new(22, LigeritoProfile::Fast, HashKind::Sha256).unwrap_err(),
+            CommitError::invalid_configuration(
+                "SHA-256 Merkle hashing is unsupported because Flock does not separate leaf and parent domains"
+            )
+        );
     }
 
     #[test]

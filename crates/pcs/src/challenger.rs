@@ -4,7 +4,7 @@ use crate::bridge::{as_flock_f128, from_flock_f128};
 use field::F128 as LocalF128;
 use flock_core::challenger::Challenger;
 use flock_core::field::F128 as FlockF128;
-use transcript::{ProverState, VerifierState};
+use transcript::{Encoding, ProverState, VerifierState};
 
 const VECTOR_SQUEEZE_TAG: &[u8] = b"pcs/flock/sample-vector/v1";
 const POW_TAG: &[u8] = b"pcs/flock/pow/v1";
@@ -16,6 +16,10 @@ pub(crate) struct ProverChallenger<'a> {
 impl<'a> ProverChallenger<'a> {
     pub(crate) fn new(transcript: &'a mut ProverState) -> Self {
         Self { transcript }
+    }
+
+    pub(crate) fn public_message<T: Encoding<[u8]> + ?Sized>(&mut self, message: &T) {
+        self.transcript.public_message(message);
     }
 }
 
@@ -34,6 +38,10 @@ impl<'a, 'proof> VerifierChallenger<'a, 'proof> {
 
     pub(crate) fn failed(&self) -> bool {
         self.failed
+    }
+
+    pub(crate) fn public_message<T: Encoding<[u8]> + ?Sized>(&mut self, message: &T) {
+        self.transcript.public_message(message);
     }
 
     fn read<T>(&mut self) -> Option<T>

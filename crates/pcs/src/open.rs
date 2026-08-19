@@ -18,8 +18,11 @@
 
 use crate::bridge::{as_flock_f128s, into_flock_f128s};
 use crate::challenger::ProverChallenger;
-use crate::protocol::{RING_SWITCH_LABEL, bind_statement, write_opening_proof};
-use crate::{CommitError, OpeningQuery, Pcs, ProverData};
+use crate::protocol::{
+    ETA_SQUEEZE_LABEL, RING_SWITCH_CLAIM_LABEL, RING_SWITCH_LABEL, bind_statement, validate_batch,
+    write_opening_proof,
+};
+use crate::{CommitError, Pcs, ProverData, ScopedOpeningQuery, StatementBinding};
 use field::F128;
 use flock_core::challenger::Challenger;
 use flock_core::field::F128 as FlockF128;
@@ -36,17 +39,13 @@ pub(crate) fn open_batch(
     pcs: &Pcs,
     data: ProverData,
     packed_witness: Vec<F128>,
-    queries: &[OpeningQuery],
+    queries: &[ScopedOpeningQuery<'_>],
+    statement_binding: StatementBinding,
     transcript: &mut ProverState,
 ) -> Result<(), CommitError> {
     // 1. Input Validation
-    if queries.is_empty() {
-        return Err(CommitError::EmptyBatch);
-    }
     let expected_m = pcs.params().m;
-    if queries.iter().any(|query| query.point.len() != expected_m) {
-        return Err(CommitError::PointLengthMismatch);
-    }
+    validate_batch(queries, expected_m)?;
     if packed_witness.len() != pcs.packed_len() {
         return Err(CommitError::InvalidBitLength);
     }
@@ -63,13 +62,16 @@ pub(crate) fn open_batch(
         .map_err(CommitError::InvalidConfiguration)?;
 
     // 2. Bind Statement
-    bind_statement(pcs, &data.commitment().root, queries, transcript);
+    if statement_binding == StatementBinding::Bind {
+        bind_statement(pcs, &data.commitment().root, queries, transcript);
+    }
     let packed_witness = into_flock_f128s(packed_witness);
     let flock_data = data.into_flock_data();
 
     // 3. Compute and Check Partial Evaluations
     let mut s_hat_vs = Vec::with_capacity(queries.len());
-    for query in queries {
+    for scoped_query in queries {
+        let query = scoped_query.query;
         let (r_lo, r_hi) = query.point.split_at(LOG_PACKING);
         let (eq_lo, eq_hi) = build_eq_split(as_flock_f128s(&query.point), r_lo.len());
         debug_assert_eq!(eq_lo.len(), 1 << r_lo.len());
@@ -92,7 +94,9 @@ pub(crate) fn open_batch(
     // 4. Record Ring-Switch Messages and Sample the Shared Challenge
     let mut challenger = ProverChallenger::new(transcript);
     challenger.observe_label(RING_SWITCH_LABEL);
-    for s_hat_v in &s_hat_vs {
+    for (scoped_query, s_hat_v) in queries.iter().zip(&s_hat_vs) {
+        challenger.observe_label(RING_SWITCH_CLAIM_LABEL);
+        challenger.public_message(&scoped_query.scope);
         challenger.observe_f128_slice(s_hat_v);
     }
     let r_dprime = challenger.sample_f128_vec(LOG_PACKING);
@@ -104,16 +108,16 @@ pub(crate) fn open_batch(
         let s_hat_u = tensor_algebra_transpose(s_hat_v);
         inner_product(&s_hat_u, &eq_r_dprime)
     });
-    let etas: Vec<_> = (0..queries.len())
-        .map(|_| challenger.sample_f128())
-        .collect();
+    challenger.observe_label(ETA_SQUEEZE_LABEL);
+    let etas = challenger.sample_f128_vec(queries.len());
     let beta0 = betas
         .zip(&etas)
         .fold(FlockF128::ZERO, |sum, (beta, eta)| sum + beta * *eta);
 
     // 6. Build and Combine the Ligerito Bases
     let mut b_initial = vec![FlockF128::ZERO; packed_witness.len()];
-    for (query, eta) in queries.iter().zip(&etas) {
+    for (scoped_query, eta) in queries.iter().zip(&etas) {
+        let query = scoped_query.query;
         let r_hi = &query.point[LOG_PACKING..];
         let eq_hi = build_eq(as_flock_f128s(r_hi));
         let basis = fold_b128_elems(&eq_hi, &eq_r_dprime);

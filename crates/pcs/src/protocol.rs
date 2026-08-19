@@ -4,11 +4,13 @@ use bincode::Options;
 use flock_core::pcs::BatchOpeningProofLigerito;
 use transcript::{Encoding, ProverState, VerifierState};
 
-use crate::{CommitError, OpeningQuery, Pcs};
+use crate::{CommitError, Pcs, ScopedOpeningQuery};
 
 pub(crate) const PROOF_HINT_LIMIT: usize = 64 * 1024 * 1024;
-pub(crate) const STATEMENT_LABEL: &[u8] = b"f2z/pcs/mle-opening/v2";
-pub(crate) const RING_SWITCH_LABEL: &[u8] = b"flock-ring-switch-v0";
+pub(crate) const STATEMENT_LABEL: &[u8] = b"f2z/pcs/mle-opening/v3";
+pub(crate) const RING_SWITCH_LABEL: &[u8] = b"f2z/pcs/group-8/ring-switch/v1";
+pub(crate) const RING_SWITCH_CLAIM_LABEL: &[u8] = b"f2z/pcs/group-8/claim/v1";
+pub(crate) const ETA_SQUEEZE_LABEL: &[u8] = b"f2z/pcs/group-9/eta/v1";
 
 pub(crate) fn write_opening_proof(
     proof: &BatchOpeningProofLigerito,
@@ -63,20 +65,44 @@ impl PublicTranscript for VerifierState<'_> {
 pub(crate) fn bind_statement(
     pcs: &Pcs,
     root: &[u8; 32],
-    queries: &[OpeningQuery],
+    queries: &[ScopedOpeningQuery<'_>],
     transcript: &mut impl PublicTranscript,
 ) {
     transcript.public_message(STATEMENT_LABEL);
     transcript.public_message(root);
     transcript.public_message(pcs);
     transcript.public_message(&(queries.len() as u64));
-    for query in queries {
+    for scoped_query in queries {
+        transcript.public_message(&scoped_query.scope);
+        let query = scoped_query.query;
         transcript.public_message(&(query.point.len() as u64));
         for coordinate in &query.point {
             transcript.public_message(coordinate);
         }
         transcript.public_message(&query.target);
     }
+}
+
+pub(crate) fn validate_batch(
+    queries: &[ScopedOpeningQuery<'_>],
+    expected_m: usize,
+) -> Result<(), CommitError> {
+    if queries.is_empty() {
+        return Err(CommitError::EmptyBatch);
+    }
+    if queries
+        .windows(2)
+        .any(|pair| pair[0].scope >= pair[1].scope)
+    {
+        return Err(CommitError::InvalidClaimScopeOrder);
+    }
+    if queries
+        .iter()
+        .any(|scoped_query| scoped_query.query.point.len() != expected_m)
+    {
+        return Err(CommitError::PointLengthMismatch);
+    }
+    Ok(())
 }
 
 fn proof_options() -> impl Options {
@@ -93,7 +119,7 @@ mod tests {
     use transcript::{NargSerialize, Proof, build_prover, build_verifier};
 
     use super::*;
-    use crate::{HashKind, LigeritoProfile};
+    use crate::{HashKind, LigeritoProfile, OpeningQuery, ScopedOpeningQuery};
 
     #[test]
     fn proof_serialization_errors_are_specific() {
@@ -154,12 +180,13 @@ mod tests {
                     .collect(),
                 target: F128::new(target_words.0, target_words.1),
             };
+            let scoped_query = ScopedOpeningQuery::new(7, &query);
 
             let mut prover = build_prover(b"pcs-protocol-test", b"statement-binding");
             bind_statement(
                 &pcs,
                 &root,
-                core::slice::from_ref(&query),
+                core::slice::from_ref(&scoped_query),
                 &mut prover,
             );
             let expected = prover.verifier_message::<F128>();
@@ -173,7 +200,7 @@ mod tests {
             bind_statement(
                 &pcs,
                 &root,
-                core::slice::from_ref(&query),
+                core::slice::from_ref(&scoped_query),
                 &mut verifier,
             );
             prop_assert_eq!(verifier.verifier_message::<F128>(), expected);
@@ -181,7 +208,7 @@ mod tests {
         }
     }
 
-    fn statement_challenge(queries: &[OpeningQuery]) -> F128 {
+    fn statement_challenge(queries: &[ScopedOpeningQuery<'_>]) -> F128 {
         let pcs = Pcs::new(22, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
         let mut prover = build_prover(b"pcs-protocol-test", b"batch-binding");
         bind_statement(&pcs, &[7; 32], queries, &mut prover);
@@ -199,11 +226,51 @@ mod tests {
             target: F128::from(6u64),
         };
 
-        let ordered = statement_challenge(&[first.clone(), second.clone()]);
-        let reversed = statement_challenge(&[second, first.clone()]);
-        let prefix = statement_challenge(&[first]);
+        let ordered = statement_challenge(&[
+            ScopedOpeningQuery::new(0, &first),
+            ScopedOpeningQuery::new(2, &second),
+        ]);
+        let reversed = statement_challenge(&[
+            ScopedOpeningQuery::new(0, &second),
+            ScopedOpeningQuery::new(2, &first),
+        ]);
+        let changed_scope = statement_challenge(&[
+            ScopedOpeningQuery::new(0, &first),
+            ScopedOpeningQuery::new(3, &second),
+        ]);
+        let prefix = statement_challenge(&[ScopedOpeningQuery::new(0, &first)]);
 
         assert_ne!(ordered, reversed);
+        assert_ne!(ordered, changed_scope);
         assert_ne!(ordered, prefix);
+    }
+
+    #[test]
+    fn batch_validation_requires_strictly_increasing_scopes() {
+        let query = OpeningQuery {
+            point: vec![F128::default(); 22],
+            target: F128::default(),
+        };
+
+        assert_eq!(
+            validate_batch(
+                &[
+                    ScopedOpeningQuery::new(2, &query),
+                    ScopedOpeningQuery::new(2, &query),
+                ],
+                22,
+            ),
+            Err(CommitError::InvalidClaimScopeOrder)
+        );
+        assert_eq!(
+            validate_batch(
+                &[
+                    ScopedOpeningQuery::new(3, &query),
+                    ScopedOpeningQuery::new(2, &query),
+                ],
+                22,
+            ),
+            Err(CommitError::InvalidClaimScopeOrder)
+        );
     }
 }
