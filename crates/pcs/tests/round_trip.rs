@@ -20,8 +20,14 @@ impl RealFixture {
     fn build() -> Self {
         let pcs = Pcs::new(M, LigeritoProfile::Fast, HashKind::Blake3);
         // One nonzero bit gives the expected MLE value a simple independent formula.
-        let mut bits = vec![false; pcs.bit_len()];
-        bits[SINGLETON] = true;
+        let mut packed_witness = vec![F128::default(); pcs.packed_len()];
+        let packed_index = SINGLETON / 128;
+        let bit_index = SINGLETON % 128;
+        if bit_index < 64 {
+            packed_witness[packed_index].lo |= 1 << bit_index;
+        } else {
+            packed_witness[packed_index].hi |= 1 << (bit_index - 64);
+        }
 
         let point = (0..M)
             .map(|coordinate| F128::from(coordinate as u64 + 2))
@@ -31,9 +37,10 @@ impl RealFixture {
             point,
         };
 
-        let (commitment, data) = pcs.commit(&bits).unwrap();
+        let (commitment, data) = pcs.commit(&packed_witness).unwrap();
         let mut prover = build_prover(SESSION, INSTANCE);
-        pcs.prove_lin(data, &query, &mut prover).unwrap();
+        pcs.prove_lin(data, packed_witness, &query, &mut prover)
+            .unwrap();
 
         Self {
             pcs,
@@ -80,7 +87,8 @@ fn real_pcs_opening_round_trip_succeeds() {
 #[test]
 fn real_pcs_rejects_point_length_mismatches() {
     let pcs = Pcs::new(M, LigeritoProfile::Fast, HashKind::Blake3);
-    let (commitment, data) = pcs.commit(&vec![false; pcs.bit_len()]).unwrap();
+    let packed_witness = vec![F128::default(); pcs.packed_len()];
+    let (commitment, data) = pcs.commit(&packed_witness).unwrap();
     let short_query = OpeningQuery {
         point: vec![F128::from(2u64); M - 1],
         target: F128::from(0u64),
@@ -88,7 +96,7 @@ fn real_pcs_rejects_point_length_mismatches() {
 
     let mut prover = build_prover(SESSION, b"wrong-prover-point");
     assert_eq!(
-        pcs.prove_lin(data, &short_query, &mut prover),
+        pcs.prove_lin(data, packed_witness, &short_query, &mut prover),
         Err(CommitError::PointLengthMismatch)
     );
 
@@ -105,9 +113,28 @@ fn real_pcs_rejects_point_length_mismatches() {
 }
 
 #[test]
+fn real_pcs_rejects_packed_witness_length_mismatches_during_opening() {
+    let pcs = Pcs::new(M, LigeritoProfile::Fast, HashKind::Blake3);
+    let mut packed_witness = vec![F128::default(); pcs.packed_len()];
+    let (_, data) = pcs.commit(&packed_witness).unwrap();
+    packed_witness.pop();
+    let query = OpeningQuery {
+        point: vec![F128::from(2u64); M],
+        target: F128::from(0u64),
+    };
+    let mut prover = build_prover(SESSION, b"wrong-packed-length");
+
+    assert_eq!(
+        pcs.prove_lin(data, packed_witness, &query, &mut prover),
+        Err(CommitError::InvalidBitLength)
+    );
+}
+
+#[test]
 fn real_pcs_rejects_mismatched_prover_parameters() {
     let source = Pcs::new(M, LigeritoProfile::Fast, HashKind::Blake3);
-    let (_, data) = source.commit(&vec![false; source.bit_len()]).unwrap();
+    let packed_witness = vec![F128::default(); source.packed_len()];
+    let (_, data) = source.commit(&packed_witness).unwrap();
     let other = Pcs::new(M, LigeritoProfile::Slim, HashKind::Blake3);
     let query = OpeningQuery {
         point: vec![F128::from(2u64); M],
@@ -116,7 +143,7 @@ fn real_pcs_rejects_mismatched_prover_parameters() {
     let mut prover = build_prover(SESSION, b"mismatched-parameters");
 
     assert!(matches!(
-        other.prove_lin(data, &query, &mut prover),
+        other.prove_lin(data, packed_witness, &query, &mut prover),
         Err(CommitError::InvalidConfiguration(description))
             if description.starts_with("prover data parameters do not match the active PCS")
     ));
@@ -125,7 +152,8 @@ fn real_pcs_rejects_mismatched_prover_parameters() {
 #[test]
 fn real_pcs_prover_rejects_a_false_evaluation() {
     let pcs = Pcs::new(M, LigeritoProfile::Fast, HashKind::Blake3);
-    let (_, data) = pcs.commit(&vec![false; pcs.bit_len()]).unwrap();
+    let packed_witness = vec![F128::default(); pcs.packed_len()];
+    let (_, data) = pcs.commit(&packed_witness).unwrap();
     let query = OpeningQuery {
         point: vec![F128::from(2u64); M],
         target: F128::from(1u64),
@@ -133,7 +161,33 @@ fn real_pcs_prover_rejects_a_false_evaluation() {
     let mut prover = build_prover(SESSION, b"false-evaluation");
 
     assert_eq!(
-        pcs.prove_lin(data, &query, &mut prover),
+        pcs.prove_lin(data, packed_witness, &query, &mut prover),
+        Err(CommitError::VerificationFailed)
+    );
+}
+
+#[test]
+fn real_pcs_rejects_an_opening_for_a_different_packed_witness() {
+    let pcs = Pcs::new(M, LigeritoProfile::Fast, HashKind::Blake3);
+    let packed_witness = vec![F128::default(); pcs.packed_len()];
+    let (commitment, data) = pcs.commit(&packed_witness).unwrap();
+    let mut different_witness = packed_witness;
+    different_witness[0].lo = 1;
+    let point = (0..M)
+        .map(|coordinate| F128::from(coordinate as u64 + 2))
+        .collect::<Vec<_>>();
+    let query = OpeningQuery {
+        target: singleton_target(&point, 0),
+        point,
+    };
+    let mut prover = build_prover(SESSION, b"different-packed-witness");
+    pcs.prove_lin(data, different_witness, &query, &mut prover)
+        .unwrap();
+    let proof = prover.finish();
+    let mut verifier = build_verifier(SESSION, b"different-packed-witness", &proof);
+
+    assert_eq!(
+        pcs.verify_lin(&commitment, &query, &mut verifier),
         Err(CommitError::VerificationFailed)
     );
 }
@@ -160,7 +214,7 @@ fn real_pcs_rejects_statement_mutations() {
         fixture
             .pcs
             .verify_lin(&changed_commitment, &fixture.query, &mut verifier),
-        Err(CommitError::MalformedProof)
+        Err(CommitError::VerificationFailed)
     );
 }
 

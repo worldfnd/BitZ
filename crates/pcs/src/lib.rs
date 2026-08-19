@@ -11,7 +11,7 @@
 //!
 //! # Packing and opening
 //!
-//! The commit phase packs the seven low Boolean coordinates into one `F128` element:
+//! The caller packs the seven low Boolean coordinates into one `F128` element:
 //! `q_pkd(y) = Σ_{v ∈ {0,1}^7} q(y, v) · basis[v]`.
 //! Flock Reed–Solomon-encodes `q_pkd` and commits to its codeword with a Merkle root.
 //!
@@ -26,11 +26,12 @@
 //!
 //! - [`Pcs`] stores trusted Flock parameters and the expected bit length.
 //! - [`Commitment`] contains the public Merkle root.
-//! - [`ProverData`] retains the packed witness, codeword, and Merkle tree after commit.
+//! - [`ProverData`] retains the codeword and Merkle tree after commitment.
 //! - [`OpeningQuery`] contains one evaluation point and its claimed value.
 //! - [`CommitScheme`] connects commitment, proving, and verification to project transcripts.
 //!
-//! [`CommitScheme::prove_lin`] consumes [`ProverData`] because one opening owns the retained data.
+//! The caller packs and retains the witness after [`CommitScheme::commit`].
+//! [`CommitScheme::prove_lin`] consumes the packed witness and [`ProverData`] for one opening.
 //! The caller must use matching transcript session and instance labels.
 //! The caller must also call `VerifierState::check_eof` after successful verification.
 //!
@@ -45,7 +46,7 @@
 //!
 //! const M: usize = 22;
 //! let pcs = Pcs::new(M, LigeritoProfile::Fast, HashKind::Blake3);
-//! let bits = vec![false; pcs.bit_len()];
+//! let packed_witness = vec![F128::default(); pcs.packed_len()];
 //! let point = (0..M)
 //!     .map(|coordinate| F128::from(coordinate as u64 + 2))
 //!     .collect();
@@ -54,9 +55,10 @@
 //!     target: F128::from(0u64),
 //! };
 //!
-//! let (commitment, prover_data) = pcs.commit(&bits).unwrap();
+//! let (commitment, prover_data) = pcs.commit(&packed_witness).unwrap();
 //! let mut prover = build_prover(b"pcs-example", b"zero-polynomial");
-//! pcs.prove_lin(prover_data, &query, &mut prover).unwrap();
+//! pcs.prove_lin(prover_data, packed_witness, &query, &mut prover)
+//!     .unwrap();
 //! let proof = prover.finish();
 //!
 //! let mut verifier = build_verifier(b"pcs-example", b"zero-polynomial", &proof);
@@ -91,7 +93,7 @@ pub struct OpeningQuery {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum CommitError {
-    /// The bit vector has no supported commitment shape.
+    /// The packed witness represents an unsupported bit length.
     InvalidBitLength,
     /// The evaluation point does not match the committed polynomial.
     PointLengthMismatch,
@@ -123,14 +125,19 @@ pub trait CommitScheme {
     /// Private data retained by the prover after commitment.
     type ProverData;
 
-    /// Packs the bits and commits to `Enc_C(q_pkd)`, where
+    /// Commits the caller-owned packed witness to `Enc_C(q_pkd)`, where
     /// `q_pkd(y) = Σ_{v ∈ {0,1}^7} q(y, v) · basis[v]`.
-    fn commit(&self, bits: &[bool]) -> Result<(Self::Commitment, Self::ProverData), CommitError>;
+    /// Bit `r` of element `i` must equal logical bit `128 * i + r`.
+    fn commit(
+        &self,
+        packed_witness: &[F128],
+    ) -> Result<(Self::Commitment, Self::ProverData), CommitError>;
 
-    /// Proves `q̂(query.point) = query.target` for the committed bit table.
+    /// Consumes the exact packed witness passed to [`Self::commit`] and proves the claim.
     fn prove_lin(
         &self,
         data: Self::ProverData,
+        packed_witness: Vec<F128>,
         query: &OpeningQuery,
         transcript: &mut ProverState,
     ) -> Result<(), CommitError>;
@@ -148,17 +155,21 @@ impl CommitScheme for Pcs {
     type Commitment = Commitment;
     type ProverData = ProverData;
 
-    fn commit(&self, bits: &[bool]) -> Result<(Self::Commitment, Self::ProverData), CommitError> {
-        Pcs::commit(self, bits)
+    fn commit(
+        &self,
+        packed_witness: &[F128],
+    ) -> Result<(Self::Commitment, Self::ProverData), CommitError> {
+        Pcs::commit(self, packed_witness)
     }
 
     fn prove_lin(
         &self,
         data: Self::ProverData,
+        packed_witness: Vec<F128>,
         query: &OpeningQuery,
         transcript: &mut ProverState,
     ) -> Result<(), CommitError> {
-        open::open(self, data, query, transcript)
+        open::open(self, data, packed_witness, query, transcript)
     }
 
     fn verify_lin(

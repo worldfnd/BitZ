@@ -1,20 +1,20 @@
 //! Checked commit-phase wrapper for flock's binary-field PCS.
 //!
 //! Commitment steps:
-//! 1. Require the configured number of witness bits.
-//! 2. Pack each 128-bit witness block into one binary-field element.
-//! 3. Commit the packed witness with Flock.
-//! 4. Expose the Merkle root as the public commitment.
-//! 5. Retain the packed witness and Flock prover data for one opening.
+//! 1. Require the configured packed-witness length.
+//! 2. Commit the caller-owned packed witness with Flock.
+//! 3. Expose the Merkle root as the public commitment.
+//! 4. Retain Flock prover data for one opening.
 
 use core::mem::size_of;
 
 use crate::CommitError;
-use flock_core::field::F128 as FlockF128;
+use crate::bridge::as_flock_f128s;
+use field::F128;
 pub use flock_core::hash::HashKind;
 use flock_core::pcs::Commitment as FlockCommitment;
 use flock_core::pcs::ligerito::LigeritoProfile;
-use flock_core::pcs::{PcsParams, ProverData as FlockProverData, pack_witness};
+use flock_core::pcs::{LOG_PACKING, PcsParams, ProverData as FlockProverData};
 use transcript::Encoding;
 
 /// Initial Ligerito fold size required by Flock's registered security profiles.
@@ -35,10 +35,9 @@ pub struct Commitment {
     root: [u8; 32],
 }
 
-/// Private state retained between commitment and one opening.
+/// Flock state retained between commitment and one opening.
 pub struct ProverData {
     commitment: FlockCommitment,
-    packed_witness: Vec<FlockF128>,
     flock_prover_data: FlockProverData,
 }
 
@@ -56,31 +55,27 @@ impl Pcs {
         }
     }
 
-    /// Commits to the exact configured number of bits.
-    pub fn commit(&self, bits: &[bool]) -> Result<(Commitment, ProverData), CommitError> {
+    /// Commits to the exact configured number of packed field elements.
+    pub fn commit(&self, packed_witness: &[F128]) -> Result<(Commitment, ProverData), CommitError> {
         // 1. Input Validation
-        if bits.len() != self.bit_len {
+        if packed_witness.len() != self.packed_len() {
             return Err(CommitError::InvalidBitLength);
         }
 
-        // 2. Pack Witness
-        let packed_witness = pack_witness(bits, self.params.m);
-
-        // 3. Commit Packed Witness
+        // 2. Commit Packed Witness
         let (flock_commitment, flock_prover_data) =
-            flock_core::pcs::commit(&packed_witness, &self.params);
+            flock_core::pcs::commit(as_flock_f128s(packed_witness), &self.params);
 
-        // 4. Build Public Commitment
+        // 3. Build Public Commitment
         let commitment = Commitment {
             root: flock_commitment.root,
         };
 
-        // 5. Retain Opening Data
+        // 4. Retain Opening Data
         Ok((
             commitment,
             ProverData {
                 commitment: flock_commitment,
-                packed_witness,
                 flock_prover_data,
             },
         ))
@@ -88,6 +83,11 @@ impl Pcs {
 
     pub fn bit_len(&self) -> usize {
         self.bit_len
+    }
+
+    /// Returns the required number of packed `F128` elements.
+    pub fn packed_len(&self) -> usize {
+        self.bit_len >> LOG_PACKING
     }
 
     pub(crate) fn params(&self) -> &PcsParams {
@@ -123,16 +123,12 @@ impl Encoding<[u8]> for Pcs {
 }
 
 impl ProverData {
-    pub fn packed_len(&self) -> usize {
-        self.packed_witness.len()
-    }
-
     pub fn codeword_len(&self) -> usize {
         self.flock_prover_data.codeword.len()
     }
 
-    pub(crate) fn into_opening_parts(self) -> (Vec<FlockF128>, FlockProverData) {
-        (self.packed_witness, self.flock_prover_data)
+    pub(crate) fn into_flock_data(self) -> FlockProverData {
+        self.flock_prover_data
     }
 
     pub(crate) fn commitment(&self) -> &FlockCommitment {
@@ -153,34 +149,46 @@ impl Commitment {
 
 #[cfg(test)]
 mod tests {
+    use flock_core::pcs::pack_witness;
     use proptest::prelude::*;
 
     use super::*;
 
     #[test]
-    fn commitment_is_deterministic_and_packing_preserves_boundary_bits() {
+    fn commitment_is_deterministic_for_packed_boundary_bits() {
         let scheme = Pcs::new(22, LigeritoProfile::Fast, HashKind::Blake3);
-        let mut bits = vec![false; scheme.bit_len()];
-        for index in [0, 1, 63, 64, 127, 128, bits.len() - 1] {
-            bits[index] = true;
-        }
+        let mut packed_witness = vec![F128::default(); scheme.packed_len()];
+        packed_witness[0] = F128::new(1 | (1 << 1) | (1 << 63), 1 | (1 << 63));
+        packed_witness[1] = F128::new(1, 0);
+        packed_witness.last_mut().unwrap().hi = 1 << 63;
 
-        let (commitment, data) = scheme.commit(&bits).unwrap();
-        let (second_commitment, _) = scheme.commit(&bits).unwrap();
-        let mut changed_bits = bits.clone();
-        changed_bits[2] = true;
-        let (changed_commitment, _) = scheme.commit(&changed_bits).unwrap();
+        let (commitment, data) = scheme.commit(&packed_witness).unwrap();
+        let (second_commitment, _) = scheme.commit(&packed_witness).unwrap();
+        let mut changed_witness = packed_witness.clone();
+        changed_witness[0].lo |= 1 << 2;
+        let (changed_commitment, _) = scheme.commit(&changed_witness).unwrap();
 
         assert_eq!(commitment, second_commitment);
         assert_ne!(commitment, changed_commitment);
-        assert_eq!(data.packed_len(), bits.len() / 128);
         assert!(data.codeword_len() > 0);
-        assert_eq!(data.packed_witness[0].lo, 1 | (1 << 1) | (1 << 63));
-        assert_eq!(data.packed_witness[0].hi, 1 | (1 << 63));
-        assert_eq!(data.packed_witness[1].lo, 1);
-        assert_eq!(data.packed_witness[1].hi, 0);
-        assert_eq!(data.packed_witness.last().unwrap().lo, 0);
-        assert_eq!(data.packed_witness.last().unwrap().hi, 1 << 63);
+    }
+
+    #[test]
+    fn caller_packing_layout_matches_flock() {
+        let scheme = Pcs::new(22, LigeritoProfile::Fast, HashKind::Blake3);
+        let mut bits = vec![false; scheme.bit_len()];
+        for index in [0, 63, 64, 127, 128, bits.len() - 1] {
+            bits[index] = true;
+        }
+
+        let packed = pack_witness(&bits, scheme.params.m);
+
+        assert_eq!((packed[0].lo, packed[0].hi), (1 | (1 << 63), 1 | (1 << 63)));
+        assert_eq!((packed[1].lo, packed[1].hi), (1, 0));
+        assert_eq!(
+            (packed.last().unwrap().lo, packed.last().unwrap().hi),
+            (0, 1 << 63)
+        );
     }
 
     #[test]
@@ -213,12 +221,12 @@ mod tests {
         #![proptest_config(ProptestConfig::with_cases(64))]
 
         #[test]
-        fn rejects_arbitrary_short_bit_lengths(len in 0usize..4096) {
+        fn rejects_arbitrary_short_packed_witnesses(len in 0usize..4096) {
             let pcs = Pcs::new(22, LigeritoProfile::Fast, HashKind::Blake3);
-            let bits = vec![false; len];
+            let packed_witness = vec![F128::default(); len];
 
             prop_assert!(matches!(
-                pcs.commit(&bits),
+                pcs.commit(&packed_witness),
                 Err(CommitError::InvalidBitLength)
             ));
         }

@@ -1,7 +1,7 @@
 //! Standard multilinear openings over the Flock commitment.
 //!
 //! Prover steps:
-//! 1. Validate the prover data and require `query.point.len() == params.m`.
+//! 1. Validate the packed witness, prover data, and query point.
 //! 2. Bind the commitment root, trusted parameters, point, and target to the transcript.
 //! 3. Split the point into seven low coordinates and `m - 7` high coordinates.
 //! 4. Build the low and high equality tables with Flock's `build_eq_split`.
@@ -20,10 +20,11 @@
 //! For sampled `r_dprime`, set `B(y) = Σ_u eq(r_dprime, u) · A(y, u)`.
 //! The final packed claim is `Σ_y B(y) · q_pkd(y) = beta0`.
 
-use crate::bridge::as_flock_f128s;
+use crate::bridge::{as_flock_f128s, into_flock_f128s};
 use crate::challenger::ProverChallenger;
 use crate::protocol::{RING_SWITCH_LABEL, bind_statement, write_opening_proof};
 use crate::{CommitError, OpeningQuery, Pcs, ProverData};
+use field::F128;
 use flock_core::challenger::Challenger;
 use flock_core::pcs::ligerito::recursive_prover_with_basis;
 use flock_core::pcs::ring_switch::{
@@ -37,6 +38,7 @@ use transcript::ProverState;
 pub(crate) fn open(
     pcs: &Pcs,
     data: ProverData,
+    packed_witness: Vec<F128>,
     query: &OpeningQuery,
     transcript: &mut ProverState,
 ) -> Result<(), CommitError> {
@@ -44,6 +46,9 @@ pub(crate) fn open(
     let expected_m = pcs.params().m;
     if query.point.len() != expected_m {
         return Err(CommitError::PointLengthMismatch);
+    }
+    if packed_witness.len() != pcs.packed_len() {
+        return Err(CommitError::InvalidBitLength);
     }
     if !params_match(pcs, &data) {
         return Err(CommitError::invalid_configuration(format!(
@@ -59,7 +64,8 @@ pub(crate) fn open(
 
     // 2. Bind Statement
     bind_statement(pcs, &data.commitment().root, query, transcript);
-    let (packed_witness, flock_data) = data.into_opening_parts();
+    let packed_witness = into_flock_f128s(packed_witness);
+    let flock_data = data.into_flock_data();
 
     // 3. Split Point
     let (r_lo, r_hi) = query.point.split_at(LOG_PACKING);
