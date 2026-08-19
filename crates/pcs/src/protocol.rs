@@ -16,12 +16,20 @@ pub(crate) fn write_opening_proof(
 ) -> Result<(), CommitError> {
     let proof_bytes = proof_options()
         .serialize(proof)
-        .map_err(|_| CommitError::Flock)?;
+        .map_err(map_serialization_error)?;
     if proof_bytes.len() > PROOF_HINT_LIMIT {
-        return Err(CommitError::Flock);
+        return Err(CommitError::ProofTooLarge);
     }
     transcript.hint_bytes(&proof_bytes);
     Ok(())
+}
+
+fn map_serialization_error(error: bincode::Error) -> CommitError {
+    if matches!(error.as_ref(), bincode::ErrorKind::SizeLimit) {
+        CommitError::ProofTooLarge
+    } else {
+        CommitError::SerializationFailed(error.to_string())
+    }
 }
 
 pub(crate) fn read_opening_proof(
@@ -83,6 +91,20 @@ mod tests {
 
     use super::*;
     use crate::{HashKind, LigeritoProfile};
+
+    #[test]
+    fn proof_serialization_errors_are_specific() {
+        assert_eq!(
+            map_serialization_error(Box::new(bincode::ErrorKind::SizeLimit)),
+            CommitError::ProofTooLarge
+        );
+        assert_eq!(
+            map_serialization_error(Box::new(bincode::ErrorKind::Custom(
+                "serialization failed".to_owned(),
+            ))),
+            CommitError::SerializationFailed("serialization failed".to_owned())
+        );
+    }
 
     #[test]
     fn opening_proof_reader_rejects_malformed_bytes() {

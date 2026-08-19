@@ -101,8 +101,10 @@ pub enum CommitError {
     InvalidConfiguration(String),
     /// The transcript does not contain a complete canonical proof.
     MalformedProof,
-    /// Flock rejected an operation.
-    Flock,
+    /// The opening proof could not be serialized, with the serializer message.
+    SerializationFailed(String),
+    /// The serialized opening proof exceeds the transcript hint limit.
+    ProofTooLarge,
     /// The linear-query proof did not verify.
     VerificationFailed,
 }
