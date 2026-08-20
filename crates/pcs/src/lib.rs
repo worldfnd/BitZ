@@ -175,6 +175,8 @@ pub enum CommitError {
     ProofTooLarge,
     /// The linear-query proof did not verify.
     VerificationFailed,
+    /// Invalid claim to prove
+    InvalidClaim,
 }
 
 impl CommitError {

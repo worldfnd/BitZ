@@ -125,7 +125,7 @@ pub(crate) fn open_batch(
         let evaluation = claim_check(&eq_lo, s_hat_v);
         let target = as_flock_f128s(core::slice::from_ref(&query.target))[0];
         if evaluation != target {
-            return Err(CommitError::VerificationFailed);
+            return Err(CommitError::InvalidClaim);
         }
     }
 
