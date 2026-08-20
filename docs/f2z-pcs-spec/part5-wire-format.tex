@@ -1,11 +1,14 @@
-\section{Wire and transcript format v1}
+\section{Wire and transcript format v1 (Optional)}
 \label{sec:wire-format}
 
 \begingroup\small
 
 \begin{normative}
-This section fixes the bytes consumed by a conforming prover and verifier.
-The proof system has two physical proof streams, prefix-free typed records, a
+This optional section defines the concrete v1 profile.  Optionality concerns
+whether an implementation selects this profile; once selected, every rule in
+this section is mandatory.  The section fixes the bytes consumed by a
+conforming v1 prover and verifier.
+The proof system has two physical, canonically encoded positional record streams, a
 BLAKE3 transcript, SHA-256 Merkle roots, and the recursive Ligerito and
 proof-of-work parameters below.  A proof using the legacy positional/bincode
 codec is not a v1 proof.
@@ -15,18 +18,21 @@ codec is not a v1 proof.
 \label{sec:wire-version}
 
 The eight-byte container magic is the ASCII string \code{F2ZPCS\textbackslash0\textbackslash0},
-and the wire version is one.  Changing any normative rule in this section
-requires a new wire version.
+and the wire version is one.  This document defines the not-yet-frozen v1
+format; its input-shaping ledger supersedes the earlier draft that reserved
+the entire \code{1000--1fff} range.  Once a complete v1 proof/transcript
+fixture is published, changing any normative rule in this section requires a
+new wire version.
 
 The transcript and its XOF are unkeyed BLAKE3; Merkle nodes and roots use
 SHA-256; PoW uses unkeyed BLAKE3-256.  The field basis is the polynomial basis
-of Equation~\eqref{eq:concrete-domains}.  The public parameters fix the
+fixed in Section~\ref{sec:domains}.  The public parameters fix the
 GKR protocol, constrained-code construction, transcript, and opening protocol.
 None is selected or negotiated by proof bytes.  A proof system without a
 byte-exact GKR ledger or without a canonical codeword construction and root
 vectors is incomplete and \mustnot{} accept proofs.
 
-Write $m:=m_f$ and $m_p:=m-7$ for the committed layout.  For the deployed
+Write $m:=m_f$ and $m_p:=m-7$ for the packed-vector dimension.  For the deployed
 range $22\le m\le35$, let $J_m$ be the number of recursive
 opening levels.  The level shapes and all parameters except the base fold
 difficulties are fixed by
@@ -96,7 +102,7 @@ polynomial basis; coefficient bit $j$ is bit $j$ of the resulting 128-bit
 word.\\
 $a\in\Fq$&16&$\LE{128}{\bar a}$, where $0\le\bar a<q$ and
 $\pi_q(\bar a)=a$; reject an integer at least $q=2^{100}-15$.\\
-Chunk exponent $u$&16&$\LE{128}{u}$; require $u<2^{127}$.\\
+Bounded exponent $u$&16&$\LE{128}{u}$; require $u<2^{127}$.\\
 Nonce&8&$\LE{64}{n}$.\\
 Merkle value&32&Raw SHA-256 digest bytes, in digest output order.\\
 Vector $[x_0,\ldots,x_{n-1}]$&4 plus elements&$\LE{32}{n}$ followed by
@@ -145,7 +151,7 @@ are
 \end{equation}
 Here $\operatorname{Enc}_{\K}$ is the 16-byte encoding in
 Section~\ref{sec:wire-primitives}.  Equation~\eqref{eq:merkle-v1-tree} uses
-no native-memory cast, row-length prefix, row index, level tag, padding, or
+no native-memory cast, row-length prefix, row index, level domain code, padding, or
 leaf/internal-node domain byte.  Adding such a byte changes every root and
 requires a new wire version.  The fixed code specification defines
 how $C_k$ is generated; this section fixes its portable row and tree encoding.
@@ -187,6 +193,12 @@ digests or payload bytes.
 
 \subsection{Outer two-stream container}
 \label{sec:wire-container}
+
+Here $N$ and $H$ are the concatenations of their canonical payload records in
+the verifier-event and hint-check orders, respectively.  They contain no
+transmitted event domain, scope, or generic record-length wrapper; each next
+decoder and its bounded length follow from the fixed ledger and the canonical
+payload type.
 
 The 40-byte header is fixed as follows.  Offsets and sizes are decimal; all
 multibyte integers use Section~\ref{sec:wire-primitives}.
@@ -230,43 +242,68 @@ require input length exactly $40+\mathtt{narg\_byte\_len}+
 records actually consumed.  Header count and length fields are transport
 metadata and are not transcript input.
 
-\subsection{Typed event frames and registry}
+\subsection{Typed event records and domain registry}
 \label{sec:wire-events}
 
-Every NARG record, Hint record, public absorb, and squeeze event uses the same
-prefix-free frame header:
+Every absorbed NARG value, public value, and squeeze event uses the three-part
+encoding from Equation~\eqref{eq:transcript-absorb}.  Its canonical domain is
+the following 16-byte string:
 
-\begin{lstlisting}[style=wire]
-offset  size  field
-0       2     event_tag                         u16-le
-2       2     reserved = 0                     u16-le
-4       4     chunk                            u32-le
-8       4     level                            u32-le
-12      4     round_or_index                   u32-le
-16      8     payload_len                      u64-le
-24      ...   payload[payload_len]
-\end{lstlisting}
-
-Let $\bot_{32}:=\mathtt{0xffffffff}$ denote an inapplicable scope coordinate.
-For tag $\tau$, scope $(\ell,k,i)$, and payload $z$, the frame is exactly
 \begin{equation}
- \Frame(\tau,\ell,k,i;z):=
+ D_{\tau,j,k,i}:=
  \LE{16}{\tau}\parallel\LE{16}{0}\parallel
- \LE{32}{\ell}\parallel\LE{32}{k}\parallel\LE{32}{i}\parallel
- \LE{64}{\ByteLen(z)}\parallel z.
- \label{eq:event-frame-v1}
+ \LE{32}{j}\parallel\LE{32}{k}\parallel\LE{32}{i}.
+ \label{eq:event-domain-v1}
 \end{equation}
-Thus Equation~\eqref{eq:event-frame-v1} has length $24+\ByteLen(z)$.  A stream
-record with a reserved nonzero word, an inapplicable coordinate other than
-$\bot_{32}$, a wrong channel, a wrong expected scope, or an unknown tag is
-malformed.
 
-The base-tag registry is below.  \textsf{D} events are public or derived,
-have no proof record, and are absorbed at their ledger position;
-\textsf{N} records occur only in $N$ and are absorbed;
-\textsf{H} records occur only in $H$ and are checked but never absorbed;
-\textsf{S} tags are squeeze requests.  For an \textsf{S} base tag $\tau$, the
-squeeze-result tag is $\tau\mathbin{\mathrm{OR}}\mathtt{0x8000}$ and is derived,
+Here $\tau$ is the numeric semantic-domain code and $(j,k,i)$ is its
+verifier-derived scope.  Let $\bot_{32}:=\mathtt{0xffffffff}$ denote an
+inapplicable coordinate.  These values are fixed by the current ledger
+position; they are never read from either proof stream.
+
+The names used by the verifier algorithm in Section~\ref{sec:verifier}
+abbreviate
+\begin{equation}
+ \begin{aligned}
+  \mathsf D_{\rm domain}&:=D_{\mathtt{0x0001},\bot_{32},\bot_{32},\bot_{32}},&
+  \mathsf D_{\rm statement}&:=D_{\mathtt{0x0002},\bot_{32},\bot_{32},\bot_{32}},\\
+  \mathsf D_{{\rm shape},i}&:=D_{\mathtt{0x1002},\bot_{32},\bot_{32},i},&
+  \mathsf D_{{\rm shape\text{-}challenge},i}&:=
+    D_{\mathtt{0x1101},\bot_{32},\bot_{32},i},\\
+  \mathsf D_{\rm seam}&:=D_{\mathtt{0x1003},\bot_{32},\bot_{32},\bot_{32}},&
+  \mathsf D_{\nu}&:=D_{\mathtt{0x2001},\bot_{32},\bot_{32},\bot_{32}},\\
+  \mathsf D_{\mu}&:=D_{\mathtt{0x2081},\bot_{32},\bot_{32},\bot_{32}},&
+  \mathsf D_{s,\theta}&:=D_{\mathtt{0x4001},\theta,\bot_{32},\bot_{32}},&
+  \mathsf D_{\lambda,\theta}&:=D_{\mathtt{0x4102},\theta,\bot_{32},\bot_{32}},\\
+  \mathsf D_{\rm target}&:=D_{\mathtt{0x5001},\bot_{32},\bot_{32},\bot_{32}}.&&
+ \end{aligned}
+ \label{eq:verifier-domain-abbreviations}
+\end{equation}
+The vector names $\mathsf D_\zeta$ and $\mathsf D_{r''}$ denote consecutive
+coordinate domains $D_{\mathtt{0x2101},\bot_{32},\bot_{32},i}$ and
+$D_{\mathtt{0x4101},\bot_{32},\bot_{32},i}$, respectively.
+
+For payload $z$, an absorbed event appends exactly
+\begin{equation}
+ D_{\tau,j,k,i}
+ \parallel\LE{64}{\ByteLen(z)}\parallel z.
+ \label{eq:event-absorb-v1}
+\end{equation}
+There is no frame or event wrapper.  A transmitted NARG or Hint record is only
+the canonical payload $z$.  Its decoder and expected length are determined by
+the fixed event ledger, including any canonical length prefix belonging to the
+payload type itself.  Thus proof parsing is positional and separate from
+transcript absorption: a NARG read decodes and validates $z$, then applies
+Equation~\eqref{eq:event-absorb-v1}; a Hint read decodes and checks $z$ but
+never applies that equation.
+
+The domain registry is below.  Domain codes and scopes are verifier-derived
+transcript inputs, not record headers.  \textsf{D} events are public or
+derived, have no proof record, and are absorbed at their ledger position;
+\textsf{N} payloads occur only in $N$ and are absorbed;
+\textsf{H} payloads occur only in $H$ and are checked but never absorbed;
+\textsf{S} domains are squeeze requests.  For an \textsf{S} base domain code $\tau$, the
+result domain code is $\tau\mathbin{\mathrm{OR}}\mathtt{0x8000}$ and is derived,
 never transmitted.  For an \textsf{S} row, the last column describes the
 derived result; its request payload is always $\LE{32}{n}\parallel a$ as fixed
 by Equation~\eqref{eq:transcript-v1}.
@@ -276,47 +313,57 @@ by Equation~\eqref{eq:transcript-v1}.
 \setlength{\tabcolsep}{2pt}
 \begin{longtable}{@{}p{0.52in}p{0.30in}p{1.62in}p{4.72in}@{}}
 \toprule
-\textbf{Tag}&\textbf{Class}&\textbf{Event}&\textbf{Scope; proof payload or squeeze result}\\
+\textbf{Code}&\textbf{Class}&\textbf{Event}&\textbf{Scope; proof payload or squeeze result}\\
 \midrule
 \endfirsthead
 \toprule
-\textbf{Tag}&\textbf{Class}&\textbf{Event}&\textbf{Scope; proof payload or squeeze result}\\
+\textbf{Code}&\textbf{Class}&\textbf{Event}&\textbf{Scope; proof payload or squeeze result}\\
 \midrule
 \endhead
 \code{0001}&D&domain/version&$(\bot,\bot,\bot)$; $\mathsf{DomainV1}$ from
 Equation~\eqref{eq:domain-statement-payloads}.\\
 \code{0002}&D&statement&$(\bot,\bot,\bot)$; $\mathsf{StatementV1}$ from
 Equation~\eqref{eq:domain-statement-payloads}.\\
-\code{0003}&D&core seam&$(\bot,\bot,\bot)$;
-$\mathsf{CoreSeamV1}$ from Equation~\eqref{eq:core-seam-payload}.\\
-\code{1000--1fff}&---&reserved&These tags \mustnot{} occur in an F2Z proof.\\
-\code{2001}&N&chunk $\nu$&$(\ell,\bot,\bot)$; vector of $2^{d_c}$ elements of
-$\K$.\\
-\code{2081}&H&chunk $\mu$&$(\ell,\bot,\bot)$; vector of $2^{d_c}$ canonical
-$u_{128}<2^{127}$.\\
-\code{2101}&S&chunk $\zeta$&$(\ell,\bot,i)$ for $0\le i<d_c$; one $\K$
+\code{0003}&---&legacy core seam&Reserved and \mustnot{} be scheduled; the input
+Sumcheck terminates with derived domain code \code{1003}.\\
+\code{1001}&---&PIOP row collapse&Reserved for a legacy PIOP-side phase;
+it does not occur when F2Z receives the public $\bm v$-weighted claim.\\
+\code{1002}&N&input-Sumcheck round&$(\bot,\bot,i)$ for $0\le i<m_h$; exactly
+$\operatorname{Enc}_{\Fq}(g_i(0))\parallel
+ \operatorname{Enc}_{\Fq}(g_i(1))\parallel
+ \operatorname{Enc}_{\Fq}(g_i(2))$ for the degree-two round polynomial, with
+no vector prefix.\\
+\code{1003}&D&input-Sumcheck seam&$(\bot,\bot,\bot)$;
+$\mathsf{LinCheckSeamV1}$ from
+Equation~\eqref{eq:lincheck-seam-payload}.\\
+\code{1101}&S&input-Sumcheck challenge&$(\bot,\bot,i)$ for $0\le i<m_h$;
+one $\Fq$ challenge from the rejection sampler below.\\
+\code{1000}&---&reserved&The verifier \mustnot{} schedule this domain code.\\
+\code{1004--1100}&---&reserved&The verifier \mustnot{} schedule these domain codes.\\
+\code{1102--1fff}&---&reserved&The verifier \mustnot{} schedule these domain codes.\\
+\code{2001}&N&fold exponent image $\nu$&$(\bot,\bot,\bot)$; vector of
+$2^{d_c}$ elements of $\K$.\\
+\code{2081}&H&integer fold $\mu$&$(\bot,\bot,\bot)$; vector of
+$2^{d_c}$ canonical $u_{128}<2^{127}$.\\
+\code{2101}&S&fold challenge $\zeta$&$(\bot,\bot,i)$ for $0\le i<d_c$; one $\K$
 challenge.\\
-\code{3001}&N&GKR phase-$c$ sum&$(\ell,k,\bot)$; one $\K$ element, absorbed
+\code{3001}&N&GKR phase-$c$ sum&$(\bot,k,\bot)$; one $\K$ element, absorbed
 after the phase-link check and before the first phase-$c$ round.\\
-\code{3002--30ff}&GKR&GKR messages&The fixed GKR protocol owns exact
-message tags, codecs, and checks in this range.\\
-\code{3100--31ff}&GKR&GKR squeezes&The fixed GKR protocol owns exact
-squeeze tags and result types in this range.\\
-\code{4001}&N&ring $s$ vector&$(\ell,\bot,\bot)$; vector of exactly 128
-elements of $\K$.\\
-\code{4002}&N&coefficient-LinCheck round&$(\bot,\bot,i)$ for $0\le i<m_f$; exactly the
-three coefficients of $g_i(X)=\gamma_{i,0}+\gamma_{i,1}X+\gamma_{i,2}X^2$,
-encoded as $\operatorname{Enc}_{\K}(\gamma_{i,0})\parallel
- \operatorname{Enc}_{\K}(\gamma_{i,1})\parallel
- \operatorname{Enc}_{\K}(\gamma_{i,2})$, with no vector prefix.\\
+\code{3002--30ff}&Sub.&subprotocol messages&The fixed subordinate ledger
+owns exact message domain codes, codecs, and checks for $\pi_{\rm GKR}$
+followed by $\pi_{\rm MLE}$.\\
+\code{3100--31ff}&Sub.&subprotocol squeezes&The fixed subordinate ledger
+owns exact squeeze domain codes and result types in the same order.\\
+\code{4001}&N&ring $\bm s_\theta$ vector&$(\theta,\bot,\bot)$ for
+$\theta\in\Theta$ in canonical order; vector of exactly 128 elements of $\K$.\\
+\code{4002}&---&reserved&The verifier \mustnot{} schedule this domain code.\\
 \code{4101}&S&shared $r''$&$(\bot,\bot,i)$ for $0\le i<7$; one $\K$
 challenge.\\
-\code{4102}&S&batch $\eta$&$(\ell,\bot,\bot)$ in increasing active-chunk
-order; one $\K$ challenge.\\
-\code{4103}&S&coefficient-LinCheck challenge&$(\bot,\bot,i)$ for $0\le i<m_f$; one $\K$
-challenge.\\
+\code{4102}&S&ring batch coefficient $\lambda_\theta$&$(\theta,\bot,\bot)$
+for $\theta\in\Theta$ in canonical order; one $\K$ challenge.\\
+\code{4103}&---&reserved&The verifier \mustnot{} schedule this domain code.\\
 \code{5001}&D&opening target&$(\bot,\bot,\bot)$;
-$\LE{32}{m_f-7}\parallel\operatorname{Enc}_{\K}(\beta)$.  $B$ is recomputed.\\
+$\LE{32}{m_p}\parallel\operatorname{Enc}_{\K}(\beta)$.  $B$ is recomputed.\\
 \code{5002}&N&initial root&$(\bot,0,\bot)$; one 32-byte SHA-256 digest.\\
 \code{5003}&N&recursive root&$(\bot,k,\bot)$, $1\le k<J_m$; one digest.\\
 \code{5004}&N&sumcheck message&scope by kind below; $\mathsf{kind}:u_8$
@@ -348,17 +395,25 @@ implementation-defined bytes.  The fixed GKR protocol must publish a ledger
 with the same columns as this table.  The fixed
 \code{3001} event resolves the PCS-level phase-$c$ placement ambiguity in
 Gap~G1; the rest of that gap remains GKR-protocol work and no protocol
-may reassign the tag.  The v1 outer row LinCheck
-omits the redundant \code{presums[ell].claimed\_sums} field and derives
-$[e_d^{(\ell)}+1]$, so tag \code{3081} is reserved and \mustnot{} occur.
+may reassign the domain code.  The v1 outer row LinCheck
+omits the redundant \code{presum.claimed\_sums} field and derives
+$[e_d+1]$, so domain code \code{3081} is reserved and \mustnot{} occur.
+The ledger first consumes $\pi_{\rm GKR}$ to derive
+$(\bm\omega_\xi,\sigma)$ and then, with no intervening absorb or squeeze,
+consumes $\pi_{\rm MLE}$ to derive $(\bm r_h,\theta,\eta)$.  It must require
+$\theta=\widetilde{\bm\omega_\xi}(\bm r_h)\eta$ before returning the successor
+claim $\widetilde H_{\K}(\bm r_h)=\eta$.  The semantic P5/V5--P6/V6 split does
+not create a transcript event.  An absent or incomplete fixed ledger is a hard
+reject.
 
 \subsection{Transcript transitions and replay}
 \label{sec:wire-transcript}
 
 Model the transcript state as the byte string hashed by an unkeyed BLAKE3
-hasher.  It starts empty.  The domain/version frame \code{0001} and statement frame
-\code{0002} are absorbed, in that order, before any proof-dependent squeeze.
-The application-supplied linear-claim statement digest is
+hasher.  It starts empty.  The domain/version value \code{0001} and statement
+value \code{0002} are absorbed, in that order, before any proof-dependent
+squeeze.
+The PIOP-supplied linear-claim statement digest is
 \begin{equation}
  d_{\rm claim}:=\operatorname{BLAKE3}_{256}
  \bigl(\operatorname{hex}^{-1}
@@ -369,7 +424,7 @@ The application-supplied linear-claim statement digest is
 For v1 byte compatibility, Equation~\eqref{eq:claim-statement-digest} retains
 the legacy ASCII domain literal \code{F2Z-PCS/app-statement/v1} followed by one
 NUL byte.  Changing that literal requires a new wire version.  The two initial
-frame payloads are exactly
+payloads are exactly
 \begin{equation}
  \begin{aligned}
   \mathsf{DomainV1}:={}&
@@ -383,74 +438,119 @@ frame payloads are exactly
  \label{eq:domain-statement-payloads}
 \end{equation}
 Thus $\mathsf{DomainV1}$ and $\mathsf{StatementV1}$ have 10 and 92 bytes,
-respectively.  The host application must make the linear-claim statement byte
-string in Equation~\eqref{eq:claim-statement-digest} canonical.
+respectively.  The host must make the linear-claim statement byte
+string in Equation~\eqref{eq:claim-statement-digest} canonical.  That string
+must bind $\operatorname{Vec}_{\Fq}(\bm v)$, $\operatorname{Enc}_{\Fq}(\mu)$,
+the configured shapes and coordinate orders of $F$ and $H$, and a
+virtualization-mode byte.  The vector encoding is
+$\LE{32}{n_h}\parallel\prod_{z=0}^{n_h-1}
+\operatorname{Enc}_{\Fq}(v[z])$.  The direct mode binds no matrix and requires
+the effective map to be the identity; the virtualized mode also binds the
+canonical dimensions and entries of $\bm M$.  Consequently an omitted map
+and an explicitly configured nonidentity map cannot share a statement digest.
 
-The derived core-seam payload is
+After the final input-Sumcheck challenge, the verifier derives and absorbs
 \begin{equation}
- \mathsf{CoreSeamV1}:=
-  \LE{32}{2^{d_r}}\parallel
-    \prod_{r=0}^{2^{d_r}-1}\LE{128}{\gamma_r}
-  \parallel\LE{32}{2^{d_c}}\parallel
-    \prod_{c=0}^{2^{d_c}-1}\LE{128}{\bar a'_c}
-  \parallel\LE{128}{\bar\mu},
- \label{eq:core-seam-payload}
+ \mathsf{LinCheckSeamV1}:=
+  \LE{32}{d_r}\parallel\LE{32}{d_c}\parallel
+  \operatorname{Vec}_{\Fq}(\bm s_h)\parallel
+  \operatorname{Enc}_{\Fq}(\kappa)\parallel
+  \operatorname{Enc}_{\Fq}(\tau).
+ \label{eq:lincheck-seam-payload}
 \end{equation}
-where $\pi_q(\bar a'_c)=a'_c$, $0\le\bar a'_c<q$, and
-$\pi_q(\bar\mu)=\mu$, $0\le\bar\mu<q$.  It has exactly
-$24+16(2^{d_r}+2^{d_c})$ bytes.  It is absorbed under tag \code{0003} after
-the F2Z statement is bound and before the first tag-\code{2001} record.
+Here $\operatorname{Vec}_{\Fq}(\bm s_h)$ has its canonical $u_{32}$ count
+$m_h$ followed by the $m_h$ canonical coordinates in transcript order.
+Equation~\eqref{eq:lincheck-seam-payload} has exactly $44+16m_h$ bytes.  It is
+absorbed under derived domain code \code{1003} after the last accepted domain code \code{1101}
+challenge and before the domain code \code{2001} record.  The verifier derives
+$\kappa=\widetilde{\bm v}(\bm s_h)$,
+$a_r=\eq_{\Fq}(r,\bm s_r)$, and
+$a'_c=\kappa\eq_{\Fq}(c,\bm s_c)$; none of these dense factor vectors is
+serialized in the seam.
 
-For a canonical frame $F$, absorption appends the exact frame bytes.  A
-squeeze under base tag $\tau<\mathtt{0x8000}$, scope $(\ell,k,i)$, output
-length $n$, and auxiliary request payload $a$ is the transition
+Absorption appends exactly Equation~\eqref{eq:event-absorb-v1}.  A squeeze
+under base domain code $\tau<\mathtt{0x8000}$, verifier-derived scope
+$(j,k,i)$, output length $n$, and auxiliary request payload $a$ first sets
+$q:=\LE{32}{n}\parallel a$ and then performs the transition
 \begin{equation}
  \begin{aligned}
-  R&:=\Frame(\tau,\ell,k,i;\LE{32}{n}\parallel a),\\
-  \tr'&:=\tr\parallel R,\\
+  q&:=\LE{32}{n}\parallel a,\\
+  \tr'&:=\tr\parallel D_{\tau,j,k,i}
+    \parallel\LE{64}{\ByteLen(q)}\parallel q,\\
   z&:=\operatorname{BLAKE3\text{-}XOF}(\tr')[0\mathbin{..}n],\\
   \tr''&:=\tr'\parallel
-    \Frame(\tau\mathbin{\mathrm{OR}}\mathtt{0x8000},\ell,k,i;z).
+    D_{\tau\mathbin{\mathrm{OR}}\mathtt{0x8000},j,k,i}
+    \parallel\LE{64}{n}\parallel z.
  \end{aligned}
  \label{eq:transcript-v1}
 \end{equation}
 Equation~\eqref{eq:transcript-v1} uses a clone/finalize-XOF of the incremental
-hasher after $R$; it does not reset or key the hasher.  A $\K$ challenge has
+hasher after the request bytes; it does not reset or key the hasher.  A $\K$ challenge has
 $n=16$ and decodes by Section~\ref{sec:wire-primitives}.  A vector challenge
 is a sequence of scalar squeezes, not one long squeeze.  Unless its registry
 row says otherwise, the scalars use consecutive $i$ values and the auxiliary
-request payload $a$ is empty.  Tag \code{4102} instead uses
-$(\ell,\bot,\bot)$ for each active $\ell$ in increasing order.  Tag
-\code{5103} uses its one-byte glue kind, and tag \code{5104} uses the PoW
-context $C$; these are the only nonempty core auxiliary payloads.
+request payload $a$ is empty.
 
-On a normal NARG read, the verifier validates the expected tag, scope, payload
-length, and canonical payload, then immediately appends the complete frame
-from Equation~\eqref{eq:event-frame-v1}.  A PoW nonce is the sole deferred
-NARG read: the verifier parses its expected canonical frame, permits no
-intervening event, checks Equation~\eqref{eq:pow-predicate-v1}, and appends the
-frame only on success.  On a Hint read, it validates the same framing but
-never appends those bytes.  It must complete the hint predicate before the
-next squeeze.  In particular, it reads and absorbs \code{2001}, then reads
-\code{2081} and verifies the exponent bounds and $g^\mu=\nu$ before the first
-\code{2101} event.  NARG replay follows verifier-event order, never Rust
+Domain code \code{1101} samples one unbiased $\Fq$ challenge.  For attempts
+$a=0,1,\ldots$, apply Equation~\eqref{eq:transcript-v1} with $n=16$ and
+auxiliary payload $\LE{32}{a}$.  Interpret the raw result as a little-endian
+$u_{128}$, clear its high $28$ bits, and accept the resulting candidate iff it
+is less than $q=2^{100}-15$; otherwise continue with the next attempt.  Every
+request and raw domain code \code{9101} result remains in the transcript, including
+rejected attempts.  Reject before attempt $2^{32}$; the counter must not wrap.
+
+Domain code \code{5103} uses its one-byte glue kind, and domain code \code{5104} uses the PoW
+context $C$; domain codes \code{1101}, \code{5103}, and \code{5104} are the only core
+squeezes with nonempty auxiliary payloads.
+
+Immediately after domain codes \code{0001} and \code{0002}, the verifier runs exactly
+$m_h$ input-Sumcheck rounds.  Starting with
+$\sigma_{-1}^{\rm shape}=\mu$, round $i$ reads one payload, requires
+$g_i^{\rm shape}(0)+g_i^{\rm shape}(1)=\sigma_{i-1}^{\rm shape}$, absorbs the
+payload under domain code \code{1002}, and then samples
+$s_{h,i}$ under domain code \code{1101} at the same scope, and sets
+$\sigma_i^{\rm shape}=g_i^{\rm shape}(s_{h,i})$.  No event may intervene
+between that read and its accepted challenge.  After the final round it sets
+$\tau=\sigma_{m_h-1}^{\rm shape}$ and
+$\kappa=\widetilde{\bm v}(\bm s_h)$, then immediately absorbs the derived
+domain code \code{1003} seam.  The remaining core must discharge
+$\kappa\widetilde H_q(\bm s_h)=\tau$; the seam does not assert that the
+original $\bm v$ equals the derived equality weights.
+
+On a normal NARG read, the verifier derives the next expected domain and
+payload decoder from the ledger, validates the canonical payload, and
+immediately applies Equation~\eqref{eq:event-absorb-v1}.  A PoW nonce is the
+sole deferred NARG read: the verifier parses its expected canonical payload,
+permits no intervening event, checks Equation~\eqref{eq:pow-predicate-v1}, and
+absorbs it only on success.  On a Hint read, it derives the next expected
+decoder and validates the canonical payload but never absorbs it.  It must
+complete the hint predicate before the next squeeze.  In particular, it reads
+and absorbs \code{2001}, then reads \code{2081} and requires
+$|\bm\mu|=2^{d_c}$, $0\le\mu_c<2^{127}$ and $g^{\mu_c}=\nu_c$ for every $c$,
+and $\sum_ca'_c\pi_q(\mu_c)=\tau$ before the first \code{2101} event.  NARG
+replay follows verifier-event order, never Rust
 structure-field order.  Acceptance requires no deferred record or pending
 hint and exact logical and byte exhaustion of both streams and every nested
 slice.
 
-Tags \code{4002} and \code{4103} are enabled only when the pulled-back
-coefficient requires the coefficient protocol $\mathsf{LinCheck}_f$.  An
-MLE-shaped coefficient requires zero such
-events.  Otherwise the verifier alternates, for $i=0,\ldots,m_f-1$, one
-tag-\code{4002} read-and-absorb, the check
-$g_i(0)+g_i(1)=\sigma_{i-1}$, and one tag-\code{4103} squeeze at the same
-scope.  No event may intervene within a round.  It then reads and absorbs the
-singleton tag-\code{4001} vector at scope $(0,\bot,\bot)$, derives
-$z=\sum_v\eq(v,r_{\lo})s_v$, and checks
-$\sigma_{m_f-1}=\widetilde a_f(r)z$ before tag \code{4101}.  The coefficient
-evaluator is verifier-derived and contributes no payload.  This is the only
-coefficient LinCheck in the opening path; the same tag-\code{4001} vector continues into
-the inherited ring-switch computation.
+After the adjoint, both parties derive the same canonical
+$\mathsf{RingDecomp}(\bm a_f)$ and require
+$A_f[v,j]=\sum_{\theta\in\Theta}A_\theta[v]B_\theta[j]$.  For each
+$\theta\in\Theta$ in order, the verifier reads and absorbs one domain-code
+\code{4001} vector and requires $|\bm s_\theta|=128$.  After all such records,
+and before domain code \code{4101}, it checks the single anchor equation
+\[
+ \sum_{\theta\in\Theta}\sum_{v=0}^{127}
+   A_\theta[v]s_{\theta,v}=\eta.
+\]
+It then squeezes the seven coordinates of $r''$ under domain code \code{4101},
+derives $(\bm\omega_\theta,\beta_\theta)$ for every term, and squeezes one
+domain-code \code{4102} coefficient $\lambda_\theta$ per term in the same
+order.  Finally it derives
+$B=\sum_\theta\lambda_\theta\bm\omega_\theta$ and
+$\beta=\sum_\theta\lambda_\theta\beta_\theta$.  No post-adjoint LinCheck or
+coefficient-Sumcheck event exists; domain codes \code{4002} and \code{4103}
+are reserved.
 
 \subsection{Grinding and query derivation}
 \label{sec:wire-pow}
@@ -465,9 +565,9 @@ the exact PoW context
  \label{eq:pow-context-v1}
 \end{equation}
 In Equation~\eqref{eq:pow-context-v1}, $i=\bot_{32}$ for a query grind.  The seed is the 16-byte output of
-Equation~\eqref{eq:transcript-v1} under tag \code{5104}, the same scope, and
+Equation~\eqref{eq:transcript-v1} under domain code \code{5104}, the same scope, and
 auxiliary request payload $C$.  After obtaining the seed, the verifier reads
-the expected \code{5007} or \code{5008} NARG frame without absorbing it and
+the expected \code{5007} or \code{5008} NARG nonce payload without absorbing it and
 requires, for the scheduled positive difficulty $d$,
 \begin{equation}
  \LZ\!\left(\operatorname{BLAKE3}_{256}
@@ -479,7 +579,8 @@ $\LZ$ in Equation~\eqref{eq:pow-predicate-v1} counts zero bits from the
 most-significant bit of digest byte zero, then proceeds toward the
 least-significant bit and subsequent bytes.  Any satisfying nonce is accepted;
 minimality is not checked.  Only after the predicate succeeds does
-the verifier absorb the complete nonce frame, before any dependent squeeze.
+the verifier absorb the nonce under its verifier-derived domain, before any
+dependent squeeze.
 Difficulty zero has no predicate invocation, seed squeeze, or nonce record in
 this wire format.
 
@@ -492,13 +593,13 @@ The exact scheduled difficulties are
 \end{equation}
 Equation~\eqref{eq:pow-difficulties-v1} is evaluated with ordinary
 nonnegative integers.  After the preceding sumcheck message and immediately
-before fold challenge $(k,i)$, perform both the tag-\code{5104} seed squeeze
-and tag-\code{5007} nonce record if $d^{\rm fold}_{k,i}>0$; if the difficulty
+before fold challenge $(k,i)$, perform both the domain code \code{5104} seed squeeze
+and domain code \code{5007} nonce record if $d^{\rm fold}_{k,i}>0$; if the difficulty
 is zero, perform neither event.  For $0\le k<J_m-1$, query event $k$ occurs after the
-tag-\code{5003} commitment root for level $k+1$, all $o_{k+1}$ OOD bindings
-for that root, and their glue challenges, and immediately before the tag-\code{5105}
+domain code \code{5003} commitment root for level $k+1$, all $o_{k+1}$ OOD bindings
+for that root, and their glue challenges, and immediately before the domain code \code{5105}
 draws that open level $k$.  Query event $J_m-1$ instead occurs after the
-tag-\code{5006} final $y_r$, with no new root or OOD binding, and immediately
+domain code \code{5006} final $y_r$, with no new root or OOD binding, and immediately
 before the final-level draws.  There is exactly one query nonce at every level.
 Consequently the exact number of nonce records is
 \begin{equation}
@@ -515,14 +616,14 @@ For level $k$, each \code{5105} event yields $r\in\K$ and proposes
 \end{equation}
 The verifier repeats Equation~\eqref{eq:query-position-v1} until $Q_k$
 distinct positions exist, discarding duplicates, and then sorts the positions
-in increasing order.  It then derives the tag-\code{5106} alphas before
+in increasing order.  It then derives the domain code \code{5106} alphas before
 reading and checking the opening.
 
 \subsection{Recursive-opening replay ledger}
 \label{sec:wire-recursive-ledger}
 
 This subsection fixes the complete replay order for the recursive opening.
-The four canonical tag-\code{5004} message kinds and scopes are
+The four canonical message kinds and scopes for domain code \code{5004} are
 \begin{equation}
  \begin{array}{ccll}
   \mathtt{0x00}&\mathsf{Start}&(\bot,0,\bot)&\text{exactly once},\\
@@ -532,55 +633,55 @@ The four canonical tag-\code{5004} message kinds and scopes are
  \end{array}
  \label{eq:sumcheck-message-kinds}
 \end{equation}
-Equation~\eqref{eq:sumcheck-message-kinds} is the complete tag-
-\code{5004} kind registry.  Each payload is the one-byte kind followed by the
+Equation~\eqref{eq:sumcheck-message-kinds} is the complete kind registry for
+domain code \code{5004}.  Each payload is the one-byte kind followed by the
 two canonical $\K$
 elements in the registry.  Any other kind/scope pair rejects.
 
-The outer $\mathsf{VerifyF2Z}$ caller first requires that $B$ is the
-deterministic coefficient function derived in P9/V9, with domain size
-$2^{m_p}$; $B$ is never densely serialized.  The caller alone absorbs tag
+The outer $\mathsf{VerifyF2Z}$ caller uses the deterministic coefficient
+function $B$ derived locally in P8/V8, with domain size
+$2^{m_p}$; $B$ is never densely serialized.  The caller alone absorbs domain code
 \code{5001} with payload
 $\LE{32}{m_p}\parallel\operatorname{Enc}_{\K}(\beta)$ and then invokes
-$\mathsf{RecVerifyStream}$.  That helper starts after tag \code{5001}: its
-first event reads tag \code{5002}, requires the root to equal $\rho$, absorbs
-it, and then reads and absorbs the $\mathsf{Start}$ tag-\code{5004} message.
+$\mathsf{RecVerify}$.  That helper starts after domain code \code{5001}: its
+first event reads domain code \code{5002}, requires the root to equal $\rho$, absorbs
+it, and then reads and absorbs the $\mathsf{Start}$ domain code \code{5004} message.
 
 For each $k=0,\ldots,J_m-1$ in increasing order, it then performs the
 following ledger without interleaving another event.
 \begin{enumerate}
  \item For $j=0,\ldots,k_k-1$, perform the optional fold grind exactly as in
- Section~\ref{sec:wire-pow}, squeeze tag \code{5101} at
+ Section~\ref{sec:wire-pow}, squeeze domain code \code{5101} at
  $(\bot,k,j)$, then read, validate, and absorb the $\mathsf{FoldNext}$
- tag-\code{5004} message at the same scope.
+ domain code \code{5004} message at the same scope.
 
- \item If $k<J_m-1$, read and absorb the tag-\code{5003} root at
+ \item If $k<J_m-1$, read and absorb the domain code \code{5003} root at
  $(\bot,k+1,\bot)$.  For each $a=0,\ldots,o_{k+1}-1$, squeeze the
- $n_{k+1}$ tag-\code{5102} coordinates at scopes $(a,k+1,c)$ for
- $c=0,\ldots,n_{k+1}-1$; read and absorb tag \code{5005} at
- $(a,k+1,\bot)$; read and absorb the $\mathsf{OodIntro}$ tag-\code{5004}
- message at that scope; and squeeze tag \code{5103} at
+ $n_{k+1}$ domain code \code{5102} coordinates at scopes $(a,k+1,c)$ for
+ $c=0,\ldots,n_{k+1}-1$; read and absorb domain code \code{5005} at
+ $(a,k+1,\bot)$; read and absorb the $\mathsf{OodIntro}$ domain code \code{5004}
+ message at that scope; and squeeze domain code \code{5103} at
  $(\bot,k+1,a)$ with the one-byte auxiliary kind \code{00}.
 
- If instead $k=J_m-1$, read and absorb tag \code{5006} at
+ If instead $k=J_m-1$, read and absorb domain code \code{5006} at
  $(\bot,k,\bot)$, requiring exactly $2^{h_k}$ canonical $\K$ elements.
 
  \item Perform the query grind at $(\bot,k,\bot)$ with difficulty 16 and
- absorb its validated tag-\code{5008} nonce.  Starting with attempt $a=0$,
- squeeze tag \code{5105} at $(\bot,k,a)$ and increment $a$ after every
+ absorb its validated domain code \code{5008} nonce.  Starting with attempt $a=0$,
+ squeeze domain code \code{5105} at $(\bot,k,a)$ and increment $a$ after every
  squeeze, including a duplicate, until $Q_k$ distinct positions have been
  obtained.  Reject rather than wrap if the next attempt would exceed
  $2^{32}-1$.  Sort the positions, then squeeze exactly
- $\lceil\log_2Q_k\rceil$ tag-\code{5106} alphas at $(\bot,k,c)$ for
+ $\lceil\log_2Q_k\rceil$ domain code \code{5106} alphas at $(\bot,k,c)$ for
  consecutive $c$.
 
- Read exactly one opening Hint using tag \code{5080} for $k=0$, tag
- \code{5081} for $0<k<J_m-1$, or tag \code{5082} for $k=J_m-1$.  Check
+ Read exactly one opening Hint using domain code \code{5080} for $k=0$,
+ \code{5081} for $0<k<J_m-1$, or \code{5082} for $k=J_m-1$.  Check
  Equations~\eqref{eq:merkle-opening-payload}--\eqref{eq:merkle-opening-length}
  and the root before any later event.  For $k<J_m-1$, next read and absorb
- the $\mathsf{QueryIntro}$ tag-\code{5004} message.  At every level,
+ the $\mathsf{QueryIntro}$ domain code \code{5004} message.  At every level,
  including the final level where no such message exists, squeeze the query
- glue tag \code{5103} at $(\bot,k,o_k)$ with one-byte auxiliary kind
+ glue domain code \code{5103} at $(\bot,k,o_k)$ with one-byte auxiliary kind
  \code{01}.  At the final level this challenge is used directly in the
  residual check.
 \end{enumerate}
@@ -600,7 +701,8 @@ The fixed record/event cardinalities are therefore
  \label{eq:recursive-event-counts}
 \end{equation}
 The cardinalities in Equation~\eqref{eq:recursive-event-counts} are exact.
-Here $\#508{*}$ is one opening Hint per level.  Tag-\code{5105} count is the
+Here $\#508{*}$ is one opening Hint per level.  The number of domain-
+\code{5105} events is the
 transcript-derived number of attempts, all of which appear in the audit log.
 Nonce counts remain Equation~\eqref{eq:pow-count-v1}.  A different order,
 scope, kind, cardinality, or unread field rejects.
@@ -612,7 +714,7 @@ A v1 implementation \must{}:
 \begin{enumerate}
  \item validate magic, version, flags, all public-parameter-, statement-, and
  transcript-derived bounds, and all
- reserved fields before allocating or doing proof work;
+reserved fields before allocating or doing proof work;
  \item use checked arithmetic and checked conversion for every length and
  index, reject noncanonical field values, and return a decoding error rather
  than panic on adversarial bytes;
@@ -625,20 +727,25 @@ A v1 implementation \must{}:
  slice is exactly exhausted.
 \end{enumerate}
 
-Conformance fixtures \must{} include canonical primitive and frame hex, one
+Conformance fixtures \must{} include canonical primitive, domain, and payload
+hex, one
 complete $N/H/\HostEncode$ proof, the ordered transcript audit log, every
 squeezed challenge, PoW seeds/nonces and query positions, and all four lengths
 from Equation~\eqref{eq:wire-lengths-v1}.  Negative fixtures \must{} cover an
-unknown version or tag, a reserved bit, wrong endian or channel, record
+unknown version, wrong endian or channel, record
 reordering, truncation and suffix bytes, noncanonical scalars, count overflow,
-a failed or late $u/\nu$ hint, altered PoW scope/difficulty/nonce, and missing
-or extra recursive fields.  A coefficient-LinCheck-enabled fixture must additionally
-cover a wrong round polynomial, reordered \code{4002/4103} pair, altered
-terminal coefficient, and failed terminal gate.  Native, recursive, and independent reference
+a wrong input-Sumcheck round polynomial, wrong initial target, reordered
+\code{1002/1101} events, a changed domain code \code{1003} seam, a failed or late
+$\mu/\nu$ hint, altered PoW scope/difficulty/nonce, and missing or extra
+recursive fields.  Fixtures must also cover at least one rejected
+domain code \code{1101} sampling attempt and its transcript continuation.
+Ring-switch fixtures must additionally cover a malformed or reordered
+\code{4001} term, a failed anchor equation, and reordered or missing
+\code{4101/4102} challenges.  Native, recursive, and independent reference
 verifiers must produce byte-identical transcript audit logs.
 
 The repository file \code{wire-v1-vectors.txt} is the normative initial
-known-answer set for the primitive container/frame codec,
+known-answer set for the primitive container/domain/payload codec,
 Merkle row/tree/multiproof codec, and PoW predicate at difficulties 1, 7, 8,
 and 16.  A conforming implementation must reproduce it exactly and add a
 complete proof/transcript

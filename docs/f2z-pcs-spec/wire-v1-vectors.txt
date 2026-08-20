@@ -2,27 +2,37 @@ F2Z-PCS wire/transcript v1 known-answer vectors
 =================================================
 
 All hex is lowercase and contains no separators. These vectors are normative
-for the primitive container/frame, Merkle codec, and positive-difficulty PoW
+for the primitive container/domain/payload encoding, Merkle codec, and positive-difficulty PoW
 predicate. The fixtures are codec tests, not a complete proof accepted by
 VerifyF2Z.
 
-Outer container and one NARG frame
-----------------------------------
-The NARG record is tag 0x2001, chunk=2, level=round=0xffffffff. Its
-payload is Vec<K>([1]): count u32-le followed by K(1) as lo-u64-le,
-hi-u64-le. There are no Hint records.
+Outer container and one NARG payload
+------------------------------------
+The NARG record is only the canonical payload Vec<K>([1]): count u32-le
+followed by K(1) as lo-u64-le, hi-u64-le. There are no Hint records. At this
+ledger position, the verifier derives domain code 0x2001 with all three scope
+coordinates inapplicable (0xffffffff). The domain and payload size are
+transcript input but are not repeated in the NARG stream.
 
 header_len_dec: 40
 header_hex:
-46325a5043530000010028000000000001000000000000002c000000000000000000000000000000
+46325a50435300000100280000000000010000000000000014000000000000000000000000000000
 
-narg_frame_len_dec: 44
-narg_frame_hex:
-0120000002000000ffffffffffffffff14000000000000000100000001000000000000000000000000000000
+narg_record_len_dec: 20
+narg_record_hex:
+0100000001000000000000000000000000000000
 
-host_len_dec: 84
+domain_len_dec: 16
+domain_hex:
+01200000ffffffffffffffffffffffff
+
+absorb_input_len_dec: 44
+absorb_input_hex:
+01200000ffffffffffffffffffffffff14000000000000000100000001000000000000000000000000000000
+
+host_len_dec: 60
 host_hex:
-46325a5043530000010028000000000001000000000000002c0000000000000000000000000000000120000002000000ffffffffffffffff14000000000000000100000001000000000000000000000000000000
+46325a504353000001002800000000000100000000000000140000000000000000000000000000000100000001000000000000000000000000000000
 
 Merkle primitive micro-vector
 -----------------------------

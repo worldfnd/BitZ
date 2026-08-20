@@ -3,57 +3,44 @@
 
 \begingroup\small
 
-\subsection{Committed and active witness views}
+\subsection{Committed and virtual witness views}
 \label{sec:public-objects}
 
 The PCS receives a committed binary witness $\bm f$.  Before proving, the
-developer selects one of two public witness configurations:
+developer fixes the matrix layouts used by the commitment and the PIOP.
+The same configuration may optionally include a public virtualization map:
 
 \begin{itemize}[leftmargin=1.4em]
  \item \textbf{Direct.}
-       The application PIOP uses the committed witness directly, so
-       $\bm h=\bm f$ and $\bm M=I$.
+       The virtualization map is omitted and the PIOP uses the
+       committed witness directly, so $\bm h=\bm f$.
  \item \textbf{Virtualized.}
-       The application PIOP uses a binary witness $\bm h$ related to the
+       The PIOP uses a binary witness $\bm h$ related to the
        committed witness by a nontrivial developer-selected public matrix
        $\bm M$.
 \end{itemize}
 
-The remainder of this specification uses the developer's Virtualized
-configuration exclusively.  Throughout, $\bm f$ is the commitment-facing view
-and $\bm h$ is the application-facing view.
+Throughout, $\bm f$ is the commitment-facing vector and $\bm h$ is the
+PIOP-facing vector.  When $\bm M$ is omitted, every uniform formula
+below interprets it as the identity map.
 
-\begingroup
-\setlength{\tabcolsep}{5pt}
-\renewcommand{\arraystretch}{1.08}
-\begin{tabularx}{\linewidth}{@{}l l X@{}}
-\toprule
-Symbol & Type & Role \\
-\midrule
-$\bm f$ & $\bitsset^{n_f}$ & Witness committed by the PCS. \\
-$\bm M$ & $\Ftwo^{n_h\times n_f}$ & Developer-selected virtualization matrix. \\
-$\bm h$ & $\bitsset^{n_h}$ & Active witness used by the PIOP and the F2Z core. \\
-$O$ & $\K^{n_O}$ & Codeword oracle encoding the packed coordinates of $\bm f$. \\
-$\rho$ & bit string & Merkle root of $O$. \\
-\bottomrule
-\end{tabularx}
-\endgroup
-
-The active witness is
+The virtual witness is
 \begin{equation}
  \boxed{\quad
  \pi_2(\bm h)=\bm M\pi_2(\bm f).
  \quad}
- \label{eq:active-witness}
+ \label{eq:virtual-witness}
 \end{equation}
 Here $\pi_2:\mathbb Z\to\Ftwo$, $x\mapsto x\bmod 2$, acts coordinatewise.
-Since $\bm f$ and $\bm h$ are binary, Equation~\eqref{eq:active-witness}
-uniquely determines $\bm h$.  The developer fixes the public map $\bm M$
-before proving; it is part of the instance and is not chosen by the prover.
+Since $\bm f$ and $\bm h$ are binary, Equation~\eqref{eq:virtual-witness}
+uniquely determines $\bm h$.  If virtualization is enabled, the developer
+fixes $\bm M$ before proving; it is not chosen by the prover.
 
-Only $\bm f$ is committed.  Let $F$ be its fixed two-dimensional layout and
-let $\operatorname{vec}(F)=\pi_2(\bm f)$.  The commitment is
+Only $\bm f$ is committed.  The developer-configured matrices $F$ and $H$ are
+reshapings of $\bm f$ and $\bm h$, not additional witnesses.  The commitment is
 \begin{equation}
+ \bm f\in\bitsset^{n_f},\qquad
+ \operatorname{vec}(F):=\pi_2(\bm f),\qquad
  P:=\Pack(F),\qquad
  O:=\Enc_{\mathcal C}(P),\qquad
  \rho:=\Root(O).
@@ -62,27 +49,44 @@ let $\operatorname{vec}(F)=\pi_2(\bm f)$.  The commitment is
 Neither $H$, the layout of $\bm h$, nor any value derived from $H$ is encoded
 in $O$.
 
-\subsection{Application linear-claim handoff}
+\paragraph{Adjoint convention.}
+For the standard inner product over a field $\mathbb E$, the adjoint of a
+matrix $\bm T$ is its transpose $\bm T^{\mathsf T}$:
+\begin{equation}
+ \langle\bm u,\bm T\bm v\rangle_{\mathbb E}
+ =\langle\bm T^{\mathsf T}\bm u,\bm v\rangle_{\mathbb E}.
+ \label{eq:adjoint-convention}
+\end{equation}
+Throughout this specification, applying the adjoint means using this identity
+to move a public matrix across the inner product.  It is a deterministic
+rewrite and sends no protocol message.
+
+\subsection{PIOP linear-claim handoff}
 \label{sec:piop-handoff}
 
-The application begins with a constraint-satisfaction relation over $\Fq$
-evaluated on the active witness $\pi_q(\bm h)$.  Its PIOP reduces that relation
-to an admissible Lin-BitsDual claim consumed by F2Z:
+The end-to-end proof begins with a constraint-satisfaction relation over $\Fq$
+evaluated on the virtual witness $\pi_q(\bm h)$.  The PIOP reduces that relation
+to a general Lin-BitsDual claim consumed by F2Z.  The input Sumcheck phase of
+$\Pi_1$ shapes that claim before the integer-fold phase:
 \begin{equation}
  \begin{aligned}
-  (x;\pi_q(\bm h))\in\mathcal R_{\rm app}
-  &\xRightarrow{\ \Pi_{\rm app}\ }
-    \left\langle\bm v,\pi_q(\bm h)\right\rangle_{\Fq}=\mu,
-    \quad V=\bm a(\bm a')^{\mathsf T} \\
+  (x;\pi_q(\bm h))\in\mathcal R_{\rm CS}
+  &\xRightarrow{\ \Pi_{\rm PIOP}\ }
+    \left\langle\bm v,\pi_q(\bm h)\right\rangle_{\Fq}=\mu \\
+  &\xRightarrow{\ \Pi_1\ }
+    \mathcal R_{\rm PESAT}[\bm h] \\
   &\xRightarrow{\ \mathrm{F2Z}\ }
     \text{opening against $\rho$}.
  \end{aligned}
  \label{eq:piop-f2z-flow}
 \end{equation}
-The application proof is outside the F2Z protocol.  F2Z receives the public
-claim and does not inspect the equations or reductions that produced it.
-The remainder of this specification defines the public parameters and reduces
-this linear claim to an opening against the commitment to $\bm f$.
+The PIOP is defined by the constraint system and is not part of F2Z itself.
+The end-to-end interaction includes it as the subprotocol that produces the
+F2Z handoff.  F2Z receives the arbitrary public coefficient $\bm v$ and does
+not inspect the equations or reductions that produced it.  The checked input
+Sumcheck is internal to $\Pi_1$; it does
+not factor $\bm v$, but replaces the original scalar claim by an
+evaluation-shaped intermediate claim before producing F2Z PESAT instances.
 
 \endgroup
 
@@ -91,173 +95,290 @@ this linear claim to an opening against the commitment to $\bm f$.
 
 \begingroup\small
 
-\subsection{Domains and representations}
+Section~\ref{sec:instance} is the canonical registry for persistent and
+cross-phase F2Z notation.  A definition gives the exact value denoted by a
+symbol, its type gives the ambient set or interface class, and its rule records
+the normative constraint on its use.  Section~\ref{sec:encoding} specifies how
+the transcript derives the non-input symbols registered here.
+
+\newcommand{\DefTableHead}{%
+  \toprule
+  \cellcolor{specnavy}\textcolor{white}{\textbf{Symbol}} &
+  \cellcolor{specblue}\textcolor{white}{\textbf{Definition}} &
+  \cellcolor{spectableteal}\textcolor{white}{\textbf{Type}} &
+  \cellcolor{specnavy}\textcolor{white}{\textbf{Rule}} \\
+  \midrule}
+
+\newcommand{\DefTableSetup}{%
+  \setlength{\tabcolsep}{3pt}%
+  \renewcommand{\arraystretch}{1.10}%
+  \arrayrulecolor{spectableline}%
+  \rowcolors{2}{white}{spectablerow}}
+
+\subsection{Algebraic domains and canonical maps}
 \label{sec:domains}
 
 \begingroup
-\setlength{\tabcolsep}{4pt}
-\renewcommand{\arraystretch}{1.08}
-\begin{tabularx}{\linewidth}{@{}l l X@{}}
-\toprule
-Object & Concrete value & Rule \\
+\scriptsize
+\DefTableSetup
+\begin{tabularx}{\linewidth}{@{}>{\color{specnavy}\raggedright\arraybackslash}p{0.78in}
+ >{\raggedright\arraybackslash}X
+ >{\color{spectableteal}\raggedright\arraybackslash}p{1.25in}
+ >{\raggedright\arraybackslash}X@{}}
+\DefTableHead
+$\mathbb Z$ & Exact integer domain & Ring \john{don't need} &\\
 \midrule
-$\Ftwo$ & binary field & Matrix $\bm M$ and witness coordinates \\
-$R=\Fq$ & $q=2^{100}-15$ & Application and F2Z scalar linear claims \\
-$\K$ & $\Ftwo[X]/(X^{128}+X^7+X^2+X+1)$ & Packing, products, GKR, and openings \\
-$\pi_2$ & $\mathbb Z\to\Ftwo$ & Coordinatewise reduction modulo $2$ \\
-$\pi_q$ & $\mathbb Z\to\Fq$ & Reduction modulo $q$ \\
-$\gamma(a)$ & $\gamma(a)\in[0,q)$, $\pi_q(\gamma(a))=a$ & Unique representative; no alternate lift is accepted \\
-$\beta_v$ & $X^v$, $0\le v<128$ & Ordered $\Ftwo$-basis of $\K$ \\
+$\Ftwo$ & Binary field & $\mathbb F_2$ &\\
+\midrule
+$\Fq$ & $q=2^{100}-15$ & Finite field &\\
+\midrule
+$\K$ & $\Ftwo[X]/(X^{128}+X^7+X^2+X+1)$ & $\mathbb F_{2^{128}}$ & Used for packing, products, GKR, and openings. \\
+\midrule
+$\pi_2$ & $x\mapsto x\bmod2$ & $\mathbb Z\to\Ftwo$ & \\
+\midrule
+$\operatorname{lift}_2(b)$ & The unique $u\in\{0,1\}\subset\mathbb Z$ satisfying $\pi_2(u)=b$ & $\Ftwo\to\{0,1\}$ & Canonical bit representative; not an inverse of $\pi_2$ on all of $\mathbb Z$. \\
+\midrule
+$\pi_q$ & $x\mapsto x\bmod q$ & $\mathbb Z\to\Fq$ & \\
+\midrule
+$\operatorname{lift}_q$ & $\operatorname{lift}_q(a)$ is the unique integer in $[0,q)$ satisfying $\pi_q(\operatorname{lift}_q(a))=a$ & $\Fq\to[0,q)$ & Canonical integer lift; no alternative representative is accepted. \\
+\midrule
+$\iota_{2\to\K}$ & Canonical subfield embedding & $\Ftwo\hookrightarrow\K$ & Applied coordinatewise when a binary witness enters a $\K$-claim. \\
+\midrule
+$\beta_v$ & $X^v$ in the fixed polynomial basis of $\K$ & Element of $\K$ & $0\le v<128$, ordered by increasing $v$. \\
 \bottomrule
 \end{tabularx}
 \endgroup
-\begin{equation}
- R=\Fq,\quad q=2^{100}-15,\qquad
- \K=\Ftwo[X]/(X^{128}+X^7+X^2+X+1).
- \label{eq:concrete-domains}
-\end{equation}
 
-\subsection{Witnesses and layouts}
-\label{sec:witness-layouts}
+\subsection{Dimensions and index conventions}
+\label{sec:dimensions}
 
-\begin{center}
-\begin{tabularx}{\linewidth}{@{}l l l X@{}}
-\toprule
-View & Vector & Layout & Used by \\
+\begingroup
+\scriptsize
+\DefTableSetup
+\begin{tabularx}{\linewidth}{@{}>{\color{specnavy}\raggedright\arraybackslash}p{0.78in}
+ >{\raggedright\arraybackslash}X
+ >{\color{spectableteal}\raggedright\arraybackslash}p{1.25in}
+ >{\raggedright\arraybackslash}X@{}}
+\DefTableHead
+$n_f$ & Length of the committed witness & $\mathbb N$ & $n_f=2^{m_f}$ and $128\mid n_f$. \\
 \midrule
-Committed & $\bm f\in\bitsset^{n_f}$ & $F\in\Ftwo^{2^{m_f-7}\times2^7}$ & packing, coding, and opening \\
-Active & $\bm h\in\bitsset^{n_h}$ & $H\in\Ftwo^{2^{d_r}\times2^{d_c}}$ & PIOP, folds, products, and GKR \\
+$n_h$ & Length of the virtual witness & $\mathbb N$ & $n_h=2^{m_h}$. \\
+\midrule
+$m_f$ & Boolean dimension of $\bm f$ & $\mathbb N$ & \\
+\midrule
+$m_h$ & Boolean dimension of $\bm h$ & $\mathbb N$ & \\
+\midrule
+$d_{F,r},d_{F,c}$ & Row and column dimensions of $F$ & $\mathbb N^2$ & $d_{F,r}+d_{F,c}=m_f$. \\
+\midrule
+$d_r,d_c$ & Row and column dimensions of $H$ & $\mathbb N^2$ & $d_r+d_c=m_h$ and $2^{d_r}q<2^{127}$. \\
+\midrule
+$m_p$ & Packed-message dimension & $\mathbb N$ & $m_p=m_f-7$. \\
+\midrule
+$r$ & Row index of $H$ & $0\le r<2^{d_r}$ &  \\
+\midrule
+$c$ & Column index of $H$ & $0\le c<2^{d_c}$ & \\
+\midrule
+$j$ & Packed-element index & $0\le j<n_f/128$ & \\
+\midrule
+$v$ & Basis-coordinate index in $K$ & $0\le v<128$ & index to reference a coefficient for a packed galios number \\
 \bottomrule
 \end{tabularx}
-\end{center}
+\endgroup
 
-The layouts satisfy
+\subsection{Witnesses, layouts, and virtualization}
+\label{sec:witness-layouts}
+
+\begingroup
+\scriptsize
+\DefTableSetup
+\begin{tabularx}{\linewidth}{@{}>{\color{specnavy}\raggedright\arraybackslash}p{0.78in}
+ >{\raggedright\arraybackslash}X
+ >{\color{spectableteal}\raggedright\arraybackslash}p{1.25in}
+ >{\raggedright\arraybackslash}X@{}}
+\DefTableHead
+$\bm f$ & Commitment-facing binary witness & $\bitsset^{n_f}$ & The PCS commits only to this vector. \\
+\midrule
+$F$ & Developer-configured reshaping of $\pi_2(\bm f)$ & $\Ftwo^{2^{d_{F,r}}\times2^{d_{F,c}}}$ & $\operatorname{vec}(F)=\pi_2(\bm f)$. The developer reshapes it in terms of $2^{d_{F,r}}\times2^{d_{F,c}}$. \\
+\midrule
+$\bm h$ & PIOP-facing binary witness & $\bitsset^{n_h}$ & Equals $\bm f$ when virtualization is omitted. \\
+\midrule
+$H$ & Developer-configured reshaping of $\pi_2(\bm h)$ & $\Ftwo^{2^{d_r}\times2^{d_c}}$ & $\operatorname{vec}(H)=\pi_2(\bm h)$. \\
+\midrule
+$H_{\mathbb Z}$ & Entrywise $\operatorname{lift}_2(H)$ & $\{0,1\}^{2^{d_r}\times2^{d_c}}\subset\mathbb Z^{2^{d_r}\times2^{d_c}}$ & Used in exact integer folds. \\
+\midrule
+$H_q$ & Entrywise $\pi_q(H_{\mathbb Z})$ & $\Fq^{2^{d_r}\times2^{d_c}}$ & Used in the Lin-BitsDual claim and the input Sumcheck. \\
+\midrule
+$H_{\K}$ & Entrywise $\iota_{2\to\K}(H)$ & $\K^{2^{d_r}\times2^{d_c}}$ & Used in PESAT, GKR, and MLE claims. \\
+\midrule
+$\operatorname{vec}$ & Flattening of a configured matrix layout & Matrix-to-vector map & The developer fixes its coordinate order before proving. \\
+\midrule
+$\bm M$ & Effective virtualization map & $\Ftwo^{n_h\times n_f}$ & Supplied by the developer when virtualization is enabled.  Otherwise $n_h=n_f$, both layouts preserve the same flattened coordinate order, $\bm h=\bm f$, and $\bm M:=I$. \\
+\midrule
+$\bm M_{\K}$ & Scalar extension of the effective $\bm M$ & $\K^{n_h\times n_f}$ & Its transpose is the adjoint from Equation~\eqref{eq:adjoint-convention}. \\
+\midrule
+$\bm f_{\K},\bm h_{\K}$ & Coordinatewise images under $\iota_{2\to\K}$ & $\K^{n_f}$ and $\K^{n_h}$ & Used only in $\K$-linear claims. \\
+\bottomrule
+\end{tabularx}
+\endgroup
+
+The matrices $F$ and $H$ are views of the witness vectors, not additional
+witnesses.  Their shapes and coordinate orders are developer configuration
+choices fixed before proving.  The configured Boolean address of $H$ is
+$z=(r,c)\in\bitsset^{d_r}\times\bitsset^{d_c}$; its vectorization and every
+multilinear extension in this specification use this same row/column bit
+split.  In particular, reshaping a vector $\bm u\in\Fq^{n_h}$ into a matrix
+$U$ means $\operatorname{vec}(U)=\bm u$ under that configured order, not an
+independently chosen row-major convention.
+
+\subsection{Packing and commitment}
+\label{sec:packing-commitment}
+
+\begingroup
+\scriptsize
+\DefTableSetup
+\begin{tabularx}{\linewidth}{@{}>{\color{specnavy}\raggedright\arraybackslash}p{0.78in}
+ >{\raggedright\arraybackslash}X
+ >{\color{spectableteal}\raggedright\arraybackslash}p{1.25in}
+ >{\raggedright\arraybackslash}X@{}}
+\DefTableHead
+$\Pack$ & Packs consecutive groups of $128$ coordinates into $\K$ & $\Ftwo^{n_f}\to\K^{n_f/128}$ & Uses the ordered basis $(\beta_v)_{v<128}$. \\
+\midrule
+$P$ & $P[j]=\sum_{v=0}^{127}\operatorname{vec}(F)[128j+v]\beta_v$ & $\K^{n_f/128}$ & Derived only from the configured view $F$. \\
+\midrule
+$F_v$ & $F_v[j]=\operatorname{vec}(F)[128j+v]$ & $\Ftwo^{2^{m_p}}$ & The $v$-th bit slice of the packed message, so $P[j]=\sum_vF_v[j]\beta_v$. \\
+\midrule
+$\mathcal C$ & Configured encoding code & Public code &  \\
+\midrule
+$\Enc_{\mathcal C}$ & Canonical encoder for $\mathcal C$ & $\K^{n_f/128}\to\K^{n_O}$ & \\
+\midrule
+$O$ & $\Enc_{\mathcal C}(P)$ & $\K^{n_O}$ & Encodes $P$ and never the virtual view $H$. \\
+\midrule
+$\Root$ & Configured Merkle-root algorithm & $\K^{n_O}\to\bitsset^{\lambda}$ & Constructs a Merkle tree on $\Enc_{\mathcal C}(P)$. \\
+\midrule
+$\rho$ & $\Root(O)$ & $\bitsset^{\lambda}$ & Public commitment to $O$. \\
+\bottomrule
+\end{tabularx}
+\endgroup
+
+\subsection{Structured ring-switch coefficients}
+\label{sec:ring-switch-coefficients}
+
+\begingroup
+\scriptsize
+\DefTableSetup
+\begin{tabularx}{\linewidth}{@{}>{\color{specnavy}\raggedright\arraybackslash}p{0.78in}
+ >{\raggedright\arraybackslash}X
+ >{\color{spectableteal}\raggedright\arraybackslash}p{1.25in}
+ >{\raggedright\arraybackslash}X@{}}
+\DefTableHead
+$A_f[v,j]$ & $\bm a_f[128j+v]$ in the configured commitment order & $\K^{128\times2^{m_p}}$ & Pack-boundary view of the public coefficient produced by the adjoint. \\
+\midrule
+$\Theta$ & $\{0,\ldots,t_{\rm sw}-1\}$ in canonical order & Finite nonempty index set & Derived by the developer configuration from $\bm a_f$, with $t_{\rm sw}<2^{32}$. \\
+\midrule
+$A_\theta,B_\theta$ & $A_\theta[v]\in\K$ and $B_\theta[j]\in\K$ & $\K^{128}$ and $\K^{2^{m_p}}$ & Must satisfy $A_f[v,j]=\sum_{\theta\in\Theta}A_\theta[v]B_\theta[j]$ for every $(v,j)$. \\
+\midrule
+$\mathsf{RingDecomp}$ & $\bm a_f\mapsto(\Theta,(A_\theta,B_\theta)_{\theta\in\Theta})$ & Public deterministic map & The verifier derives the same ordered decomposition; no proof field is used. \\
+\bottomrule
+\end{tabularx}
+\endgroup
+
+Every coefficient admits the canonical fallback
+$\Theta=\{0,\ldots,127\}$,
+$A_\theta[v]=1$ when $v=\theta$ and $0$ otherwise, and
+$B_\theta[j]=A_f[\theta,j]$.  A developer configuration may instead provide a
+smaller structured decomposition, such as the translated-equality terms
+induced by rotations, shifts, or other public witness wiring.
+
+\subsection{Lin-BitsDual public claim}
+\label{sec:linbits-instance}
+
+\begingroup
+\scriptsize
+\DefTableSetup
+\begin{tabularx}{\linewidth}{@{}>{\color{specnavy}\raggedright\arraybackslash}p{0.78in}
+ >{\raggedright\arraybackslash}X
+ >{\color{spectableteal}\raggedright\arraybackslash}p{1.25in}
+ >{\raggedright\arraybackslash}X@{}}
+\DefTableHead
+$\bm v$ & Public coefficient vector & $\Fq^{n_h}$ & Uses the configured coordinate order of $H$. \\
+\midrule
+$V$ & $\operatorname{vec}(V)=\bm v$ in the configured order of $H$ & $\Fq^{2^{d_r}\times2^{d_c}}$ & Arbitrary; no rank or separability condition is imposed. \\
+\midrule
+$\mu$ & Claimed inner product $\langle\bm v,\pi_q(\bm h)\rangle_{\Fq}=\langle\bm v,\operatorname{vec}(H_q)\rangle_{\Fq}$ & $\Fq$ & Initial target of the input Sumcheck. \\
+\midrule
+$\mathcal I_{\rm LinBitsDual}$ & $(\bm v,\mu)$ together with the developer configuration & Public F2Z instance & Binds the arbitrary input claim, both layouts, and the effective virtualization map. \\
+\midrule
+$\bm s_h=(\bm s_r,\bm s_c)$ & Input-Sumcheck terminal point & $\Fq^{m_h}$ & Transcript-derived with $|\bm s_r|=d_r$ and $|\bm s_c|=d_c$. \\
+\midrule
+$\kappa$ & $\widetilde{\bm v}(\bm s_h)$ & $\Fq$ & Computed by the verifier; never supplied by the prover. \\
+\midrule
+$\tau$ & Input-Sumcheck terminal value & $\Fq$ & Reduced target satisfying $\kappa\widetilde H_q(\bm s_h)=\tau$. \\
+\bottomrule
+\end{tabularx}
+\endgroup
+
+After the input Sumcheck, the verifier locally derives
+$a_r:=\eq_{\Fq}(r,\bm s_r)$ and
+$a'_c:=\kappa\eq_{\Fq}(c,\bm s_c)$.  Consequently,
 \begin{equation}
- \operatorname{vec}(F)=\pi_2(\bm f),\qquad
- \operatorname{vec}(H)=\pi_2(\bm h),\qquad
- \operatorname{vec}(H)=\bm M\operatorname{vec}(F).
- \label{eq:tensor-layout}
+ W[r,c]:=\kappa\eq_{\Fq}((r,c),\bm s_h)
+        =\eq_{\Fq}(r,\bm s_r)\,
+         \kappa\eq_{\Fq}(c,\bm s_c)=a_ra'_c,
+ \label{eq:derived-core-coefficient}
 \end{equation}
+only the new coefficient $W$ is separable.  Equation~\eqref{eq:derived-core-coefficient}
+is a consequence of the equality polynomial at the Sumcheck terminal point;
+it is not a decomposition of the arbitrary input matrix $V$.
 
-Packing uses only $F$.  For $0\le j<n_f/128$,
-\begin{equation}
- P[j]:=\sum_{v=0}^{127}F_{128j+v}\,\beta_v,\qquad
- O:=\Enc_{\mathcal C}(P),\qquad \rho:=\Root(O),
- \label{eq:packed-commitment}
-\end{equation}
-where $F_i$ denotes the $i$-th coordinate in the fixed vectorization.  Thus
-$P\in\K^{n_f/128}$ before encoding with a RS code.  The public instance requires $n_f$
-to be a multiple of $128$ after witness padding.
-
-\subsection{Separable claim and bounded fold decomposition}
+\subsection{Integer lifts and fold parameters}
 \label{sec:core-parameters}
 
-F2Z receives the public linear claim
-\begin{equation}
- \left\langle\bm v,\pi_q(\bm h)\right\rangle_{\Fq}=\mu.
- \label{eq:core-linear-claim}
-\end{equation}
-The developer configuration fixes
-$H\in\Ftwo^{2^{d_r}\times2^{d_c}}$ and its row-major vectorization.  Using
-the same coordinate order, reshape $\bm v$ into
-$V\in\Fq^{2^{d_r}\times2^{d_c}}$ by
-\begin{equation}
- V[r,c]:=v_{r\cdot2^{d_c}+c}.
- \label{eq:coefficient-layout}
-\end{equation}
-Identifying each bit $H[r,c]$ with its canonical image in $\Fq$,
-Equation~\eqref{eq:core-linear-claim} is
-\begin{equation}
- \sum_{r,c}V[r,c]H[r,c]=\mu.
- \label{eq:matrix-linear-claim}
-\end{equation}
-
-The F2Z fold accepts only a separable coefficient matrix.  An admissible
-instance therefore includes public factors
-$\bm a=(a_r)_r$ and $\bm a'=(a'_c)_c$ satisfying
-\begin{equation}
- V[r,c]=a_r a'_c,
- \qquad
- \mu=\sum_c a'_c\sum_r a_rH[r,c].
- \label{eq:separable-coefficient}
-\end{equation}
-An application that begins with a nonseparable coefficient must perform its
-own reduction before invoking F2Z.
-
-For every row factor $a_r\in\Fq$, let
-$\gamma_r:=\gamma(a_r)\in[0,q)$ be its canonical integer representative.
-Since $q<2^{100}$, each $\gamma_r$ has at most $100$ bits.  For
-$d_r\le126$, define
-\begin{equation}
- c_w:=127-d_r,
- \qquad
- L:=\left\lceil\frac{100}{c_w}\right\rceil.
- \label{eq:chunk-parameters}
-\end{equation}
-
-Split each lift into $L$ little-endian chunks:
-\begin{equation}
- \begin{aligned}
-  \gamma_r^{(\ell)}
-    &:=\left\lfloor\gamma_r/2^{c_w\ell}\right\rfloor\bmod2^{c_w},&
-  \gamma_r&=\sum_{\ell=0}^{L-1}
-        2^{c_w\ell}\gamma_r^{(\ell)}.
- \end{aligned}
- \label{eq:chunking}
-\end{equation}
-For every column $c$ and chunk $\ell$, define the exact integer fold
-\begin{equation}
- \mu_c^{(\ell)}
- :=\sum_{r<2^{d_r}}\gamma_r^{(\ell)}H[r,c]\in\mathbb Z.
- \label{eq:integer-fold}
-\end{equation}
-Because $0\le\gamma_r^{(\ell)}<2^{c_w}$ and $H[r,c]\in\{0,1\}$,
-\begin{equation}
- 0\le\mu_c^{(\ell)}<2^{c_w+d_r}=2^{127}.
- \label{eq:fold-bound}
-\end{equation}
-The verifier reconstructs the supplied field claim by reducing the exact
-folds modulo $q$, applying the column factors, and summing the chunks:
-\begin{equation}
- \mu=
- \sum_c a'_c
- \sum_{\ell=0}^{L-1}\pi_q(2^{c_w\ell}\mu_c^{(\ell)}).
- \label{eq:fold-reconstruction}
-\end{equation}
-
-The product generator has full multiplicative order:
-\begin{equation}
- g\in\K^\times,\qquad
- \operatorname{ord}(g)=2^{128}-1.
- \label{eq:generator-condition}
-\end{equation}
-Together, Equations~\eqref{eq:fold-bound} and~\eqref{eq:generator-condition}
-make $u\mapsto g^u$ injective on every accepted fold.
-Section~\ref{sec:encoding} uses this injectivity to convert each fold into a
-grand-product claim over $\K$.
+\begingroup
+\scriptsize
+\DefTableSetup
+\begin{tabularx}{\linewidth}{@{}>{\color{specnavy}\raggedright\arraybackslash}p{0.86in}
+ >{\raggedright\arraybackslash}X
+ >{\color{spectableteal}\raggedright\arraybackslash}p{1.27in}
+ >{\raggedright\arraybackslash}X@{}}
+\DefTableHead
+$\gamma_r$ & $\operatorname{lift}_q(a_r)$ & $[0,q)\subset\mathbb Z$ & Unique canonical integer lift of $a_r$. \\
+\midrule
+$\widehat\mu_c$ & $\sum_{r<2^{d_r}}\gamma_rH_{\mathbb Z}[r,c]$ & $[0,2^{127})\subset\mathbb Z$ & The bound follows from $2^{d_r}q<2^{127}$ and is required for exponent injectivity. \\
+\midrule
+$\mu_c$ & Prover-supplied claimed fold & $[0,2^{127})\subset\mathbb Z$ & Accepted only if its exponent matches PESAT and $\tau=\sum_ca'_c\pi_q(\mu_c)$. \\
+\midrule
+$g$ & Product generator & $\K^\times$ & $\operatorname{ord}(g)=2^{128}-1$, making exponentiation injective on accepted folds. \\
+\midrule
+$\nu_c$ & $g^{\mu_c}$ & $\K^\times$ & Must equal $\prod_r\bigl(1+(g^{\gamma_r}-1)H_{\K}[r,c]\bigr)$. \\
+\bottomrule
+\end{tabularx}
+\endgroup
 
 \subsection{Protocol interfaces}
 \label{sec:protocol-interfaces}
 
 \begingroup
-\setlength{\tabcolsep}{3.5pt}
-\renewcommand{\arraystretch}{1.08}
-\begin{tabularx}{\linewidth}{@{}l X X@{}}
+\scriptsize
+\DefTableSetup
+\begin{tabularx}{\linewidth}{@{}>{\color{specnavy}\raggedright\arraybackslash}p{0.9in}
+ >{\raggedright\arraybackslash}X
+ >{\raggedright\arraybackslash}X@{}}
 \toprule
-Protocol & Input & Output \\
+\cellcolor{specnavy}\textcolor{white}{\textbf{Symbol}} &
+\cellcolor{specblue}\textcolor{white}{\textbf{Definition}} &
+\cellcolor{specnavy}\textcolor{white}{\textbf{Rule}} \\
 \midrule
-$\Pi_1$ & separable Lin-BitsDual claim and chunk schedule & exact folds and grand-product claims on $H$ \\
-$\Pi_{\rm GKR}$ & product claims and the fixed product circuit & weighted sum claim on $H$ \\
-$\Pi_{\rm MLE}$ & weighted sum claim on $H$ & $\widetilde H(\bm r_h)=\eta$ \\
-$\operatorname{Adj}_{\bm M}$ & $\bm a_h$ & $\bm a_f=\bm M_{\K}^{\mathsf T}\bm a_h$; no message \\
-$\Pi_{\rm LC}\;(\mathsf{LinCheck}_f)$ & $\langle\bm a_f,\bm f_{\K}\rangle=\eta$ & MLE-shaped claim when required \\
-$\Pi_{\rm iopp}$ & MLE-shaped claim and $O$ & accepted opening or rejection \\
+$\Pi_1$ & $\begin{gathered}\langle\bm v,\pi_q(\bm h)\rangle_{\Fq}=\mu\\[-2pt] \Longrightarrow\quad g^{\mu_c}=\displaystyle\prod_r\left(1+(g^{\gamma_r}-1)H_{\K}[r,c]\right)\end{gathered}$ & Runs the input Sumcheck, derives the canonical integer weights, and checks the fold bounds, exponentiation, and reconstruction of the reduced scalar claim. \\
+\midrule
+$\Pi_{\rm GKR}$ & $\begin{gathered}g^{\mu_c}=\displaystyle\prod_r\left(1+(g^{\gamma_r}-1)H_{\K}[r,c]\right)\\[-2pt] \Longrightarrow\ \displaystyle\sum_z\omega_{\xi,z}H_{\K}[z]=\sigma\end{gathered}$ & \\
+\midrule
+$\Pi_{\rm MLE}$ & $\begin{gathered}\displaystyle\sum_z\omega_{\xi,z}H_{\K}[z]=\sigma\\[-2pt] \Longrightarrow\ \widetilde H_{\K}(\bm r_h)=\eta\end{gathered}$ & Typically reduced by $\mathsf{LinCheck}_H$. \\
+\midrule
+$\operatorname{Adj}_{\bm M}$ & $\langle\bm u,\bm M_{\K}\bm v\rangle_{\K}\longmapsto\langle\bm M_{\K}^{\mathsf T}\bm u,\bm v\rangle_{\K}$ & \\
+\midrule
+$\Pi_{\rm iopp}$ & $\begin{gathered}\langle\bm a_f,\bm f_{\K}\rangle_{\K}=\eta\\[-2pt] \Longrightarrow\ \langle B,P\rangle_{\K}=\beta\ \Longrightarrow\ \mathsf{accept}\end{gathered}$ & Performs one ring switch and one recursive Ligerito opening. \\
 \bottomrule
 \end{tabularx}
 \endgroup
-
-The coefficient protocol $\mathsf{LinCheck}_f$ is omitted when $\bm a_f$
-already has the MLE shape required by the opening protocol.  Omission depends
-only on its shape in the committed packing layout.
 
 \endgroup

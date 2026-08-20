@@ -12,12 +12,13 @@
   \textcolor{specblue}{\chN}\!/
   \textcolor{pvhint}{\chH}[#1]}
 
+\newcommand{\idCS}{$\mathsf{CS}[h]$}
 \newcommand{\idLINH}{$\mathsf{LIN}[h]$}
-\newcommand{\idPESAT}{$\mathsf{PESAT}^{(\ell)}$}
+\newcommand{\idSUMIN}{$\mathsf{SC}_{\rm in}[H]$}
+\newcommand{\idPESAT}{$\mathsf{PESAT}$}
 \newcommand{\idSUMH}{$\mathsf{SUM}[H]$}
 \newcommand{\idEVALH}{$\mathsf{EVAL}[H]$}
 \newcommand{\idLINPACK}{$\mathsf{LIN}[f]$}
-\newcommand{\idLINIDFAM}{$\mathsf{LIN}[\mathsf{id}]^{\mathcal A}$}
 \newcommand{\idLINID}{$\mathsf{LIN}[\mathsf{id}]$}
 
 \newcolumntype{L}{>{\raggedright\arraybackslash}p{2.04in}}
@@ -85,88 +86,118 @@
    \nopagebreak}
   {\clgreserve\par\addvspace{0.12\baselineskip}}
 
-\subsection{Transcript channels and schedule}
+\subsection{End-to-end proof decomposition and transcript channels}
 \label{sec:transcript-channels}
 
-Equation~\eqref{eq:proof-channel-lengths} defines the two proof streams; these
-badges remain normative without color.
+The end-to-end proof consists of the configured PIOP proof followed by the
+F2Z proof:
+\begin{equation}
+ \pi_{\rm e2e}:=\left(
+   \pi_{\rm PIOP},
+   \pi_{\rm F2Z}
+ \right).
+ \label{eq:end-to-end-proof-object}
+\end{equation}
+Verification of $\pi_{\rm PIOP}$ reduces the initial constraint statement to
+the F2Z handoff
+\begin{equation}
+ \left\langle\bm v,\operatorname{vec}(H_q)\right\rangle_{\Fq}=\mu.
+ \label{eq:piop-f2z-handoff}
+\end{equation}
+The pair $(\bm v,\mu)$ is produced by the PIOP verifier and is not repeated as
+an F2Z proof field.
+
+Within F2Z, write
+\begin{equation}
+ \pi_1:=\left(
+   \pi_{1,{\rm in}},
+   \bm\nu,\bm\mu
+ \right),
+ \qquad
+ \pi_{1,{\rm in}}:=(g_i^{\rm shape})_{i=0}^{m_h-1}.
+ \label{eq:pi1-proof-object}
+\end{equation}
+The semantic F2Z proof object is
+\begin{equation}
+ \pi_{\mathrm{F2Z}}
+ =\left(
+   \pi_1,
+   \pi_{\rm GKR},\pi_{\rm MLE},
+   \bm s,
+   \pi_{\rm open}
+ \right).
+ \label{eq:proof-object}
+\end{equation}
+The fragment $\pi_{1,{\rm in}}$ contains the round polynomials of the standard
+input Sumcheck that reduces Equation~\eqref{eq:piop-f2z-handoff} to
+\begin{equation}
+ \kappa\widetilde H_q(\bm s_h)=\tau.
+ \label{eq:input-sumcheck-output}
+\end{equation}
+The point $\bm s_h$, scalars $\kappa$ and $\tau$, and factors
+$(\bm a,\bm a')$ are verifier-derived and are not additional proof fields.
+The ring-switch component is
+$\bm s=(\bm s_\theta)_{\theta\in\Theta}$, with each
+$\bm s_\theta\in\K^{128}$; the ordered set $\Theta$ and its coefficient
+decomposition are public and are not proof fields.
+
+Equations~\eqref{eq:end-to-end-proof-object}--\eqref{eq:proof-object} describe
+semantic proof components.  The developer configuration fixes the encoding of
+$\pi_{\rm PIOP}$, while Section~\ref{sec:wire-format} fixes the encoding of
+$\pi_{\rm F2Z}$.  The F2Z v1 container partitions its transmitted records into
+the NARG stream $N_{\rm F2Z}$ and the hint stream $H_{\rm F2Z}$:
+\begin{equation}
+ \pi_{\rm wire}:=(N_{\rm F2Z},H_{\rm F2Z}),\qquad
+ \begin{aligned}
+  \NargLen(\pi_{\rm F2Z})&:=|N_{\rm F2Z}|,&
+  \HintLen(\pi_{\rm F2Z})&:=|H_{\rm F2Z}|,\\
+  \PayloadLen(\pi_{\rm F2Z})&:=|N_{\rm F2Z}|+|H_{\rm F2Z}|,&
+  \WireLen(\pi_{\rm F2Z})&:=|\HostEncode(N_{\rm F2Z},H_{\rm F2Z})|.
+ \end{aligned}
+ \label{eq:proof-channel-lengths}
+\end{equation}
+
+Equation~\eqref{eq:proof-channel-lengths} defines the two F2Z proof streams;
+the following badges identify how each transmitted value is handled.
 
 \begingroup\footnotesize
 \renewcommand{\arraystretch}{1.05}
-\begin{tabularx}{\linewidth}{@{}p{0.48in}p{0.67in}X@{}}
+\begin{tabularx}{\linewidth}{@{}p{0.48in}p{0.90in}X@{}}
 \toprule
-\textbf{Badge}&\textbf{Bytes}&\textbf{Verifier action}\\
+\textbf{Badge}&\textbf{Source}&\textbf{Verifier action}\\
 \midrule
-$\Nbadge{x}$&NARG&Consume a canonical typed record and absorb that same encoding
-before any dependent squeeze; PoW alone uses the checked-deferred read in
-Section~\ref{sec:wire-transcript}.\\
-$\Hbadge{x}$&Hint&Consume, never absorb, and check against the bound prefix
-before the next squeeze.\\
-$\Dbadge{x}$&None&Public, verifier-derived, or challenge value; no proof bytes,
-with the exact framing and squeeze transition of
-Section~\ref{sec:wire-transcript}.\\
-$\Splitbadge{\pi}$&Both&The subordinate ledger fixes each field's channel and
-both replay orders.\\
+$\Nbadge{x}$&NARG stream&Receive $x$ and verify it, and absorb it into the
+verifier's transcript.\\
+$\Hbadge{x}$&Hint stream&Receive $x$ and verify it, but do not absorb it into the
+verifier's transcript.\\
+$\Dbadge{x}$&No proof bytes&Receive nothing; $x$ is public or derived by the
+verifier.\\
+$\Splitbadge{\pi}$&Both streams&Receive each field from its specified stream.
+Absorb NARG fields and verify Hint fields.\\
 \bottomrule
 \end{tabularx}
 \endgroup
 
-% TODO(john): Decide whether VerifyStream should remain a named interface.
-Object notation $\mathsf{Verify}(\ldots,\pi;\tr)$ denotes the equivalent
-$\mathsf{VerifyStream}(\ldots;\tr,c_N,c_H)$.  It follows the subordinate ledger
-over the fixed proof system's bounded input slices, performs the same checks and events,
-and succeeds only at both declared cursor endpoints.
+The verifier completes every required check and absorption before deriving the
+next challenge.
 
-% TODO(john): Decide whether CheckHint needs an explicit named relation.
-Given public data and bound NARG prefix $A$, a hint $h$ is admissible only
-if its accepted value is computationally unique:
+\paragraph{Transcript absorption.}
+Every absorbed value uses the encoding
 \begin{equation}
- \Pr\!\left[\exists h\ne h':
-   \mathsf{CheckHint}_i(A,h)=
-   \mathsf{CheckHint}_i(A,h')=1\right]
- \le \operatorname{negl}(\lambda).
- \label{eq:hint-single-valued}
-\end{equation}
-The uniqueness condition in Equation~\eqref{eq:hint-single-valued} \must{} be
-checked before the next $\Squeeze$.  Acceptance requires no
-pending hint and exact exhaustion of both cursors; missing, misordered, or
-trailing records reject.
-
-% TODO(john): Consider presenting the transcript directly as a sponge.
-Let $\Frame(\tau,\ell,k,i;z)$ be the byte frame of
-Equation~\eqref{eq:event-frame-v1}.
-Before the first proof challenge,
-\begin{equation}
- \tr_0:=\Absorb\!\left(
-   \Absorb\!\left(
-    \tr_{\rm init},
-    \Frame(\mathtt{0x0001},\bot_{32},\bot_{32},\bot_{32};
-      \mathsf{DomainV1})\right),
-   \Frame(\mathtt{0x0002},\bot_{32},\bot_{32},\bot_{32};
-      \mathsf{StatementV1})
+ \Absorb\!\left(
+   \mathsf{DOMAIN}
+   \parallel\mathsf{PAYLOAD\_SIZE}
+   \parallel\mathsf{PAYLOAD}
  \right).
- \label{eq:bind-statement}
+ \label{eq:transcript-absorb}
 \end{equation}
-The payloads in Equation~\eqref{eq:bind-statement} are fixed by
-Equation~\eqref{eq:domain-statement-payloads}.  Later absorbs are
-domain-separated by their numeric tag and fixed $(\ell,k,i)$ scope fields.
-A squeeze updates $\tr$ and yields a derived, non-transmitted value; each
-populated interaction row denotes one event.
+Section~\ref{sec:wire-format} specifies the canonical encoding of each domain
+and payload, together with the transcript replay rules.  The domain identifies
+the semantic meaning of the absorbed value.
 
-The tables realize Equation~\eqref{eq:solid-reduction-graph} as matched
-prover/verifier steps in this exact order:
-\begin{equation}
- \begin{aligned}
- &(P_1/V_1);\\
- &\mathbf{for}\ \ell\in\mathcal A\ \text{in increasing order}:\
-   ((P_2/V_2)^{(\ell)};(P_3/V_3)^{(\ell)});\\
- &(P_4/V_4);(P_5/V_5);(P_6/V_6);(P_7/V_7);(P_8/V_8);(P_9/V_9).
- \end{aligned}
- \label{eq:pv-step-order}
-\end{equation}
-Equation~\eqref{eq:pv-step-order} is the normative top-level replay order.
-Right ledgers contain post-step claims; \emph{internal} claims and
-superscript-$(\ell)$ copies add no paper relation.
+Right ledgers contain post-step claims; \emph{internal} claims are shown only
+when they explain why a later acceptance check cannot yet discharge the
+original relation.
 
 \setlength{\textwidth}{5.63in}
 \setlength{\columnwidth}{5.63in}
@@ -176,309 +207,383 @@ superscript-$(\ell)$ copies add no paper relation.
 \setlength{\marginparsep}{0.10in}
 
 % --------------------------------------------------------------------------
-\begin{pvstep}{Bind the F2Z statement and commitment}{%
-  \clgnewrel{\idLINH}
-    {$\sum_ca'_c\sum_ra_rH[r,c]=\mu$}%
+\begin{pvstep}{Bind the constraint statement and commitment}{%
+  \clgnewrel{\idCS}
+    {$(x;H_q)\in\mathcal R_{\rm CS}$}%
   \clgdef{$\rho$}{$\rho=\Root(O)$}%
 }
 \begin{pvexchange}
-\Pturn{Construct
+\Pturn{Construct the committed and PIOP-facing witness views:
 \(\begin{aligned}
- \pi_2(\bm h)&=\bm M\pi_2(\bm f),\quad \bm h\in\bitsset^{n_h},\\
- P&:=\Pack(F),\quad \operatorname{vec}(F)=\pi_2(\bm f),\\
+ \pi_2(\bm h)&=\bm M\pi_2(\bm f),\\
+ \operatorname{vec}(H)&=\pi_2(\bm h),\\
+ \operatorname{vec}(F)&=\pi_2(\bm f),\qquad P:=\Pack(F),\\
  O&:=\Enc_{\mathcal C}(P),\qquad \rho:=\Root(O).
-\end{aligned}\).}
-\Psend{\Dbadge{\mathsf{com}}}
-\Vturn{Validate the public factors $(\bm a,\bm a')$, claim value $\mu$,
-configuration, shapes, code, and root type; then set
-\(\displaystyle
- \tr\leftarrow\Absorb_{\mathsf{statement}}
-   (\tr,(\mathsf{pp},\bm a,\bm a',\mu,\bm M,\mathsf{com}))\).}
-\Pturn{Retain $\bm h$ and its active matrix form $H$.}
-\Vturn{Derive the unique integer representatives, chunk schedule, and
-active-chunk set from the public factors.  This step sends no message and
-samples no challenge.}
-\Vturn{Encode $\mathsf{CoreSeamV1}$ by
-Equation~\eqref{eq:core-seam-payload} and absorb its tag-\code{0003} frame at
-scope $(\bot_{32},\bot_{32},\bot_{32})$ before the first chunk record.}
-\end{pvexchange}
-\end{pvstep}
-
-% --------------------------------------------------------------------------
-\begin{pvstep}[2.35in]{Run chunk $\ell$ of $\Pi_1$}{%
-  \clgedge[paper-edge fragment]{$\Pi_1^{(\ell)}$}
-    {$\mathcal R_{\rm LinBitsDual}[\bm h]$}
-    {$\mathcal R_{\rm PESAT}^{(\ell)}[\bm h]$}%
-  \clgtouch{\idLINH}%
-  \clgnewrel{\idPESAT}{$Q_c^{(\ell)}(H)=0\ (\forall c)$}%
-  \clgdef{$P$}{$P=\Pack(F)$}%
-}
-\begin{pvexchange}
-\Pturn{Before sending anything, compute
-\(\displaystyle
- \mu_c^{(\ell)}=\sum_r\gamma_r^{(\ell)}H[r,c],\qquad
- \nu_c^{(\ell)}=g^{\mu_c^{(\ell)}}\).}
-\Psend{\Nbadge{\nu^{(\ell)}}}
-\Vturn{Read and absorb the canonical typed vector $\nu^{(\ell)}$.}
-\Psend{\Hbadge{\mu^{(\ell)}}}
-\Vturn{Before any later squeeze, require
-\(\displaystyle
-|\mu^{(\ell)}|=2^{d_c},\qquad 0\le \mu_c^{(\ell)}<2^{127},
-\)
-and $g^{\mu_c^{(\ell)}}=\nu_c^{(\ell)}$ for every $c$.  The order of $g$ and the
-range bound make this accepted exponent unique.  Then set
-\(\begin{aligned}
- \zeta^{(\ell)}&\leftarrow\Squeeze_{\K}^{s}(\tr),\\
- e_0^{(\ell)}&:=\MLE{\nu^{(\ell)}}(\zeta^{(\ell)}).
-\end{aligned}\)}
-\Vsend{\Dbadge{\zeta^{(\ell)}}}
-\end{pvexchange}
-\end{pvstep}
-
-% --------------------------------------------------------------------------
-\begin{pvstep}[2.35in]{Run the GKR reduction for chunk $\ell$}{%
-  \clgedge[GKR subprotocol]{$\Pi_{\rm GKR}^{(\ell)}$}
-    {$\mathcal R_{\rm PESAT}^{(\ell)}[\bm h]$}
-    {$\mathcal R_{\rm sum}^{h,(\ell)}$}%
-  \clgedge[row LinCheck]{$\Pi_{\rm MLE}^{(\ell)}$}
-    {$\mathcal R_{\rm sum}^{h,(\ell)}$}
-    {$\mathcal R_{\rm eval}^{h,(\ell)}$}%
-  \clgdone{\idPESAT}%
-  \clgnewrel{\idEVALH}
-    {$\begin{gathered}
-       \widetilde H(\bm r_h^{(r)})=\eta_r\\[-2pt]
-       (r\in\mathcal A,\ r\le\ell)
-     \end{gathered}$}%
-}
-The PCS-level schedule treats GKR and the following row LinCheck as two
-reductions inside the existing GKR record.  GKR consumes the current PESAT
-claim and returns a weighted sum claim on $H$.  The row LinCheck consumes that
-claim and returns $\widetilde H(\bm r_h^{(\ell)})=\eta_\ell$.
-Denote this typed input bundle by $\mathcal I_{\rm GKR}^{(\ell)}$.
-Neither reduction queries $O$.
-
-\begin{pvexchange}
-\Pturn{Construct the fixed GKR protocol's canonical proof fragment
-\(\displaystyle
- \pi_{\rm red}^{(\ell)}\leftarrow
- (\mathsf{GKR};\mathsf{LinCheck}_H).\mathsf{Prove}
- (\mathsf{pp}_{\rm GKR},\mathcal I_{\rm GKR}^{(\ell)},H;\tr)\).}
-\Psend{\Splitbadge{\pi_{\rm red}^{(\ell)}}}
-\Vturn{Compute
-\(\begin{aligned}
- (\tr',\bm r_h^{(\ell)},\eta_\ell)&\leftarrow
-   (\mathsf{GKR};\mathsf{LinCheck}_H).\mathsf{Verify}\\
- &\quad(\mathsf{pp}_{\rm GKR},\mathcal I_{\rm GKR}^{(\ell)},
-        \pi_{\rm red}^{(\ell)};\tr),
 \end{aligned}\)
-require success and complete consumption of the GKR fragment, then set
-$\tr\leftarrow\tr'$.}
-\Pturn{Retain the witness value
-$\widetilde H(\bm r_h^{(\ell)})$.}
-\end{pvexchange}
-All internal GKR messages and challenges are owned by the fixed GKR
-protocol and use its domain namespace.  Treating GKR atomically here
-does not permit an implementation to omit that subordinate transcript and
-encoding specification.
-
-For the merged-forest GKR protocol, the repeated phase-$x$ value
-$\Hbadge{S_{x,k}^{(\ell)}}$ is a valid hint because the prefix already fixes
-$e_k^{(\ell)}$ and the verifier immediately requires
-$S_{x,k}^{(\ell)}=e_k^{(\ell)}$ before any following squeeze.  A canonical
-implementation \should{} omit that redundant field and mark it $\Dbadge{e_k^{(\ell)}}$
-instead.  The phase-$c$ claimed sums, sumcheck messages, and terminal child
-pairs remain $\Nbadge{\mathrm{GKR\ messages}}$: their consistency checks do not
-uniquely determine them and later challenges must bind them.
-
-The outer encoded field
-$\mathtt{presums}[\ell]\mathtt{.claimed\_sums}$ is distinct from those phase-$c$
-claims.  Wire format v1 omits it and supplies the derived value
-$\Dbadge{[e_d^{(\ell)}+1]}$ to the MultiDegree row LinCheck.  A decoder that
-encounters the reserved legacy tag \code{3081} \must{} reject.
-\end{pvstep}
-
-% --------------------------------------------------------------------------
-\begin{pvstep}[1.65in]{Complete the fold reconstruction check}{%
-  \clgedge[paper composition]{$\Pi_1;\Pi_{\rm GKR};\Pi_{\rm MLE}$}
-    {$\mathcal R_{\rm LinBitsDual}[\bm h]$}
-    {$\displaystyle\bigwedge_{\ell\in\mathcal A}
-       \mathcal R_{\rm eval}^{h,(\ell)}$}%
-  \clgdone{\idLINH}%
-  \clgupd{\idEVALH}{%
-    $\begin{gathered}
-       \widetilde H(\bm r_h^{(\ell)})=\eta_\ell\\[-2pt]
-       (\ell\in\mathcal A)
-     \end{gathered}$}%
-  \clgundef{$P$}%
-}
-\begin{pvexchange}
-\Vturn{After all active chunks, set inactive $\mu^{(\ell)}:=0$, reconstruct
-\(\displaystyle
- \mu_c^{\rm col}:=\sum_{\ell=0}^{L-1}2^{c_w\ell}\mu_c^{(\ell)}\in\Z,
-\)
-and require the fold reconstruction equality
-\(\displaystyle
- \boxed{\sum_c a'_c\,\pi_q(\mu_c^{\rm col})=\mu}\).
-This check has no message, absorb, or challenge.}
+and retain $(\bm h,H,F,P,O)$.}
+\Psend{\Dbadge{x,\rho}}
+\Vturn{Validate the constraint statement, the developer configuration, and
+the commitment root.  Bind $(x,\rho)$ as required by the configured PIOP.}
 \end{pvexchange}
 \end{pvstep}
 
-% --------------------------------------------------------------------------
-\begin{pvstep}[1.70in]{Pull each active claim back through the adjoint}{%
-  \clgedge[zero-message rewrite]
-    {$\mathsf{Adj}_{\bm M_{\K}^{\mathsf T}}$}
-    {$\mathcal R_{\rm eval}^{h}$}
-    {$\mathcal R_{\rm Lin}^{f}$}%
-  \clgdone{\idEVALH}%
-  \clgnewrel{\idLINPACK}{$\langle\bm a_f,\bm f_{\K}\rangle_{\K}=\eta$}%
-}
-For each active claim, set
-\begin{equation}
- \bm a_h[z]:=\eq(z,\bm r_h),\qquad
- \bm a_f:=\bm M_{\K}^{\mathsf T}\bm a_h,
+\smallskip
+\noindent\textbf{Configured matrix indexing.}
+The developer configuration fixes a bijection between each Boolean address
+$z\in\bitsset^{m_h}$ and a pair
+\[
+ z=(r,c)\in\bitsset^{d_r}\times\bitsset^{d_c},
+ \qquad m_h=d_r+d_c.
+\]
+Using this fixed address split, define
+\[
+ H[r,c]:=\bigl[\pi_2(\bm h)\bigr]_z,
  \qquad
- \langle\bm a_f,\bm f_{\K}\rangle_{\K}=\eta.
- \label{eq:interaction-virtual-adjoint}
-\end{equation}
-Equation~\eqref{eq:interaction-virtual-adjoint} generates no message or
-challenge.  The verifier uses the developer-supplied full-adjoint evaluator of
-Equation~\eqref{eq:virtual-adjoint-evaluator}.
-\end{pvstep}
+ \operatorname{vec}(H)=\pi_2(\bm h).
+\]
+Thus $H$ is a matrix view of the same witness bits, not a new witness.  The
+tables $H_{\mathbb Z}$, $H_q$, and $H_{\K}$ contain these same entries embedded
+into $\mathbb Z$, $\Fq$, and $\K$, respectively.  We use brackets for table
+entries, such as $H_q[r,c]$, and parentheses only for multilinear-extension
+evaluations, such as $\widetilde H_q(\bm x_r,\bm x_c)$.
 
 % --------------------------------------------------------------------------
-\begin{pvstep}[2.35in]{Coefficient LinCheck when needed}{%
-  \clgedge[$\Pi_{\rm iopp}$ internal]{$\Pi_{\rm LC}$}
-    {$\mathcal R_{\rm Lin}^{f}$}
-    {$\mathsf{EvalGate}(\K,\mathcal C,\Pack)$}%
-  \clgtouch{\idLINPACK}%
+\begin{pvstep}[2.65in]{Run the PIOP}{%
+  \clgedge[PIOP]{$\Pi_{\rm PIOP}$}
+    {$\mathcal R_{\rm CS}$}
+    {$\mathcal R_{\rm LinBitsDual}[\bm h]$}%
+  \clgdone{\idCS}%
+  \clgnewrel{\idLINH}
+    {$\langle\bm v,\operatorname{vec}(H_q)\rangle_{\Fq}=\mu$}%
 }
-P6/V6 is skipped when $\bm a_f$ already has the MLE shape required by the ring
-switch.  Otherwise it runs the degree-two coefficient protocol
-$\mathsf{LinCheck}_f$ on the claim produced by P5/V5.  Write
-$g_i(X)=\gamma_{i,0}+\gamma_{i,1}X+\gamma_{i,2}X^2$.  For
-$i=0,\ldots,m_f-1$, P6 sends its three canonical coefficients under NARG tag
-\code{4002} and scope
-$(\bot_{32},\bot_{32},i)$.  V6 absorbs that frame, requires
-\begin{equation}
- g_i(0)+g_i(1)=\sigma_{i-1},\qquad
- \sigma_{-1}=\eta,
- \label{eq:interaction-lincheck-round}
-\end{equation}
-then squeezes $r_i\in\K$ under tag \code{4103} at the same scope and sets
-$\sigma_i=g_i(r_i)$.  Equation~\eqref{eq:interaction-lincheck-round} is
-checked before every dependent squeeze.  Put
-$r=(r_{\lo},r_{\hi})$, $|r_{\lo}|=7$.  P6/V6 leaves the terminal gate
-\begin{equation}
- \sigma_{m_f-1}=\widetilde a_f(r)\widetilde f_{\K}(r),
- \label{eq:interaction-lincheck-terminal}
-\end{equation}
-Equation~\eqref{eq:interaction-lincheck-terminal} is checked by P7/V7 with its
-first ring vector.  No other coefficient LinCheck is permitted.
 \begin{pvexchange}
-\Pturn{Send each degree-two $g_i$ in increasing $i$.}
-\Psend{\Nbadge{\pi_{\rm LC}}}
-\Vturn{Check, absorb, and squeeze each round in exact alternation; derive
-$(r,\sigma_{m_f-1})$ and the public evaluator
-$r\mapsto\widetilde a_f(r)$.}
+\Pturn{Run the configured PIOP on the constraint statement and witness:
+\[
+ \pi_{\rm PIOP}\leftarrow
+ \Pi_{\rm PIOP}.\mathsf{Prove}
+   (\mathsf{pp}_{\rm PIOP},x,\operatorname{vec}(H_q)).
+\]}
+\Psend{\pi_{\rm PIOP}}
+\Vturn{Run the matching PIOP verifier:
+\[
+ (\mathsf{ok}_{\rm PIOP},\bm v,\mu)\leftarrow
+ \Pi_{\rm PIOP}.\mathsf{Verify}
+   (\mathsf{pp}_{\rm PIOP},x,\pi_{\rm PIOP}).
+\]
+Require $\mathsf{ok}_{\rm PIOP}=1$.  Its output is the F2Z handoff
+\[
+ \boxed{\left\langle\bm v,\operatorname{vec}(H_q)\right\rangle_{\Fq}=\mu}.
+\]}
+\Vsend{\Dbadge{\bm v,\mu}}
 \end{pvexchange}
 \end{pvstep}
 
 % --------------------------------------------------------------------------
-\begin{pvstep}[2.35in]{Ring-switch each active linear claim}{%
-  \clgedge[$\Pi_{\rm iopp}$ internal]{$\Pi_{\rm ring}^{\mathcal A}$}
-    {$\displaystyle\bigwedge_{\ell\in\mathcal A}
-       \mathcal R_{\rm Lin}^{f,(\ell)}$}
-    {$\displaystyle\bigwedge_{\ell\in\mathcal A}
-       \RLin^{(\ell)}(\K,\mathcal C,\mathsf{id})$}%
-  \clgdone{\idLINPACK}%
-  \clgnewrel{\idLINIDFAM}
-    {$\begin{gathered}
-       \langle B_\ell,P\rangle_{\K}=\beta_\ell\\[-2pt]
-       (\ell\in\mathcal A)
-     \end{gathered}$}%
+\begin{pvstep}[3.05in]{Reduce the PIOP handoff with Sumcheck}{%
+  \clgedge[Sumcheck]{$\Pi_{1,{\rm in}}$}
+    {$\mathcal R_{\rm LinBitsDual}[\bm h]$}
+    {$\kappa\widetilde H_q(\bm s_h)=\tau$}%
+  \clgdone{\idLINH}%
+  \clgnewinternal{\idSUMIN}
+    {$\kappa\widetilde H_q(\bm s_h)=\tau$}%
+}
+\begin{pvexchange}
+\Vturn{Initialize the F2Z transcript by binding its domain, handoff statement,
+configuration, and commitment root.}
+\Pturn{Run the standard $m_h$-round Sumcheck on the Lin-BitsDual claim from
+Section~\ref{sec:linbits-instance}:
+\[
+ \begin{aligned}
+  \bm X&=(\bm X_r,\bm X_c),\\
+  G_{\rm shape}(\bm X)
+    &:=\widetilde{\bm v}(\bm X_r,\bm X_c)\\[-2pt]
+    &\phantom{:=}{}\cdot\widetilde H_q(\bm X_r,\bm X_c),\\
+  \mu&=\sum_{r,c}G_{\rm shape}(r,c),\\
+  \pi_{1,{\rm in}}&:=(g_i^{\rm shape})_{i=0}^{m_h-1}.
+ \end{aligned}
+\]}
+\Psend{\Nbadge{\pi_{1,{\rm in}}}}
+\Vturn{Verify the Sumcheck transcript.  It yields a terminal point
+$\bm s_h=(\bm s_r,\bm s_c)$ and value $\tau$ satisfying
+\[
+ \tau=\widetilde{\bm v}(\bm s_r,\bm s_c)
+      \widetilde H_q(\bm s_r,\bm s_c),
+ \qquad
+ \kappa:=\widetilde{\bm v}(\bm s_r,\bm s_c),
+\]
+and derive
+\(\begin{aligned}
+ a_r&:=\eq_{\Fq}(r,\bm s_r),\\
+ a'_c&:=\kappa\eq_{\Fq}(c,\bm s_c).
+\end{aligned}\)
+The resulting terminal claim is
+\[
+ \boxed{
+  \kappa\widetilde H_q(\bm s_r,\bm s_c)
+  =\tau
+  =\sum_c a'_c\sum_r a_rH_q[r,c]
+ }.
+\]
+Absorb the derived seam and derive the canonical integer lifts
+$\gamma_r:=\operatorname{lift}_q(a_r)$.}
+\Vsend{\Dbadge{\bm s_h,\kappa,\tau}}
+\end{pvexchange}
+\end{pvstep}
+
+% --------------------------------------------------------------------------
+\begin{pvstep}[3.15in]{Fold each column and encode the folds as product claims}{%
+  \clgdone{\idSUMIN}%
+  \clgnewrel{\idPESAT}{$\mathcal R_{\rm PESAT}[\bm h]$}%
+  \clgnote{\idPESAT}{%
+    $\nu_c=\prod_r
+      \bigl(1+(g^{\gamma_r}-1)H_{\K}[r,c]\bigr)$}%
   \clgdef{$P$}{$P=\Pack(F)$}%
 }
-When the coefficient LinCheck is skipped, split
-$\bm r_h^{(\ell)}=(r_{\lo}^{(\ell)},r_{\hi}^{(\ell)})$ with
-$|r_{\lo}^{(\ell)}|=7$.
-When the coefficient LinCheck is required, use its point $r$ instead.
-In both cases define
-\begin{equation}
- z_\ell:=\sum_{v=0}^{127}\eq(v,r_{\lo}^{(\ell)})s_v^{(\ell)},
- \quad
- \begin{cases}
-  z_\ell=\eta_\ell,&\text{MLE-shaped coefficient},\\
-  \sigma_{m_f-1}=\widetilde a_f(r)z_0,&\text{coefficient LinCheck}.
- \end{cases}
- \label{eq:ring-source-gate}
-\end{equation}
-The applicable gate in Equation~\eqref{eq:ring-source-gate} is checked after
-the NARG frame is absorbed and before tag \code{4101}; no division occurs.
-After the shared challenge $r''$, the successor coefficients are
-\begin{align}
- \bar s_u^{(\ell)}&:=\sum_v[s_v^{(\ell)}]_u\beta_v,&
- \Phi_{r''}(z)&:=\sum_u\eq(u,r'')[z]_u,\notag\\[-2pt]
- \beta_\ell&:=\sum_u\eq(u,r'')\bar s_u^{(\ell)},&
- B_\ell(Y)&:=\Phi_{r''}(\eq(r_{\hi}^{(\ell)},Y)).
- \label{eq:ring-successor}
-\end{align}
 \begin{pvlongexchange}
-\Pturn{For every $\ell\in\mathcal A$ and $0\le v<128$, compute
-\(\displaystyle
- s_v^{(\ell)}:=\widetilde F_v(r_{\hi}^{(\ell)}).
-\)}
-\Psend{\Nbadge{s^{(\ell)}}}
-\Vturn{For each $\ell$, validate and absorb the canonical $s^{(\ell)}$ frame,
-then require the applicable equality in Equation~\eqref{eq:ring-source-gate}
-before any squeeze.  After the last vector squeeze
-$r''\leftarrow\Squeeze_{\K}^{7}(\tr)$.}
-\Vsend{\Dbadge{r''}}
-\Pturn{With $[z]_u$ denoting coordinate $u$ in the fixed $\K/\Ftwo$ basis,
-derive $(B_\ell,\beta_\ell)$ by Equation~\eqref{eq:ring-successor}.}
-\Vturn{Independently derive the same
-$(B_\ell,\beta_\ell)_{\ell\in\mathcal A}$.}
+\Pturn{For every column $c$, compute
+\(\begin{aligned}
+ \widehat\mu_c&:=\sum_r\gamma_rH_{\mathbb Z}[r,c],\\
+ \mu_c&:=\widehat\mu_c,\\
+ \nu_c&:=g^{\mu_c}\in\K^\times.
+\end{aligned}\)}
+\Psend{\Nbadge{\bm\nu}}
+\Psend{\Hbadge{\bm\mu}}
+\Vturn{Before deriving any dependent challenge, require
+\[
+ |\bm\mu|=2^{d_c},
+\]
+and, for every $c$,
+\[
+ 0\le\mu_c<2^{127},\qquad g^{\mu_c}=\nu_c.
+\]
+Then close the retained Sumcheck claim by checking
+\[
+ \boxed{\sum_c a'_c\pi_q(\mu_c)=\tau}.
+\]}
+\Vturn{After accepting the hint, derive
+\(\begin{aligned}
+ \zeta&\leftarrow\Squeeze_{\K}^{d_c}(\tr),\\
+ e_0&:=\MLE{\bm\nu}(\zeta).
+\end{aligned}\)}
+\Vsend{\Dbadge{\zeta}}
+\Vturn{Record the successor claim for P5/V5:
+\(\begin{aligned}
+ Q_{r,c}&:=1+(g^{\gamma_r}-1)H_{\K}[r,c],\\
+ \nu_c&=\prod_r Q_{r,c}.
+\end{aligned}\)
+This equality is not checked in P4/V4, and no entry of $H_{\K}$ is sent.}
 \end{pvlongexchange}
 \end{pvstep}
 
 % --------------------------------------------------------------------------
-\begin{pvstep}[1.55in]{Batch the packed linear relations}{%
-  \clgedge[$\Pi_{\rm iopp}$ internal]{$\mathsf{Batch}_{\bm\eta}$}
-    {$\displaystyle\bigwedge_{\ell\in\mathcal A}
-       \RLin^{(\ell)}(\K,\mathcal C,\mathsf{id})$}
-    {$\RLin(\K,\mathcal C,\mathsf{id})$}%
-  \clgdone{\idLINIDFAM}%
-  \clgnewrel{\idLINID}{$\langle B,P\rangle_{\K}=\beta$}%
+\begin{pvstep}[2.35in]{Run the GKR reduction}{%
+  \clgedge[GKR subprotocol]{$\Pi_{\rm GKR}$}
+    {$\mathcal R_{\rm PESAT}[\bm h]$}
+    {$\mathcal R_{\rm sum}^{h}$}%
+  \clgdone{\idPESAT}%
+  \clgnewrel{\idSUMH}
+    {$S(H_{\K})=\sigma$}%
+  \clgnote{\idSUMH}{%
+    $S(H_{\K})=\sum_z\omega_{\xi,z}H_{\K}[z]$}%
 }
 \begin{pvexchange}
-\Vturn{For each active $\ell$ in increasing order, squeeze $\eta_\ell\in\K$
-under tag \code{4102} and scope $(\ell,\bot_{32},\bot_{32})$.}
-\Vsend{\Dbadge{\bm\eta}}
-\Pturn{Form
+\Pturn{Set
 \(\displaystyle
- B:=\sum_{\ell\in\mathcal A}\eta_\ell B_\ell,
- \qquad
- \beta:=\sum_{\ell\in\mathcal A}\eta_\ell\beta_\ell\).}
-\Vturn{Independently derive the same $(B,\beta)$.}
+ \mathcal I_{\rm GKR}:=
+ \mathsf{GKRInput}(\bm\gamma,\bm\nu,\zeta,e_0)
+\)
+and compute
+\(\displaystyle
+ \pi_{\rm GKR}\leftarrow
+ \mathsf{GKR.Prove}
+ (\mathsf{pp}_{\rm GKR},\mathcal I_{\rm GKR},H_{\K};\tr)\).}
+\Psend{\Splitbadge{\pi_{\rm GKR}}}
+\Vturn{Compute
+\(\begin{aligned}
+ (\tr',\bm\omega_\xi,\sigma)&\leftarrow
+   \mathsf{GKR.Verify}\\
+ &\quad(\mathsf{pp}_{\rm GKR},\mathcal I_{\rm GKR},
+        \pi_{\rm GKR};\tr),
+\end{aligned}\)
+require success and the exact subordinate endpoint, then set
+$\tr\leftarrow\tr'$.  The successor is
+\(\displaystyle
+ \sum_{z\in\bitsset^{m_h}}
+   \omega_{\xi,z}H_{\K}[z]=\sigma.
+\)}
 \end{pvexchange}
+GKR operates on $H_{\K}$ and does not query $O$.
 \end{pvstep}
 
 % --------------------------------------------------------------------------
-\begin{pvstep}[1.55in]{Open the batched claim}{%
+\begin{pvstep}[3.05in]{Reduce the GKR sum claim to an MLE claim}{%
+  \clgedge[row LinCheck]{$\Pi_{\rm MLE}$}
+    {$\mathcal R_{\rm sum}^{h}$}
+    {$\mathcal R_{\rm eval}^{h}$}%
+  \clgdone{\idSUMH}%
+  \clgnewrel{\idEVALH}
+    {$\widetilde H_{\K}(\bm r_h)=\eta$}%
+  \clgundef{$P$}%
+}
+\begin{pvexchange}
+\Pturn{Run the standard $m_h$-round Sumcheck on the weighted-sum claim:
+\[
+ \begin{aligned}
+  G_{\rm MLE}(\bm X)
+    &:=\widetilde{\bm\omega_\xi}(\bm X)
+       \widetilde H_{\K}(\bm X),\\
+  \sigma&=\sum_{z\in\bitsset^{m_h}}G_{\rm MLE}(z),\\
+  \pi_{\rm MLE}
+    &:=\bigl((g_i^{\rm MLE})_{i=0}^{m_h-1},\eta\bigr),
+ \end{aligned}
+\]
+where the prover supplies
+$\eta:=\widetilde H_{\K}(\bm r_h)$ at the transcript-derived terminal point
+$\bm r_h$.}
+\Psend{\Splitbadge{\pi_{\rm MLE}}}
+\Vturn{Verify the Sumcheck transcript.  It yields a terminal point
+$\bm r_h$ and value $\theta$.  Compute
+\[
+ \lambda:=\widetilde{\bm\omega_\xi}(\bm r_h)
+\]
+and require the terminal check
+\[
+ \boxed{\theta=\lambda\eta}.
+\]
+The resulting successor claim is
+\[
+ \boxed{\widetilde H_{\K}(\bm r_h)=\eta}.
+\]}
+\end{pvexchange}
+The row LinCheck operates on $H_{\K}$ and does not query $O$.
+\end{pvstep}
+
+% --------------------------------------------------------------------------
+\begin{pvstep}[2.25in]{Rewrite $\langle\bm a,\bm M\bm f\rangle$ as
+$\langle\bm M^{\mathsf T}\bm a,\bm f\rangle$}{%
+  \clgedge[adjoint identity]
+    {$\begin{gathered}
+       \langle\bm a,\bm M_{\K}\bm f_{\K}\rangle_{\K}\\[-2pt]
+       =\langle\bm M_{\K}^{\mathsf T}\bm a,\bm f_{\K}\rangle_{\K}
+     \end{gathered}$}
+    {$\mathcal R_{\rm eval}^{h}$}
+    {$\LIN(\K,\mathcal C,\Pack)$}%
+  \clgdone{\idEVALH}%
+  \clgnewrel{\idLINPACK}{$\langle\bm a_f,\bm f_{\K}\rangle_{\K}=\eta$}%
+}
+\begin{pvlongexchange}
+\multicolumn{3}{@{}p{5.05in}@{}}{
+Both parties set $\bm a[z]:=\eq(z,\bm r_h)$ and use
+$H_{\K}=\bm M_{\K}\bm f_{\K}$ to rewrite
+\[
+ \eta
+ =\langle\bm a,H_{\K}\rangle_{\K}
+ =\langle\bm a,\bm M_{\K}\bm f_{\K}\rangle_{\K}
+ =\langle\bm M_{\K}^{\mathsf T}\bm a,\bm f_{\K}\rangle_{\K}.
+\]
+Set $\bm a_f:=\bm M_{\K}^{\mathsf T}\bm a$.  No message or challenge is
+needed.  In the configured packing order, both parties also view this same
+coefficient as
+\[
+ A_f[v,j]:=\bm a_f[128j+v].
+\]
+This is only a change of coordinates; the claim remains
+$\langle\bm a_f,\bm f_{\K}\rangle_{\K}=\eta$.}
+\end{pvlongexchange}
+\end{pvstep}
+
+% --------------------------------------------------------------------------
+\begin{pvstep}[4.35in]{Ring-switch the adjoint claim into the committed packing}{%
+  \clgedge[$\Pi_{\rm iopp}$ internal]{$\Pi_{\rm ring}$}
+    {$\LIN(\K,\mathcal C,\Pack)$}
+    {$\LIN(\K,\mathcal C,\mathsf{id})$}%
+  \clgdone{\idLINPACK}%
+  \clgnewrel{\idLINID}{$\langle B,P\rangle_{\K}=\beta$}%
+  \clgdef{$P$}{$P=\Pack(F)$}%
+}
+\begin{pvlongexchange}
+\multicolumn{3}{@{}p{5.05in}@{}}{
+From the public coefficient $A_f$, both parties derive the canonical ordered
+decomposition
+\[
+ A_f[v,j]=\sum_{\theta\in\Theta}A_\theta[v]B_\theta[j]
+\]
+from Section~\ref{sec:ring-switch-coefficients}.  This represents the same
+inner product produced by P7/V7; it is not another reduction or proof claim.}
+\\[2pt]
+\Pturn{For every $\theta\in\Theta$ and $0\le v<128$, compute
+\[
+ s_{\theta,v}:=\sum_{j<2^{m_p}}B_\theta[j]F_v[j].
+\]}
+\Psend{\Nbadge{\bm s_\theta}}
+\Vturn{Require $|\bm s_\theta|=128$ for every $\theta$ and anchor all
+messages to the adjoint claim:
+\[
+ \boxed{
+  \sum_{\theta\in\Theta}\sum_{v=0}^{127}
+    A_\theta[v]s_{\theta,v}=\eta
+ }.
+\]}
+\Vturn{After accepting every $\bm s_\theta$, derive
+\(\displaystyle
+ r''\leftarrow\Squeeze_{\K}^{7}(\tr).
+\)}
+\Vsend{\Dbadge{r''}}
+\multicolumn{3}{@{}>{\raggedright\arraybackslash}p{5.05in}@{}}{
+With $[x]_u$ denoting coordinate $u$ in the fixed $\K/\Ftwo$ basis, both
+parties derive, for every $\theta$,
+\(\begin{aligned}
+ t_{\theta,u}&:=\sum_v[s_{\theta,v}]_u\beta_v,\\
+ \Phi_{r''}(x)&:=\sum_u\eq(u,r'')[x]_u,\\
+ \beta_\theta&:=\sum_u\eq(u,r'')t_{\theta,u},\\
+ \omega_\theta[j]&:=\Phi_{r''}(B_\theta[j]),
+\end{aligned}\)
+which gives $\langle\bm\omega_\theta,P\rangle_{\K}=\beta_\theta$.}
+\\[2pt]
+\Vturn{For $\theta\in\Theta$ in order, derive
+\(\displaystyle
+ \lambda_\theta\leftarrow\Squeeze_{\K}(\tr).
+\)}
+\Vsend{\Dbadge{(\lambda_\theta)_{\theta\in\Theta}}}
+\Pturn{Set
+\(\displaystyle
+ B:=\sum_{\theta\in\Theta}\lambda_\theta\bm\omega_\theta,
+ \qquad
+ \beta:=\sum_{\theta\in\Theta}\lambda_\theta\beta_\theta.
+\)}
+\Vturn{Independently derive the same $(B,\beta)$.}
+\end{pvlongexchange}
+\end{pvstep}
+
+% --------------------------------------------------------------------------
+\begin{pvstep}[2.65in]{Open the packed claim}{%
   \clgedge[$\Pi_{\rm iopp}$ internal]{$\Pi_{\rm open}$}
-    {$\RLin(\K,\mathcal C,\mathsf{id})$}
+    {$\LIN(\K,\mathcal C,\mathsf{id})$}
     {$\mathcal R_{\rm triv}$}%
   \clgdone{\idLINID}%
   \clgundef{$P$}%
   \clgundef{$\rho$}%
 }
-\begin{pvexchange}
-\Pturn{Run the fixed polynomial opening protocol---Ligerito in this proof
-system---for the batched claim $(\rho,B,\beta)$, producing
-$\pi_{\rm open}$.}
+\begin{pvlongexchange}
+\Pturn{Absorb the opening target $(m_p,\beta)$.}
+\Vturn{Retain the locally derived $B$ from P8/V8 and absorb the same opening
+target.}
+\Pturn{Compute
+\(\displaystyle
+ \pi_{\rm open}\leftarrow
+ \mathsf{RecProve}(\mathsf{pp},\rho,B,\beta,P;\tr).
+\)}
 \Psend{\Splitbadge{\pi_{\rm open}}}
-\Vturn{Accept only if $\pi_{\rm open}$ verifies against $(\rho,B,\beta)$.
-This authenticates $O=\Enc_{\mathcal C}(P)$ and discharges the batched claim.}
-\end{pvexchange}
+\Vturn{Require
+\(\begin{aligned}
+ &\mathsf{RecVerify}
+   (\mathsf{pp},\rho,B,\beta;\tr,c_N,c_H)=1,\\
+ &\mathsf{NoPendingHint}=1,\\
+ &\mathsf{NargEOF}(c_N)=\mathsf{HintEOF}(c_H)=1,\\
+ &\mathsf{HostEOF}(\pi_{\rm host})=1,\\
+ &\mathsf{Counts}(c_N,c_H)=(n_N,n_H).
+\end{aligned}\)}
+\end{pvlongexchange}
 \end{pvstep}
 
 \setlength{\textwidth}{7.45in}
@@ -486,60 +591,6 @@ This authenticates $O=\Enc_{\mathcal C}(P)$ and discharges the batched claim.}
 \setlength{\linewidth}{7.45in}
 \setlength{\hsize}{7.45in}
 
-\paragraph{Recursive-opening channel ledger.}
-For the recursive Ligerito protocol, the following partition is normative at
-the field level.  The NARG records are replayed in verifier-event order, not
-Rust structure-field order; hint records are consumed at the opening level
-where their checks appear.
-
-\begingroup\scriptsize
-\renewcommand{\arraystretch}{1.08}
-\begin{tabularx}{\linewidth}{@{}p{0.48in}p{1.50in}X@{}}
-\toprule
-\textbf{Class}&\textbf{Fields}&\textbf{Binding and verification deadline}\\
-\midrule
-$\Nbadge{\cdot}$&
-Initial and recursive roots; sumcheck messages; OOD values;
-$\code{final\_proof.yr}$; query- and fold-grinding nonces.&
-Each is observed or checked-and-absorbed before a dependent challenge.  PoW
-nonces remain NARG because multiple values may satisfy the predicate;
-Section~\ref{sec:wire-pow} fixes their tags and schedule.\\
-$\Hbadge{\mathrm{open}_0}$&
-$\code{initial\_proof.opened\_rows}$ and
-$\code{initial\_proof.merkle\_proof}$.&
-The prior initial root and sampled query positions bind the rows and path.
-Merkle verification must succeed before the next sumcheck-introduction
-challenge.\\
-$\Hbadge{\mathrm{open}_i}$&
-Each recursive proof's $\code{opened\_rows}$ and
-$\code{merkle\_proof}$.&
-Verify against the already absorbed preceding-level root and sampled queries
-before the next batching challenge.  Consume levels in increasing recursive
-order.\\
-$\Hbadge{\mathrm{open}_{\rm fin}}$&
-$\code{final\_proof.opened\_rows}$ and
-$\code{final\_proof.merkle\_proof}$.&
-Verify against the preceding root after the final queries are fixed and before
-the final batching challenge or acceptance.\\
-\bottomrule
-\end{tabularx}
-\endgroup
-
-The authenticated rows are hints because the earlier Merkle root
-computationally fixes their accepted contents; the authentication nodes only
-certify that fixed opening.  The whole $\pi_{\rm open}$ \mustnot{} be placed on
-the hint channel.  A recursive-opening implementation must reject before any
-later squeeze on a failed row-length or Merkle check and must exhaust both
-substreams before returning success.  Section~\ref{sec:wire-recursive-ledger}
-fixes the byte payload, scope, cardinality, and exact replay position of every
-field summarized in this table.
-
-The Rust type $\code{FlockCommitHint}$ is unrelated terminology: it is a
-prover-local commitment cache/key, not an $H_{\rm F2Z}$ record.  Its rows,
-packed columns, message, and prover data are not proof bytes; only the public
-commitment/root enters the verifier-facing protocol.
-
-Steps P6/V6 through P9/V9 are the fixed recursive-opening protocol's internal
-expansion of the paper edge $\Pi_{\rm iopp}$.  The verifier accepts iff every
-displayed check succeeds and the proof parser consumes exactly the fields
-specified by these steps.
+P9/V9 follows the recursive-opening ledger in
+Section~\ref{sec:wire-recursive-ledger}.  Its proof spans both streams; the
+whole $\pi_{\rm open}$ \mustnot{} be placed on the hint channel.

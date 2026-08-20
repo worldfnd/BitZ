@@ -28,23 +28,22 @@ remaining subprotocol, implementation, fixture, or provenance work.
 \midrule
 \endhead
 \textbf{G1}&
-The GKR reduction's phase-\(c\) claimed sum \(S_{c,k}^{(\ell)}\) is
+The GKR reduction's phase-\(c\) claimed sum \(S_{c,k}\) is
 transmitted, but the core reduction does not by itself prescribe its
 transcript treatment.  If
-\(\eq(r_{x,k}^{(\ell)},z_{x,k}^{(\ell)})=0\), the phase link does not determine
+\(\eq(r_{x,k},z_{x,k})=0\), the phase link does not determine
 that sum.  The current Rust merged-forest verifier uses the claimed sum only
 after its phase-\(c\) challenges and does not absorb it.&
 The PCS-level schedule treats GKR atomically.  The fixed GKR protocol must
-absorb the tag-\code{3001} frame fixed by
-Section~\ref{sec:wire-events} for \(S_{c,k}^{(\ell)}\) after the phase-link
+absorb the domain-code \code{3001} payload with the encoding fixed by
+Section~\ref{sec:wire-events} for \(S_{c,k}\) after the phase-link
 check and before the first phase-\(c\) round message.  Its already-known
-\(S_{x,k}^{(\ell)}=e_k^{(\ell)}\) field is either omitted or carried as a
+\(S_{x,k}=e_k\) field is either omitted or carried as a
 checked, non-absorbed hint.&
 An interoperable GKR protocol must pin its remaining events in the reserved
 \code{3002--31ff} ranges, and the current verifier must insert the
-tag-\code{3001} absorb at the stated deadline; alternatively the protocol must
-specify a canonical degenerate-branch rejection rule with its stated error
-bound.\\
+domain code \code{3001} absorb at the stated deadline; alternatively the protocol must
+specify a canonical degenerate-branch rejection rule.\\
 \addlinespace
 \textbf{G2}&
 The paper-level edges are
@@ -52,76 +51,82 @@ The paper-level edges are
 \to\mathcal R_{\rm sum}^{h}\),
 \(\Pi_{\rm MLE}:\mathcal R_{\rm sum}^{h}
 \to\mathcal R_{\rm eval}^{h}\), and
-\(\Pi_{\mathsf{iopp}}:\RLin(\K,\mathcal C,\Pack)
+\(\Pi_{\mathsf{iopp}}:\LIN(\K,\mathcal C,\Pack)
 \to\mathcal R_{\rm triv}\).
 The concrete path exposes the GKR sum claim before the MLE claim.&
 The proof system delegates \(\Pi_{\rm GKR}\) and \(\Pi_{\rm MLE}\) to the fixed
-GKR and row-LinCheck ledgers.  Ring switching, batching,
-and recursive opening are only the internal expansion of
-\(\Pi_{\mathsf{iopp}}\), with error
-$\sum_{\ell\in\mathcal A}
- (\varepsilon_{\rm GKR}^{(\ell)}+\varepsilon_{\rm MLE}^{(\ell)}
-  +\varepsilon_{\rm ring}^{(\ell)})
- +\varepsilon_{\rm LC}+\varepsilon_{\rm batch}+\varepsilon_{\rm open}$,
-where an MLE-shaped pulled-back coefficient sets $\varepsilon_{\rm LC}=0$.&
+GKR and row-LinCheck ledgers.  Ring switching and recursive opening are the
+internal expansion of
+\(\Pi_{\mathsf{iopp}}\).&
 A proof system claiming the
 abstract theorem must fix coordinate order and prove both that its concrete
 \(\Pi_{\rm GKR};\Pi_{\rm MLE}\) realizes the named MLE successor and that its internal
 opening path realizes \(\Pi_{\mathsf{iopp}}\) from that LIN relation to
-\(\mathcal R_{\rm triv}\), including the composed soundness loss.\\
+\(\mathcal R_{\rm triv}\).\\
 \pagebreak[4]
 \addlinespace
 \textbf{G3}&
 A nontrivial virtualization matrix may yield the general coefficient
-\(\bm M_{\K}^{\mathsf T}\bm a_h\), whereas the concrete ring switch accepts
-only an MLE-shaped coefficient.&
-The verifier applies the public adjoint without a message.  If the pulled-back
-coefficient is not MLE-shaped, it runs one degree-two coefficient LinCheck on the
-resulting \(\mathcal R_{\rm Lin}^{f}\) claim, checks its terminal equation with
-the first inherited ring vector, and reuses that vector for ring switching.  No
-multi-evaluation ring adapter is required.&
-The implementation must type $\bm M$, prove its on-demand adjoint-coefficient
-evaluator equivalent to the full transpose, enable the fixed
-\code{4002/4103} coefficient-LinCheck ledger when coefficient shape requires it,
-and supply its verifier, implementation, fixtures, and composed error.\\
+\(\bm M_{\K}^{\mathsf T}\bm a\), so an MLE-only ring switch would not cover
+the virtualized relation.&
+The verifier applies the public adjoint without a message, reshapes its
+coefficient at the $128$-bit packing boundary, and derives the canonical
+decomposition
+$A_f[v,j]=\sum_\theta A_\theta[v]B_\theta[j]$.
+The structured ring switch consumes that decomposition directly; the
+canonical $128$-term fallback covers every coefficient, while configured
+translated-equality decompositions may use fewer terms.&
+When virtualization is enabled, the implementation must type $\bm M$ and
+compute the public transpose action and ring-switch decomposition in the fixed
+coordinate order.  It must verify the decomposition identity and provide the
+configured evaluators for every $B_\theta$ and the final packed coefficient.
+No post-adjoint coefficient LinCheck is permitted.
+\\
 \addlinespace
-\textbf{G4}&
-The general relation permits a zero functional, while the active-chunk core
-has \(\mathcal A=\varnothing\) and therefore no PESAT grand-product or
-LIN-to-\(\mathcal R_{\rm triv}\) path.&
-The core protocol requires \(\mathcal A\ne\varnothing\) and rejects otherwise.&
-A zero-functional extension must still define how \(\rho\) is validated and
-must give its own proof object, transcript, and acceptance predicate.\\
+\textbf{G4}\\[-2pt]\textsc{rule fixed}&
+An arbitrary or zero input functional might appear to make the derived row
+factor vanish.&
+The input Sumcheck derives $a_r=\eq_{\Fq}(r,\bm s_r)$ and places $\kappa$ in
+the column factor $a'_c=\kappa\eq_{\Fq}(c,\bm s_c)$.  Since
+$\sum_ra_r=1$, the row vector is nonzero even when $\kappa=0$.&
+Implementations and fixtures must derive the factors in exactly this order,
+including a $\kappa=0$ case; moving $\kappa$ into the row factor is
+nonconforming.\\
 \addlinespace
-\textbf{G5}&
-An application may produce an arbitrary coefficient on $\bm h$, while the
+\textbf{G5}\\[-2pt]\textsc{rule fixed}&
+A PIOP may produce an arbitrary coefficient on $\bm h$, while the
 integer-fold core accepts only a separable row/column coefficient on $H$.&
-The F2Z input is the Lin-BitsDual relation
-\(\mathcal R_{\rm LinBitsDual}[\bm h]\), whose public factors satisfy
-\(V[r,c]=a_ra'_c\) in the configured active layout.&
-An application with a nonseparable coefficient must reduce it to the declared
-Lin-BitsDual relation before invoking F2Z and must account separately for the
-soundness of that upstream reduction.\\
+F2Z accepts arbitrary $(\bm v,\mu)$ and runs the fixed
+input-Sumcheck phase of $\Pi_1$.  It derives
+$\kappa=\widetilde{\bm v}(\bm s_h)$ and the new equality weights
+$W[r,c]=\kappa\eq_{\Fq}((r,c),\bm s_h)=a_ra'_c$; it never factorizes the
+original $V$.&
+Implement domain codes \code{1002/1101/1003}, the unbiased $\Fq$ sampler, terminal
+coefficient evaluator, $2m_h/|\Fq|$ error term, and positive and negative
+transcript fixtures before claiming conformance.\\
 \addlinespace
 \textbf{G6}\\[-2pt]\textsc{wire fixed}&
-Semantic framing alone does not choose interoperable bytes, the outer
+Semantic transcript encoding alone does not choose interoperable bytes, the outer
 two-stream container, a recursive-opening configuration, or a proof-of-work
 predicate and difficulty.  The current one-stream codec writes \(\mu\) but
 absorbs its derived image \(g^\mu\), which cannot be represented by the selected
 two-stream wrapper's write-and-absorb NARG operation.&
 Section~\ref{sec:wire-format} fixes the wire/transcript question: it gives the
 primitive, vector, record, and outer encodings; numeric
-event registry; transcript transition; NARG/hint replay; recursive Ligerito
+domain registry; transcript transition; NARG/hint replay; recursive Ligerito
 integer tables and event ledger; Merkle row and multiproof bytes; PoW context,
 nonce, predicate, schedule, and difficulty; all four length metrics; and exact
 nested and outer exhaustion.  It sends and absorbs
-\(\nu^{(\ell)}=g^{\mu^{(\ell)}}\) under tag \code{2001}, then checks the
-tag-\code{2081} \(\mu^{(\ell)}\) hint before tag \code{2101}.  A missing or
+the mandatory domain code \code{1002} input-Sumcheck rounds, samples domain code \code{1101},
+and absorbs the derived domain code \code{1003} seam before the product claim.  It
+then sends and absorbs
+\(\nu=g^{\mu}\) under domain code \code{2001}, then checks the domain code \code{2081}
+\(\mu\) hint before domain code \code{2101}.  A missing or
 unknown GKR event ledger or constrained-code construction is a
-hard reject, not an inferred encoding.  It also fixes conditional coefficient-LinCheck
-tags \code{4002/4103}, their alternation, terminal deadline, and reuse of the
-tag-\code{4001} ring vector; an MLE-shaped coefficient permits none of those
-events.&
+hard reject, not an inferred encoding.  It also fixes the ordered
+domain-code \code{4001} structured ring vectors, their anchor check before
+domain code \code{4101}, and the domain-code \code{4102} term-batching
+challenges.  Domain codes \code{4002/4103} remain reserved.&
 \textbf{Owner: John Wu.}  Port Section~\ref{sec:wire-format} to the host and
 recursive verifiers, remove the opaque bincode payload, and publish the
 required complete proof, transcript, Merkle, PoW, and negative fixtures.  The
@@ -135,11 +140,11 @@ left to implementation inference.\\
 \addlinespace
 \textbf{G7}\\[-2pt]\textsc{rule fixed}&
 The current encoded outer row LinCheck includes
-\(\mathtt{presums}[\ell]\mathtt{.claimed\_sums}\), and current recursive/host decoders may
+\(\mathtt{presum.claimed\_sums}\), and current recursive/host decoders may
 accept unused roots, nonces, recursive proofs, or suffix bytes.  The presum is
 currently checked only after the MultiDegree challenges.&
 Wire format v1 omits that redundant field and derives
-\([e_d^{(\ell)}+1]\); the reserved legacy tag \code{3081} rejects.
+\([e_d+1]\); the reserved legacy domain code \code{3081} rejects.
 Sections~\ref{sec:wire-merkle}, \ref{sec:wire-events},
 \ref{sec:wire-recursive-ledger}, and~\ref{sec:wire-conformance} derive the
 exact counts for roots, nonces, proofs, rows, and query-dependent paths and

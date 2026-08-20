@@ -24,6 +24,9 @@
 \definecolor{specblue}{HTML}{315B7D}
 \definecolor{specmuted}{HTML}{667085}
 \definecolor{specpale}{HTML}{F3F4F6}
+\definecolor{spectableteal}{HTML}{2D6F67}
+\definecolor{spectablerow}{HTML}{F7F9FC}
+\definecolor{spectableline}{HTML}{A9BACB}
 
 \setlength{\parindent}{0pt}
 \linespread{0.96}
@@ -40,7 +43,7 @@
 \pagestyle{fancy}
 \fancyhf{}
 \fancyhead[L]{\footnotesize\sffamily\color{specmuted}F2Z PCS general specification}
-\fancyhead[R]{\footnotesize\sffamily\color{specmuted}chunked mod-$q$ / recursive Ligerito}
+\fancyhead[R]{\footnotesize\sffamily\color{specmuted}integer lifting / recursive Ligerito}
 \fancyfoot[C]{\thepage}
 \renewcommand{\headrulewidth}{0.25pt}
 
@@ -84,14 +87,12 @@ Given a public vector $\bm v$ and a value $\mu\in\Fq$, the relation asserts
   \qquad
   O=\Enc_{\mathcal C}\!\left(\Pack(\pi_2(\bm f))\right),
 \]
-where $\bm f$ is the committed binary witness, $\bm h$ is the active witness
-used by the application, and $\bm M$ is a public developer-selected
-virtualization map.
+where $\bm f$ is the committed binary witness, $\bm h$ is the virtual witness
+used by the PIOP, and $\bm M$ is the effective virtualization map.
+Virtualization is optional: when the developer omits it, $\bm h=\bm f$ and
+$\bm M=I$.
 Here $\pi_2:\mathbb Z\to\Ftwo$ denotes coordinatewise reduction modulo $2$.
-The application PIOP supplies this linear claim to F2Z.  Under the configured
-layout of $\bm h$, an admissible claim has a separable coefficient matrix
-$V[r,c]=a_r a'_c$; the public factors $(\bm a,\bm a')$ are part of the F2Z
-instance.
+The PIOP supplies this linear claim to F2Z.
 
 Drawing inspiration from binary-field techniques used in systems such as Flock and Binius64, F2Z combines the following techniques:
 
@@ -103,14 +104,21 @@ Drawing inspiration from binary-field techniques used in systems such as Flock a
        operate on packed field elements.
 
  \item \textbf{Witness virtualization.}
-       The public map $\bm M$ relates the committed witness $\bm f$ to the
-       witness $\bm h$ on another ring/field. This permits constraints to be layered on top of each other while making the witness $\bm f$ to be small.
+       When configured, the public map $\bm M$ relates the committed witness
+       $\bm f$ to the PIOP-facing witness $\bm h$. This permits a
+       constraint-specific witness layout while retaining one commitment;
+       the direct configuration uses the identity map.
 
- \item \textbf{Chunked integer lifting.}
-       Coefficients in $\Fq$ are lifted to canonical integers and split into
-       bounded chunks. This preserves the original modular claim while keeping
-       every intermediate fold within the injective range of the binary-field
-       exponent encoding.
+ \item \textbf{Input-claim shaping.}
+       A degree-two LinCheck over $\Fq$ reduces the arbitrary public
+       $\bm v$-weighted claim to one evaluation-shaped claim.  The resulting
+       row and column equality weights are verifier-derived and are the only
+       factors consumed by the integer-fold core.
+
+ \item \textbf{Bounded integer lifting.}
+       Coefficients in $\Fq$ are lifted to their canonical integers.  The
+       configured row dimension guarantees that every resulting integer fold
+       lies within the injective range of the binary-field exponent encoding.
 
  \item \textbf{Grand-product encoding.}
        Because the witness coordinates are binary, each bounded linear fold can
@@ -120,22 +128,23 @@ Drawing inspiration from binary-field techniques used in systems such as Flock a
  \item \textbf{GKR and LinCheck reductions.}
        GKR verifies the product computation succinctly, while the row LinCheck
        reduces the resulting weighted claim to a multilinear-extension
-       evaluation of the active witness.
+       evaluation of the virtual witness.
 
  \item \textbf{Adjoint pullback.}
        The verifier transports the final coefficient through
        $\bm M^{\mathsf T}$, converting a claim on $\bm h$ into a claim on the
        originally committed witness $\bm f$ without another commitment or
-       protocol message.
+       protocol message. This step is the identity when virtualization is
+       omitted.
 
- \item \textbf{Conditional reduction, ring switching, and batching.}
-       The coefficient LinCheck is used only when the pulled-back coefficient
-       is not already in the required MLE form. A ring switch then converts the
-       resulting evaluations into packed linear claims, which are batched into
-       a single recursive Ligerito opening.
+ \item \textbf{Structured ring switching.}
+       The pulled-back coefficient is decomposed across the $128$-bit packing
+       boundary.  The ring switch then converts the resulting inner product on
+       $\bm f$ directly into one packed linear claim for the recursive Ligerito
+       opening; no post-adjoint LinCheck is required.
 \end{itemize}
 
-Together, these techniques allow F2Z to prove inner products claims over $\Fq$, and
+Together, these techniques allow F2Z to prove inner-product claims over $\Fq$, and
 therefore support constraints beyond $\Ftwo$, while retaining a binary-field
 commitment. This specification fixes the Lin-BitsDual relation, its
 prover--verifier reductions, and its concrete transcript and encoding rules.
