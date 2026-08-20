@@ -102,7 +102,7 @@ fn f2z_full_open(bencher: Bencher, case: Case) {
                 data,
                 witness,
                 &scoped_queries,
-                StatementBinding::AlreadyBound,
+                StatementBinding::Bind,
                 &mut transcript,
             )
             .expect("F2Z benchmark opening must succeed");
