@@ -34,7 +34,7 @@
 
 use crate::bridge::{as_flock_f128s, into_flock_f128s};
 use crate::challenger::ProverChallenger;
-use crate::protocol::{
+use crate::utils::{
     bind_ring_switch_message, bind_statement, observe_opening_target, sample_batching_scalars,
     sample_shared_ring_switch_point, validate_batch, write_opening_proof,
 };

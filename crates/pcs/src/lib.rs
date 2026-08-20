@@ -102,7 +102,7 @@ mod bridge;
 mod challenger;
 mod commitment;
 mod open;
-mod protocol;
+mod utils;
 mod verify;
 
 use field::F128;
