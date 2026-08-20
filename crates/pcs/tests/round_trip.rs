@@ -492,7 +492,7 @@ fn real_pcs_prover_rejects_a_false_evaluation_without_consuming_prover_data() {
 
     assert_eq!(
         prove_single(&pcs, &data, packed_witness, &query, &mut prover),
-        Err(CommitError::VerificationFailed)
+        Err(CommitError::InvalidClaim)
     );
     assert_eq!(data.codeword_len(), codeword_len);
 }
