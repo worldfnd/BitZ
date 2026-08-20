@@ -99,7 +99,7 @@ fn f2z_full_open(bencher: Bencher, case: Case) {
                 .collect::<Vec<_>>();
             let mut transcript = build_prover(SESSION, INSTANCE);
             pcs.prove_lin_batch(
-                data,
+                &data,
                 witness,
                 &scoped_queries,
                 StatementBinding::Bind,

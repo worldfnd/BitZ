@@ -154,8 +154,8 @@ impl ProverData {
         self.flock_prover_data.codeword.len()
     }
 
-    pub(crate) fn into_flock_data(self) -> FlockProverData {
-        self.flock_prover_data
+    pub(crate) fn flock_data(&self) -> &FlockProverData {
+        &self.flock_prover_data
     }
 
     pub(crate) fn commitment(&self) -> &FlockCommitment {

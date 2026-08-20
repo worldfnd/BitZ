@@ -78,7 +78,7 @@
 //! let (commitment, prover_data) = pcs.commit(&packed_witness).unwrap();
 //! let mut prover = build_prover(b"pcs-example", b"zero-polynomial");
 //! pcs.prove_lin_batch(
-//!     prover_data,
+//!     &prover_data,
 //!     packed_witness,
 //!     &queries,
 //!     StatementBinding::Bind,
@@ -203,10 +203,10 @@ pub trait CommitScheme {
         packed_witness: &[F128],
     ) -> Result<(Self::Commitment, Self::ProverData), CommitError>;
 
-    /// Consumes the exact packed witness and proves an ordered batch of claims.
+    /// Consumes the witness and proves an ordered batch without consuming the prover data.
     fn prove_lin_batch(
         &self,
-        data: Self::ProverData,
+        data: &Self::ProverData,
         packed_witness: Vec<F128>,
         queries: &[ScopedOpeningQuery<'_>],
         statement_binding: StatementBinding,
@@ -236,7 +236,7 @@ impl CommitScheme for Pcs {
 
     fn prove_lin_batch(
         &self,
-        data: Self::ProverData,
+        data: &Self::ProverData,
         packed_witness: Vec<F128>,
         queries: &[ScopedOpeningQuery<'_>],
         statement_binding: StatementBinding,

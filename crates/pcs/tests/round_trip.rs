@@ -45,7 +45,7 @@ impl RealFixture {
 
         let (commitment, data) = pcs.commit(&packed_witness).unwrap();
         let mut prover = build_prover(SESSION, INSTANCE);
-        prove_single(&pcs, data, packed_witness, &query, &mut prover).unwrap();
+        prove_single(&pcs, &data, packed_witness, &query, &mut prover).unwrap();
 
         Self {
             pcs,
@@ -94,7 +94,7 @@ impl BatchFixture {
         let scoped_queries = scoped_batch(&queries);
         let mut prover = build_prover(SESSION, BATCH_INSTANCE);
         pcs.prove_lin_batch(
-            data,
+            &data,
             packed_witness,
             &scoped_queries,
             StatementBinding::Bind,
@@ -121,7 +121,7 @@ fn scoped_batch(queries: &[OpeningQuery; 3]) -> [ScopedOpeningQuery<'_>; 3] {
 
 fn prove_single(
     pcs: &Pcs,
-    data: ProverData,
+    data: &ProverData,
     packed_witness: Vec<F128>,
     query: &OpeningQuery,
     transcript: &mut ProverState,
@@ -227,7 +227,7 @@ fn real_pcs_already_bound_batch_derives_queries_from_transcript() {
     });
     let prover_scoped_queries = scoped_batch(&prover_queries);
     pcs.prove_lin_batch(
-        data,
+        &data,
         packed_witness,
         &prover_scoped_queries,
         StatementBinding::AlreadyBound,
@@ -396,7 +396,7 @@ fn real_pcs_rejects_empty_batches() {
 
     assert_eq!(
         pcs.prove_lin_batch(
-            data,
+            &data,
             packed_witness,
             &[],
             StatementBinding::Bind,
@@ -425,7 +425,7 @@ fn real_pcs_rejects_point_length_mismatches() {
 
     let mut prover = build_prover(SESSION, b"wrong-prover-point");
     assert_eq!(
-        prove_single(&pcs, data, packed_witness, &short_query, &mut prover),
+        prove_single(&pcs, &data, packed_witness, &short_query, &mut prover),
         Err(CommitError::PointLengthMismatch)
     );
 
@@ -454,7 +454,7 @@ fn real_pcs_rejects_packed_witness_length_mismatches_during_opening() {
     let mut prover = build_prover(SESSION, b"wrong-packed-length");
 
     assert_eq!(
-        prove_single(&pcs, data, packed_witness, &query, &mut prover),
+        prove_single(&pcs, &data, packed_witness, &query, &mut prover),
         Err(CommitError::InvalidBitLength)
     );
 }
@@ -472,14 +472,14 @@ fn real_pcs_rejects_mismatched_prover_parameters() {
     let mut prover = build_prover(SESSION, b"mismatched-parameters");
 
     assert!(matches!(
-        prove_single(&other, data, packed_witness, &query, &mut prover),
+        prove_single(&other, &data, packed_witness, &query, &mut prover),
         Err(CommitError::InvalidConfiguration(description))
             if description == "prover data parameters mismatch"
     ));
 }
 
 #[test]
-fn real_pcs_prover_rejects_a_false_evaluation() {
+fn real_pcs_prover_rejects_a_false_evaluation_without_consuming_prover_data() {
     let pcs = Pcs::new(M, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
     let packed_witness = vec![F128::default(); pcs.packed_len()];
     let (_, data) = pcs.commit(&packed_witness).unwrap();
@@ -488,11 +488,13 @@ fn real_pcs_prover_rejects_a_false_evaluation() {
         target: F128::from(1u64),
     };
     let mut prover = build_prover(SESSION, b"false-evaluation");
+    let codeword_len = data.codeword_len();
 
     assert_eq!(
-        prove_single(&pcs, data, packed_witness, &query, &mut prover),
+        prove_single(&pcs, &data, packed_witness, &query, &mut prover),
         Err(CommitError::VerificationFailed)
     );
+    assert_eq!(data.codeword_len(), codeword_len);
 }
 
 #[test]
@@ -510,7 +512,7 @@ fn real_pcs_rejects_an_opening_for_a_different_packed_witness() {
         point,
     };
     let mut prover = build_prover(SESSION, b"different-packed-witness");
-    prove_single(&pcs, data, different_witness, &query, &mut prover).unwrap();
+    prove_single(&pcs, &data, different_witness, &query, &mut prover).unwrap();
     let proof = prover.finish();
     let mut verifier = build_verifier(SESSION, b"different-packed-witness", &proof);
 

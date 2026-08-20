@@ -61,7 +61,7 @@ type FoldTable = [FlockF128; FOLD_TABLE_LEN];
 
 pub(crate) fn open_batch(
     pcs: &Pcs,
-    data: ProverData,
+    data: &ProverData,
     packed_witness: Vec<F128>,
     queries: &[ScopedOpeningQuery<'_>],
     statement_binding: StatementBinding,
@@ -76,7 +76,7 @@ pub(crate) fn open_batch(
     if packed_witness.len() != pcs.packed_len() {
         return Err(CommitError::InvalidBitLength);
     }
-    if !params_match(pcs, &data) {
+    if !params_match(pcs, data) {
         return Err(CommitError::invalid_configuration(
             "prover data parameters mismatch",
         ));
@@ -91,7 +91,7 @@ pub(crate) fn open_batch(
         bind_statement(pcs, &data.commitment().root, queries, transcript);
     }
     let packed_witness = into_flock_f128s(packed_witness);
-    let flock_data = data.into_flock_data();
+    let flock_data = data.flock_data();
 
     // Step 3: Build split suffix factors and compute each set of 128 ring-switch values.
     // Keep balanced factors for the partial-evaluation fold and the basis fold.
