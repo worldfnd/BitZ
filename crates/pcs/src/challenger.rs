@@ -315,6 +315,59 @@ mod tests {
     }
 
     #[test]
+    fn observed_root_changes_the_following_challenge() {
+        fn sample_after_root(root: &[u8; 32]) -> FlockF128 {
+            let mut transcript = build_prover(b"pcs-challenger-test", b"root-binding");
+            let mut challenger = ProverChallenger::new(&mut transcript);
+            challenger.observe_bytes(root);
+            challenger.sample_f128()
+        }
+
+        let root = [7; 32];
+        let mut changed_root = root;
+        changed_root[0] ^= 1;
+
+        assert_ne!(sample_after_root(&root), sample_after_root(&changed_root));
+    }
+
+    #[test]
+    fn verifier_rejects_an_invalid_positive_pow_nonce() {
+        const SESSION: &[u8] = b"pcs-challenger-test";
+        const INSTANCE: &[u8] = b"invalid-positive-pow";
+        const BITS: u32 = 8;
+
+        let seed = {
+            let mut transcript = build_prover(SESSION, INSTANCE);
+            transcript.public_message(POW_TAG);
+            transcript.public_message(&BITS);
+            transcript.verifier_message::<LocalF128>().to_bytes()
+        };
+
+        let mut prover = build_prover(SESSION, INSTANCE);
+        let nonce = {
+            let mut challenger = ProverChallenger::new(&mut prover);
+            challenger.grind_pow(BITS)
+        };
+        let mut proof = prover.finish();
+
+        let mut changed_nonce = nonce.wrapping_add(1);
+        while pow_valid(&seed, changed_nonce, BITS) {
+            changed_nonce = changed_nonce.wrapping_add(1);
+        }
+        proof
+            .narg_string
+            .copy_from_slice(&changed_nonce.to_le_bytes());
+
+        let mut verifier = build_verifier(SESSION, INSTANCE, &proof);
+        {
+            let mut challenger = VerifierChallenger::new(&mut verifier);
+            assert!(!challenger.verify_pow(changed_nonce, BITS));
+            assert!(challenger.failed());
+        }
+        verifier.check_eof().unwrap();
+    }
+
+    #[test]
     fn ligerito_public_target_prefix_adds_no_narg_bytes() {
         let target = FlockF128::new(1, 2);
         let next_message = FlockF128::new(3, 4);
