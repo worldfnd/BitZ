@@ -324,7 +324,12 @@
     \hbox_to_zero:n
       {
         \skip_horizontal:n { \textwidth + \marginparsep }
-        \raisebox { -#1 } [ \c_zero_dim ] [ \c_zero_dim ]
+        %% Top-align the panel with the invocation point.  A saved parbox may
+        %% carry its full extent in the box height; a zero raise would make
+        %% the panel grow upward and cross a page boundary.
+        \raisebox
+          { \dimexpr -\box_ht:N \g__clg_board_box - #1 \relax }
+          [ \c_zero_dim ] [ \c_zero_dim ]
           { \box_use:N \g__clg_board_box }
         \hss
       }

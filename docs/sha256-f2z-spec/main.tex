@@ -15,7 +15,9 @@
 \usepackage{amsmath,amssymb,amsthm,mathtools}
 \allowdisplaybreaks
 \usepackage{booktabs,array,tabularx,longtable,multirow}
-\usepackage{enumitem,microtype,xcolor}
+\usepackage{needspace}
+\usepackage{enumitem,microtype}
+\usepackage[table]{xcolor}
 \usepackage{float,algorithm,algpseudocode}
 \makeatletter
 \newcommand{\theHALG@line}{\thealgorithm.\arabic{ALG@line}}
@@ -57,13 +59,72 @@
 \newcommand{\channelN}[1]{\textcolor{specblue}{\textbf{NARG}}~#1}
 \newcommand{\channelH}[1]{\textcolor{specamber}{\textbf{HINT}}~#1}
 \newcommand{\derived}[1]{\textcolor{specgreen}{\textbf{DERIVED}}~#1}
-\newcommand{\pvpair}[4]{%
-  \vspace{-1pt}\noindent
-  \begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}X@{\hspace{0.65em}}>{\raggedright\arraybackslash}X@{}}
-  \textcolor{specblue}{\textbf{#1}}\;#2 &
-  \textcolor{specgreen}{\textbf{#3}}\;#4
-  \end{tabularx}\vspace{-2pt}}
 \newcommand{\VCheck}[1]{\textbf{require }#1}
+
+% Prover--verifier timelines.  Empty cells are deliberate: they show which
+% actor is idle while the other computes, sends, checks, or samples.
+\definecolor{pvnavy}{HTML}{17365D}
+\definecolor{pvtraffic}{HTML}{F3F4F6}
+\definecolor{pvhint}{HTML}{A15C00}
+
+\newcommand{\Nbadge}[1]{\textcolor{specblue}{\mathsf N[#1]}}
+\newcommand{\Hbadge}[1]{\textcolor{pvhint}{\mathsf H[#1]}}
+\newcommand{\Dbadge}[1]{\textcolor{specmuted}{\mathsf D[#1]}}
+\newcommand{\Splitbadge}[1]{%
+  \textcolor{specblue}{\mathsf N}\!/
+  \textcolor{pvhint}{\mathsf H[#1]}}
+
+\newcolumntype{L}{>{\raggedright\arraybackslash}p{2.04in}}
+\newcolumntype{T}{>{\centering\arraybackslash\columncolor{pvtraffic}}p{0.65in}}
+\newcolumntype{R}{>{\raggedright\arraybackslash}p{2.21in}}
+
+\newenvironment{pvexchange}
+  {\par\scriptsize
+   \setlength{\tabcolsep}{3pt}%
+   \setlength{\abovedisplayskip}{2pt}%
+   \setlength{\belowdisplayskip}{2pt}%
+   \renewcommand{\arraystretch}{1.02}%
+   \begin{tabular}{@{}LTR@{}}
+   \rowcolor{pvnavy}
+   \multicolumn{1}{c}{\color{white}\bfseries Prover $\mathsf P$}
+   &\multicolumn{1}{c}{\color{white}\bfseries Traffic}
+   &\multicolumn{1}{c}{\color{white}\bfseries Verifier $\mathsf V$}
+   \\
+   \addlinespace[1pt]}
+  {\end{tabular}\par}
+
+\newcommand{\Pmsg}[1]{\(\xrightarrow{\;\scriptstyle #1\;}\)}
+\newcommand{\Vmsg}[1]{\(\xleftarrow{\;\scriptstyle #1\;}\)}
+\newcommand{\Pturn}[1]{#1 & & \\[1pt]}
+\newcommand{\Vturn}[1]{& & #1 \\[1pt]}
+\newcommand{\Psend}[1]{& \Pmsg{#1} & \\[-1pt]}
+\newcommand{\Vsend}[1]{& \Vmsg{#1} & \\[-1pt]}
+
+\newenvironment{pvstep}[3][2.0in]
+  {\Needspace{#1}%
+   \par\addvspace{0.45\baselineskip}%
+   \refstepcounter{clgstep}%
+   \clgmarkstart
+   \noindent
+   {\normalsize\bfseries\sffamily\textcolor{clgtitlec}%
+     {P\theclgstep/V\theclgstep.}~#2}%
+   \nopagebreak\par\vspace{0.08\baselineskip}%
+   #3%
+   \clgboard
+   \nopagebreak}
+  {\clgreserve\par\addvspace{0.12\baselineskip}}
+
+\newenvironment{pvstepzero}[3][2.0in]
+  {\Needspace{#1}%
+   \par\addvspace{0.45\baselineskip}%
+   \clgmarkstart
+   \noindent
+   {\normalsize\bfseries\sffamily\textcolor{clgtitlec}{P0/V0.}~#2}%
+   \nopagebreak\par\vspace{0.08\baselineskip}%
+   #3%
+   \clgboard
+   \nopagebreak}
+  {\clgreserve\par\addvspace{0.12\baselineskip}}
 
 \pagestyle{plain}
 
@@ -82,15 +143,6 @@ calls, including feed-forward.  It commits only the base witness $f$, derives
 the virtual bit tensor $h$, and instantiates the eleven reductions ending in
 the F2Z PCS opening.  SHA padding, private messages, and the internals of the
 named GKR and Ligerito subprotocols are outside this document.
-
-\textbf{Core-profile delta.} \coreprofileid\ is a reserved, non-resolving
-candidate for a new top-level wire/core profile.  It replaces the generic PCS
-ProfileID in the host header and tag \code{0x0001}, and replaces direct tag
-\code{0x0003} with tag \code{0x1003}.  It also enables the generic PCS
-LinCheck tags \code{0x4002/0x4103} and the singleton tag-\code{0x4001}
-terminal gate; all other inherited byte rules remain unchanged.  It must not
-resolve to acceptance until the virtual partial-core ledger and the integrated
-LinCheck/ring fixtures in G6 and G7 are frozen.
 \endgroup
 
 \input{part1-constraints}

@@ -3,128 +3,129 @@
 
 \newcommand{\piq}{\pi_q}
 
-This section instantiates the relation reductions as matched prover/verifier
-moves.  A \channelN{record} is canonical-read and immediately absorbed; a
-\channelH{record} is never absorbed and remains pending until its predicate
-succeeds; a squeeze is a derived transcript event.  Every NARG message below
-must be absorbed before the challenge that depends on it, and no squeeze is
-permitted while a Hint is pending.  The two proof streams and all primitive
-encodings are those of the F2Z PCS v1 profile.
-The sole NARG exception is a PCS PoW nonce: parse it, permit no intervening
-event, verify its predicate, and only then absorb it.
-For the two SHA application squeeze tags, a field scalar is sampled by
-requesting 16 bytes with auxiliary payload $\operatorname{LE}_{32}(a)$ for
-attempts $a=0,1,\ldots$, masking the high 28 bits of the little-endian
-integer, and accepting the first result below $q$; every attempt remains in
-the transcript.  The transcript transition commits to each raw 16-byte XOF
-result before the verifier masks the local candidate.  Rejection occurs before
-attempt $2^{32}$; the $u_{32}$ counter never wraps.
+Read each table from top to bottom.  A blank Prover or Verifier cell means that
+actor is idle.  The middle column records the event order.  An $\mathsf N$ or
+$\mathsf H$ arrow carries a NARG record or Hint; $\mathsf D$ marks a derived
+challenge or public value and carries no proof bytes.
+
+Every NARG record is absorbed before its dependent challenge.  A Hint is never
+absorbed and must be checked before the next squeeze.  The sole exception to
+immediate NARG absorption is a PCS PoW nonce: parse it, permit no intervening
+event, verify its predicate, and then absorb it.  Both proof streams and all
+primitive encodings are inherited from the F2Z PCS v1 profile.
+Tags \code{0x1001} and \code{0x1101} sample a field scalar by requesting
+16 bytes with auxiliary payload $\operatorname{LE}_{32}(a)$ for attempts
+$a=0,1,\ldots$.  Each raw XOF result enters the transcript before its high
+28 bits are masked.  The first value below $q$ is accepted; rejection occurs
+before attempt $2^{32}$, so the $u_{32}$ counter never wraps.
 
 \clgreset
 
-\begin{step*}{P0/V0 --- Fix the input and bind the commitment}{%
+\begin{pvstepzero}{Fix the input and bind the commitment}{%
   \clgnew{S}{$A_xh=0$ over $\mathbb Z$}%
   \clgnew{H}{$\pi_2(h)=h_0+T\operatorname{vec}(\pi_2(D_f))$}%
-  \clgnew{C}{$\rho=\Root(\Enc(\Pack(B_f)))$}%
+  \clgnew{C}{$\rho=\Root(O)$}%
 }
-\pvpair{P0.}{Derive
-  $h=\lift(h_0+T\operatorname{vec}(\pi_2(D_f)))$; encode and
-  Merkle-commit only $D_f$, publishing
-  $\rho$.}
- {V0.}{Validate the public SHA chain, both tensor layouts, the application,
-  candidate virtual-core, GKR and code profile identifiers, and $\rho$.}
-The initial obligations are
-\begin{equation}
- A_xh=0\ \text{in }\mathbb Z,
- \qquad \pi_2(h)=h_0+T\operatorname{vec}(\pi_2(D_f)),
- \qquad \rho=\Root(\Enc(\Pack(B_f))).
- \label{eq:sha-initial-claims}
-\end{equation}
-Here $T$ is the statement-derived SHA tap matrix and $h_0$ its affine
-column.  Tag \code{0x0001} binds \coreprofileid, while tag \code{0x0002}
-binds \profileid, the subordinate identifiers, the statement digest, shape,
-generator, and root; V0 absorbs them in that order
-before any challenge.  Equation~\eqref{eq:sha-initial-claims} fixes the three
-claims carried by the ledger; publishing a root alone does not discharge $C$.
-\end{step*}
+\begin{pvexchange}
+\Pturn{Derive
+  \(h=\lift(h_0+T\operatorname{vec}(\pi_2(D_f)))\), then set
+  $O:=\Enc(\Pack(B_f))$ and Merkle-commit only $D_f$.}
+\Psend{\Dbadge{\rho}}
+\Vturn{Validate the public SHA chain, both tensor layouts, all application,
+  virtual-core, GKR, and code identifiers, and $\rho$.  Require
+  $\operatorname{ord}(g)=2^{128}-1$.}
+\Vturn{Absorb tag \code{0x0001}, followed by tag \code{0x0002}, before the
+  first challenge.}
+\end{pvexchange}
+Here $T$ is the statement-derived SHA tap matrix and $h_0$ its affine column.
+Tag \code{0x0001} binds the virtual-core identifier \coreprofileid.
+Tag \code{0x0002} binds the application profile, subordinate identifiers,
+statement digest, shape, generator, and root.
+Publishing $\rho$ does not discharge $C$.
+\end{pvstepzero}
 
-\begin{step}{P1/V1 --- Multilinearize the constraint rows}{%
+\begin{pvstep}{Multilinearize the constraint rows}{%
   \clgupd{S}{$Q(\beta)=0$ on $\bits^{d_A}$}%
 }
-\pvpair{P1.}{Send nothing.}
- {V1.}{Pad the live rows canonically and derive their multilinear residual
-  $Q$.}
-The exact rewrite is
-\begin{equation}
+\begin{pvexchange}
+\Pturn{On witness $h$, form
+\(
  Q(Z):=\sum_{\beta\in\bits^{d_A}}
-  \eqp(\beta,Z)\langle A_x[\beta,*],h\rangle_{\mathbb Z},
- \qquad A_xh=0\Longleftrightarrow Q|_{\bits^{d_A}}=0.
- \label{eq:sha-multilinear-residual}
-\end{equation}
-Equation~\eqref{eq:sha-multilinear-residual} is deterministic: P1/V1 has no
-message, absorb, challenge, or soundness loss.
-\end{step}
+  \eqp(\beta,Z)\langle A_x[\beta,*],h\rangle_{\mathbb Z}.
+\)}
+\Vturn{Validate the canonical row padding and bind the formal rewrite
+\(
+ A_xh=0\iff Q|_{\bits^{d_A}}=0.
+\)
+No witness evaluation is performed.}
+\end{pvexchange}
+P1/V1 has no message, absorb, challenge, or soundness loss.
+\end{pvstep}
 
-\begin{step}{P2/V2 --- Project the residuals into $\Fq$}{%
+\begin{pvstep}{Project the residuals into $\Fq$}{%
   \clgupd{S}{$\bar A\piq(h)=0$}%
 }
-\pvpair{P2.}{Send nothing.}
- {V2.}{Set $\bar A=\piq(A_x)$ and check the statement-derived residual
-  bound before continuing.}
-The mandatory gate is
-\begin{equation}
+\begin{pvexchange}
+\Vturn{Set $\bar A:=\piq(A_x)$ and require
+\(
  q>2\max_{\beta\in\bits^{d_A}}\sum_j|A_x[\beta,j]|.
- \label{eq:sha-projection-gate}
-\end{equation}
-Under Equation~\eqref{eq:sha-projection-gate}, projection is injective on every
-reachable bit-witness residual and loses no soundness; otherwise V2 rejects.
-\end{step}
+\)}
+\end{pvexchange}
+This bound makes projection injective on every reachable residual; otherwise
+V2 rejects.
+\end{pvstep}
 
-\begin{step}{P3/V3 --- Collapse the public constraint rows}{%
+\begin{pvstep}{Collapse the public constraint rows}{%
   \clgdone{S}%
   \clgnew{$E_0$}{$\langle v,\piq(h)\rangle=0$}%
 }
-\pvpair{P3.}{Send nothing.}
- {V3.}{Squeeze $r_{\rm con}\in\Fq^{d_A}$ and compute the public collapsed
-  coefficient.}
-For coordinate $i=0,\ldots,d_A-1$, V3 uses tag \code{0x1001}, scope
-$(\bot_{32},\bot_{32},i)$, and the application field sampler above.
-It then derives
-\begin{equation}
- v:=\bar A^{\mathsf T}\eqp(\cdot,r_{\rm con}),
- \qquad E_0:\ \langle v,\piq(h)\rangle_{\Fq}=0.
- \label{eq:sha-row-collapse}
-\end{equation}
-The first squeeze occurs only after V2.  Equation~\eqref{eq:sha-row-collapse}
-has error at most $d_A/q$.
-\end{step}
+\begin{pvexchange}
+\Vturn{Squeeze $r_{\rm con}\in\Fq^{d_A}$ with tag \code{0x1001} in increasing
+  coordinate order.}
+\Vsend{\Dbadge{r_{\rm con}}}
+\Pturn{Derive
+\(
+ v:=\bar A^{\mathsf T}\eqp(\cdot,r_{\rm con}).
+\)}
+\Vturn{Independently derive the same $v$ and set the target to zero.}
+\end{pvexchange}
+Each coordinate uses scope $(\bot_{32},\bot_{32},i)$; the reduction error is
+at most $d_A/q$.
+\end{pvstep}
 
-\begin{step}{P4/V4 --- Shape the claim by sumcheck}{%
+\begin{pvstep}[2.8in]{Shape the claim by sumcheck}{%
   \clgdone{$E_0$}%
   \clgnew{$E_{\rm eq}$}{$c\mle{h_q}(r_h)=\tau$}%
 }
-\pvpair{P4.}{For $i=0,\ldots,d_h-1$, send the degree-two polynomial $g_i$ under NARG
-  tag \code{0x1002} and scope $(\bot_{32},\bot_{32},i)$.}
- {V4.}{Absorb $g_i$, check its Boolean sum, then squeeze $r_i\in\Fq$ under
-  tag \code{0x1101} at the same scope.}
-Put $h_q:=\piq(h)$.  The tag-\code{0x1002} payload is exactly the three
-canonical values $g_i(0),g_i(1),g_i(2)$, without a vector prefix.  Starting
-at $\sigma_{-1}=0$,
-the round and terminal rules are
-\begin{equation}
- \begin{aligned}
- g_i(0)+g_i(1)&=\sigma_{i-1},& \sigma_i&=g_i(r_i),\\
- r_h&=(r_0,\ldots,r_{d_h-1}),&
- \sigma_{-1}&=0,\quad \tau=\sigma_{d_h-1},\quad c=\mle{v}(r_h).
- \end{aligned}
- \label{eq:sha-app-sumcheck}
-\end{equation}
-Here $d_h=t_h+s=m_h$.  Thus
-Equation~\eqref{eq:sha-app-sumcheck} leaves
-$E_{\rm eq}:c\mle{h_q}(r_h)=\tau$, with error at most $2d_h/q$.
+\begin{pvexchange}
+\Pturn{In round $i$, after $r_0,\ldots,r_{i-1}$, compute
+  $g_i\in\Fq[X]$ with $\deg g_i\le2$.}
+\Psend{\Nbadge{g_i}}
+\Vturn{Read and absorb tag \code{0x1002} at
+$(\bot_{32},\bot_{32},i)$, then require
+\(
+  g_i(0)+g_i(1)=\sigma_{i-1}.
+\)}
+\Vturn{Squeeze $r_i\in\Fq$ under tag \code{0x1101} at the same scope.}
+\Vsend{\Dbadge{r_i}}
+\Pturn{Set $\sigma_i:=g_i(r_i)$.}
+\Vturn{Set $\sigma_i:=g_i(r_i)$.}
+\Pturn{After the last round, derive
+\(
+ r_h=(r_0,\ldots,r_{d_h-1}),\quad
+ \tau:=\sigma_{d_h-1},\quad c:=\mle v(r_h).
+\)
+and absorb the virtual seam under tag \code{0x1003}.}
+\Vturn{Derive the same $(r_h,\tau,c)$, then absorb the virtual seam under tag
+  \code{0x1003}.}
+\end{pvexchange}
+Here $h_q:=\piq(h)$, $\sigma_{-1}:=0$, and $d_h=t_h+s=m_h$; the reduction
+error is at most $2d_h/q$.
 Writing $r_h=(r_{\rm row},r_{\rm col})\in\Fq^{t_h}\times\Fq^s$, V4 derives
-$w_b=\can(\eqp(b,r_{\rm row}))$, $w'_c=c\eqp(c,r_{\rm col})$, and $y=\tau$.
-It then absorbs derived tag \code{0x1003}, at scope
+$w_b\in\{0,\ldots,q-1\}$ uniquely from
+$\piq(w_b)=\eqp(b,r_{\rm row})$, and sets
+$w'_c=c\eqp(c,r_{\rm col})$ and $y=\tau$.
+The derived tag \code{0x1003}, at scope
 $(\bot_{32},\bot_{32},\bot_{32})$, with
 payload
 \begin{equation}
@@ -135,137 +136,130 @@ payload
  \operatorname{Enc}_{\Fq}(\tau).
  \label{eq:sha-virtual-seam}
 \end{equation}
-The vector in Equation~\eqref{eq:sha-virtual-seam} has its canonical
-little-endian $u_{32}$ count and coordinates in transcript order.  Tag
-\code{0x1003} replaces the direct profile's mandatory
-\code{0x0003}/$\mathsf{CoreSeamV1}$ and must precede the first
-tag-\code{0x2001} record.  This replacement is legal only under
-\coreprofileid; the direct or an unknown core profile rejects before this event.
-The printed identifier is only a candidate namespace: until G6 and G7 freeze
-both ledgers, it must not resolve to an accepting core profile.
-\end{step}
+The vector uses its canonical $u_{32}$ count and transcript order.  For this
+virtual-core profile, tag \code{0x1003} replaces $\mathsf{CoreSeamV1}$ and precedes
+the first tag-\code{0x2001} record; every other profile rejects.  G6 and G7
+must close the two ledgers before this profile can accept.
+\end{pvstep}
 
-\begin{step}{P5/V5 --- Expose the integer column folds}{%
+\begin{pvstep}[2.4in]{Expose the integer column folds}{%
   \clgdone{$E_{\rm eq}$}%
   \clgnew{T}{$u_c=\langle w,D_h[*,c]\rangle_{\mathbb Z}$}%
 }
-\pvpair{P5.}{Compute $u_c$ and $\nu_c=g^{u_c}$ for every virtual column;
-  send $\nu$ as NARG \code{0x2001}, then $u$ as Hint \code{0x2081}.}
- {V5.}{Absorb $\nu$; range-check and authenticate the pending $u$ Hint,
-  then check its reconstruction of $E_{\rm eq}$.}
-For the profile's single active chunk $\ell=0$, the required checks are
-\begin{equation}
- u_c=\sum_b w_bD_h[b,c],\qquad \nu_c=g^{u_c},\qquad
- \sum_c w'_c\piq(u_c)=y,\qquad 0\le u_c<2^{127}.
- \label{eq:sha-column-folds}
-\end{equation}
-V5 checks every verifier-visible equality in
-Equation~\eqref{eq:sha-column-folds}, including $g^u=\nu$ and the full-order
-condition on $g$, before clearing the Hint.  No squeeze may occur earlier.
-Both vectors have exactly $2^s=128$ entries and scope
-$(0,\bot_{32},\bot_{32})$.  The remaining first equality is the
-claim reduced by P6--P7.
-\end{step}
+\begin{pvexchange}
+\Pturn{For each virtual column $c$, compute
+\(
+ u_c:=\sum_b w_bD_h[b,c],\qquad \nu_c:=g^{u_c}.
+\)}
+\Psend{\Nbadge{\nu}}
+\Vturn{Read and absorb $\nu$ under tag \code{0x2001}.}
+\Psend{\Hbadge{u}}
+\Vturn{Read $u$ under tag \code{0x2081}; before any squeeze, require
+$0\le u_c<2^{127}$ and $g^{u_c}=\nu_c$ for every $c$, together with
+$\sum_c w'_c\piq(u_c)=y$.  Then clear the Hint.}
+\end{pvexchange}
+Both vectors have $2^s=128$ entries and scope
+$(0,\bot_{32},\bot_{32})$; V0 already checked the order of $g$.
+\end{pvstep}
 
 \vspace*{0.10in}
-\begin{step}{P6/V6 --- Move the folds into products}{%
+\begin{pvstep}[2.15in]{Move the folds into products}{%
   \clgdone{T}%
   \clgnew{P}{$\prod_bL[b,c]=\nu_c$}%
 }
-\pvpair{P6.}{Send no additional field.}
- {V6.}{Derive the leaf family, then squeeze the initial forest point only
-  after V5 has cleared its Hint.}
-The leaf and initial claim are
-\begin{equation}
- L[b,c]:=1+(g^{w_b}-1)D_h[b,c],\qquad
- \prod_bL[b,c]=\nu_c,\qquad
- e_0:=\mle{\nu}(\zeta).
- \label{eq:sha-product-claim}
-\end{equation}
+\begin{pvexchange}
+\Pturn{Form the witness leaf values
+\(
+ L[b,c]:=1+(g^{w_b}-1)D_h[b,c].
+\)}
+\Vturn{After V5 clears its Hint, instantiate the corresponding product
+  relation.}
+\Vturn{Squeeze $\zeta\in\K^s$ under tag \code{0x2101} in increasing
+  coordinate order.}
+\Vsend{\Dbadge{\zeta}}
+\Pturn{Derive $e_0:=\mle\nu(\zeta)$ and initialize the product forest.}
+\Vturn{Independently derive $e_0:=\mle\nu(\zeta)$.}
+\end{pvexchange}
 V6 obtains $\zeta\in\K^s$ with the inherited $\K$ sampler and tag
 \code{0x2101}, scope
-$(0,\bot_{32},i)$, in increasing $0\le i<s$.  The exponent range makes the first
-reduction in Equation~\eqref{eq:sha-product-claim} exact; the random column
-compression is charged to the partial-core error.
-\end{step}
+$(0,\bot_{32},i)$, in increasing $0\le i<s$.  The exponent range makes the
+product reduction exact; random column compression is charged to the
+partial-core error.
+\end{pvstep}
 
-\begin{step}{P7/V7 --- Reduce the merged product forest to LIN}{%
+\begin{pvstep}[2.3in]{Reduce the merged product forest to LIN}{%
   \clgdone{P}%
   \clgnew{$E_H$}{$\langle R,h_{\K}\rangle_{\K}=e$}%
 }
-\pvpair{P7.}{Stream the selected GKR profile's sumcheck and child messages.}
- {V7.}{Check and absorb every message before its challenge, returning one
-  general linear claim on the virtual table.}
-The one core-fixed GKR event is NARG tag \code{0x3001}: the phase-$c$ claimed
-sum is absorbed after the phase-link check and before the first phase-$c$
-round.  The selected GKR profile owns NARG tags \code{0x3002--0x30ff} and
-squeeze tags \code{0x3100--0x31ff}; tag \code{0x3081} is forbidden.  Its
-required successor is
-defined using the coefficientwise $\K$-embeddings
-$f_{\K},h_{\K},h_{0,\K}$ and the scalar extension $T_{\K}$:
+\begin{pvexchange}
+\Pturn{Run the registered virtual-GKR prover on the product forest.}
+\Psend{\Nbadge{\pi_{\rm GKR}}}
+\Vturn{Replay the registered virtual-GKR ledger, checking and absorbing every
+  message before its dependent challenge.  Require complete consumption and
+  return $(R,e)$.}
+\end{pvexchange}
+The registered profile owns NARG tags \code{0x3001--0x30ff} and squeeze tags
+\code{0x3100--0x31ff}; tag \code{0x3081} is forbidden.  It returns
 \begin{equation}
  E_H:\quad \langle R,h_{\K}\rangle_{\K}=e,
  \qquad h_{\K}=h_{0,\K}+T_{\K}f_{\K},
  \label{eq:sha-gkr-lin}
 \end{equation}
-where $R$ is a verifier-derived coefficient function, not a transmitted dense
-vector.  \textbf{\hyperlink{gap:sha-g6}{G6}} remains the requirement that the
-statement-bound virtual-GKR identifier publish the exact P5--P7 ledger,
-reduction proof, and numeric error.  An unknown ledger rejects.
-\end{step}
+where $R$ is verifier-derived rather than transmitted densely.
+\textbf{\hyperlink{gap:sha-g6}{G6}} requires the exact P5--P7 ledger,
+reduction proof, and error; an unknown ledger rejects.
+\end{pvstep}
 
-\begin{step}{P8/V8 --- Apply the full virtual adjoint}{%
+\begin{pvstep}[2.25in]{Apply the full virtual adjoint}{%
   \clgdone{$E_H$}%
   \clgdone{H}%
   \clgnew{$E_f$}{$\langle a,F\rangle_{\K}=\mu_f$}%
 }
-\pvpair{P8.}{Send nothing.}
- {V8.}{Apply the statement-bound adjoint and affine correction without a
-  message, absorb, or squeeze.}
-Let $F:=\Pi_f f_{\K}$ be the committed bits in PCS $(c,b)$ order.  V8 derives
+\begin{pvexchange}
+\Pturn{Derive
+\(
+ a:=\Pi_fT_{\K}^{*}R,\qquad
+ \mu_f:=e-\langle R,h_{0,\K}\rangle_{\K}.
+\)}
+\Vturn{Independently derive the same $(a,\mu_f)$ and the public evaluator
+\(
+ \mle a(r)=
+ \left\langle R,
+ T_{\K}\!\left(\Pi_f^{-1}\eqp(\cdot,r)\right)
+ \right\rangle_{\K}.
+\)}
+\end{pvexchange}
+For the committed bits $F:=\Pi_f f_{\K}$ in PCS $(c,b)$ order,
 \begin{equation}
  a:=\Pi_fT_{\K}^{*}R,\qquad
  \mu_f:=e-\langle R,h_{0,\K}\rangle_{\K},\qquad
  E_f:\ \langle a,F\rangle_{\K}=\mu_f.
  \label{eq:sha-full-adjoint}
 \end{equation}
-The coefficient need not be materialized.  At any LinCheck point $r$, V8
-evaluates it by duality:
-\begin{equation}
- \widetilde a(r)=
- \left\langle R,
- T_{\K}\!\left(\Pi_f^{-1}\eqp(\cdot,r)\right)
- \right\rangle_{\K}.
- \label{eq:sha-adjoint-evaluator}
-\end{equation}
-Equations~\eqref{eq:sha-full-adjoint} and~\eqref{eq:sha-adjoint-evaluator} are
-exact.  A sparse tap evaluator is conforming only if it is proved identical to
-this full adjoint; a columnwise shortcut rejects.
-\end{step}
+The table gives its exact public evaluator.  A sparse evaluator is conforming
+only if it is identical to the full adjoint; a columnwise shortcut rejects.
+\end{pvstep}
 
-\begin{step}{P9/V9 --- Run exactly one LinCheck}{%
+\begin{pvstep}[2.7in]{Run exactly one LinCheck}{%
   \clgdone{$E_f$}%
   \clgnew{LC}{$\sigma=\widetilde a(r)\mle{F}(r)$}%
 }
-\pvpair{P9.}{For $i=0,\ldots,m_f-1$, send one degree-two polynomial $g_i$.}
- {V9.}{Absorb and check $g_i$, squeeze $r_i\in\K$, and carry the terminal
-  equality to P10/V10.}
-Starting with $\sigma_{-1}:=\mu_f$, the exact round rule is
-\begin{equation}
- g_i(0)+g_i(1)=\sigma_{i-1},\qquad
- r_i\leftarrow\K,\qquad \sigma_i:=g_i(r_i).
- \label{eq:sha-lincheck-round}
-\end{equation}
-Equation~\eqref{eq:sha-lincheck-round} fixes the running claim before every
-challenge.
-Writing $g_i(X)=\gamma_{i,0}+\gamma_{i,1}X+\gamma_{i,2}X^2$, the NARG tag is
-\code{0x4002}, with payload
-$\operatorname{Enc}_{\K}(\gamma_{i,0})\parallel
- \operatorname{Enc}_{\K}(\gamma_{i,1})\parallel
- \operatorname{Enc}_{\K}(\gamma_{i,2})$ and scope
-$(\bot_{32},\bot_{32},i)$.  After checking it, V9 squeezes tag
-\code{0x4103} at the same scope.  The final point
-$r=(r_{\rm lo},r_{\rm hi})\in\K^7\times\K^{t_f}$ leaves
+\begin{pvexchange}
+\Pturn{In round $i$, after $r_0,\ldots,r_{i-1}$, compute
+  $g_i\in\K[X]$ with $\deg g_i\le2$.}
+\Psend{\Nbadge{g_i}}
+\Vturn{Read and absorb tag \code{0x4002} at
+$(\bot_{32},\bot_{32},i)$, then require
+\(
+ g_i(0)+g_i(1)=\sigma_{i-1}.
+\)}
+\Vturn{Squeeze $r_i\in\K$ under tag \code{0x4103} at the same scope.}
+\Vsend{\Dbadge{r_i}}
+\Pturn{Set $\sigma_i:=g_i(r_i)$.}
+\Vturn{Set $\sigma_i:=g_i(r_i)$.}
+\end{pvexchange}
+Start with $\sigma_{-1}:=\mu_f$.  At the final point
+$r=(r_{\rm lo},r_{\rm hi})\in\K^7\times\K^{t_f}$,
 \begin{equation}
  \sigma_{m_f-1}=\widetilde a(r)\mle{F}(r).
  \label{eq:sha-lincheck-terminal}
@@ -273,30 +267,34 @@ $r=(r_{\rm lo},r_{\rm hi})\in\K^7\times\K^{t_f}$ leaves
 P10/V10 checks Equation~\eqref{eq:sha-lincheck-terminal} with the first ring
 vector.  This is the only LinCheck, uses no division, and has error at most
 $2m_f/|\K|$.
-\end{step}
+\end{pvstep}
 
-\begin{step}{P10/V10 --- Discharge LinCheck and ring-switch}{%
+\begin{pvstep}[3.0in]{Discharge LinCheck and ring-switch}{%
   \clgdone{LC}%
   \clgnew{$E_P$}{$\langle B,P\rangle_{\K}=\beta$}%
 }
-\pvpair{P10.}{Send the inherited ring vector $s$, then retain the derived
-  packed claim.}
- {V10.}{Use $s$ to check the LinCheck terminal, then reuse it for the inherited
-  ring switch and singleton batch.}
-For $0\le v<128$, P10 sends under NARG tag \code{0x4001}, scope
-$(0,\bot_{32},\bot_{32})$,
-\begin{equation}
- s_v:=\mle{(B_f)_{v,\K}}(r_{\rm hi}),\qquad
- z:=\sum_{v=0}^{127}\eqp(v,r_{\rm lo})s_v=\mle{F}(r).
- \label{eq:sha-ring-vector}
-\end{equation}
-After deriving $z$ in Equation~\eqref{eq:sha-ring-vector}, V10 absorbs $s$ and
-requires
-$\sigma_{m_f-1}=\widetilde a(r)z$ using
-Equation~\eqref{eq:sha-adjoint-evaluator}, and only then squeezes the seven
-tag-\code{0x4101} coordinates of $r''$.  It derives $(B_0,\beta_0)$ by the
-PCS ring-switch equation, squeezes the singleton tag-\code{0x4102} coefficient
-$\eta_0$, and sets
+\begin{pvexchange}
+\Pturn{For $0\le v<128$, compute
+\(
+ s_v:=\mle{(B_f)_{v,\K}}(r_{\rm hi}).
+\)}
+\Psend{\Nbadge{s}}
+\Vturn{Read and absorb $s$ under tag \code{0x4001} at
+$(0,\bot_{32},\bot_{32})$.  Derive
+\(
+ z:=\sum_{v=0}^{127}\eqp(v,r_{\rm lo})s_v
+   =\mle F(r)
+\)
+and require $\sigma_{m_f-1}=\widetilde a(r)z$.}
+\Vturn{Only after that check, squeeze $r''\in\K^7$ under tag \code{0x4101}.}
+\Vsend{\Dbadge{r''}}
+\Pturn{Derive the ring-switch successor $(B_0,\beta_0)$.}
+\Vturn{Independently derive the same $(B_0,\beta_0)$.}
+\Vturn{Squeeze $\eta_0\in\K$ under tag \code{0x4102}.}
+\Vsend{\Dbadge{\eta_0}}
+\Pturn{Set $B:=\eta_0B_0$ and $\beta:=\eta_0\beta_0$.}
+\Vturn{Independently derive the same $(B,\beta)$.}
+\end{pvexchange}
 \begin{equation}
  B:=\eta_0B_0,\qquad \beta:=\eta_0\beta_0,
  \qquad E_P:\ \langle B,P\rangle_{\K}=\beta,\qquad P=\Pack(B_f).
@@ -305,34 +303,31 @@ $\eta_0$, and sets
 No extra adapter message, target, or second LinCheck exists.  The event rules
 are now fixed by the PCS profile; \textbf{\hyperlink{gap:sha-g7}{G7}} is the
 remaining implementation and full-fixture closure for this virtual profile.
-\end{step}
+\end{pvstep}
 
-\begin{step}{P11/V11 --- Open the packed claim}{%
+\begin{pvstep}[2.4in]{Open the packed claim}{%
   \clgdone{$E_P$}%
   \clgdone{C}%
 }
-\pvpair{P11.}{Send the recursive proof and openings.}
- {V11.}{Verify them against $\rho$ and exhaust both streams.}
-For this committed shape, the packed opening target is exactly
-\begin{equation}
- m_p=t_f+s-7=t_f,\qquad
- B:\{0,1\}^{t_f}\longrightarrow\K,\qquad
- \mathsf{payload}_{5001}=\operatorname{LE}_{32}(t_f)
-   \parallel\operatorname{Enc}_{\K}(\beta).
- \label{eq:sha-opening-target}
-\end{equation}
-V11 first checks the domain in Equation~\eqref{eq:sha-opening-target}, then
-absorbs derived tag \code{0x5001} before the recursive helper.  The next
-tag-\code{0x5002} root must equal $\rho$.  V11 then
-reuses the PCS ledger without alteration: roots \code{0x5002/0x5003},
-sumcheck messages \code{0x5004}, OOD values \code{0x5005}, final vector
-\code{0x5006}, fold/query nonces \code{0x5007/0x5008}, Merkle Hints
-\code{0x5080--0x5082}, and squeezes \code{0x5101--0x5106}.  Every Hint is
-authenticated before a later event, and both streams, every nested slice, and
-the host container must end exactly.
-
-With the still-unresolved partial-core profile named rather than assumed, the
-composed soundness statement is
+\begin{pvexchange}
+\Pturn{Require
+\(
+ m_p=t_f,\quad B:\bits^{t_f}\to\K,
+\)
+derive
+\(
+ \mathsf{payload}_{5001}:=
+ \operatorname{LE}_{32}(t_f)\parallel\operatorname{Enc}_{\K}(\beta),
+\)
+and absorb tag \code{0x5001}.}
+\Vturn{Independently require the same domain and absorb the same derived tag.}
+\Pturn{Run the inherited recursive opening prover for $(\rho,B,\beta)$.}
+\Psend{\Splitbadge{\pi_{\rm open}}}
+\Vturn{Replay the inherited opening ledger against $(\rho,B,\beta)$.}
+\Vturn{Accept only if the opening succeeds, every Hint is authenticated, and
+  both streams, all nested slices, and the host container end exactly.}
+\end{pvexchange}
+The composed soundness error is
 \begin{equation}
  \varepsilon_{\rm SHA\text{-}F2Z}
  \le \frac{d_A+2d_h}{q}
@@ -348,4 +343,4 @@ $2m_f/2^{128}$ is the single P9 LinCheck term.
 Equation~\eqref{eq:sha-composed-error} is symbolic until
 \hyperlink{gap:sha-g6}{G6} and \hyperlink{gap:sha-g7}{G7} publish their proofs
 and fixtures.  P1, P2, P5, and P8 are exact under their stated reject gates.
-\end{step}
+\end{pvstep}

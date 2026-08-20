@@ -297,11 +297,12 @@ transcript absorption: a NARG read decodes and validates $z$, then applies
 Equation~\eqref{eq:event-absorb-v1}; a Hint read decodes and checks $z$ but
 never applies that equation.
 
-The domain registry is below.  Domain codes and scopes are verifier-derived
-transcript inputs, not record headers.  \textsf{D} events are public or
-derived, have no proof record, and are absorbed at their ledger position;
-\textsf{N} payloads occur only in $N$ and are absorbed;
-\textsf{H} payloads occur only in $H$ and are checked but never absorbed;
+The domain registry is below.  For \textsf{D}, \textsf{N}, and \textsf{S}
+events, domain codes and scopes are verifier-derived transcript inputs; for
+\textsf{H} records they are verifier-derived ledger selectors.  None is a
+record header.  \textsf{D} events are public or derived, have no proof record,
+and are absorbed at their ledger position; \textsf{N} payloads occur only in
+$N$ and are absorbed; \textsf{H} payloads occur only in $H$ and are checked but never absorbed;
 \textsf{S} domains are squeeze requests.  For an \textsf{S} base domain code $\tau$, the
 result domain code is $\tau\mathbin{\mathrm{OR}}\mathtt{0x8000}$ and is derived,
 never transmitted.  For an \textsf{S} row, the last column describes the
@@ -349,9 +350,9 @@ $2^{d_c}$ canonical $u_{128}<2^{127}$.\\
 challenge.\\
 \code{3001}&N&GKR phase-$c$ sum&$(\bot,k,\bot)$; one $\K$ element, absorbed
 after the phase-link check and before the first phase-$c$ round.\\
-\code{3002--30ff}&Sub.&subprotocol messages&The fixed subordinate ledger
-owns exact message domain codes, codecs, and checks for $\pi_{\rm GKR}$
-followed by $\pi_{\rm MLE}$.\\
+\code{3002--30ff}&Sub.&subprotocol messages&Except for reserved code
+\code{3081}, the fixed subordinate ledger owns exact message domain codes,
+codecs, and checks for $\pi_{\rm GKR}$ followed by $\pi_{\rm MLE}$.\\
 \code{3100--31ff}&Sub.&subprotocol squeezes&The fixed subordinate ledger
 owns exact squeeze domain codes and result types in the same order.\\
 \code{4001}&N&ring $\bm s_\theta$ vector&$(\theta,\bot,\bot)$ for
@@ -393,11 +394,10 @@ Equation~\eqref{eq:merkle-opening-payload}.\\
 The GKR ranges are black-box namespaces, not permission to use
 implementation-defined bytes.  The fixed GKR protocol must publish a ledger
 with the same columns as this table.  The fixed
-\code{3001} event resolves the PCS-level phase-$c$ placement ambiguity in
-Gap~G1; the rest of that gap remains GKR-protocol work and no protocol
-may reassign the domain code.  The v1 outer row LinCheck
-omits the redundant \code{presum.claimed\_sums} field and derives
-$[e_d+1]$, so domain code \code{3081} is reserved and \mustnot{} occur.
+\code{3001} event resolves the PCS-level phase-$c$ placement ambiguity; the
+mandatory subordinate ledger fixes all remaining GKR messages and squeezes,
+and no protocol may reassign the domain code.  Domain code \code{3081} is
+reserved and \mustnot{} occur.
 The ledger first consumes $\pi_{\rm GKR}$ to derive
 $(\bm\omega_\xi,\sigma)$ and then, with no intervening absorb or squeeze,
 consumes $\pi_{\rm MLE}$ to derive $(\bm r_h,\theta,\eta)$.  It must require
