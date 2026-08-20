@@ -2,12 +2,18 @@ use crate::{CommitError, Pcs, ScopedOpeningQuery};
 
 use super::{NO_SCOPE, PublicTranscript, STATEMENT_LABEL};
 
+// One more 2,056-byte ring-switch proof exceeds the 64 MiB hint limit.
+const MAX_BATCH_QUERIES: usize = 32_640;
+
 pub(crate) fn validate_batch(
     queries: &[ScopedOpeningQuery<'_>],
     expected_m: usize,
 ) -> Result<(), CommitError> {
     if queries.is_empty() {
         return Err(CommitError::EmptyBatch);
+    }
+    if queries.len() > MAX_BATCH_QUERIES {
+        return Err(CommitError::ProofTooLarge);
     }
     if queries
         .iter()
@@ -171,6 +177,20 @@ mod tests {
         assert_eq!(
             validate_batch(&[ScopedOpeningQuery::new(u32::MAX, &query)], 22),
             Err(CommitError::InvalidClaimScope)
+        );
+    }
+
+    #[test]
+    fn batch_validation_rejects_batches_that_cannot_fit_the_hint() {
+        let query = OpeningQuery {
+            point: vec![F128::default(); 22],
+            target: F128::default(),
+        };
+        let queries = vec![ScopedOpeningQuery::new(0, &query); MAX_BATCH_QUERIES + 1];
+
+        assert_eq!(
+            validate_batch(&queries, 22),
+            Err(CommitError::ProofTooLarge)
         );
     }
 }
