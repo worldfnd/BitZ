@@ -3,660 +3,330 @@
 
 \begingroup\footnotesize
 
-\subsection{How to read this section}
-
-Section~\ref{sec:overview} described the main F2Z reduction informally.  This
-section names its intermediate claims and the reductions between them.  The
-reductions appear in dependency order.
-
-Throughout the direct path, the encoded oracle $O$ and its public root $\rho$
-remain fixed.  What changes is the public claim attached to that committed
-data.  Bitify also changes the witness view from the native entries $\bm f$ to
-their canonical bits $\bm b=\bits(\bm f)$.
-
-An encoded relation contains triples $(x,O;\mathsf{wit})$: $x$ is the explicit
-instance, $O$ is the implicit encoded oracle, and $\mathsf{wit}$ is the
-witness.  For a public witness encoder $E_{\rm wit}$, the binding condition is
+An encoded relation contains triples $(x,O;\mathsf{wit})$.  The explicit
+instance is $x$, the encoded oracle is $O$, and $\mathsf{wit}$ is the witness
+view used by that relation.  Every relation below carries the same public
+instance parameters, matrix $\bm M$, oracle $O$, and root $\rho=\Root(O)$.
+The binding invariant is always
 \begin{equation}
- O=\Enc_{\mathcal C}(E_{\rm wit}(\mathsf{wit})).
+ O=\Enc_{\mathcal C}(\Pack(F)),\qquad
+ \operatorname{vec}(F)=\pi_2(\bm f).
  \label{eq:encoded-oracle-binding}
 \end{equation}
-Merkle compilation publishes the public root $\rho:=\Root(O)$ for this oracle;
-$\rho$ is not a proof field.
-Every relation below is additionally parameterized by the fixed public
-context $\chi:=(\mathsf{pp},t,s,W,g)$ and its derived dimensions.  The context
-is omitted from displayed instances and is carried unchanged by every edge.
-The three protocol interfaces used below are $\Pi_{\rm ZC}$,
-$\Pi_{\rm red}:=\Pi_{\rm GKR}$, and
-$\Pi_{\rm iopp}:=\Pi_{\rm open}$.
+No intermediate relation replaces $F$ by $H$ in
+Equation~\eqref{eq:encoded-oracle-binding}.
 
-The edge notation is
+The edge notation distinguishes deterministic claim changes from interactive
+reductions:
 \begin{equation}
- \begin{aligned}
-  \mathcal R_0\equiv_F\mathcal R_1
-    &\quad\text{denotes deterministic retyping},\\
-  \mathcal R_0\xrightarrow{F}\mathcal R_1
-    &\quad\text{denotes deterministic compilation},\\
-  \mathcal R_0\xRightarrow{\Pi}\mathcal R_1
-    &\quad\text{denotes an interactive reduction},\\
-  \mathcal R_0\mathrel{\dashrightarrow}\mathcal R_1
-    &\quad\text{denotes a conditional extension or classification only}.
- \end{aligned}
+ \mathcal R_0\equiv_G\mathcal R_1
+ \quad\text{and}\quad
+ \mathcal R_0\xRightarrow{\Pi}\mathcal R_1.
  \label{eq:reduction-edge-notation}
 \end{equation}
-A proof fragment lists transmitted values only; challenges, successor
-coefficients, exponentiated values, batching coefficients, and work tables are
-verifier-derived.
+The first edge applies a public deterministic map $G$ and sends no message.
+The second edge is implemented by the named protocol.
 
-\subsection{ZeroCheck black-box handoff}
+\subsection{Relation chain}
 
-The reduction chain starts with ZeroCheck.  Let $\mathcal R_{\rm src}$ be the
-PESAT or PIMSAT source relation selected by the fixed profile.  F2Z treats its
-ZeroCheck protocol as a black box and assumes only the handoff below.  The
-deterministic $\mathsf{Encode}$ step binds the witness to the encoded oracle:
+F2Z begins from the application-supplied separable Lin-BitsDual claim:
 \begin{align}
- \mathcal R_{\rm src}^{\rm enc}:=
- \Bigl\{(x_{\rm src},O;\bm f):\;&
-  (x_{\rm src};\bm f)\in\mathcal R_{\rm src},
-  \quad\bm f\in\mathcal W_B,\notag\\[-2pt]
- &O=\Enc_{\mathcal C}\!\left(
-       \Pack(\pi_2(\bits(\bm f)))\right)\Bigr\}.
- \label{eq:rel-source-encoded}
+ \mathcal R_{\rm LinBitsDual}[\bm h]:=
+ \Bigl\{((\bm a,\bm a',\mu,\bm M),O;\bm f):\;&
+  \operatorname{vec}(H)=\bm M\pi_2(\bm f),\notag\\[-2pt]
+ &\mu=\sum_c a'_c\sum_r a_rH[r,c],\notag\\[-2pt]
+ &O=\Enc_{\mathcal C}(\Pack(F)),
+  \quad\operatorname{vec}(F)=\pi_2(\bm f)\Bigr\}.
+ \label{eq:rel-linbits-h}
 \end{align}
-This encoded relation is the sole source consumed by the PCS.
+The F2Z statement binds $(\bm a,\bm a',\mu)$, the active layout $H$, the
+chunk schedule, and the virtualization matrix to the transcript.  The
+application proof establishing this claim is outside F2Z, and no second
+commitment is created.
 
-ZeroCheck supplies one black-box reduction
+For each active chunk $\ell$, define
 \begin{equation}
- \mathcal R_{\rm src}^{\rm enc}
- \xRightarrow{\Pi_{\rm ZC}}
- \RLMFB.
- \label{eq:edge-zerocheck-handoff}
-\end{equation}
-The proof fragment $\pi_{\rm ZC}$ and all transcript events on this edge
-belong to ZeroCheck.  Its verifier derives $(\psi,\bm v,\mu)$ and
-the required separable tuple $(\bm w,\bm w',y)$ with $y=\mu$.  The adapter must
-satisfy Equation~\eqref{eq:concrete-lmfb-specialization} and
-$v_{c,b}=\pi_q(w_b)w'_c$, while retaining the same witness, oracle $O$, and
-root $\rho$.  An oracle mismatch or incomplete event ledger causes rejection.
-Once this reduction succeeds, the source constraints have been discharged;
-the F2Z core receives only the derived linear claim.  For a PIMSAT source,
-ZeroCheck may perform ideal-membership checks internally.
-
-\subsection{The Lin-ModFieldBin relation}
-
-The ZeroCheck handoff leaves a scalar linear claim about native witness
-entries.  The Lin-ModFieldBin relation records that claim together with the
-same encoded oracle.  Its public ordered basis and statement-bound injection
-$\bits:\mathcal W_B\hookrightarrow\bitsset^n$ give the fixed reconstruction
-\begin{equation}
- f_i=\sum_{k<B}\sum_{j<D_M}b_{i,k,j}2^k\gamma_j,
- \qquad b_{i,k,j}\in\bitsset,
- \qquad \bm b=\bits(\bm f).
- \label{eq:module-bit-reconstruction}
-\end{equation}
-This equation fixes both reconstruction and bit order.  The additive map
-$\psi:M\to R$ is instantiated by ZeroCheck and carried explicitly in
-the public successor instance.
-\Needspace{7\baselineskip}
-The resulting module relation is
-\begin{align}
- \RLMFB:=\Bigl\{((\psi,\bm v,\mu),O;\bm f):\;&
- \bm f\in\mathcal W_B,
- \quad\psi:M\to R\text{ is ZeroCheck-admitted and additive},
- \quad\bm v\in R^r,
- \quad\mu\in R,
- \quad O=\Enc_{\mathcal C}\!\left(
-                 \Pack(\pi_2(\bits(\bm f)))\right),\notag\\[-2pt]
- &\sum_i v_i\psi(f_i)=\mu\quad\text{in }R\Bigr\}.
- \label{eq:rel-lmfb}
-\end{align}
-This is the exact source-to-core seam.  The first core reduction simply
-rewrites the claim using the canonical bits already bound to $O$.
-
-\paragraph{Direct reductions.}
-\begin{itemize}
-
-\item \textbf{Reduction 1: Deterministic Bitify.}
-
-\begin{equation}
- \RLMFB
- \equiv_{\mathsf{Bitify}}
- \RLBD,
- \qquad
- u_{i,k,j}:=
- v_i\,\psi(2^k\gamma_j).
- \label{eq:edge-bitify}
-\end{equation}
-Bitify transmits nothing: it retypes the witness as
-$\bm b:=\bits(\bm f)$ and derives the public coefficients.  Since $O$ already
-binds these canonical bits, no new Booleanity test is needed.
-
-\end{itemize}
-
-\subsection{The Lin-BitsDual relation}
-
-After Bitify, the claim is expressed directly on the committed bits.  The
-corresponding core relation is
-\begin{align}
- \RLBD:=\Bigl\{((\bm u,\mu),O;\bm b):\;&
- \bm b\in\operatorname{im}(\bits)\subseteq\bitsset^n,
- \quad\bm u\in R^n,
- \quad\mu\in R,
- \quad O=\Enc_{\mathcal C}(\Pack(\pi_2(\bm b))),\notag\\[-2pt]
- &\langle\pi_q(\bm b),\bm u\rangle_R=\mu\Bigr\}.
- \label{eq:rel-lbd}
-\end{align}
-Here $\pi_q(\bm b)$ denotes the coordinatewise bit embedding into
-$R=\Fq$.  Restricting $\bm b$ to $\operatorname{im}(\bits)$ makes Bitify an
-equivalence rather than a one-way reduction.
-Let $\iota_{2\to\K}:\Ftwo\hookrightarrow\K$ denote the corresponding
-coordinatewise embedding into the binary field.
-
-The claim now concerns the committed bits, but it is still evaluated in
-$R=\Fq$, whereas the oracle proof operates over $\K$.  To cross this boundary,
-reshape the bits as $\Bbit[c,i]$ and write the public coefficient in the same
-$c$-major order as $u_{c,i}=u_c^{(2)}u_i^{(1)}$.  With canonical integer
-representatives $\lambda_i$ of $u_i^{(1)}$, the prover exposes the column
-values
-\begin{equation}
- \mu_c:=\sum_i\lambda_i\Bbit[c,i]\in\Z.
- \label{eq:paper-column-values}
-\end{equation}
-The verifier first checks that these values reconstruct the original scalar
-claim:
-\begin{equation}
- \sum_c u_c^{(2)}\,\pi_q(\mu_c)=\mu\quad\text{in }R=\Fq.
- \label{eq:pi1-paper-reconstruction}
-\end{equation}
-It then derives $y_i:=g^{\lambda_i}$ and $\nu_c:=g^{\mu_c}$.  The bounded
-integer sums become the binary-field product claims
-\begin{equation}
- \prod_i\bigl(1+(y_i-1)\Bbit[c,i]\bigr)=\nu_c
- \qquad(\forall c).
- \label{eq:paper-grand-product}
-\end{equation}
-These are the product claims consumed by $\Pi_1$.
-
-\paragraph{Direct reductions.}
-\begin{itemize}
-
-\item \textbf{Reduction 1: Produce the F2Z encoded PESAT claim.}
-\begin{equation}
- \RLBD
- \xRightarrow{\Pi_1}
- \RPESAT(\K,Q_{\Ftwo\!\Z},\mathcal C,\Pack).
- \label{eq:edge-pi1}
-\end{equation}
-\begin{itemize}
- \item \textbf{Proof:} The prover sends $\pi_1=(\mu_c)_c$.  The verifier checks
- Equation~\eqref{eq:pi1-paper-reconstruction} before accepting the successor.
- \item \textbf{Result:} the verifier derives $\bm y=(g^{\lambda_i})_i$,
- $\bm\nu=(g^{\mu_c})_c$, and the PESAT instance; the bit witness and $O$
- are unchanged.
- \item \textbf{Scope:} the first core F2Z reduction.
-\end{itemize}
-
-\item \textbf{Proof-system restriction: weighted coefficient shape.}
-The chunked mod-$q$ proof system admits only coefficients of the form
-\begin{equation}
- u_{c,b,j}=\pi_q(w_b2^j)w'_c,
- \qquad
- 0\le w_b<2^{q_{\rm bits}},\qquad w'_c\in\Fq.
- \label{eq:weighted-coefficient-shape}
-\end{equation}
-This weighted form is the admissible public coefficient shape.
-
-\end{itemize}
-
-\subsubsection{Active-chunk instantiation of
-  \texorpdfstring{$\Pi_1$}{Pi1}}
-
-The fixed mod-$q$ proof system implements the same $\Pi_1$ reduction in chunks,
-keeping every exponent inside the injective range of $g$.  For the admitted
-weighted shape, write
-\begin{equation}
- w_b=\sum_{\ell=0}^{L-1}2^{c_w\ell}\omega_b^{(\ell)},
- \qquad
- u_c^{(\ell)}:=\sum_b\omega_b^{(\ell)}\INT(D(b,c)).
- \label{eq:active-chunk-values}
-\end{equation}
-The verifier derives
-$\mathcal A:=\{\ell<L:\exists b,\ \omega_b^{(\ell)}\ne0\}$ from the public
-weights, requires $\mathcal A\ne\varnothing$, and processes its elements in
-increasing order.  The values in
-Equation~\eqref{eq:active-chunk-values} determine the proof fragment
-\begin{equation}
- \pi_1^{\rm chunk}
- :=\bigl(\nu^{(\ell)},u^{(\ell)}\bigr)_{
-       \ell\in\mathcal A\uparrow},
- \qquad
- \begin{aligned}
-  u^{(\ell)}&=(u_c^{(\ell)})_{c\in\bitsset^s},\\
-  \nu^{(\ell)}&=(g^{u_c^{(\ell)}})_{c\in\bitsset^s}.
- \end{aligned}
- \label{eq:pi1-chunk-proof}
-\end{equation}
-This tuple lists exactly the transmitted chunk fields.  For each active chunk,
-$\nu^{(\ell)}$ is a NARG record
-and $u^{(\ell)}$ is a checked, non-absorbed hint.  Inactive chunks have the
-derived value $u^{(\ell)}=0$.  The verifier rejects a missing, duplicate,
-out-of-order, or noncanonical active pair; requires
-$0\le u_c^{(\ell)}<2^{127}$; and checks
-$g^{u_c^{(\ell)}}=\nu_c^{(\ell)}$ before its next squeeze.  Because
-$\operatorname{ord}(g)=2^{128}-1$, the stated range makes the accepted exponent
-unique.  The checked hints reconstruct the original column values:
-\begin{equation}
- \mu_c
- :=\sum_{\ell=0}^{L-1}2^{c_w\ell}u_c^{(\ell)}
- =\sum_b w_b\INT(D(b,c)).
- \label{eq:chunk-reconstructs-mu}
-\end{equation}
-After receiving the final active vector, the verifier checks
-\begin{equation}
- \sum_c w'_c\,\pi_q(\mu_c)=y.
- \label{eq:pi1-weighted-reconstruction}
-\end{equation}
-This chunked reconstruction discharges the scalar claim before the opening
-phase.
-
-For each active $\ell$, the verifier also derives
-\begin{equation}
-i=(b\ll w)\mid j,\qquad
-\omega_i^{(\ell)}=\omega_b^{(\ell)}2^j,\qquad
- y_i^{(\ell)}=g^{\omega_i^{(\ell)}}.
- \label{eq:chunk-exponent-data}
-\end{equation}
-These exponents define one successor PESAT claim for each active chunk:
-\begin{equation}
- \bigwedge_{\ell\in\mathcal A}
- \RPESAT(\K,Q_{\Ftwo\!\Z}^{(\ell)},\mathcal C,\Pack).
- \label{eq:chunk-pesat-family}
-\end{equation}
-\subsection{The encoded F2Z PESAT relation}
-
-Each accepted chunk asserts one grand-product identity.  For one active chunk,
-write its residual polynomial as
-\begin{equation}
- Q_c^{(\ell)}(\Bbit)
- :=\prod_i\left(1+(y_i^{(\ell)}-1)\Bbit[c,i]\right)
-   -\nu_c^{(\ell)}.
+ Q_c^{(\ell)}(H)
+ :=\prod_r\left(1+
+       (g^{\gamma_r^{(\ell)}}-1)H[r,c]\right)
+   -g^{\mu_c^{(\ell)}}.
  \label{eq:chunk-pesat-polynomial}
 \end{equation}
-The encoded F2Z PESAT relation collects the equations
-$Q_c^{(\ell)}(\Bbit)=0$ for every column:
+The product relation is
 \begin{align}
- &\RPESAT(\K,Q_{\Ftwo\!\Z}^{(\ell)},\mathcal C,\Pack)
- \notag\\[-2pt]
- &\quad:=
- \Bigl\{((\bm y^{(\ell)},\bm\nu^{(\ell)}),O;\Bbit):
- \Bbit\in\Ftwo^{2^s\times2^d},\ 
- O=\Enc_{\mathcal C}(\Pack(\Bbit)),\ 
- Q_c^{(\ell)}(\Bbit)=0\ (\forall c)\Bigr\}.
- \label{eq:rel-gp}
+ \mathcal R_{\rm PESAT}[\bm h]:=
+ \Bigl\{((\bm\gamma^{(\ell)},\bm\mu^{(\ell)},\bm M),O;\bm f):\;&
+  \operatorname{vec}(H)=\bm M\pi_2(\bm f),
+  \quad Q_c^{(\ell)}(H)=0\ (\forall c,\ell),\notag\\[-2pt]
+ &O=\Enc_{\mathcal C}(\Pack(F)),
+  \quad\operatorname{vec}(F)=\pi_2(\bm f)\Bigr\}.
+ \label{eq:rel-pesat-h}
 \end{align}
-Omitting $\ell$ gives the unchunked notation
-$\RPESAT(\K,Q_{\Ftwo\!\Z},\mathcal C,\Pack)$.  Thus the grand-product claim is
-represented by this encoded PESAT relation.
+The exact folds $\mu_c^{(\ell)}$ are checked against the supplied linear claim by
+Equation~\eqref{eq:fold-reconstruction} before this relation is accepted.
 
-Checking all products directly would be expensive.  GKR instead compresses
-their verification into a linear claim on the same committed bits.
-
-\paragraph{Direct reductions and classifications.}
-\begin{itemize}
-
-\item \textbf{Reduction 1: Linearize with GKR.}
+GKR reduces the product computation to a weighted sum claim.  Its verifier
+derives public weights $\bm\omega_{\xi}$ and a target $\sigma$:
 \begin{equation}
- \RPESAT(\K,Q_{\Ftwo\!\Z},\mathcal C,\Pack)
- \xRightarrow{\Pi_{\rm red}}
- \RLin(\K,\mathcal C,\Pack).
- \label{eq:edge-gkr-reduction}
+ \mathcal R_{\rm sum}^{h}:=
+ \left\{((\bm\omega_{\xi},\sigma,\bm M),O;\bm f):
+ \sum_z\omega_{\xi,z}H[z]=\sigma,
+ \quad\operatorname{vec}(H)=\bm M\pi_2(\bm f),
+ \quad\text{Equation~\eqref{eq:encoded-oracle-binding}}
+ \right\}.
+ \label{eq:rel-sum-h}
 \end{equation}
-For the chunked family, this reduction runs once per $\ell\in\mathcal A$.
-\begin{itemize}
- \item \textbf{Input:} the chunk's PESAT instance, the unchanged root
- $\rho=\Root(O)$, and the transcript after $\zeta^{(\ell)}$ and
- $e_0^{(\ell)}$; call this bundle $\mathcal I_{\rm GKR}^{(\ell)}$.
- \item \textbf{Proof:}
- \begin{equation}
-  (\tr',\mathit{pt}_\ell,\mu_\ell)
-  \leftarrow
-  \mathsf{GKR.Verify}
-  (\mathsf{pp}_{\rm GKR},\mathcal I_{\rm GKR}^{(\ell)},
-   \pi_{\rm red}^{(\ell)};\tr).
-  \label{eq:gkr-verifier-contract}
- \end{equation}
- This call consumes exactly one canonical GKR fragment
- $\pi_{\rm red}^{(\ell)}$ and returns the updated transcript $\tr'$.  The GKR
- protocol fixes its messages, challenge order, encodings, tags, and rejection
- rules.
- \item \textbf{Result:} the verifier derives $(\bm a_\ell,\mu_\ell)$ for
- $\RLin(\K,\mathcal C,\Pack)$, retaining the same $O$ and bit witness.  In the
- current proof system, with
- $B_{\mathrm{bit},\K}:=\iota_{2\to\K}(\Bbit)$ coordinatewise,
- \begin{equation}
-  \bm a_\ell[z]=\eq(z,\mathit{pt}_\ell),
-  \qquad
-  \MLE{B_{\mathrm{bit},\K}}(\mathit{pt}_\ell)=\mu_\ell.
-  \label{eq:gkr-lin-successor}
- \end{equation}
- \item \textbf{Scope:} this edge assumes a GKR instantiation with a byte-exact
- transcript and a proof of the reduction.  Its error is
- $\varepsilon_{\rm red}^{(\ell)}$ per active chunk.
-\end{itemize}
+GKR reads the active witness through its circuit oracle.  It does not query
+$O$ or assert that $O$ encodes $H$.
 
-\item \textbf{Classification: Degree-zero, zero-ideal PIMSAT.}
-With $S=\K[X]$, $S_{\le0}=\K$, and $I=(0)$, membership means exactly
-$Q_c^{(\ell)}=0$.  Boolean witnesses keep their bit domain; unrestricted
-$\K$ variables also require $Z^2-Z=0$.
-
-\end{itemize}
-
-\subsection{The encoded LIN relation}
-
-After GKR, neither the source constraints nor the grand products remain.
-The encoded LIN relation records the sole remaining linear claim.  Using the
-coordinatewise embedding defined above, put
-$\bm b_{\K}:=\iota_{2\to\K}(\pi_2(\bm b))$:
-\begin{align}
- \RLin(\K,\mathcal C,\Pack):=
- \Bigl\{((\bm a,\mu),O;\bm b):\;&
- \bm b\in\bitsset^n,
- \quad\bm a\in\K^n,
- \quad\mu\in\K,\notag\\[-2pt]
- &O=\Enc_{\mathcal C}(\Pack(\pi_2(\bm b))),
- \quad\langle\bm a,\bm b_{\K}\rangle_{\K}=\mu\Bigr\}.
- \label{eq:rel-lin-pack}
-\end{align}
-This is the linear target consumed by the opening IOP.
-
-For the fixed geometry $n=2^m$, write $\widetilde a$ and
-$\widetilde b_{\K}$ for the multilinear extensions of $\bm a$ and
-$\bm b_{\K}$.  The direct GKR successor is the special case
-$a[z]=\eq(z,r)$, so its claim is already
-$\widetilde b_{\K}(r)=\mu$.  A general coefficient need not have this form.
-The final reduction now opens the derived linear claim against the original
-root.
-
-\paragraph{Direct reductions.}
-\begin{itemize}
-
-\item \textbf{Reduction 1: Run the linear-relation IOP.}
+The row protocol $\mathsf{LinCheck}_H$ reduces the weighted sum claim to one
+MLE evaluation:
 \begin{equation}
- \RLin(\K,\mathcal C,\Pack)
- \xRightarrow{\Pi_{\rm iopp}}
- \mathcal R_{\rm triv}.
- \label{eq:edge-iopp}
+ \mathcal R_{\rm eval}^{h}:=
+ \left\{((\bm r_h,\eta,\bm M),O;\bm f):
+  \widetilde H(\bm r_h)=\eta,
+  \quad\operatorname{vec}(H)=\bm M\pi_2(\bm f),
+  \quad\text{Equation~\eqref{eq:encoded-oracle-binding}}
+ \right\}.
+ \label{eq:rel-eval-h}
 \end{equation}
-\begin{itemize}
- \item \textbf{Proof:} In Equation~\eqref{eq:edge-iopp}, $\pi_{\rm iopp}$
- proves the derived $(\bm a,\mu)$ claim against the public root
- $\rho=\Root(O)$.
- \item \textbf{Result:} acceptance or rejection; no public relation remains.
- \item \textbf{Scope:} the final direct edge.  The construction below gives one
- concrete implementation.
-\end{itemize}
-
-\end{itemize}
-
-\subsubsection{Fixed opening protocol's internal expansion of
-  \texorpdfstring{$\Pi_{\rm iopp}$}{Pi-iopp}}
-
-The fixed recursive-opening protocol implements $\Pi_{\rm iopp}$ as follows.
-Direct MLE-shaped claims proceed to the ring switch, while virtual claims first
-pass through the LinCheck below.
-\begin{enumerate}
-
-\item \textbf{One LinCheck for a general coefficient.}
-The direct mode skips this item.  For a general claim
-$\langle\bm a,\bm b_{\K}\rangle_{\K}=\mu$, the prover and verifier run the
-degree-two sumcheck for
+For $z\in\bitsset^{m_h}$ and $\bm r_h\in\K^{m_h}$, define
 \begin{equation}
- \sum_{x\in\bits^m}\widetilde a(x)\widetilde b_{\K}(x)=\mu.
- \label{eq:lincheck-sum}
+ \eq(z,\bm r_h):=
+ \prod_{j=0}^{m_h-1}
+ \bigl((1-z_j)(1-r_{h,j})+z_jr_{h,j}\bigr).
+ \label{eq:equality-polynomial}
 \end{equation}
-Starting with $\sigma_{-1}:=\mu$, round $i$ sends one degree-two polynomial
-$g_i$ and enforces
+By the definition of the multilinear extension,
 \begin{equation}
- g_i(0)+g_i(1)=\sigma_{i-1},\qquad
- r_i\leftarrow\K,\qquad \sigma_i:=g_i(r_i),\qquad 0\le i<m.
- \label{eq:lincheck-round}
+ \widetilde H(\bm r_h)
+ =\sum_{z\in\bitsset^{m_h}}\eq(z,\bm r_h)H[z].
+ \label{eq:active-mle-expansion}
 \end{equation}
-These equations fix every round check and challenge deadline.  Let
-$r=(r_{\lo},r_{\hi})$, where $|r_{\lo}|=7$.  The first ring-switch message
-derives
+Thus the MLE claim has coefficient vector
+$\bm a_h[z]:=\eq(z,\bm r_h)$.  Scalar extension and the adjoint give
 \begin{equation}
- z:=\sum_{v=0}^{127}\eq(v,r_{\lo})s_v
-    =\widetilde b_{\K}(r),\qquad
- \sigma_{m-1}=\widetilde a(r)z.
- \label{eq:lincheck-terminal}
-\end{equation}
-The verifier checks Equation~\eqref{eq:lincheck-terminal} immediately after
-absorbing that message and before the next squeeze.  This terminal rule uses
-no division and has no exceptional branch when $\widetilde a(r)=0$.  The
-LinCheck proof fragment is $\pi_{\rm LC}:=(g_i)_{i=0}^{m-1}$ and its
-soundness error is at most
-$\varepsilon_{\rm LC}:=2m/|\K|$.  After the check, the same $s$ vector is
-reused by the ring switch; no second LinCheck or extra evaluation target is
-introduced.
-
-\item \textbf{Per-claim ring switch.}
-For $0\le v<128$, define the $v$-th bit plane of a packed row by
-$B_{\mathrm{bit},v}[c,i_{\hi}]
-:=\Bbit[c][(i_{\hi}\ll7)\mid v]$, using the coordinate order from
-Equation~\eqref{eq:packed-commitment}.  For each active $\ell$, the prover
-transmits
-\begin{equation}
- s^{(\ell)}=(s_v^{(\ell)})_{v<128},
+ \bm a_f:=\bm M_{\K}^{\mathsf T}\bm a_h,
  \qquad
- s_v^{(\ell)}:=\MLE{B_{\mathrm{bit},v}}(r_{\hi}^{(\ell)}).
- \label{eq:ring-switch-message}
-\end{equation}
-After all vectors in Equation~\eqref{eq:ring-switch-message} are absorbed,
-the verifier squeezes one shared $r''$ and derives a packed claim
-\begin{equation}
- O=\Enc_{\mathcal C}(P),
- \qquad
- \langle B_\ell,P\rangle_{\K}=\beta_\ell.
- \label{eq:packed-claim}
-\end{equation}
-In Equation~\eqref{eq:packed-claim}, the witness is
-$P=\Pack(\pi_2(\bm b))$ and $\rho=\Root(O)$ is unchanged.  This step
-has error $\varepsilon_{\rm ring}^{(\ell)}$.  For a direct MLE-shaped source,
-the verifier checks $z=\mu_\ell$; for the single general claim normalized by
-LinCheck, it checks Equation~\eqref{eq:lincheck-terminal}.  Thus the ring
-switch itself still consumes only one MLE evaluation.
-
-\item \textbf{Batch.}
-The verifier squeezes fresh
-$\bm\eta\in\K^{|\mathcal A|}$ and derives, without a proof field,
-\begin{equation}
- B:=\sum_{\ell\in\mathcal A}\eta_\ell B_\ell,
- \qquad
- \beta:=\sum_{\ell\in\mathcal A}\eta_\ell\beta_\ell.
- \label{eq:batch-packed-claim}
-\end{equation}
-The batch values in Equation~\eqref{eq:batch-packed-claim} define the
-resulting internal claim
-$O=\Enc_{\mathcal C}(P)$ and
-$\langle B,P\rangle_{\K}=\beta$, with batching error
-$\varepsilon_{\rm batch}$.
-
-\item \textbf{Recursive opening.}
-The prover transmits $\pi_{\rm open}=\pi_{\rm lig}$, one fixed
-recursive constrained-code proof containing its internal proximity messages
-and authenticated openings.  The verifier derives all opening challenges and
-accepts only if the proof verifies against $(\rho,B,\beta)$.  This completes
-$\Pi_{\rm iopp}$ with error $\varepsilon_{\rm open}$.
-
-\end{enumerate}
-
-\subsection{The virtual Lin-BitsDual extension}
-
-The virtual extension provides an optional route into the same LIN relation
-when the claimed values come from a public linear transformation of the
-committed bits.
-
-For a public $\Ftwo$-linear map $T:\Ftwo^n\to\Ftwo^{n'}$ and
-$h_0\in\Ftwo^{n'}$, let
-$\operatorname{lift}_2:\Ftwo\to\{0,1\}\subset\Z$ act coordinatewise and put
-$\bar h=h_0+T(\pi_2(\bm b))$.  Define
-\begin{align}
- \RLBD^{\virt}:=\Bigl\{((T,\bm a_q,\mu,h_0),O;\bm b):\;&
- \bm b\in\bitsset^n,
- \quad\bm a_q\in\Fq^{n'},
- \quad\mu\in\Fq,\notag\\[-2pt]
- &O=\Enc_{\mathcal C}(\Pack(\pi_2(\bm b))),
- \quad
- \langle\pi_q(\operatorname{lift}_2(\bar h)),\bm a_q\rangle_{\Fq}
- =\mu\Bigr\}.
- \label{eq:rel-lbd-virtual}
-\end{align}
-This is the source relation for the virtual branch.
-
-\paragraph{Direct reductions.}
-\begin{itemize}
-
-\item \textbf{Conditional virtual reduction.}
-\begin{equation}
- \RLBD^{\virt}
- \overset{\Pi_{\rm partial\text{-}core}}{\dashrightarrow}
- \mathcal R_{h\text{-}{\rm Lin}}^{\virt}.
- \label{eq:edge-virtual-partial-core}
-\end{equation}
-\begin{itemize}
- \item \textbf{Proof:} For the conditional edge in
- Equation~\eqref{eq:edge-virtual-partial-core}, $\pi_{\rm virtual}$ carries
- the chosen partial-core and GKR messages; the virtual table is not
- transmitted.
- \item \textbf{Result:} the verifier derives $(\bm a_{\K},\mu')$.
- \item \textbf{Scope:} available only after the virtual mode defines the
- proof format, transcript, verifier, and error bound.
-\end{itemize}
-
-\end{itemize}
-
-Let $h_{0,\K}:=\iota_{2\to\K}(h_0)$ and let $T_{\K}$ be the scalar extension
-of $T$.  Only $\bm b$ is committed.  The virtual linear seam is
-\begin{align}
- \mathcal R_{h\text{-}{\rm Lin}}^{\virt}:=
- \Bigl\{((T,h_0,\bm a_{\K},\mu'),O;\bm b):\;&
- \bm b\in\bitsset^n,
- \quad\bm a_{\K}\in\K^{n'},
- \quad\mu'\in\K,\notag\\[-2pt]
- &O=\Enc_{\mathcal C}(\Pack(\pi_2(\bm b))),\notag\\[-2pt]
- &\langle\bm a_{\K},h_{0,\K}+T_{\K}(\bm b_{\K})\rangle_{\K}
- =\mu'\Bigr\}.
- \label{eq:rel-virtual-lin}
-\end{align}
-This relation is the partial core's required successor.  Its public adjoint
-rewrite transmits nothing:
-\begin{equation}
- \begin{aligned}
-  \mathcal R_{h\text{-}{\rm Lin}}^{\virt}
-  &\equiv_{\mathsf{Adj}_{T_{\K}^{*}}}
-  \RLin(\K,\mathcal C,\Pack),\\
-  \bm a_b&:=T_{\K}^{*}(\bm a_{\K}),&
-  \mu_b&:=\mu'-\langle\bm a_{\K},h_{0,\K}\rangle_{\K}.
- \end{aligned}
+ \langle\bm a_h,\bm h_{\K}\rangle_{\K}
+ =\langle\bm a_f,\bm f_{\K}\rangle_{\K}=\eta.
  \label{eq:virtual-adjoint-rewrite}
 \end{equation}
-The exact rewrite in Equation~\eqref{eq:virtual-adjoint-rewrite} need not
-preserve the direct mode's MLE coefficient shape.  The virtual mode therefore
-invokes the LinCheck in
-Equations~\eqref{eq:lincheck-sum}--\eqref{eq:lincheck-terminal} before the
-existing ring switch.  It must provide a deterministic evaluator for the
-adjoint coefficient, for example by the dual identity
+This step sends no message.  The public instance must provide a deterministic
+full-adjoint evaluator, for example through
 \begin{equation}
- \widetilde{T_{\K}^{*}(\bm a_{\K})}(r)
- =\left\langle\bm a_{\K},T_{\K}(\eq(\cdot,r))\right\rangle_{\K},
+ \widetilde{\bm M_{\K}^{\mathsf T}\bm a_h}(\bm r_f)
+ =\left\langle
+    \bm a_h,
+    \bm M_{\K}\bigl(\eq(\cdot,\bm r_f)\bigr)
+  \right\rangle_{\K}.
  \label{eq:virtual-adjoint-evaluator}
 \end{equation}
-The virtual profile must prove that this evaluator equals the declared full
-adjoint.  No dense adjoint vector and no multi-evaluation ring adapter are
-required.  A virtual profile is admissible only if it specifies the
-partial-core predecessor, evaluator, LinCheck ledger, and composed error.
-Otherwise the verifier rejects; direct mode always rejects this source.
+The resulting encoded relation is
+\begin{align}
+ \mathcal R_{\rm Lin}^{f}:=
+ \Bigl\{((\bm a_f,\eta),O;\bm f):\;&
+  \bm a_f\in\K^{n_f},
+  \quad\langle\bm a_f,\bm f_{\K}\rangle_{\K}=\eta,\notag\\[-2pt]
+ &O=\Enc_{\mathcal C}(\Pack(F)),
+  \quad\operatorname{vec}(F)=\pi_2(\bm f)\Bigr\}.
+ \label{eq:rel-lin-f}
+\end{align}
 
-\subsection{The complete relation graph and proof object}
+\begingroup
+\setlength{\tabcolsep}{3pt}
+\renewcommand{\arraystretch}{1.08}
+\begin{tabularx}{\linewidth}{@{}l X l X l@{}}
+\toprule
+Relation & Public claim & Active witness & Commitment invariant & Successor \\
+\midrule
+$\mathcal R_{\rm LinBitsDual}[\bm h]$ & $\sum_ca'_c\sum_ra_rH[r,c]=\mu$ & $\bm h$ & $O$ encodes $\bm f$ & $\Pi_1$ \\
+$\mathcal R_{\rm PESAT}[\bm h]$ & product identities & $H$ & unchanged & $\Pi_{\rm GKR}$ \\
+$\mathcal R_{\rm sum}^{h}$ & weighted sum on $H$ & $H$ & unchanged & $\Pi_{\rm MLE}$ \\
+$\mathcal R_{\rm eval}^{h}$ & $\widetilde H(\bm r_h)=\eta$ & $H$ & unchanged & $\bm M^{\mathsf T}$ \\
+$\mathcal R_{\rm Lin}^{f}$ & $\langle\bm a_f,\bm f_{\K}\rangle=\eta$ & $\bm f$ & $O$ encodes $\bm f$ & $\Pi_{\rm iopp}$ \\
+$\mathcal R_{\rm triv}$ & acceptance & --- & discharged & --- \\
+\bottomrule
+\end{tabularx}
+\endgroup
 
-Collecting the preceding reductions gives the complete relation graph.  Along
-the direct path, Bitify changes the witness view once, from $\bm f$ to
-$\bm b$, while the encoded oracle and root remain fixed.  Let
-$\mathcal R_{\rm triv}:=\{(\bot,\bot;\bot)\}$:
+\subsection{Reductions}
+
+The complete relation graph is
 \begin{equation}
 \begin{aligned}
- \mathcal R_{\rm src}
- &\xrightarrow{\mathsf{Encode}}
- \mathcal R_{\rm src}^{\rm enc},
- \\[1pt]
- \mathcal R_{\rm src}^{\rm enc}
- &\xRightarrow{\Pi_{\rm ZC}}
- \RLMFB,
- \\[1pt]
- \RLMFB
- &\equiv_{\mathsf{Bitify}}
- \RLBD
- \xRightarrow{\Pi_1}
- \RPESAT(\K,Q_{\Ftwo\!\Z},\mathcal C,\Pack)
- \\[1pt]
- \RPESAT(\K,Q_{\Ftwo\!\Z},\mathcal C,\Pack)
- &\xRightarrow{\Pi_{\rm red}}
- \RLin(\K,\mathcal C,\Pack)
+ \mathcal R_{\rm LinBitsDual}[\bm h]
+ &\xRightarrow{\Pi_1}
+ \mathcal R_{\rm PESAT}[\bm h]
+ \xRightarrow{\Pi_{\rm GKR}}
+ \mathcal R_{\rm sum}^{h}
+ \\[2pt]
+ &\xRightarrow{\Pi_{\rm MLE}}
+ \mathcal R_{\rm eval}^{h}
+ \equiv_{\bm M^{\mathsf T}}
+ \mathcal R_{\rm Lin}^{f}
  \xRightarrow{\Pi_{\rm iopp}}
  \mathcal R_{\rm triv}.
 \end{aligned}
 \label{eq:solid-reduction-graph}
 \end{equation}
-$\mathsf{Encode}$ and Bitify add no proof fields; chunking and recursive
-opening refine the displayed edges.  Concatenating the messages carried by the
-interactive edges gives the semantic proof object
+
+\paragraph{Integer folds and products.}
+$\Pi_1$ sends the active exact folds
+\begin{equation}
+ \pi_1:=
+ \bigl(\bm\nu^{(\ell)},\bm\mu^{(\ell)}\bigr)_{
+       \ell\in\mathcal A\uparrow},
+ \qquad
+ \nu_c^{(\ell)}:=g^{\mu_c^{(\ell)}}.
+ \label{eq:pi1-chunk-proof}
+\end{equation}
+The verifier requires $0\le\mu_c^{(\ell)}<2^{127}$, checks
+$g^{\mu_c^{(\ell)}}=\nu_c^{(\ell)}$, and checks
+Equation~\eqref{eq:fold-reconstruction} before deriving the product
+instances.  The vectors $\bm\nu^{(\ell)}$ are proof records.  The integer
+vectors $\bm\mu^{(\ell)}$ are checked, non-absorbed hints.  Inactive chunks
+have derived value zero.
+
+\paragraph{GKR and row LinCheck.}
+For every active chunk, the fixed GKR interface consumes one product instance
+and returns one weighted sum claim on $H$:
+\begin{equation}
+ (\tr',\bm\omega_{\xi},\sigma)
+ \leftarrow
+ \mathsf{GKR.Verify}
+ (\mathsf{pp}_{\rm GKR},\mathcal I_{\rm GKR},
+  \pi_{\rm GKR};\tr).
+ \label{eq:gkr-verifier-contract}
+\end{equation}
+The row LinCheck then consumes that sum claim and returns
+$(\bm r_h,\eta)$ for Equation~\eqref{eq:rel-eval-h}.  Write its proof fragment
+as $\pi_{\rm MLE}$.  The existing GKR wire record carries the ordered pair
+$(\pi_{\rm GKR},\pi_{\rm MLE})$; this semantic split does not add a wire tag or
+change framing.
+
+\paragraph{Adjoint and opening.}
+The verifier evaluates $\bm a_f=\bm M_{\K}^{\mathsf T}\bm a_h$ locally.
+If $\bm a_f$ is already MLE-shaped, $\Pi_{\rm iopp}$ proceeds directly to the
+ring switch.  Otherwise it first runs the coefficient protocol
+$\mathsf{LinCheck}_f$.  The decision is determined by the public instance and
+coefficient shape, not by a prover flag.
+
+\subsection{Opening a pulled-back claim}
+
+For a general coefficient, the coefficient protocol $\mathsf{LinCheck}_f$
+proves
+\begin{equation}
+ \sum_{x\in\bitsset^{m_f}}
+   \widetilde a_f(x)\widetilde f_{\K}(x)=\eta.
+ \label{eq:lincheck-sum}
+\end{equation}
+Starting with $\sigma_{-1}:=\eta$, round $i$ sends a degree-two polynomial
+$g_i$ and checks
+\begin{equation}
+ g_i(0)+g_i(1)=\sigma_{i-1},\qquad
+ r_i\leftarrow\K,\qquad
+ \sigma_i:=g_i(r_i),\qquad 0\le i<m_f.
+ \label{eq:lincheck-round}
+\end{equation}
+Let $\bm r=(\bm r_{\lo},\bm r_{\hi})$, with
+$|\bm r_{\lo}|=7$.  The first ring-switch message derives
+\begin{equation}
+ z:=\sum_{v=0}^{127}\eq(v,\bm r_{\lo})s_v
+   =\widetilde f_{\K}(\bm r),\qquad
+ \sigma_{m_f-1}=\widetilde a_f(\bm r)z.
+ \label{eq:lincheck-terminal}
+\end{equation}
+The verifier performs this check after absorbing the message and before its
+next squeeze.  It uses no division and has no exceptional branch when
+$\widetilde a_f(\bm r)=0$.  The coefficient-LinCheck fragment is
+$\pi_{\rm LC}:=(g_i)_{i=0}^{m_f-1}$ and has error at most
+$\varepsilon_{\rm LC}:=2m_f/|\K|$.  An MLE-shaped coefficient sets
+$\pi_{\rm LC}=()$ and $\varepsilon_{\rm LC}=0$.
+
+For $0\le v<128$, let $F_v$ be the $v$-th bit plane of the packed committed
+layout.  The prover transmits
+\begin{equation}
+ \bm s=(s_v)_{v<128},\qquad
+ s_v:=\widetilde F_v(\bm r_{\hi}).
+ \label{eq:ring-switch-message}
+\end{equation}
+The verifier derives a packed claim
+\begin{equation}
+ O=\Enc_{\mathcal C}(P),\qquad
+ \langle B,P\rangle_{\K}=\beta.
+ \label{eq:packed-claim}
+\end{equation}
+For several active chunks, fresh coefficients $\bm\eta_{\rm bat}$ combine the
+packed claims without adding a proof field:
+\begin{equation}
+ B:=\sum_{\ell\in\mathcal A}\eta_{{\rm bat},\ell}B_\ell,
+ \qquad
+ \beta:=\sum_{\ell\in\mathcal A}\eta_{{\rm bat},\ell}\beta_\ell.
+ \label{eq:batch-packed-claim}
+\end{equation}
+The recursive constrained-code proof $\pi_{\rm lig}$ verifies this claim
+against $\rho$.
+
+\subsection{Proof object and soundness}
+
+The semantic proof object is
 \begin{equation}
  \pi_{\mathrm{F2Z}}
  =\left(
-   \pi_{\rm ZC},
-   \bigl(\nu^{(\ell)},u^{(\ell)},\pi_{\rm red}^{(\ell)}\bigr)_{
-         \ell\in\mathcal A\text{ increasing}},
+   \bigl(\bm\nu^{(\ell)},\bm\mu^{(\ell)},
+         \pi_{\rm GKR}^{(\ell)},\pi_{\rm MLE}^{(\ell)}\bigr)_
+         {\ell\in\mathcal A\uparrow},
    \pi_{\rm LC},
-   (s^{(\ell)})_{\ell\in\mathcal A\text{ increasing}},
+   (\bm s^{(\ell)})_{\ell\in\mathcal A\uparrow},
    \pi_{\rm lig}
  \right).
  \label{eq:proof-object}
 \end{equation}
-The fields in Equation~\eqref{eq:proof-object} are replayed according to
-Section~\ref{sec:interaction}.  Public
-inputs are external to the proof; other omitted values are derived.  The v1
-wire format partitions transmitted fields, in replay order, as
+
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}l l X@{}}
+\toprule
+Fragment & Successor claim & Error \\
+\midrule
+$\pi_1$ & product claims on $H$ & $\varepsilon_1$ \\
+$\pi_{\rm GKR}^{(\ell)}$ & weighted sum claim on $H$ & $\varepsilon_{\rm GKR}^{(\ell)}$ \\
+$\pi_{\rm MLE}^{(\ell)}$ & MLE claim on $H$ & $\varepsilon_{\rm MLE}^{(\ell)}$ \\
+$\pi_{\rm LC}$ & MLE-shaped claim on $F$ & $\varepsilon_{\rm LC}$ or $0$ \\
+ring switch and batch & packed claim & $\varepsilon_{\rm ring}^{(\ell)}$, $\varepsilon_{\rm batch}$ \\
+$\pi_{\rm lig}$ & acceptance & $\varepsilon_{\rm open}$ \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+The v1 wire format partitions transmitted fields, in replay order, as
 \begin{equation}
  \pi_{\rm wire}:=(N_{\rm F2Z},H_{\rm F2Z}),\qquad
  \begin{aligned}
   \NargLen(\pi)&:=|N_{\rm F2Z}|,&
   \HintLen(\pi)&:=|H_{\rm F2Z}|,\\
   \PayloadLen(\pi)&:=|N_{\rm F2Z}|+|H_{\rm F2Z}|,&
-    \WireLen(\pi)&:=
-    |\HostEncode(N_{\rm F2Z},H_{\rm F2Z})|.
+  \WireLen(\pi)&:=|\HostEncode(N_{\rm F2Z},H_{\rm F2Z})|.
  \end{aligned}
  \label{eq:proof-channel-lengths}
 \end{equation}
-Benchmarks \must{} report all four lengths.  Section~\ref{sec:wire-container}
-fixes their byte meaning, the outer 40-byte container, and the exact record
-counts and exhaustion rules.
+The byte tags and container rules are fixed in Section~\ref{sec:wire-container}.
 
-With ZeroCheck error $\varepsilon_{\rm ZC}$,
-$\varepsilon_{\rm red}^{(\ell)}$, the optional $\varepsilon_{\rm LC}$,
-$\varepsilon_{\rm ring}^{(\ell)}$,
-$\varepsilon_{\rm batch}$, and $\varepsilon_{\rm open}$,
+The composed error is bounded by
 \begin{equation}
+ \begin{aligned}
  \varepsilon_{\rm F2Z}
- \le \varepsilon_{\rm ZC}
-    +\sum_{\ell\in\mathcal A}
-       \bigl(\varepsilon_{\rm red}^{(\ell)}
-             +\varepsilon_{\rm ring}^{(\ell)}\bigr)
-    +\varepsilon_{\rm LC}
-    +\varepsilon_{\rm batch}+\varepsilon_{\rm open}.
+ \le{}&\varepsilon_1
+  +\sum_{\ell\in\mathcal A}
+    \left(
+      \varepsilon_{\rm GKR}^{(\ell)}
+      +\varepsilon_{\rm MLE}^{(\ell)}
+      +\varepsilon_{\rm ring}^{(\ell)}
+    \right)\\
+ &+\varepsilon_{\rm LC}
+  +\varepsilon_{\rm batch}+\varepsilon_{\rm open}.
+ \end{aligned}
  \label{eq:composed-soundness}
 \end{equation}
-Equation~\eqref{eq:composed-soundness} is the proof system's composed soundness
-bound.  The direct mode sets $\pi_{\rm LC}=()$ and
-$\varepsilon_{\rm LC}=0$.
 
 \endgroup

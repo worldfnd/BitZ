@@ -12,11 +12,11 @@
   \textcolor{specblue}{\chN}\!/
   \textcolor{pvhint}{\chH}[#1]}
 
-\newcommand{\idSRC}{$\mathsf{SRC}$}
-\newcommand{\idLMFB}{$\mathsf{LMFB}$}
-\newcommand{\idLBD}{$\mathsf{LBD}$}
+\newcommand{\idLINH}{$\mathsf{LIN}[h]$}
 \newcommand{\idPESAT}{$\mathsf{PESAT}^{(\ell)}$}
-\newcommand{\idLINPACK}{$\mathsf{LIN}[\Pack]$}
+\newcommand{\idSUMH}{$\mathsf{SUM}[H]$}
+\newcommand{\idEVALH}{$\mathsf{EVAL}[H]$}
+\newcommand{\idLINPACK}{$\mathsf{LIN}[f]$}
 \newcommand{\idLINIDFAM}{$\mathsf{LIN}[\mathsf{id}]^{\mathcal A}$}
 \newcommand{\idLINID}{$\mathsf{LIN}[\mathsf{id}]$}
 
@@ -111,12 +111,14 @@ both replay orders.\\
 \end{tabularx}
 \endgroup
 
-\john{WTF is a verifyStream? Do we really need that. It's not defined on the overleaf.} Object notation $\mathsf{Verify}(\ldots,\pi;\tr)$ denotes the equivalent
+% TODO(john): Decide whether VerifyStream should remain a named interface.
+Object notation $\mathsf{Verify}(\ldots,\pi;\tr)$ denotes the equivalent
 $\mathsf{VerifyStream}(\ldots;\tr,c_N,c_H)$.  It follows the subordinate ledger
 over the fixed proof system's bounded input slices, performs the same checks and events,
 and succeeds only at both declared cursor endpoints.
 
-\john{WTF is this relation of CheckHint? Is it really needed?} Given public data and bound NARG prefix $A$, a hint $h$ is admissible only
+% TODO(john): Decide whether CheckHint needs an explicit named relation.
+Given public data and bound NARG prefix $A$, a hint $h$ is admissible only
 if its accepted value is computationally unique:
 \begin{equation}
  \Pr\!\left[\exists h\ne h':
@@ -130,7 +132,8 @@ checked before the next $\Squeeze$.  Acceptance requires no
 pending hint and exact exhaustion of both cursors; missing, misordered, or
 trailing records reject.
 
-\john{This mother fucking thing can just be said more simply of how we are doing a transcript absorb. It can simply be absorb(domain|length of bytes |bytes) and then we can use squeeze. Just define the goddamm transcript as a sponge} Let $\Frame(\tau,\ell,k,i;z)$ be the byte frame of
+% TODO(john): Consider presenting the transcript directly as a sponge.
+Let $\Frame(\tau,\ell,k,i;z)$ be the byte frame of
 Equation~\eqref{eq:event-frame-v1}.
 Before the first proof challenge,
 \begin{equation}
@@ -154,11 +157,10 @@ The tables realize Equation~\eqref{eq:solid-reduction-graph} as matched
 prover/verifier steps in this exact order:
 \begin{equation}
  \begin{aligned}
- &(P_1/V_1);(P_2/V_2);(P_3/V_3);\\
+ &(P_1/V_1);\\
  &\mathbf{for}\ \ell\in\mathcal A\ \text{in increasing order}:\
-   ((P_4/V_4)^{(\ell)};(P_5/V_5)^{(\ell)});\\
- &(P_6/V_6);(P_7/V_7);(P_8/V_8);(P_9/V_9);(P_{10}/V_{10});
-   (P_{11}/V_{11}).
+   ((P_2/V_2)^{(\ell)};(P_3/V_3)^{(\ell)});\\
+ &(P_4/V_4);(P_5/V_5);(P_6/V_6);(P_7/V_7);(P_8/V_8);(P_9/V_9).
  \end{aligned}
  \label{eq:pv-step-order}
 \end{equation}
@@ -174,75 +176,28 @@ superscript-$(\ell)$ copies add no paper relation.
 \setlength{\marginparsep}{0.10in}
 
 % --------------------------------------------------------------------------
-\begin{pvstep}{Commit and bind the source statement}{%
-  \clgedge[initialization]{$\mathsf{Encode}$}
-    {$\mathcal R_{\rm src}$}
-    {$\mathcal R_{\rm src}^{\rm enc}$}%
-  \clgnewrel{\idSRC}{$\mathcal R_{\rm src}^{\rm enc}(x_{\rm src},O;\bm f)$}%
+\begin{pvstep}{Bind the F2Z statement and commitment}{%
+  \clgnewrel{\idLINH}
+    {$\sum_ca'_c\sum_ra_rH[r,c]=\mu$}%
   \clgdef{$\rho$}{$\rho=\Root(O)$}%
 }
 \begin{pvexchange}
 \Pturn{Construct
 \(\begin{aligned}
- \bm b&:=\bits(\bm f),\\
- P&:=\Pack(\pi_2(\bm b)),\\
+ \pi_2(\bm h)&=\bm M\pi_2(\bm f),\quad \bm h\in\bitsset^{n_h},\\
+ P&:=\Pack(F),\quad \operatorname{vec}(F)=\pi_2(\bm f),\\
  O&:=\Enc_{\mathcal C}(P),\qquad \rho:=\Root(O).
 \end{aligned}\).}
 \Psend{\Dbadge{\mathsf{com}}}
-\Vturn{Validate the public parameters, statement, shape, code, and root type; then set
+\Vturn{Validate the public factors $(\bm a,\bm a')$, claim value $\mu$,
+configuration, shapes, code, and root type; then set
 \(\displaystyle
  \tr\leftarrow\Absorb_{\mathsf{statement}}
-   (\tr,(\mathsf{pp},x_{\rm src},\mathsf{com}))\).}
-\end{pvexchange}
-\end{pvstep}
-
-% --------------------------------------------------------------------------
-\begin{pvstep}{Run ZeroCheck}{%
-  \clgedge[relation reduction]{$\Pi_{\rm ZC}$}
-    {$\mathcal R_{\rm src}^{\rm enc}$}
-    {$\RLMFB$}%
-  \clgdone{\idSRC}%
-  \clgnewrel{\idLMFB}{$\langle\bm v,\psi(\bm f)\rangle_R=\mu$}%
-}
-The fixed ZeroCheck protocol owns this entire reduction and retains the
-same encoded oracle.
-\begin{pvexchange}
-\Pturn{Construct
-\(\displaystyle
- (\tr,\pi_{\rm ZC})\leftarrow
- \mathsf{ZeroCheck.Prove}(\mathsf{pp},x_{\rm src},\bm f;\tr)\).}
-\Psend{\Splitbadge{\pi_{\rm ZC}}}
-\Vturn{Compute
-\(\begin{aligned}
- (\tr,\mathcal I_{\rm LMFB},\bm w,\bm w')
-   &\leftarrow\mathsf{VerifyZeroCheck}\\[-2pt]
- &\quad(x_{\rm src},\rho,\pi_{\rm ZC};\tr),
-\end{aligned}\)
-derive $(\psi,\bm v,\mu):=\mathsf{Claim}(\mathcal I_{\rm LMFB})$,
-set $y:=\mu$, require
-$\mathsf{SameRoot}(\mathcal I_{\rm LMFB},\rho)=1$,
-$\psi=\pi_q$, the concrete adapter of
-Equation~\eqref{eq:concrete-lmfb-specialization},
-$v_{c,b}=\pi_q(w_b)w'_c$, and all public bounds; then bind the derived core
-instance before its first challenge.}
-\end{pvexchange}
-\end{pvstep}
-
-% --------------------------------------------------------------------------
-\begin{pvstep}[1.45in]{Bitify the weighted linear relation}{%
-  \clgedge[deterministic rewrite]{$\mathsf{Bitify}$}
-    {$\RLMFB$}
-    {$\RLBD$}%
-  \clgdone{\idLMFB}%
-  \clgnewrel{\idLBD}{$\langle\pi_q(\bm b),\bm u\rangle_R=y$}%
-}
-\begin{pvexchange}
-\Pturn{Retain $\bm b=\bits(\bm f)$ and its matrix form $\Bbit$.}
-\Vturn{Derive, without a message or challenge,
-\(\displaystyle
- u_{c,b,j}:=v_{c,b}\pi_q(2^j)
-             =\pi_q(w_b2^j)w'_c\).
-This is retyping by semilinearity, not a Booleanity round.}
+   (\tr,(\mathsf{pp},\bm a,\bm a',\mu,\bm M,\mathsf{com}))\).}
+\Pturn{Retain $\bm h$ and its active matrix form $H$.}
+\Vturn{Derive the unique integer representatives, chunk schedule, and
+active-chunk set from the public factors.  This step sends no message and
+samples no challenge.}
 \Vturn{Encode $\mathsf{CoreSeamV1}$ by
 Equation~\eqref{eq:core-seam-payload} and absorb its tag-\code{0003} frame at
 scope $(\bot_{32},\bot_{32},\bot_{32})$ before the first chunk record.}
@@ -252,25 +207,25 @@ scope $(\bot_{32},\bot_{32},\bot_{32})$ before the first chunk record.}
 % --------------------------------------------------------------------------
 \begin{pvstep}[2.35in]{Run chunk $\ell$ of $\Pi_1$}{%
   \clgedge[paper-edge fragment]{$\Pi_1^{(\ell)}$}
-    {$\RLBD$}
-    {$\RPESAT(\K,Q_{\Ftwo\!\Z}^{(\ell)},\mathcal C,\Pack)$}%
-  \clgtouch{\idLBD}%
-  \clgnewrel{\idPESAT}{$Q_c^{(\ell)}(\Bbit)=0\ (\forall c)$}%
-  \clgdef{$P$}{$P=\Pack(\pi_2(\bm b))$}%
+    {$\mathcal R_{\rm LinBitsDual}[\bm h]$}
+    {$\mathcal R_{\rm PESAT}^{(\ell)}[\bm h]$}%
+  \clgtouch{\idLINH}%
+  \clgnewrel{\idPESAT}{$Q_c^{(\ell)}(H)=0\ (\forall c)$}%
+  \clgdef{$P$}{$P=\Pack(F)$}%
 }
 \begin{pvexchange}
 \Pturn{Before sending anything, compute
 \(\displaystyle
- u_c^{(\ell)}=\sum_i\omega_i^{(\ell)}\Bbit[c,i],\qquad
- \nu_c^{(\ell)}=g^{u_c^{(\ell)}}\).}
+ \mu_c^{(\ell)}=\sum_r\gamma_r^{(\ell)}H[r,c],\qquad
+ \nu_c^{(\ell)}=g^{\mu_c^{(\ell)}}\).}
 \Psend{\Nbadge{\nu^{(\ell)}}}
 \Vturn{Read and absorb the canonical typed vector $\nu^{(\ell)}$.}
-\Psend{\Hbadge{u^{(\ell)}}}
+\Psend{\Hbadge{\mu^{(\ell)}}}
 \Vturn{Before any later squeeze, require
 \(\displaystyle
- |u^{(\ell)}|=2^s,\qquad 0\le u_c^{(\ell)}<2^{127},
+|\mu^{(\ell)}|=2^{d_c},\qquad 0\le \mu_c^{(\ell)}<2^{127},
 \)
-and $g^{u_c^{(\ell)}}=\nu_c^{(\ell)}$ for every $c$.  The order of $g$ and the
+and $g^{\mu_c^{(\ell)}}=\nu_c^{(\ell)}$ for every $c$.  The order of $g$ and the
 range bound make this accepted exponent unique.  Then set
 \(\begin{aligned}
  \zeta^{(\ell)}&\leftarrow\Squeeze_{\K}^{s}(\tr),\\
@@ -282,42 +237,44 @@ range bound make this accepted exponent unique.  Then set
 
 % --------------------------------------------------------------------------
 \begin{pvstep}[2.35in]{Run the GKR reduction for chunk $\ell$}{%
-  \clgedge[GKR subprotocol]{$\Pi_{\rm red}^{(\ell)}$}
-    {$\RPESAT(\K,Q_{\Ftwo\!\Z}^{(\ell)},\mathcal C,\Pack)$}
-    {$\RLin^{(\ell)}(\K,\mathcal C,\Pack)$}%
+  \clgedge[GKR subprotocol]{$\Pi_{\rm GKR}^{(\ell)}$}
+    {$\mathcal R_{\rm PESAT}^{(\ell)}[\bm h]$}
+    {$\mathcal R_{\rm sum}^{h,(\ell)}$}%
+  \clgedge[row LinCheck]{$\Pi_{\rm MLE}^{(\ell)}$}
+    {$\mathcal R_{\rm sum}^{h,(\ell)}$}
+    {$\mathcal R_{\rm eval}^{h,(\ell)}$}%
   \clgdone{\idPESAT}%
-  \clgnewrel{\idLINPACK}
+  \clgnewrel{\idEVALH}
     {$\begin{gathered}
-       \MLE{B_{\mathrm{bit},\K}}(\mathit{pt}_r)=\mu_r\\[-2pt]
+       \widetilde H(\bm r_h^{(r)})=\eta_r\\[-2pt]
        (r\in\mathcal A,\ r\le\ell)
      \end{gathered}$}%
 }
-The PCS-level schedule treats $\Pi_{\rm red}^{(\ell)}$ as the named GKR
-subprotocol.  Its input is the current PESAT claim, its unchanged commitment
-$\rho=\Root(O)$, and the transcript state after $\zeta^{(\ell)}$ and
-$e_0^{(\ell)}$ are derived.
+The PCS-level schedule treats GKR and the following row LinCheck as two
+reductions inside the existing GKR record.  GKR consumes the current PESAT
+claim and returns a weighted sum claim on $H$.  The row LinCheck consumes that
+claim and returns $\widetilde H(\bm r_h^{(\ell)})=\eta_\ell$.
 Denote this typed input bundle by $\mathcal I_{\rm GKR}^{(\ell)}$.
-Its output must have the MLE-shaped coefficient
-$\bm a_\ell[z]=\eq(z,\mathit{pt}_\ell)$ and satisfy
-$\MLE{B_{\mathrm{bit},\K}}(\mathit{pt}_\ell)=\mu_\ell$ against the same root.
+Neither reduction queries $O$.
 
 \begin{pvexchange}
 \Pturn{Construct the fixed GKR protocol's canonical proof fragment
 \(\displaystyle
  \pi_{\rm red}^{(\ell)}\leftarrow
- \mathsf{GKR.Prove}
- (\mathsf{pp}_{\rm GKR},\mathcal I_{\rm GKR}^{(\ell)},\Bbit;\tr)\).}
+ (\mathsf{GKR};\mathsf{LinCheck}_H).\mathsf{Prove}
+ (\mathsf{pp}_{\rm GKR},\mathcal I_{\rm GKR}^{(\ell)},H;\tr)\).}
 \Psend{\Splitbadge{\pi_{\rm red}^{(\ell)}}}
 \Vturn{Compute
 \(\begin{aligned}
- (\tr',\mathit{pt}_\ell,\mu_\ell)&\leftarrow\mathsf{GKR.Verify}\\
+ (\tr',\bm r_h^{(\ell)},\eta_\ell)&\leftarrow
+   (\mathsf{GKR};\mathsf{LinCheck}_H).\mathsf{Verify}\\
  &\quad(\mathsf{pp}_{\rm GKR},\mathcal I_{\rm GKR}^{(\ell)},
         \pi_{\rm red}^{(\ell)};\tr),
 \end{aligned}\)
 require success and complete consumption of the GKR fragment, then set
 $\tr\leftarrow\tr'$.}
 \Pturn{Retain the witness value
-$\MLE{B_{\mathrm{bit},\K}}(\mathit{pt}_\ell)$.}
+$\widetilde H(\bm r_h^{(\ell)})$.}
 \end{pvexchange}
 All internal GKR messages and challenges are owned by the fixed GKR
 protocol and use its domain namespace.  Treating GKR atomically here
@@ -336,103 +293,93 @@ uniquely determine them and later challenges must bind them.
 The outer encoded field
 $\mathtt{presums}[\ell]\mathtt{.claimed\_sums}$ is distinct from those phase-$c$
 claims.  Wire format v1 omits it and supplies the derived value
-$\Dbadge{[e_d^{(\ell)}+1]}$ to the MultiDegree pre-sumcheck.  A decoder that
+$\Dbadge{[e_d^{(\ell)}+1]}$ to the MultiDegree row LinCheck.  A decoder that
 encounters the reserved legacy tag \code{3081} \must{} reject.
 \end{pvstep}
 
 % --------------------------------------------------------------------------
-\begin{pvstep}[1.65in]{Complete $\Pi_1$'s reconstruction check}{%
-  \clgedge[paper composition]{$\Pi_1;\Pi_{\rm red}$}
-    {$\RLBD$}
+\begin{pvstep}[1.65in]{Complete the fold reconstruction check}{%
+  \clgedge[paper composition]{$\Pi_1;\Pi_{\rm GKR};\Pi_{\rm MLE}$}
+    {$\mathcal R_{\rm LinBitsDual}[\bm h]$}
     {$\displaystyle\bigwedge_{\ell\in\mathcal A}
-       \RLin^{(\ell)}(\K,\mathcal C,\Pack)$}%
-  \clgdone{\idLBD}%
-  \clgupd{\idLINPACK}{%
+       \mathcal R_{\rm eval}^{h,(\ell)}$}%
+  \clgdone{\idLINH}%
+  \clgupd{\idEVALH}{%
     $\begin{gathered}
-       \MLE{B_{\mathrm{bit},\K}}(\mathit{pt}_\ell)=\mu_\ell\\[-2pt]
+       \widetilde H(\bm r_h^{(\ell)})=\eta_\ell\\[-2pt]
        (\ell\in\mathcal A)
      \end{gathered}$}%
   \clgundef{$P$}%
 }
 \begin{pvexchange}
-\Vturn{After all active chunks, set inactive $u^{(\ell)}:=0$, reconstruct
+\Vturn{After all active chunks, set inactive $\mu^{(\ell)}:=0$, reconstruct
 \(\displaystyle
- \mu_c^{\rm col}:=\sum_{\ell=0}^{L-1}2^{c_w\ell}u_c^{(\ell)}\in\Z,
+ \mu_c^{\rm col}:=\sum_{\ell=0}^{L-1}2^{c_w\ell}\mu_c^{(\ell)}\in\Z,
 \)
-and require the paper's tensor reconstruction equality
+and require the fold reconstruction equality
 \(\displaystyle
- \boxed{\sum_c w'_c\,\pi_q(\mu_c^{\rm col})=y}\).
+ \boxed{\sum_c a'_c\,\pi_q(\mu_c^{\rm col})=\mu}\).
 This check has no message, absorb, or challenge.}
 \end{pvexchange}
 \end{pvstep}
 
 % --------------------------------------------------------------------------
-\begin{pvstep}[1.70in]{Apply the virtual adjoint when needed}{%
-  \clgedge[optional zero-message branch]
-    {$\mathsf{Adj}_{T_K^*}$}
-    {$\mathcal R_{h\text{-}{\rm Lin}}^{\virt}$}
-    {$\RLin(\K,\mathcal C,\Pack)$}%
-  \clgtouch{\idLINPACK}%
+\begin{pvstep}[1.70in]{Pull each active claim back through the adjoint}{%
+  \clgedge[zero-message rewrite]
+    {$\mathsf{Adj}_{\bm M_{\K}^{\mathsf T}}$}
+    {$\mathcal R_{\rm eval}^{h}$}
+    {$\mathcal R_{\rm Lin}^{f}$}%
+  \clgdone{\idEVALH}%
+  \clgnewrel{\idLINPACK}{$\langle\bm a_f,\bm f_{\K}\rangle_{\K}=\eta$}%
 }
-The direct mode skips this optional P7/V7 step and carries its current LIN
-family unchanged.  The virtual mode substitutes its specified partial core
-for P4/V4 through P6/V6, producing
-$h=h_{0,\K}+T_K(b_K)$ and $\langle a_h,h\rangle_{\K}=\mu_h$ by the
-proof-carrying conditional edge
+For each active claim, set
 \begin{equation}
- \RLBD^{\virt}
- \overset{\Pi_{\rm partial\text{-}core}}{\dashrightarrow}
- \mathcal R_{h\text{-}{\rm Lin}}^{\virt}.
- \label{eq:interaction-virtual-partial-edge}
-\end{equation}
-Equation~\eqref{eq:interaction-virtual-partial-edge} is the required
-proof-carrying predecessor; only the following adjoint rewrite is
-zero-message:
-\begin{equation}
- a_b:=T_K^*a_h,\qquad
- \mu_b:=\mu_h-\langle a_h,h_{0,\K}\rangle_{\K},\qquad
- \langle a_b,b_K\rangle_{\K}=\mu_b.
+ \bm a_h[z]:=\eq(z,\bm r_h),\qquad
+ \bm a_f:=\bm M_{\K}^{\mathsf T}\bm a_h,
+ \qquad
+ \langle\bm a_f,\bm f_{\K}\rangle_{\K}=\eta.
  \label{eq:interaction-virtual-adjoint}
 \end{equation}
 Equation~\eqref{eq:interaction-virtual-adjoint} generates no message or
-challenge.  A virtual-mode implementation without this predecessor and the LinCheck evaluator of
-Equation~\eqref{eq:virtual-adjoint-evaluator} rejects virtual inputs.
+challenge.  The verifier uses the developer-supplied full-adjoint evaluator of
+Equation~\eqref{eq:virtual-adjoint-evaluator}.
 \end{pvstep}
 
 % --------------------------------------------------------------------------
-\begin{pvstep}[2.35in]{LinCheck a general coefficient when needed}{%
+\begin{pvstep}[2.35in]{Coefficient LinCheck when needed}{%
   \clgedge[$\Pi_{\rm iopp}$ internal]{$\Pi_{\rm LC}$}
-    {$\RLin(\K,\mathcal C,\Pack)$}
+    {$\mathcal R_{\rm Lin}^{f}$}
     {$\mathsf{EvalGate}(\K,\mathcal C,\Pack)$}%
   \clgtouch{\idLINPACK}%
 }
-The direct mode skips P8/V8 because every GKR successor is already
-MLE-shaped.  The virtual mode runs exactly one degree-two LinCheck on the
-general claim produced by P7/V7.  Write
+P6/V6 is skipped when $\bm a_f$ already has the MLE shape required by the ring
+switch.  Otherwise it runs the degree-two coefficient protocol
+$\mathsf{LinCheck}_f$ on the claim produced by P5/V5.  Write
 $g_i(X)=\gamma_{i,0}+\gamma_{i,1}X+\gamma_{i,2}X^2$.  For
-$i=0,\ldots,m-1$, P8 sends its three canonical coefficients under NARG tag
+$i=0,\ldots,m_f-1$, P6 sends its three canonical coefficients under NARG tag
 \code{4002} and scope
-$(\bot_{32},\bot_{32},i)$.  V8 absorbs that frame, requires
+$(\bot_{32},\bot_{32},i)$.  V6 absorbs that frame, requires
 \begin{equation}
  g_i(0)+g_i(1)=\sigma_{i-1},\qquad
- \sigma_{-1}=\mu_b,
+ \sigma_{-1}=\eta,
  \label{eq:interaction-lincheck-round}
 \end{equation}
 then squeezes $r_i\in\K$ under tag \code{4103} at the same scope and sets
 $\sigma_i=g_i(r_i)$.  Equation~\eqref{eq:interaction-lincheck-round} is
 checked before every dependent squeeze.  Put
-$r=(r_{\lo},r_{\hi})$, $|r_{\lo}|=7$.  P8/V8 leaves the terminal gate
+$r=(r_{\lo},r_{\hi})$, $|r_{\lo}|=7$.  P6/V6 leaves the terminal gate
 \begin{equation}
- \sigma_{m-1}=\widetilde a_b(r)\widetilde b_{\K}(r),
+ \sigma_{m_f-1}=\widetilde a_f(r)\widetilde f_{\K}(r),
  \label{eq:interaction-lincheck-terminal}
 \end{equation}
-Equation~\eqref{eq:interaction-lincheck-terminal} is checked by P9/V9 with its
-first ring vector.  No other LinCheck is permitted.
+Equation~\eqref{eq:interaction-lincheck-terminal} is checked by P7/V7 with its
+first ring vector.  No other coefficient LinCheck is permitted.
 \begin{pvexchange}
 \Pturn{Send each degree-two $g_i$ in increasing $i$.}
-\Psend{\Nbadge{(g_i)_{i<m}}}
+\Psend{\Nbadge{\pi_{\rm LC}}}
 \Vturn{Check, absorb, and squeeze each round in exact alternation; derive
-$(r,\sigma_{m-1})$ and the public evaluator $r\mapsto\widetilde a_b(r)$.}
+$(r,\sigma_{m_f-1})$ and the public evaluator
+$r\mapsto\widetilde a_f(r)$.}
 \end{pvexchange}
 \end{pvstep}
 
@@ -440,7 +387,7 @@ $(r,\sigma_{m-1})$ and the public evaluator $r\mapsto\widetilde a_b(r)$.}
 \begin{pvstep}[2.35in]{Ring-switch each active linear claim}{%
   \clgedge[$\Pi_{\rm iopp}$ internal]{$\Pi_{\rm ring}^{\mathcal A}$}
     {$\displaystyle\bigwedge_{\ell\in\mathcal A}
-       \RLin^{(\ell)}(\K,\mathcal C,\Pack)$}
+       \mathcal R_{\rm Lin}^{f,(\ell)}$}
     {$\displaystyle\bigwedge_{\ell\in\mathcal A}
        \RLin^{(\ell)}(\K,\mathcal C,\mathsf{id})$}%
   \clgdone{\idLINPACK}%
@@ -449,19 +396,19 @@ $(r,\sigma_{m-1})$ and the public evaluator $r\mapsto\widetilde a_b(r)$.}
        \langle B_\ell,P\rangle_{\K}=\beta_\ell\\[-2pt]
        (\ell\in\mathcal A)
      \end{gathered}$}%
-  \clgdef{$P$}{$P=\Pack(\pi_2(\bm b))$}%
+  \clgdef{$P$}{$P=\Pack(F)$}%
 }
-For the direct mode, split
-$\mathit{pt}_\ell=(r_{\lo}^{(\ell)},r_{\hi}^{(\ell)})$ with
+When the coefficient LinCheck is skipped, split
+$\bm r_h^{(\ell)}=(r_{\lo}^{(\ell)},r_{\hi}^{(\ell)})$ with
 $|r_{\lo}^{(\ell)}|=7$.
-For the virtual singleton, use $\ell=0$ and the LinCheck point $r$ instead.
+When the coefficient LinCheck is required, use its point $r$ instead.
 In both cases define
 \begin{equation}
  z_\ell:=\sum_{v=0}^{127}\eq(v,r_{\lo}^{(\ell)})s_v^{(\ell)},
  \quad
  \begin{cases}
-  z_\ell=\mu_\ell,&\text{direct MLE source},\\
-  \sigma_{m-1}=\widetilde a_b(r)z_0,&\text{virtual LinCheck source}.
+  z_\ell=\eta_\ell,&\text{MLE-shaped coefficient},\\
+  \sigma_{m_f-1}=\widetilde a_f(r)z_0,&\text{coefficient LinCheck}.
  \end{cases}
  \label{eq:ring-source-gate}
 \end{equation}
@@ -478,7 +425,7 @@ After the shared challenge $r''$, the successor coefficients are
 \begin{pvlongexchange}
 \Pturn{For every $\ell\in\mathcal A$ and $0\le v<128$, compute
 \(\displaystyle
- s_v^{(\ell)}:=\MLE{B_{\rm bit,v}}(r_{\hi}^{(\ell)}).
+ s_v^{(\ell)}:=\widetilde F_v(r_{\hi}^{(\ell)}).
 \)}
 \Psend{\Nbadge{s^{(\ell)}}}
 \Vturn{For each $\ell$, validate and absorb the canonical $s^{(\ell)}$ frame,
@@ -592,7 +539,7 @@ prover-local commitment cache/key, not an $H_{\rm F2Z}$ record.  Its rows,
 packed columns, message, and prover data are not proof bytes; only the public
 commitment/root enters the verifier-facing protocol.
 
-Steps P8/V8 through P11/V11 are the fixed recursive-opening protocol's internal
+Steps P6/V6 through P9/V9 are the fixed recursive-opening protocol's internal
 expansion of the paper edge $\Pi_{\rm iopp}$.  The verifier accepts iff every
 displayed check succeeds and the proof parser consumes exactly the fields
 specified by these steps.

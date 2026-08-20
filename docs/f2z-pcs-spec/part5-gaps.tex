@@ -48,40 +48,41 @@ bound.\\
 \addlinespace
 \textbf{G2}&
 The paper-level edges are
-\(\Pi_{\rm red}:\RPESAT(\K,Q,\mathcal C,\Pack)
-\to\RLin(\K,\mathcal C,\Pack)\) and
+\(\Pi_{\rm GKR}:\mathcal R_{\rm PESAT}[\bm h]
+\to\mathcal R_{\rm sum}^{h}\),
+\(\Pi_{\rm MLE}:\mathcal R_{\rm sum}^{h}
+\to\mathcal R_{\rm eval}^{h}\), and
 \(\Pi_{\mathsf{iopp}}:\RLin(\K,\mathcal C,\Pack)
 \to\mathcal R_{\rm triv}\).
-The concrete path exposes an MLE-specialized LIN claim before changing its
-representation.&
-The proof system delegates \(\Pi_{\rm red}\) to the fixed GKR reduction,
-whose contract returns the MLE-shaped LIN claim.  Ring switching, batching,
+The concrete path exposes the GKR sum claim before the MLE claim.&
+The proof system delegates \(\Pi_{\rm GKR}\) and \(\Pi_{\rm MLE}\) to the fixed
+GKR and row-LinCheck ledgers.  Ring switching, batching,
 and recursive opening are only the internal expansion of
 \(\Pi_{\mathsf{iopp}}\), with error
 $\sum_{\ell\in\mathcal A}
- (\varepsilon_{\rm red}^{(\ell)}+\varepsilon_{\rm ring}^{(\ell)})
+ (\varepsilon_{\rm GKR}^{(\ell)}+\varepsilon_{\rm MLE}^{(\ell)}
+  +\varepsilon_{\rm ring}^{(\ell)})
  +\varepsilon_{\rm LC}+\varepsilon_{\rm batch}+\varepsilon_{\rm open}$,
-where the direct mode sets $\varepsilon_{\rm LC}=0$.&
-No runtime closure is missing for the direct mode.  A proof system claiming the
+where an MLE-shaped pulled-back coefficient sets $\varepsilon_{\rm LC}=0$.&
+A proof system claiming the
 abstract theorem must fix coordinate order and prove both that its concrete
-\(\Pi_{\rm red}\) realizes the named LIN successor and that its internal
+\(\Pi_{\rm GKR};\Pi_{\rm MLE}\) realizes the named MLE successor and that its internal
 opening path realizes \(\Pi_{\mathsf{iopp}}\) from that LIN relation to
 \(\mathcal R_{\rm triv}\), including the composed soundness loss.\\
 \pagebreak[4]
 \addlinespace
 \textbf{G3}&
-A virtual seam may yield the general coefficient
-\(T_{\K}^{*}(\bm a_{\K})\), whereas the concrete ring switch accepts only its
-declared LIN source family (MLE-shaped in the direct mode).&
-The direct verifier rejects virtual inputs.  A virtual extension may apply the
-public adjoint without a message only after verifying its own partial-core
-predecessor.  It then runs exactly one degree-two LinCheck on the resulting
-\(\RLin(\K,\mathcal C,\Pack)\) claim, checks the LinCheck terminal with the
-first inherited ring vector, and reuses that vector for ring switching.  No
+A nontrivial virtualization matrix may yield the general coefficient
+\(\bm M_{\K}^{\mathsf T}\bm a_h\), whereas the concrete ring switch accepts
+only an MLE-shaped coefficient.&
+The verifier applies the public adjoint without a message.  If the pulled-back
+coefficient is not MLE-shaped, it runs one degree-two coefficient LinCheck on the
+resulting \(\mathcal R_{\rm Lin}^{f}\) claim, checks its terminal equation with
+the first inherited ring vector, and reuses that vector for ring switching.  No
 multi-evaluation ring adapter is required.&
-The extension must type \(T,T^*\), specify the virtual partial-core seam, prove
-its on-demand adjoint-coefficient evaluator equivalent to the full transpose,
-enable the fixed \code{4002/4103} LinCheck ledger in the virtual mode,
+The implementation must type $\bm M$, prove its on-demand adjoint-coefficient
+evaluator equivalent to the full transpose, enable the fixed
+\code{4002/4103} coefficient-LinCheck ledger when coefficient shape requires it,
 and supply its verifier, implementation, fixtures, and composed error.\\
 \addlinespace
 \textbf{G4}&
@@ -93,23 +94,20 @@ A zero-functional extension must still define how \(\rho\) is validated and
 must give its own proof object, transcript, and acceptance predicate.\\
 \addlinespace
 \textbf{G5}&
-ZeroCheck may output an arbitrary scalar Lin-ModFieldBin
-coefficient, while the Lin-BitsDual core requires the separable tensor
-\(u_{c,b,j}=\pi_q(w_b2^j)w'_c\).&
-The end-to-end verifier accepts only
-\(\mathsf{VerifyZeroCheck}\) outputs whose deterministic bitification equals
-the declared weighted tensor; the same root must cross the handoff.&
-The ZeroCheck protocol must specify its proof and transcript handoff plus
-a weighted-shape adapter, and prove that its Lin-ModFieldBin successor bitifies
-to either a weighted instance of \(\RLBD\) or its declared weighted virtual
-Lin-BitsDual source,
-with a composed soundness bound.\\
+An application may produce an arbitrary coefficient on $\bm h$, while the
+integer-fold core accepts only a separable row/column coefficient on $H$.&
+The F2Z input is the Lin-BitsDual relation
+\(\mathcal R_{\rm LinBitsDual}[\bm h]\), whose public factors satisfy
+\(V[r,c]=a_ra'_c\) in the configured active layout.&
+An application with a nonseparable coefficient must reduce it to the declared
+Lin-BitsDual relation before invoking F2Z and must account separately for the
+soundness of that upstream reduction.\\
 \addlinespace
 \textbf{G6}\\[-2pt]\textsc{wire fixed}&
 Semantic framing alone does not choose interoperable bytes, the outer
 two-stream container, a recursive-opening configuration, or a proof-of-work
-predicate and difficulty.  The current one-stream codec writes \(u\) but
-absorbs its derived image \(g^u\), which cannot be represented by the selected
+predicate and difficulty.  The current one-stream codec writes \(\mu\) but
+absorbs its derived image \(g^\mu\), which cannot be represented by the selected
 two-stream wrapper's write-and-absorb NARG operation.&
 Section~\ref{sec:wire-format} fixes the wire/transcript question: it gives the
 primitive, vector, record, and outer encodings; numeric
@@ -117,25 +115,26 @@ event registry; transcript transition; NARG/hint replay; recursive Ligerito
 integer tables and event ledger; Merkle row and multiproof bytes; PoW context,
 nonce, predicate, schedule, and difficulty; all four length metrics; and exact
 nested and outer exhaustion.  It sends and absorbs
-\(\nu^{(\ell)}=g^{u^{(\ell)}}\) under tag \code{2001}, then checks the
-tag-\code{2081} \(u^{(\ell)}\) hint before tag \code{2101}.  A missing or
-unknown ZeroCheck/GKR event ledger or constrained-code construction is a
-hard reject, not an inferred encoding.  It also fixes conditional LinCheck
+\(\nu^{(\ell)}=g^{\mu^{(\ell)}}\) under tag \code{2001}, then checks the
+tag-\code{2081} \(\mu^{(\ell)}\) hint before tag \code{2101}.  A missing or
+unknown GKR event ledger or constrained-code construction is a
+hard reject, not an inferred encoding.  It also fixes conditional coefficient-LinCheck
 tags \code{4002/4103}, their alternation, terminal deadline, and reuse of the
-tag-\code{4001} ring vector; the direct mode permits none of those events.&
+tag-\code{4001} ring vector; an MLE-shaped coefficient permits none of those
+events.&
 \textbf{Owner: John Wu.}  Port Section~\ref{sec:wire-format} to the host and
 recursive verifiers, remove the opaque bincode payload, and publish the
 required complete proof, transcript, Merkle, PoW, and negative fixtures.  The
 current Rust codec remains nonconforming and its legacy bytes are not v1.
-End-to-end interoperability may be claimed only after the fixed ZeroCheck and
-GKR protocols have published byte ledgers and the fixed code specification gives a
+End-to-end interoperability may be claimed only after the fixed GKR protocol
+has published its byte ledger and the fixed code specification gives a
 complete canonical RS/LCH construction
 (including domain, basis, padding, and coordinate order) with independent
 commitment/root vectors.  The wire namespaces and PoW rules themselves are not
 left to implementation inference.\\
 \addlinespace
 \textbf{G7}\\[-2pt]\textsc{rule fixed}&
-The current encoded outer pre-sumcheck includes
+The current encoded outer row LinCheck includes
 \(\mathtt{presums}[\ell]\mathtt{.claimed\_sums}\), and current recursive/host decoders may
 accept unused roots, nonces, recursive proofs, or suffix bytes.  The presum is
 currently checked only after the MultiDegree challenges.&

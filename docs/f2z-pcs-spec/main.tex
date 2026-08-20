@@ -62,7 +62,8 @@
 \newenvironment{normative}
   {\par\smallskip\begingroup
    \setlength{\leftskip}{0.7em}\setlength{\rightskip}{0.7em}%
-   \color{specnavy}\noindent\textbf{Normative v1 proof system.}\ }
+  %  \color{specnavy}\noindent\textbf{Normative v1 proof system.}
+   }
   {\par\endgroup\smallskip}
 
 \begin{document}
@@ -74,20 +75,70 @@
 \end{center}
 
 \begin{normative}
-F2Z is the polynomial-commitment layer for scalar linear claims about bounded
-integer or polynomial witnesses whose canonical bits are committed over a
-binary extension field.  A profile-selected ZeroCheck protocol for PESAT or
-PIMSAT is treated as a black box: it outputs an inner-product claim
-$\langle\bm v,\psi(\bm f)\rangle_R=\mu$, where $\psi$ maps a native witness
-entry into the scalar evaluation domain.  F2Z then
-\begin{enumerate}[label=\arabic*.,leftmargin=1.4em]
- \item rewrites the linear claim over the committed bits;
- \item converts bounded integer sums into binary-field grand products;
- \item uses GKR to reduce those products to a linear opening claim; and
- \item verifies that opening against the original commitment.
-\end{enumerate}
-This document specifies that PCS reduction, its prover--verifier interaction,
-its verifier algorithm, and its concrete encoding rules.
+F2Z is a polynomial-commitment layer for proving the Lin-BitsDual relation.
+Given a public vector $\bm v$ and a value $\mu\in\Fq$, the relation asserts
+\[
+  \left\langle\bm v,\pi_q(\bm h)\right\rangle_{\Fq}=\mu,
+  \qquad
+  \pi_2(\bm h)=\bm M\pi_2(\bm f),
+  \qquad
+  O=\Enc_{\mathcal C}\!\left(\Pack(\pi_2(\bm f))\right),
+\]
+where $\bm f$ is the committed binary witness, $\bm h$ is the active witness
+used by the application, and $\bm M$ is a public developer-selected
+virtualization map.
+Here $\pi_2:\mathbb Z\to\Ftwo$ denotes coordinatewise reduction modulo $2$.
+The application PIOP supplies this linear claim to F2Z.  Under the configured
+layout of $\bm h$, an admissible claim has a separable coefficient matrix
+$V[r,c]=a_r a'_c$; the public factors $(\bm a,\bm a')$ are part of the F2Z
+instance.
+
+Drawing inspiration from binary-field techniques used in systems such as Flock and Binius64, F2Z combines the following techniques:
+
+\begin{itemize}[leftmargin=1.4em]
+ \item \textbf{Binary packing.}
+       The committed witness bits are packed into elements of the binary
+       extension field $\K$ and encoded using the binary linear code
+       $\mathcal C$. This allows the commitment and opening protocols to
+       operate on packed field elements.
+
+ \item \textbf{Witness virtualization.}
+       The public map $\bm M$ relates the committed witness $\bm f$ to the
+       witness $\bm h$ on another ring/field. This permits constraints to be layered on top of each other while making the witness $\bm f$ to be small.
+
+ \item \textbf{Chunked integer lifting.}
+       Coefficients in $\Fq$ are lifted to canonical integers and split into
+       bounded chunks. This preserves the original modular claim while keeping
+       every intermediate fold within the injective range of the binary-field
+       exponent encoding.
+
+ \item \textbf{Grand-product encoding.}
+       Because the witness coordinates are binary, each bounded linear fold can
+       be expressed as a product identity over $\K$. This converts the original
+       linear claim into product claims suited to binary-field verification.
+
+ \item \textbf{GKR and LinCheck reductions.}
+       GKR verifies the product computation succinctly, while the row LinCheck
+       reduces the resulting weighted claim to a multilinear-extension
+       evaluation of the active witness.
+
+ \item \textbf{Adjoint pullback.}
+       The verifier transports the final coefficient through
+       $\bm M^{\mathsf T}$, converting a claim on $\bm h$ into a claim on the
+       originally committed witness $\bm f$ without another commitment or
+       protocol message.
+
+ \item \textbf{Conditional reduction, ring switching, and batching.}
+       The coefficient LinCheck is used only when the pulled-back coefficient
+       is not already in the required MLE form. A ring switch then converts the
+       resulting evaluations into packed linear claims, which are batched into
+       a single recursive Ligerito opening.
+\end{itemize}
+
+Together, these techniques allow F2Z to prove inner products claims over $\Fq$, and
+therefore support constraints beyond $\Ftwo$, while retaining a binary-field
+commitment. This specification fixes the Lin-BitsDual relation, its
+prover--verifier reductions, and its concrete transcript and encoding rules.
 \end{normative}
 
 \input{part1-instance}

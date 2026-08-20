@@ -28,11 +28,11 @@
 \newcommand{\VAbsorb}{\VNargOp{\Absorb}}
 \newcommand{\PVStep}[2]{%
   \textbf{\textcolor{specnavy}{P#1/V#1: #2}}}
-The verifier rejects on any failed gate or helper, malformed or unsupported
-value, or cursor mismatch.  NARG and hint cursors are independent; a hint stays
-pending until its predicate succeeds, and every squeeze requires
-\(\mathsf{NoPendingHint}\).  Records and prover/verifier steps are processed in increasing
-order.  The labels below remain meaningful without color.
+
+The verifier rejects on a failed gate, malformed value, unsupported public
+configuration, or cursor mismatch.  NARG and hint cursors are independent.  A
+hint remains pending until its predicate succeeds, and every squeeze requires
+$\mathsf{NoPendingHint}$.
 
 \begingroup\scriptsize
 \setlength{\tabcolsep}{2pt}
@@ -47,222 +47,186 @@ order.  The labels below remain meaningful without color.
 \textcolor{verifierCall}{\textbf{[CALL]}} subprotocol\\[-1pt]
 \end{tabularx}
 \begin{tabularx}{\linewidth}{@{}*{4}{>{\centering\arraybackslash}X}@{}}
-\textbf{P1/V1--P3/V3} statement&
-\textbf{P4/V4--P5/V5} per chunk&
-\textbf{P6/V6--P7/V7} reconstruction&
-\textbf{P8/V8--P11/V11} opening\\
+\textbf{P1/V1} statement&
+\textbf{P2/V2--P3/V3} active-witness core&
+\textbf{P4/V4--P5/V5} reconstruction / adjoint&
+\textbf{P6/V6--P9/V9} opening\\
 \end{tabularx}
 \endgroup
 
-\paragraph{Procedure \(\mathsf{VerifyF2Z}\).}
+\paragraph{Procedure $\mathsf{VerifyF2Z}$.}
 \begin{algorithmic}[1]
-\Require \(\mathsf{pp},x_{\rm src},\mathsf{com}=(\rho),
-  \pi_{\rm host}\)
-\Ensure \(\mathsf{true}\) or \(\mathsf{false}\)
+\Require $\mathsf{pp},\mathcal I_{\rm LinBitsDual}=(\bm a,\bm a',\mu,\bm M),
+  \mathsf{com}=(\rho),\pi_{\rm host}$
+\Ensure $\mathsf{true}$ or $\mathsf{false}$
 
 \Statex
-\Statex \PVStep{1}{Validate and bind the commitment}
+\Statex \PVStep{1}{Validate and bind the F2Z statement}
 \Statex \hspace{\algorithmicindent}
-  \(\mathcal R_{\rm src}
-    \xrightarrow{\mathsf{Encode}}\mathcal R_{\rm src}^{\rm enc}\)
-\State \((N_{\rm F2Z},H_{\rm F2Z},n_N,n_H,b_N,b_H)
-  \gets\mathsf{DecodeHostV1}(\pi_{\rm host})\)
-\State \(\VCheckOp[\mathsf{HeaderV1}=1\land
-  \mathsf{wire\_version}=1]\)
-\State \(\VCheckOp[\mathsf{ValidatePublic}
-  (\mathsf{pp},x_{\rm src},\rho)=1]\)
-\State Read \((t,s,W,g)\) from \(x_{\rm src}\);
-  \(\VCheckOp[t,s\in\mathbb N\land W\in2^{\mathbb N}]\)
-\State \(\VDerive w\gets\log_2W\), \(d\gets t+w\), \(m\gets d+s\),
-  \(m_p\gets m-7\), \(c_w\gets127-t-W\)
-\State \(\VCheckOp[d\ge7\land t+W\le126\land
-  22\le m\le35\land c_w>0]\)
-\State \(\VCheckOp[\operatorname{ord}(g)=2^{128}-1]\)
-\State \(\tr\gets\VAbsorb
+  $\mathcal R_{\rm LinBitsDual}[\bm h]$
+\State $(N_{\rm F2Z},H_{\rm F2Z},n_N,n_H,b_N,b_H)
+  \gets\mathsf{DecodeHostV1}(\pi_{\rm host})$
+\State $\VCheckOp[\mathsf{HeaderV1}=1\land\mathsf{wire\_version}=1]$
+\State $\VCheckOp[\mathsf{ValidateConfig}
+  (\mathsf{pp},\mathcal I_{\rm LinBitsDual},\rho)=1]$
+\State Read $(n_f,m_f,n_h,m_h,d_r,d_c,c_w,L,g)$ from the fixed public
+  configuration
+\State $\VCheckOp[n_f=2^{m_f}\land n_h=2^{m_h}\land m_h=d_r+d_c
+  \land c_w=127-d_r\land c_w>0]$
+\State $\VCheckOp[\bm M\in\Ftwo^{n_h\times n_f}
+  \land\operatorname{ord}(g)=2^{128}-1]$
+\State $\VCheckOp[|\bm a|=2^{d_r}\land|\bm a'|=2^{d_c}
+  \land\mu\in\Fq]$
+\State $\tr\gets\VAbsorb
   (\tr_{\mathsf{init}},\Frame(\mathtt{0x0001},\bot_{32},\bot_{32},
-    \bot_{32};\mathsf{DomainV1}))\)
+    \bot_{32};\mathsf{DomainV1}))$
   using Equation~\eqref{eq:domain-statement-payloads}
-\State \(\tr\gets\VAbsorb
+\State $\tr\gets\VAbsorb
   (\tr,\Frame(\mathtt{0x0002},\bot_{32},\bot_{32},
-    \bot_{32};\mathsf{StatementV1}))\)
+    \bot_{32};\mathsf{StatementV1}))$
   using Equation~\eqref{eq:domain-statement-payloads}
 \State Initialize independent cursors
-  \(\VDerive c_N\gets\mathsf{Cursor}(N_{\rm F2Z},n_N,b_N)\),
-  \(c_H\gets\mathsf{Cursor}(H_{\rm F2Z},n_H,b_H)\), and
-  \(\mathsf{PendingHint}\gets0\)
-\State Load the fixed ZeroCheck and GKR event ledgers and the canonical
-  constrained-code construction from \(\mathsf{pp}\)
-
-\Statex
-\Statex \PVStep{2}{Verify ZeroCheck}
-\Statex \hspace{\algorithmicindent}
-  \(\mathcal R_{\rm src}^{\rm enc}
-    \xRightarrow{\Pi_{\rm ZC}}\RLMFB\)
-\State \((\tr,\mathcal I_{\rm LMFB},\bm w,\bm w')
-  \gets\VCall{VerifyZeroCheckStream}
-  (\mathsf{pp},x_{\rm src},\rho;\tr,c_N,c_H)\)
-\State \(\VDerive(\psi,\bm v,\mu)\gets
-  \mathsf{Claim}(\mathcal I_{\rm LMFB})\)
-\State \(\VCheckOp[\mathsf{SameRoot}(\mathcal I_{\rm LMFB},\rho)=1
-  \land\psi=\pi_q
-  \land\mathsf{ConcreteLMFBShape}(\mathcal I_{\rm LMFB},t,s,W)=1]\)
-\State \(\VDerive y\gets\mu\)
-\State \(\VCheckOp[|\bm w|=2^t\land|\bm w'|=2^s
-  \land 0\le w_b<2^{100}\land w'_c,y\in\Fq]\)
-
-\Statex
-\Statex \PVStep{3}{Apply deterministic Bitify}
-\Statex \hspace{\algorithmicindent}
-  \(\RLMFB\equiv_{\mathsf{Bitify}}\RLBD\)
-\State \(\VDerive\mathcal I_{\rm LBD}\gets
-  \mathsf{Bitify}(\mathcal I_{\rm LMFB})\)
-\State \(\VCheckOp[\mathsf{WeightShape}
-  (\mathcal I_{\rm LBD},\bm w,\bm w',y)=1]\)
-\Statex \hspace{2\algorithmicindent}
-  \(u_{c,b,j}=\pi_q(w_b2^j)w'_c\)
-\State \(\VDerive x_{\rm core}\gets((t,s,W),(\bm w,\bm w',y),g)\)
-\State \(\tr\gets\VAbsorb
+  $\VDerive c_N\gets\mathsf{Cursor}(N_{\rm F2Z},n_N,b_N)$,
+  $c_H\gets\mathsf{Cursor}(H_{\rm F2Z},n_H,b_H)$, and
+  $\mathsf{PendingHint}\gets0$
+\State Load the fixed GKR, row-LinCheck, and opening ledgers
+\State For every row $r$, derive the unique
+  $\gamma_r\in[0,q)$ with $\pi_q(\gamma_r)=a_r$
+\State $\VDerive\gamma_r^{(\ell)}\gets
+  \lfloor\gamma_r/2^{c_w\ell}\rfloor\bmod2^{c_w}$
+\State $\VDerive\mathcal A\gets
+  \{\ell<L:\exists r,\ \gamma_r^{(\ell)}\ne0\}$;
+  $\VCheckOp[\mathcal A\ne\varnothing]$
+\State $\tr\gets\VAbsorb
   (\tr,\Frame(\mathtt{0x0003},\bot_{32},\bot_{32},\bot_{32};
-    \mathsf{CoreSeamV1}))\)
+    \mathsf{CoreSeamV1}))$
   using Equation~\eqref{eq:core-seam-payload}
-\State \(\VDerive L\gets\max(\lceil100/c_w\rceil,1)\)
-\State \(\VDerive\omega_b^{(\ell)}\gets
-  \lfloor w_b/2^{c_w\ell}\rfloor\bmod2^{c_w}\)
-\State \(\VDerive\mathcal A\gets
-  \{\ell<L:\exists b,\ \omega_b^{(\ell)}\ne0\}\);
-  \(\VCheckOp[\mathcal A\ne\varnothing]\)
-\State Set \(u^{(\ell)}\gets0^{2^s}\) for \(\ell\notin\mathcal A\)
-\State Fix, without advancing either cursor, the remaining semantic schedule
-  \(\bigl((\nu^{(\ell)},u^{(\ell)},\pi_{\rm red}^{(\ell)})_{
-  \ell\in\mathcal A\uparrow},
-  \pi_{\rm LC},(s^{(\ell)})_{\ell\in\mathcal A\uparrow},
-  \pi_{\rm open}\bigr)\)
+\State Set $\bm\mu^{(\ell)}\gets0^{2^{d_c}}$ for
+  $\ell\notin\mathcal A$
+\State Fix, without advancing either cursor, the remaining record schedule
 
-\For{\(\ell\in\mathcal A\) in increasing order}
+\For{$\ell\in\mathcal A$ in increasing order}
   \Statex
-  \Statex \PVStep{4}{Verify chunk \(\ell\) of \(\Pi_1\)}
+  \Statex \PVStep{2}{Verify chunk $\ell$ of $\Pi_1$}
   \Statex \hspace{\algorithmicindent}
-    \(\RLBD\xRightarrow{\Pi_1^{(\ell)}}
-      \RPESAT(\K,Q_{\Ftwo\!\Z}^{(\ell)},\mathcal C,\Pack)\)
-  \State \((\nu^{(\ell)},F_\nu)\gets
-    \VReadNarg(c_N,\mathtt{0x2001},\ell,\bot_{32},\bot_{32})\)
-  \State \(\tr\gets\VAbsorb(\tr,F_\nu)\)
-  \State \(\mathsf{PendingHint}\gets1\),
-    \((u^{(\ell)},F_u)\gets
-      \VReadHint(c_H,\mathtt{0x2081},\ell,\bot_{32},\bot_{32})\)
-  \State \(\VCheckOp[|u^{(\ell)}|=2^s\land
-    0\le u_c^{(\ell)}<2^{127}\land
-    (g^{u_c^{(\ell)}})_c=\bm\nu^{(\ell)}]\)
-  \State \(\mathsf{PendingHint}\gets0\)
-  \State \(\VDerive\omega_i^{(\ell)}\gets\omega_b^{(\ell)}2^j\),
-    \(y_i^{(\ell)}\gets g^{\omega_i^{(\ell)}}\),
-    where \(i=(b\ll w)\mid j\)
-  \State \(\zeta^{(\ell)}\gets
-    \VSqueezeOp_{\K,\mathtt{0x2101}}^s(\tr;\ell)\),
-    \(e_0^{(\ell)}\gets
-      \MLE{\bm\nu^{(\ell)}}(\zeta^{(\ell)})\)
+    $\mathcal R_{\rm LinBitsDual}[\bm h]\xRightarrow{\Pi_1^{(\ell)}}
+      \mathcal R_{\rm PESAT}^{(\ell)}[\bm h]$
+  \State $(\bm\nu^{(\ell)},F_\nu)\gets
+    \VReadNarg(c_N,\mathtt{0x2001},\ell,\bot_{32},\bot_{32})$
+  \State $\tr\gets\VAbsorb(\tr,F_\nu)$
+  \State $\mathsf{PendingHint}\gets1$,
+    $(\bm\mu^{(\ell)},F_\mu)\gets
+      \VReadHint(c_H,\mathtt{0x2081},\ell,\bot_{32},\bot_{32})$
+  \State $\VCheckOp[|\bm\mu^{(\ell)}|=2^{d_c}\land
+    0\le\mu_c^{(\ell)}<2^{127}\land
+    (g^{\mu_c^{(\ell)}})_c=\bm\nu^{(\ell)}]$
+  \State $\mathsf{PendingHint}\gets0$
+  \State $\zeta^{(\ell)}\gets
+    \VSqueezeOp_{\K,\mathtt{0x2101}}^{d_c}(\tr;\ell)$,
+    $e_0^{(\ell)}\gets\widetilde{\bm\nu}^{(\ell)}(\zeta^{(\ell)})$
 
   \Statex
-  \Statex \PVStep{5}{Verify the GKR reduction}
+  \Statex \PVStep{3}{Verify GKR and the sum-to-MLE reduction}
   \Statex \hspace{\algorithmicindent}
-    \(\RPESAT(\K,Q_{\Ftwo\!\Z}^{(\ell)},\mathcal C,\Pack)
-      \xRightarrow{\Pi_{\rm red}^{(\ell)}}
-      \RLin^{(\ell)}(\K,\mathcal C,\Pack)\)
-  \State \(\VDerive\mathcal I_{\rm GKR}^{(\ell)}\gets
-    \mathsf{GKRInput}(x_{\rm core},\rho,\bm y^{(\ell)},
-      \bm\nu^{(\ell)},\zeta^{(\ell)},e_0^{(\ell)})\)
-  \State \((\mathsf{ok}_{\rm GKR},\tr,\mathit{pt}_\ell,\mu_\ell)
-    \gets\VCall{GKR.VerifyStream}
+    $\mathcal R_{\rm PESAT}^{(\ell)}[\bm h]
+      \xRightarrow{\Pi_{\rm GKR}^{(\ell)}}
+      \mathcal R_{\rm sum}^{h,(\ell)}
+      \xRightarrow{\Pi_{\rm MLE}^{(\ell)}}
+      \mathcal R_{\rm eval}^{h,(\ell)}$
+  \State $\VDerive\mathcal I_{\rm GKR}^{(\ell)}\gets
+    \mathsf{GKRInput}(\bm\gamma^{(\ell)},\bm\nu^{(\ell)},
+      \zeta^{(\ell)},e_0^{(\ell)})$
+  \State $(\mathsf{ok}_{\rm GKR},\tr,
+    \bm r_h^{(\ell)},\eta_\ell)
+    \gets\VCall{GKRAndRowLinCheck.VerifyStream}
     (\mathsf{pp}_{\rm GKR},\mathcal I_{\rm GKR}^{(\ell)};
-     \tr,c_N,c_H)\)
-  \State \(\VCheckOp[\mathsf{ok}_{\rm GKR}=1]\)
+     \tr,c_N,c_H)$
+  \State $\VCheckOp[\mathsf{ok}_{\rm GKR}=1]$
 \EndFor
 
-\Statex \PVStep{6}{Complete the \(\Pi_1\) reconstruction}
-\State \(\VDerive\mu_c\gets
-  \sum_{\ell=0}^{L-1}2^{c_w\ell}u_c^{(\ell)}\) over \(\mathbb Z\)
-\State \(\VCheckOp
-  [\sum_cw'_c\pi_q(\mu_c)=y]\)
+\Statex \PVStep{4}{Complete the fold reconstruction}
+\State $\VDerive\mu_c^{\rm col}\gets
+  \sum_{\ell=0}^{L-1}2^{c_w\ell}\mu_c^{(\ell)}$ over $\mathbb Z$
+\State $\VCheckOp[\sum_ca'_c\pi_q(\mu_c^{\rm col})=\mu]$
 
-\Statex \PVStep{7}{Normalize the optional virtual source}
-\Statex \hspace{\algorithmicindent}
-  \(\mathcal R_{h\text{-}{\rm Lin}}^{\virt}
-    \equiv_{\mathsf{Adj}_{T_\K^*}}
-    \RLin(\K,\mathcal C,\Pack)\)
-\State \(\VCheckOp[\mathsf{core\_mode}=\mathsf{direct}]\)
-\Statex \hspace{\algorithmicindent}
-  \textit{The virtual mode uses a specified partial-core, adjoint, and the
-  one-LinCheck adapter below.}
-
-\Statex \PVStep{8}{LinCheck a general coefficient when required}
-\State \(\VCheckOp[\mathsf{core\_mode}=\mathsf{direct}
-  \Longrightarrow \pi_{\rm LC}=()\land\varepsilon_{\rm LC}=0]\)
-\Statex \hspace{\algorithmicindent}
-  \textit{The virtual mode alternates tag-\code{4002} degree-two messages and
-  tag-\code{4103} challenges, then checks its terminal gate with the first
-  tag-\code{4001} vector.}
-
-\Statex \PVStep{9}{Verify the ring switch}
-\Statex \hspace{\algorithmicindent}
-  internal expansion of \(\Pi_{\mathsf{iopp}}\)
-\For{\(\ell\in\mathcal A\) in increasing order}
-  \State Write \(\mathit{pt}_\ell
-    =(r_{\lo}^{(\ell)},r_{\hi}^{(\ell)})\)
-  \State \((s^{(\ell)},F_s)\gets
-    \VReadNarg(c_N,\mathtt{0x4001},\ell,\bot_{32},\bot_{32})\)
-  \State \(\VCheckOp[|r_{\lo}^{(\ell)}|=7
-    \land|s^{(\ell)}|=128]\)
-  \State \(\tr\gets\VAbsorb(\tr,F_s)\)
-  \State \(\VCheckOp
-    [\sum_{v=0}^{127}\eq(v,r_{\lo}^{(\ell)})s_v^{(\ell)}
-      =\mu_\ell]\)
-\EndFor
-\State \(r''\gets\VSqueezeOp_{\K,\mathtt{0x4101}}^7(\tr)\)
-\For{\(\ell\in\mathcal A\) in increasing order}
-  \State \(\VDerive\bar s_u^{(\ell)}\gets
-    \sum_v[s_v^{(\ell)}]_u\beta_v\),
-    \(\Phi_{r''}(z)\gets\sum_u\eq(u,r'')[z]_u\)
-  \State \(\VDerive\beta_\ell\gets
-    \sum_u\eq(u,r'')\bar s_u^{(\ell)}\),
-    \(B_\ell(Y)\gets\Phi_{r''}(\eq(r_{\hi}^{(\ell)},Y))\)
+\Statex \PVStep{5}{Pull each active claim back through $\bm M^{\mathsf T}$}
+\For{$\ell\in\mathcal A$ in increasing order}
+  \State $\VDerive\bm a_h^{(\ell)}[z]\gets
+    \eq(z,\bm r_h^{(\ell)})$
+  \State $\VDerive\bm a_f^{(\ell)}\gets
+    \bm M_{\K}^{\mathsf T}\bm a_h^{(\ell)}$
+  \State $\VCheckOp[\mathsf{FullAdjointEvaluator}
+    (\bm M,\bm a_h^{(\ell)},\bm a_f^{(\ell)})=1]$
 \EndFor
 
-\Statex \PVStep{10}{Batch the packed LIN claims}
-\Statex \hspace{\algorithmicindent}
-  internal expansion of \(\Pi_{\mathsf{iopp}}\)
-\For{\(\ell\in\mathcal A\) in increasing order}
-  \State \(\eta_\ell\gets
+\Statex \PVStep{6}{Coefficient LinCheck when the pulled-back coefficient requires it}
+\State $\VDerive b_{\rm LC}\gets
+  \mathsf{NeedsLinCheck}((\bm a_f^{(\ell)})_{\ell\in\mathcal A})$
+\If{$b_{\rm LC}$}
+  \State $(\tr,(\bm r_f^{(\ell)},\eta_\ell)_{
+    \ell\in\mathcal A})\gets\VCall{CoefficientLinCheck.VerifyStream}
+    (\mathsf{pp},(\bm a_f^{(\ell)},\eta_\ell)_{
+      \ell\in\mathcal A};\tr,c_N)$
+  \State The helper alternates tag-\code{4002} messages with
+    tag-\code{4103} challenges and leaves the terminal gate for P7/V7
+\Else
+  \State $\VCheckOp[\pi_{\rm LC}=()\land\varepsilon_{\rm LC}=0]$
+  \State $\VDerive\bm r_f^{(\ell)}\gets\bm r_h^{(\ell)}$
+\EndIf
+
+\Statex \PVStep{7}{Verify the ring switch}
+\For{$\ell\in\mathcal A$ in increasing order}
+  \State Write $\bm r_f^{(\ell)}
+    =(r_{\lo}^{(\ell)},r_{\hi}^{(\ell)})$
+  \State $(\bm s^{(\ell)},F_s)\gets
+    \VReadNarg(c_N,\mathtt{0x4001},\ell,\bot_{32},\bot_{32})$
+  \State $\VCheckOp[|r_{\lo}^{(\ell)}|=7\land|\bm s^{(\ell)}|=128]$
+  \State $\tr\gets\VAbsorb(\tr,F_s)$
+  \State $\VDerive z_\ell\gets
+    \sum_{v=0}^{127}\eq(v,r_{\lo}^{(\ell)})s_v^{(\ell)}$
+  \State Check $z_\ell=\eta_\ell$ when $b_{\rm LC}=0$; otherwise check the
+    coefficient-LinCheck terminal equation~\eqref{eq:interaction-lincheck-terminal}
+\EndFor
+\State $r''\gets\VSqueezeOp_{\K,\mathtt{0x4101}}^7(\tr)$
+\For{$\ell\in\mathcal A$ in increasing order}
+  \State $\VDerive\bar s_u^{(\ell)}\gets
+    \sum_v[s_v^{(\ell)}]_u\beta_v$,
+    $\Phi_{r''}(z)\gets\sum_u\eq(u,r'')[z]_u$
+  \State $\VDerive\beta_\ell\gets
+    \sum_u\eq(u,r'')\bar s_u^{(\ell)}$,
+    $B_\ell(Y)\gets\Phi_{r''}(\eq(r_{\hi}^{(\ell)},Y))$
+\EndFor
+
+\Statex \PVStep{8}{Batch the packed LIN claims}
+\For{$\ell\in\mathcal A$ in increasing order}
+  \State $\eta_{{\rm bat},\ell}\gets
     \VSqueezeOp_{\K,\mathtt{0x4102}}
-      (\tr;\ell,\bot_{32},\bot_{32})\)
+      (\tr;\ell,\bot_{32},\bot_{32})$
 \EndFor
-\State \(\VDerive B\gets\sum_{\ell\in\mathcal A}\eta_\ell B_\ell\),
-  \(\beta\gets\sum_{\ell\in\mathcal A}\eta_\ell\beta_\ell\)
+\State $\VDerive B\gets
+  \sum_{\ell\in\mathcal A}\eta_{{\rm bat},\ell}B_\ell$,
+  $\beta\gets\sum_{\ell\in\mathcal A}\eta_{{\rm bat},\ell}\beta_\ell$
 
-\Statex \PVStep{11}{Open the batched claim}
-\Statex \hspace{\algorithmicindent}
-  fixed polynomial opening (Ligerito in this proof system)
-\State \(\VCheckOp[B=\mathsf{DerivedCoefficient}(x_{\rm src},\tr)
-  \land\operatorname{dom}(B)=\{0,1\}^{m_p}]\)
-\State \(\tr\gets\VAbsorb
+\Statex \PVStep{9}{Open the batched claim}
+\State $\VCheckOp[B=\mathsf{DerivedCoefficient}
+  (\mathcal I_{\rm LinBitsDual},\tr)]$
+\State $\tr\gets\VAbsorb
   (\tr,\Frame(\mathtt{0x5001},\bot_{32},\bot_{32},\bot_{32};
-    \LE{32}{m_p}\parallel\operatorname{Enc}_{\K}(\beta)))\)
-\State \(\VCheckOp[\VCall{RecVerifyStream}
-  (\mathsf{pp},\rho,B,\beta;\tr,c_N,c_H)=1]\)
-\State \(\VCheckOp[\mathsf{NoPendingHint}=1\land
+    \LE{32}{m_f-7}\parallel\operatorname{Enc}_{\K}(\beta)))$
+\State $\VCheckOp[\VCall{RecVerifyStream}
+  (\mathsf{pp},\rho,B,\beta;\tr,c_N,c_H)=1]$
+\State $\VCheckOp[\mathsf{NoPendingHint}=1\land
   \mathsf{NargEOF}(c_N)=1\land\mathsf{HintEOF}(c_H)=1\land
   \mathsf{HostEOF}(\pi_{\rm host})=1\land
-  \mathsf{Counts}(c_N,c_H)=(n_N,n_H)]\)
-\State \Return \(\mathsf{true}\)
+  \mathsf{Counts}(c_N,c_H)=(n_N,n_H)]$
+\State \Return $\mathsf{true}$
 \end{algorithmic}
 
-The helper verifiers own the checks, absorptions, and challenges specified in
-Section~\ref{sec:interaction}; they do not introduce additional paper-level
-relation nodes.  They also own their subordinate channel ledgers: every NARG
-read advances only $c_N$, every hint read advances only $c_H$, and a helper
-\mustnot{} return success with an unchecked hint.  P4/V4's
-$\Nbadge{\nu^{(\ell)}}$, $\Hbadge{u^{(\ell)}}$ order is realized by tags
-\code{2001} and \code{2081}.  Every read, absorb, squeeze, PoW check, and EOF
-condition uses the byte rules in Section~\ref{sec:wire-format}; no helper may
-fall back to structure-field order or an opaque serialization.
+The helper verifiers own their subordinate ledgers.  Every NARG read advances
+only $c_N$, every hint read advances only $c_H$, and no helper returns with an
+unchecked hint.  P2/V2's $\Nbadge{\nu^{(\ell)}}$,
+$\Hbadge{\mu^{(\ell)}}$ order still uses tags \code{2001} and \code{2081}.
+The byte rules in Section~\ref{sec:wire-format} govern every read, absorb,
+squeeze, PoW check, and EOF condition.
 
 \endgroup

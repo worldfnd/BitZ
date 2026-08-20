@@ -21,12 +21,13 @@ requires a new wire version.
 The transcript and its XOF are unkeyed BLAKE3; Merkle nodes and roots use
 SHA-256; PoW uses unkeyed BLAKE3-256.  The field basis is the polynomial basis
 of Equation~\eqref{eq:concrete-domains}.  The public parameters fix the
-ZeroCheck protocol, GKR protocol, constrained-code construction, transcript,
-and opening protocol.  None is selected or negotiated by proof bytes.  A proof system
-without byte-exact ZeroCheck and GKR ledgers or without a canonical codeword
-construction and root vectors is incomplete and \mustnot{} accept proofs.
+GKR protocol, constrained-code construction, transcript, and opening protocol.
+None is selected or negotiated by proof bytes.  A proof system without a
+byte-exact GKR ledger or without a canonical codeword construction and root
+vectors is incomplete and \mustnot{} accept proofs.
 
-For the deployed range $22\le m\le35$, let $J_m$ be the number of recursive
+Write $m:=m_f$ and $m_p:=m-7$ for the committed layout.  For the deployed
+range $22\le m\le35$, let $J_m$ be the number of recursive
 opening levels.  The level shapes and all parameters except the base fold
 difficulties are fixed by
 \begin{equation}
@@ -93,8 +94,8 @@ little-endian of exactly the named width.\\
 $a\in\K$&16&$\LE{64}{a_{\lo}}\parallel\LE{64}{a_{\hi}}$ in the fixed
 polynomial basis; coefficient bit $j$ is bit $j$ of the resulting 128-bit
 word.\\
-$a\in\Fq$&16&$\LE{128}{\operatorname{can}_q(a)}$; reject an integer at least
-$q=2^{100}-15$.\\
+$a\in\Fq$&16&$\LE{128}{\bar a}$, where $0\le\bar a<q$ and
+$\pi_q(\bar a)=a$; reject an integer at least $q=2^{100}-15$.\\
 Chunk exponent $u$&16&$\LE{128}{u}$; require $u<2^{127}$.\\
 Nonce&8&$\LE{64}{n}$.\\
 Merkle value&32&Raw SHA-256 digest bytes, in digest output order.\\
@@ -288,13 +289,12 @@ Equation~\eqref{eq:domain-statement-payloads}.\\
 Equation~\eqref{eq:domain-statement-payloads}.\\
 \code{0003}&D&core seam&$(\bot,\bot,\bot)$;
 $\mathsf{CoreSeamV1}$ from Equation~\eqref{eq:core-seam-payload}.\\
-\code{1000--1fff}&ZC&ZeroCheck&The fixed ZeroCheck protocol owns a
-disjoint, byte-exact ledger within this range.\\
-\code{2001}&N&chunk $\nu$&$(\ell,\bot,\bot)$; vector of $2^s$ elements of
+\code{1000--1fff}&---&reserved&These tags \mustnot{} occur in an F2Z proof.\\
+\code{2001}&N&chunk $\nu$&$(\ell,\bot,\bot)$; vector of $2^{d_c}$ elements of
 $\K$.\\
-\code{2081}&H&chunk $u$&$(\ell,\bot,\bot)$; vector of $2^s$ canonical
+\code{2081}&H&chunk $\mu$&$(\ell,\bot,\bot)$; vector of $2^{d_c}$ canonical
 $u_{128}<2^{127}$.\\
-\code{2101}&S&chunk $\zeta$&$(\ell,\bot,i)$ for $0\le i<s$; one $\K$
+\code{2101}&S&chunk $\zeta$&$(\ell,\bot,i)$ for $0\le i<d_c$; one $\K$
 challenge.\\
 \code{3001}&N&GKR phase-$c$ sum&$(\ell,k,\bot)$; one $\K$ element, absorbed
 after the phase-link check and before the first phase-$c$ round.\\
@@ -304,7 +304,7 @@ message tags, codecs, and checks in this range.\\
 squeeze tags and result types in this range.\\
 \code{4001}&N&ring $s$ vector&$(\ell,\bot,\bot)$; vector of exactly 128
 elements of $\K$.\\
-\code{4002}&N&LinCheck round&$(\bot,\bot,i)$ for $0\le i<m$; exactly the
+\code{4002}&N&coefficient-LinCheck round&$(\bot,\bot,i)$ for $0\le i<m_f$; exactly the
 three coefficients of $g_i(X)=\gamma_{i,0}+\gamma_{i,1}X+\gamma_{i,2}X^2$,
 encoded as $\operatorname{Enc}_{\K}(\gamma_{i,0})\parallel
  \operatorname{Enc}_{\K}(\gamma_{i,1})\parallel
@@ -313,10 +313,10 @@ encoded as $\operatorname{Enc}_{\K}(\gamma_{i,0})\parallel
 challenge.\\
 \code{4102}&S&batch $\eta$&$(\ell,\bot,\bot)$ in increasing active-chunk
 order; one $\K$ challenge.\\
-\code{4103}&S&LinCheck challenge&$(\bot,\bot,i)$ for $0\le i<m$; one $\K$
+\code{4103}&S&coefficient-LinCheck challenge&$(\bot,\bot,i)$ for $0\le i<m_f$; one $\K$
 challenge.\\
 \code{5001}&D&opening target&$(\bot,\bot,\bot)$;
-$\LE{32}{m_p}\parallel\operatorname{Enc}_{\K}(\beta)$.  $B$ is recomputed.\\
+$\LE{32}{m_f-7}\parallel\operatorname{Enc}_{\K}(\beta)$.  $B$ is recomputed.\\
 \code{5002}&N&initial root&$(\bot,0,\bot)$; one 32-byte SHA-256 digest.\\
 \code{5003}&N&recursive root&$(\bot,k,\bot)$, $1\le k<J_m$; one digest.\\
 \code{5004}&N&sumcheck message&scope by kind below; $\mathsf{kind}:u_8$
@@ -343,12 +343,12 @@ Equation~\eqref{eq:merkle-opening-payload}.\\
 \end{longtable}
 \endgroup
 
-The ZeroCheck and GKR ranges are black-box namespaces, not permission to use
-implementation-defined bytes.  The fixed protocols must publish ledgers with
-the same columns as this table.  The fixed
+The GKR ranges are black-box namespaces, not permission to use
+implementation-defined bytes.  The fixed GKR protocol must publish a ledger
+with the same columns as this table.  The fixed
 \code{3001} event resolves the PCS-level phase-$c$ placement ambiguity in
 Gap~G1; the rest of that gap remains GKR-protocol work and no protocol
-may reassign the tag.  The v1 outer pre-sumcheck
+may reassign the tag.  The v1 outer row LinCheck
 omits the redundant \code{presums[ell].claimed\_sums} field and derives
 $[e_d^{(\ell)}+1]$, so tag \code{3081} is reserved and \mustnot{} occur.
 
@@ -358,15 +358,15 @@ $[e_d^{(\ell)}+1]$, so tag \code{3081} is reserved and \mustnot{} occur.
 Model the transcript state as the byte string hashed by an unkeyed BLAKE3
 hasher.  It starts empty.  The domain/version frame \code{0001} and statement frame
 \code{0002} are absorbed, in that order, before any proof-dependent squeeze.
-The source-statement digest is
+The application-supplied linear-claim statement digest is
 \begin{equation}
- d_{\rm src}:=\operatorname{BLAKE3}_{256}
+ d_{\rm claim}:=\operatorname{BLAKE3}_{256}
  \bigl(\operatorname{hex}^{-1}
    (\code{46325a2d5043532f6170702d73746174656d656e742f763100})
- \parallel\mathsf{source\_statement\_bytes}\bigr).
- \label{eq:source-statement-digest}
+ \parallel\mathsf{linear\_claim\_statement\_bytes}\bigr).
+ \label{eq:claim-statement-digest}
 \end{equation}
-For v1 byte compatibility, Equation~\eqref{eq:source-statement-digest} retains
+For v1 byte compatibility, Equation~\eqref{eq:claim-statement-digest} retains
 the legacy ASCII domain literal \code{F2Z-PCS/app-statement/v1} followed by one
 NUL byte.  Changing that literal requires a new wire version.  The two initial
 frame payloads are exactly
@@ -376,27 +376,30 @@ frame payloads are exactly
     \operatorname{hex}^{-1}(\code{46325a5043530000})
     \parallel\LE{16}{1},\\
   \mathsf{StatementV1}:={}&
-    d_{\rm src}[32]
-    \parallel\LE{32}{t}\parallel\LE{32}{s}\parallel\LE{32}{W}\\
+    d_{\rm claim}[32]
+    \parallel\LE{32}{d_r}\parallel\LE{32}{d_c}\parallel\LE{32}{m_f}\\
     &\parallel\operatorname{Enc}_{\K}(g)\parallel\rho[32].
  \end{aligned}
  \label{eq:domain-statement-payloads}
 \end{equation}
 Thus $\mathsf{DomainV1}$ and $\mathsf{StatementV1}$ have 10 and 92 bytes,
-respectively.  ZeroCheck must make the source-statement byte string in
-Equation~\eqref{eq:source-statement-digest} canonical.
+respectively.  The host application must make the linear-claim statement byte
+string in Equation~\eqref{eq:claim-statement-digest} canonical.
 
 The derived core-seam payload is
 \begin{equation}
  \mathsf{CoreSeamV1}:=
-  \LE{32}{2^t}\parallel\prod_{b=0}^{2^t-1}\LE{128}{w_b}
-  \parallel\LE{32}{2^s}\parallel
-    \prod_{c=0}^{2^s-1}\LE{128}{\operatorname{can}_q(w'_c)}
-  \parallel\LE{128}{\operatorname{can}_q(y)},
+  \LE{32}{2^{d_r}}\parallel
+    \prod_{r=0}^{2^{d_r}-1}\LE{128}{\gamma_r}
+  \parallel\LE{32}{2^{d_c}}\parallel
+    \prod_{c=0}^{2^{d_c}-1}\LE{128}{\bar a'_c}
+  \parallel\LE{128}{\bar\mu},
  \label{eq:core-seam-payload}
 \end{equation}
-with exactly $24+16(2^t+2^s)$ bytes.  It is absorbed under tag \code{0003}
-after deterministic Bitify and before the first tag-\code{2001} record.
+where $\pi_q(\bar a'_c)=a'_c$, $0\le\bar a'_c<q$, and
+$\pi_q(\bar\mu)=\mu$, $0\le\bar\mu<q$.  It has exactly
+$24+16(2^{d_r}+2^{d_c})$ bytes.  It is absorbed under tag \code{0003} after
+the F2Z statement is bound and before the first tag-\code{2001} record.
 
 For a canonical frame $F$, absorption appends the exact frame bytes.  A
 squeeze under base tag $\tau<\mathtt{0x8000}$, scope $(\ell,k,i)$, output
@@ -429,23 +432,24 @@ intervening event, checks Equation~\eqref{eq:pow-predicate-v1}, and appends the
 frame only on success.  On a Hint read, it validates the same framing but
 never appends those bytes.  It must complete the hint predicate before the
 next squeeze.  In particular, it reads and absorbs \code{2001}, then reads
-\code{2081} and verifies the exponent bounds and $g^u=\nu$ before the first
+\code{2081} and verifies the exponent bounds and $g^\mu=\nu$ before the first
 \code{2101} event.  NARG replay follows verifier-event order, never Rust
 structure-field order.  Acceptance requires no deferred record or pending
 hint and exact logical and byte exhaustion of both streams and every nested
 slice.
 
-Tags \code{4002} and \code{4103} are enabled only when the fixed core mode
-declares a general-coefficient LinCheck; the direct mode requires zero such
-events.  The virtual mode alternates, for $i=0,\ldots,m-1$, one
+Tags \code{4002} and \code{4103} are enabled only when the pulled-back
+coefficient requires the coefficient protocol $\mathsf{LinCheck}_f$.  An
+MLE-shaped coefficient requires zero such
+events.  Otherwise the verifier alternates, for $i=0,\ldots,m_f-1$, one
 tag-\code{4002} read-and-absorb, the check
 $g_i(0)+g_i(1)=\sigma_{i-1}$, and one tag-\code{4103} squeeze at the same
 scope.  No event may intervene within a round.  It then reads and absorbs the
 singleton tag-\code{4001} vector at scope $(0,\bot,\bot)$, derives
 $z=\sum_v\eq(v,r_{\lo})s_v$, and checks
-$\sigma_{m-1}=\widetilde a(r)z$ before tag \code{4101}.  The coefficient
+$\sigma_{m_f-1}=\widetilde a_f(r)z$ before tag \code{4101}.  The coefficient
 evaluator is verifier-derived and contributes no payload.  This is the only
-LinCheck in the virtual path; the same tag-\code{4001} vector continues into
+coefficient LinCheck in the opening path; the same tag-\code{4001} vector continues into
 the inherited ring-switch computation.
 
 \subsection{Grinding and query derivation}
@@ -534,7 +538,7 @@ two canonical $\K$
 elements in the registry.  Any other kind/scope pair rejects.
 
 The outer $\mathsf{VerifyF2Z}$ caller first requires that $B$ is the
-deterministic coefficient function derived in P10/V10, with domain size
+deterministic coefficient function derived in P9/V9, with domain size
 $2^{m_p}$; $B$ is never densely serialized.  The caller alone absorbs tag
 \code{5001} with payload
 $\LE{32}{m_p}\parallel\operatorname{Enc}_{\K}(\beta)$ and then invokes
@@ -628,7 +632,7 @@ from Equation~\eqref{eq:wire-lengths-v1}.  Negative fixtures \must{} cover an
 unknown version or tag, a reserved bit, wrong endian or channel, record
 reordering, truncation and suffix bytes, noncanonical scalars, count overflow,
 a failed or late $u/\nu$ hint, altered PoW scope/difficulty/nonce, and missing
-or extra recursive fields.  A LinCheck-enabled fixture must additionally
+or extra recursive fields.  A coefficient-LinCheck-enabled fixture must additionally
 cover a wrong round polynomial, reordered \code{4002/4103} pair, altered
 terminal coefficient, and failed terminal gate.  Native, recursive, and independent reference
 verifiers must produce byte-identical transcript audit logs.

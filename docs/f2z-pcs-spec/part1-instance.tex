@@ -3,134 +3,86 @@
 
 \begingroup\small
 
-\subsection{The ZeroCheck-to-PCS boundary}
+\subsection{Committed and active witness views}
 \label{sec:public-objects}
 
-Let $\bm x$ be the public input and let $\bm f$ be a bounded witness.  An
-admitted source relation expresses its constraints as polynomial equations
-(PESAT) or as polynomial ideal-membership statements (PIMSAT):
+The PCS receives a committed binary witness $\bm f$.  Before proving, the
+developer selects one of two public witness configurations:
+
+\begin{itemize}[leftmargin=1.4em]
+ \item \textbf{Direct.}
+       The application PIOP uses the committed witness directly, so
+       $\bm h=\bm f$ and $\bm M=I$.
+ \item \textbf{Virtualized.}
+       The application PIOP uses a binary witness $\bm h$ related to the
+       committed witness by a nontrivial developer-selected public matrix
+       $\bm M$.
+\end{itemize}
+
+The remainder of this specification uses the developer's Virtualized
+configuration exclusively.  Throughout, $\bm f$ is the commitment-facing view
+and $\bm h$ is the application-facing view.
+
+\begingroup
+\setlength{\tabcolsep}{5pt}
+\renewcommand{\arraystretch}{1.08}
+\begin{tabularx}{\linewidth}{@{}l l X@{}}
+\toprule
+Symbol & Type & Role \\
+\midrule
+$\bm f$ & $\bitsset^{n_f}$ & Witness committed by the PCS. \\
+$\bm M$ & $\Ftwo^{n_h\times n_f}$ & Developer-selected virtualization matrix. \\
+$\bm h$ & $\bitsset^{n_h}$ & Active witness used by the PIOP and the F2Z core. \\
+$O$ & $\K^{n_O}$ & Codeword oracle encoding the packed coordinates of $\bm f$. \\
+$\rho$ & bit string & Merkle root of $O$. \\
+\bottomrule
+\end{tabularx}
+\endgroup
+
+The active witness is
 \begin{equation}
- \begin{aligned}
-  \mathsf{PESAT}:&\quad p_i(\bm x,\bm f)=0 &&(\forall i),\\
-  \mathsf{PIMSAT}:&\quad p_j^{(a)}(\bm x,\bm f)\in I_a
-    &&(\forall a,j).
- \end{aligned}
- \label{eq:source-relations}
+ \boxed{\quad
+ \pi_2(\bm h)=\bm M\pi_2(\bm f).
+ \quad}
+ \label{eq:active-witness}
 \end{equation}
-The polynomial ring, bounded witness domain, and ideals in
-Equation~\eqref{eq:source-relations} belong to the source relation.  The fixed
-profile selects that relation and supplies the black-box ZeroCheck contract
-below.  Here ``ZeroCheck'' names the source-to-linear interface; a PIMSAT
-instantiation may perform ideal-membership checks internally.
+Here $\pi_2:\mathbb Z\to\Ftwo$, $x\mapsto x\bmod 2$, acts coordinatewise.
+Since $\bm f$ and $\bm h$ are binary, Equation~\eqref{eq:active-witness}
+uniquely determines $\bm h$.  The developer fixes the public map $\bm M$
+before proving; it is part of the instance and is not chosen by the prover.
 
-Let $M$ be the native domain of one witness entry and let $R$ be the scalar
-evaluation domain.  ZeroCheck declares how the verifier derives
-an additive map
+Only $\bm f$ is committed.  Let $F$ be its fixed two-dimensional layout and
+let $\operatorname{vec}(F)=\pi_2(\bm f)$.  The commitment is
 \begin{equation}
- \psi:M\longrightarrow R,
- \qquad \psi(x+x')=\psi(x)+\psi(x').
- \label{eq:evaluation-map}
-\end{equation}
-For an integer witness, $\psi$ may be reduction into $R$; for a polynomial
-witness, it may combine coefficient reduction with evaluation at a public or
-transcript-derived point.  In either case, $\psi(\bm f)$ means that $\psi$ is
-applied entry by entry.
-
-ZeroCheck must reduce its source claim to
-\begin{equation}
- \left\langle\bm v,\psi(\bm f)\right\rangle_R
- :=\sum_{i=0}^{r-1}v_i\psi(f_i)=\mu,
- \qquad \bm v\in R^r,\quad \mu\in R.
- \label{eq:zerocheck-linear-claim}
-\end{equation}
-The verifier derives $\psi$, $\bm v$, and $\mu$ from the ZeroCheck transcript.
-The same witness $\bm f$ is retained.  Equation~
-\eqref{eq:zerocheck-linear-claim} is the only source claim consumed by
-the F2Z core.
-
-\subsection{Committing the witness as bits}
-\label{sec:bit-basis}
-
-The ZeroCheck protocol fixes an ordered basis
-$(\gamma_0,\ldots,\gamma_{D_M-1})$ for the native witness domain $M$.  Each
-$\gamma_j$ is the $j$-th public basis element: every accepted $f_i$ has unique
-coordinates in these elements, and the order of the indices $j$ fixes how
-those coordinates are serialized.  The basis is not computed from the witness
-or sampled during the protocol.  For the concrete integer case, $M=\Z$ and
-the basis is simply $D_M=1$, $\gamma_0=1$.  For a polynomial case with
-$M=\Z[X]_{<d}$, the usual choice is $D_M=d$ and $\gamma_j=X^j$, ordered from
-the constant term through $X^{d-1}$.  Every accepted entry then has a
-canonical, fixed-width decomposition
-\begin{equation}
- f_i=\sum_{k=0}^{B-1}\sum_{j=0}^{D_M-1}
-       b_{i,k,j}\,(2^k\gamma_j),
- \qquad b_{i,k,j}\in\bitsset,
- \qquad \bm b:=\bits(\bm f).
- \label{eq:overview-bit-reconstruction}
-\end{equation}
-The statement fixes the valid bit strings and the order in which the triples
-$(i,k,j)$ are flattened.  Every coefficient vector below uses that same order.
-
-F2Z commits to these bits before the first ZeroCheck challenge.  Consecutive
-blocks are packed in an ordered basis of a binary extension field, encoded by
-the proof system's linear code, and Merkle committed:
-\begin{equation}
- P:=\Pack(\pi_2(\bm b)),\qquad
+ P:=\Pack(F),\qquad
  O:=\Enc_{\mathcal C}(P),\qquad
  \rho:=\Root(O).
  \label{eq:overview-commitment}
 \end{equation}
-The oracle and root in Equation~\eqref{eq:overview-commitment} are carried
-through ZeroCheck and the F2Z proof.  The equality in
-Equation~\eqref{eq:zerocheck-linear-claim}
-remains an equality in $R$; only the committed representation of the witness
-lives over the binary field.
+Neither $H$, the layout of $\bm h$, nor any value derived from $H$ is encoded
+in $O$.
 
-\subsection{Bitify and the role of GKR}
+\subsection{Application linear-claim handoff}
+\label{sec:piop-handoff}
 
-Bitify rewrites the ZeroCheck output directly in terms of the committed
-bits.  The bit $b_{i,k,j}$ inherits the coefficient
+The application begins with a constraint-satisfaction relation over $\Fq$
+evaluated on the active witness $\pi_q(\bm h)$.  Its PIOP reduces that relation
+to an admissible Lin-BitsDual claim consumed by F2Z:
 \begin{equation}
- u_{i,k,j}:=v_i\,\psi(2^k\gamma_j).
- \label{eq:overview-bitify-coefficient}
+ \begin{aligned}
+  (x;\pi_q(\bm h))\in\mathcal R_{\rm app}
+  &\xRightarrow{\ \Pi_{\rm app}\ }
+    \left\langle\bm v,\pi_q(\bm h)\right\rangle_{\Fq}=\mu,
+    \quad V=\bm a(\bm a')^{\mathsf T} \\
+  &\xRightarrow{\ \mathrm{F2Z}\ }
+    \text{opening against $\rho$}.
+ \end{aligned}
+ \label{eq:piop-f2z-flow}
 \end{equation}
-
-Substituting the decomposition in
-Equation~\eqref{eq:overview-bit-reconstruction} into the linear claim gives
-the following identity.  In the concrete proof system, $R=\Fq$ and bits enter $R$
-through $\pi_q$ coordinatewise:
-\begin{equation}
- \left\langle\bm v,\psi(\bm f)\right\rangle_R=\mu
- \quad\Longleftrightarrow\quad
- \left\langle\pi_q(\bm b),\bm u\right\rangle_R=\mu.
- \label{eq:overview-bitify}
-\end{equation}
-This Bitify step sends no message and creates no new commitment.
-
-The remaining problem is to prove the claim in Equation~
-\eqref{eq:overview-bitify}, which is evaluated in $R$, using bits
-committed over a different field.  F2Z tensors the bit vector and lifts one
-coefficient factor to bounded nonnegative integers $\lambda_i$.  For a bit
-matrix $\Bbit$, a column sum has the form
-\begin{equation}
- \mu_c:=\sum_i\lambda_i\Bbit[c,i]\in\Z.
- \label{eq:overview-column-sum}
-\end{equation}
-If the sum in Equation~\eqref{eq:overview-column-sum} lies in an accepted range
-narrower than the order of $g\in\K^\times$, then exponentiation is injective on
-that range and
-\begin{equation}
- g^{\mu_c}
-  =\prod_i g^{\lambda_i\Bbit[c,i]}
-  =\prod_i\bigl(1+(g^{\lambda_i}-1)\Bbit[c,i]\bigr)
- \qquad\text{in }\K.
- \label{eq:overview-grand-product}
-\end{equation}
-Equation~\eqref{eq:overview-grand-product} turns the exact column sums into
-grand-product claims over the binary field.  GKR reduces the batched product
-computation to a linear opening claim on the same committed bits---an MLE
-evaluation in the proof system's fixed specialization.  The binary-field opening
-protocol then checks that terminal claim against $O$.
+The application proof is outside the F2Z protocol.  F2Z receives the public
+claim and does not inspect the equations or reductions that produced it.
+The remainder of this specification defines the public parameters and reduces
+this linear claim to an opening against the commitment to $\bm f$.
 
 \endgroup
 
@@ -139,278 +91,173 @@ protocol then checks that terminal claim against $O$.
 
 \begingroup\small
 
-\subsection{MLE handoff and concrete proof system}
-\label{sec:opening-statements}
-
-The concrete proof system first flattens the source witness into bounded
-integer cells.  At the PCS boundary it specializes the generic interface as
-\begin{equation}
- \begin{aligned}
-  r&=2^{t+s},& M&=\Z,& \psi&=\pi_q,& D_M&=1,& \gamma_0&=1,& B&=W,\\
-  f_{c,b}&:=\INT(D(b,c)),&&
-  \bm f&:=\bigl(f_{c,b}\bigr)_{c\in\bitsset^s,\,b\in\bitsset^t}.
- \end{aligned}
- \label{eq:concrete-lmfb-specialization}
-\end{equation}
-The order in Equation~\eqref{eq:concrete-lmfb-specialization} is $c$-major,
-then $b$-major; the bit order is $(c,b,j)$.  The coefficient at position
-$(c,b)$ is denoted $v_{c,b}$.  This adapter is part of ZeroCheck
-and must preserve the root from Equation~\eqref{eq:overview-commitment}.
-
-For $z\in\bitsset^a$ and $\bm r\in\Fq^a$, define the equality polynomial
-\begin{equation}
- \eq(z,\bm r):=\prod_{h=0}^{a-1}
-   \bigl((1-z_h)(1-\bm r_h)+z_h\bm r_h\bigr).
- \label{eq:equality-polynomial}
-\end{equation}
-The coordinate order in Equation~\eqref{eq:equality-polynomial} is the order
-fixed by the tensor layout below.
-
-The concrete proof system instantiates the scalar handoff with an MLE evaluation.
-Let $D:\bitsset^t\times\bitsset^s\to[0,2^W)$ be the committed witness tensor,
-and let $r_1\in\Fq^t$ and $r_2\in\Fq^s$ be transcript-derived.  Set
-\begin{equation}
- \begin{aligned}
-  y&:=\MLE{\pi_q\circ\INT(D)}(r_1,r_2),\\
-  w_b&:=\operatorname{can}_q(\eq(b,r_1)),
-  &w'_c&:=\eq(c,r_2).
- \end{aligned}
- \label{eq:mle-opening}
-\end{equation}
-Expanding the MLE in Equation~\eqref{eq:mle-opening} gives the separable form
-used by this proof system:
-\begin{equation}
- y=\sum_{c\in\bitsset^s}w'_c\,
-   \pi_q\!\left(\sum_{b\in\bitsset^t}
-      w_b\,\INT(D(b,c))\right).
- \label{eq:weighted-opening}
-\end{equation}
-This expansion also fixes the coefficient of each committed bit:
-\begin{equation}
- u_{c,b,j}:=\pi_q(w_b2^j)w'_c,
- \qquad i:=(b\ll w)\mid j.
- \label{eq:weighted-bit-coeff}
-\end{equation}
-Equations~\eqref{eq:mle-opening}--\eqref{eq:weighted-bit-coeff} give the tensor
-expansion of a single MLE claim.  The table records the resulting notation and
-concrete proof-system bounds.
-
-\subsection{Definition table}
-\label{sec:tensor-instance}
-
-\newcommand{\InstanceTopic}[1]{\textbf{#1}}
-\newcommand{\InstanceEqTopic}[2]{%
-  \refstepcounter{equation}\label{#1}%
-  \textbf{#2}\par{\color{specmuted}(\theequation)}}
-\newcommand{\InstanceTableHead}{%
-  \rowcolor{specnavy}%
-  \color{white}\bfseries Object &
-  \color{white}\bfseries Exact definition &
-  \color{white}\bfseries Type and rule\\
-  \midrule}
-\newcommand{\InstanceGroup}[1]{%
-  \rowcolor{specpale}\multicolumn{3}{@{}l@{}}{\textbf{#1}}\\
-  \midrule}
+\subsection{Domains and representations}
+\label{sec:domains}
 
 \begingroup
-\scriptsize
-\linespread{0.95}\selectfont
-\setlength{\tabcolsep}{3pt}
-\setlength{\LTpre}{2pt}
-\setlength{\LTpost}{2pt}
-\renewcommand{\arraystretch}{0.98}
-\begin{longtable}{@{}>{\raggedright\arraybackslash}p{0.95in}
-                       >{\raggedright\arraybackslash}p{4.65in}
-                       >{\raggedright\arraybackslash}p{1.65in}@{}}
-\InstanceTableHead
-\endfirsthead
-\InstanceTableHead
-\rowcolor{specpale}\multicolumn{3}{@{}l@{}}{\textbf{Definition table (continued)}}\\
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.08}
+\begin{tabularx}{\linewidth}{@{}l l X@{}}
+\toprule
+Object & Concrete value & Rule \\
 \midrule
-\endhead
-\endfoot
+$\Ftwo$ & binary field & Matrix $\bm M$ and witness coordinates \\
+$R=\Fq$ & $q=2^{100}-15$ & Application and F2Z scalar linear claims \\
+$\K$ & $\Ftwo[X]/(X^{128}+X^7+X^2+X+1)$ & Packing, products, GKR, and openings \\
+$\pi_2$ & $\mathbb Z\to\Ftwo$ & Coordinatewise reduction modulo $2$ \\
+$\pi_q$ & $\mathbb Z\to\Fq$ & Reduction modulo $q$ \\
+$\gamma(a)$ & $\gamma(a)\in[0,q)$, $\pi_q(\gamma(a))=a$ & Unique representative; no alternate lift is accepted \\
+$\beta_v$ & $X^v$, $0\le v<128$ & Ordered $\Ftwo$-basis of $\K$ \\
 \bottomrule
-\endlastfoot
-\InstanceGroup{Domains and ZeroCheck handoff}
-\InstanceEqTopic{eq:concrete-domains}{Concrete fields} &
-  \(\displaystyle
-    R=\Fq,\quad q=2^{100}-15,\qquad
-    \Fbin=\K=\Ftwo[X]/(X^{128}+X^7+X^2+X+1)
-      \cong\mathbb F_{2^{128}}.
-  \) &
-  Linear claims are evaluated in $\Fq$.  Packing, grand products, and
-  commitment openings use $\K$.
-  \\
+\end{tabularx}
+\endgroup
+\begin{equation}
+ R=\Fq,\quad q=2^{100}-15,\qquad
+ \K=\Ftwo[X]/(X^{128}+X^7+X^2+X+1).
+ \label{eq:concrete-domains}
+\end{equation}
+
+\subsection{Witnesses and layouts}
+\label{sec:witness-layouts}
+
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}l l l X@{}}
+\toprule
+View & Vector & Layout & Used by \\
 \midrule
-\InstanceTopic{Witness map} &
-  $\bm f\in\mathcal W_B\subseteq M^r$ and
-  $\psi:M\to R$, with $\psi$ additive as in
-  Equation~\eqref{eq:evaluation-map}. &
-  $M$ is the native witness domain; $\mathcal W_B$ fixes canonical bounds and
-  encodings.  ZeroCheck fixes the derivation rule; its verifier
-  derives the instantiated $\psi$.
-  \\
+Committed & $\bm f\in\bitsset^{n_f}$ & $F\in\Ftwo^{2^{m_f-7}\times2^7}$ & packing, coding, and opening \\
+Active & $\bm h\in\bitsset^{n_h}$ & $H\in\Ftwo^{2^{d_r}\times2^{d_c}}$ & PIOP, folds, products, and GKR \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+The layouts satisfy
+\begin{equation}
+ \operatorname{vec}(F)=\pi_2(\bm f),\qquad
+ \operatorname{vec}(H)=\pi_2(\bm h),\qquad
+ \operatorname{vec}(H)=\bm M\operatorname{vec}(F).
+ \label{eq:tensor-layout}
+\end{equation}
+
+Packing uses only $F$.  For $0\le j<n_f/128$,
+\begin{equation}
+ P[j]:=\sum_{v=0}^{127}F_{128j+v}\,\beta_v,\qquad
+ O:=\Enc_{\mathcal C}(P),\qquad \rho:=\Root(O),
+ \label{eq:packed-commitment}
+\end{equation}
+where $F_i$ denotes the $i$-th coordinate in the fixed vectorization.  Thus
+$P\in\K^{n_f/128}$ before encoding with a RS code.  The public instance requires $n_f$
+to be a multiple of $128$ after witness padding.
+
+\subsection{Separable claim and bounded fold decomposition}
+\label{sec:core-parameters}
+
+F2Z receives the public linear claim
+\begin{equation}
+ \left\langle\bm v,\pi_q(\bm h)\right\rangle_{\Fq}=\mu.
+ \label{eq:core-linear-claim}
+\end{equation}
+The developer configuration fixes
+$H\in\Ftwo^{2^{d_r}\times2^{d_c}}$ and its row-major vectorization.  Using
+the same coordinate order, reshape $\bm v$ into
+$V\in\Fq^{2^{d_r}\times2^{d_c}}$ by
+\begin{equation}
+ V[r,c]:=v_{r\cdot2^{d_c}+c}.
+ \label{eq:coefficient-layout}
+\end{equation}
+Identifying each bit $H[r,c]$ with its canonical image in $\Fq$,
+Equation~\eqref{eq:core-linear-claim} is
+\begin{equation}
+ \sum_{r,c}V[r,c]H[r,c]=\mu.
+ \label{eq:matrix-linear-claim}
+\end{equation}
+
+The F2Z fold accepts only a separable coefficient matrix.  An admissible
+instance therefore includes public factors
+$\bm a=(a_r)_r$ and $\bm a'=(a'_c)_c$ satisfying
+\begin{equation}
+ V[r,c]=a_r a'_c,
+ \qquad
+ \mu=\sum_c a'_c\sum_r a_rH[r,c].
+ \label{eq:separable-coefficient}
+\end{equation}
+An application that begins with a nonseparable coefficient must perform its
+own reduction before invoking F2Z.
+
+For every row factor $a_r\in\Fq$, let
+$\gamma_r:=\gamma(a_r)\in[0,q)$ be its canonical integer representative.
+Since $q<2^{100}$, each $\gamma_r$ has at most $100$ bits.  For
+$d_r\le126$, define
+\begin{equation}
+ c_w:=127-d_r,
+ \qquad
+ L:=\left\lceil\frac{100}{c_w}\right\rceil.
+ \label{eq:chunk-parameters}
+\end{equation}
+
+Split each lift into $L$ little-endian chunks:
+\begin{equation}
+ \begin{aligned}
+  \gamma_r^{(\ell)}
+    &:=\left\lfloor\gamma_r/2^{c_w\ell}\right\rfloor\bmod2^{c_w},&
+  \gamma_r&=\sum_{\ell=0}^{L-1}
+        2^{c_w\ell}\gamma_r^{(\ell)}.
+ \end{aligned}
+ \label{eq:chunking}
+\end{equation}
+For every column $c$ and chunk $\ell$, define the exact integer fold
+\begin{equation}
+ \mu_c^{(\ell)}
+ :=\sum_{r<2^{d_r}}\gamma_r^{(\ell)}H[r,c]\in\mathbb Z.
+ \label{eq:integer-fold}
+\end{equation}
+Because $0\le\gamma_r^{(\ell)}<2^{c_w}$ and $H[r,c]\in\{0,1\}$,
+\begin{equation}
+ 0\le\mu_c^{(\ell)}<2^{c_w+d_r}=2^{127}.
+ \label{eq:fold-bound}
+\end{equation}
+The verifier reconstructs the supplied field claim by reducing the exact
+folds modulo $q$, applying the column factors, and summing the chunks:
+\begin{equation}
+ \mu=
+ \sum_c a'_c
+ \sum_{\ell=0}^{L-1}\pi_q(2^{c_w\ell}\mu_c^{(\ell)}).
+ \label{eq:fold-reconstruction}
+\end{equation}
+
+The product generator has full multiplicative order:
+\begin{equation}
+ g\in\K^\times,\qquad
+ \operatorname{ord}(g)=2^{128}-1.
+ \label{eq:generator-condition}
+\end{equation}
+Together, Equations~\eqref{eq:fold-bound} and~\eqref{eq:generator-condition}
+make $u\mapsto g^u$ injective on every accepted fold.
+Section~\ref{sec:encoding} uses this injectivity to convert each fold into a
+grand-product claim over $\K$.
+
+\subsection{Protocol interfaces}
+\label{sec:protocol-interfaces}
+
+\begingroup
+\setlength{\tabcolsep}{3.5pt}
+\renewcommand{\arraystretch}{1.08}
+\begin{tabularx}{\linewidth}{@{}l X X@{}}
+\toprule
+Protocol & Input & Output \\
 \midrule
-\InstanceTopic{ZeroCheck output} &
-  $\psi:M\to R$, $\bm v\in R^r$, $\mu\in R$, and
-  $\langle\bm v,\psi(\bm f)\rangle_R=\mu$. &
-  The verifier derives $(\psi,\bm v,\mu)$ through the black-box ZeroCheck
-  protocol.  See Equation~\eqref{eq:zerocheck-linear-claim}.
-  \\
-\midrule
-\InstanceTopic{Concrete adapter} &
-  $M=\Z$, $\psi=\pi_q$, $D_M=1$, $\gamma_0=1$, $B=W$, and
-  $f_{c,b}=\INT(D(b,c))$. &
-  Equation~\eqref{eq:concrete-lmfb-specialization} fixes the $c$-major
-  $(c,b,j)$ order and ties the generic witness to the committed tensor.
-  \\
-\midrule
-\InstanceTopic{Public objects} &
-  \(\displaystyle
-  \begin{aligned}
-   \mathsf{pp}&:=(R,M,\mathcal C,\Pi_{\rm ZC},\Pi_{\rm GKR},
-     \Pi_{\rm open},\mathsf{transcript},\mathsf{hash},\mathsf{core\_mode}),\\
-   x_{\rm src}&:=(\mathsf{source\_statement},(t,s,W),g),\\
-   x_{\rm core}&:=((t,s,W),(\bm w,\bm w',y),g),
-   &\mathsf{com}&:=(\rho).
-  \end{aligned}
-  \) &
-  These public parameters fix ZeroCheck, GKR, wire, transcript, code, and
-  opening algorithms.  The ZeroCheck verifier derives $x_{\rm core}$; it is not an
-  independent prover input.
-  \\
-\midrule
-\InstanceTopic{Canonical bits} &
-  $(\gamma_j)_{j<D_M}$, bit width $B$, and
-  $\bm b:=\bits(\bm f)$ as in
-  Equation~\eqref{eq:overview-bit-reconstruction}. &
-  The proof system fixes the valid bit strings and a single flattening order shared
-  by $\bm b$ and its coefficient vector.
-  \\
-\midrule
-\InstanceTopic{Canonical maps} &
-  $\pi_2:\Z\to\Ftwo$, $\pi_q:\Z\to\Fq$, and
-  $\operatorname{can}_q:\Fq\to[0,q)$; for $0\le v<128$,
-  $\beta_v:=X^v\bmod(X^{128}+X^7+X^2+X+1)$. &
-  $\operatorname{can}_q$ returns the unique integer representative used for
-  bounded exponent lifts.  $(\beta_v)_{v<128}$ is the ordered polynomial basis
-  used by $\Pack$.
-  \\
-\midrule
-\InstanceGroup{Tensor layout and commitment}
-\InstanceTopic{Shape and cells} &
-  $\bm b:=\bits(\bm f)$,
-  $W=2^w$, and
-  \(\displaystyle
-    D(b,c)\in[0,2^W),\qquad
-    d:=t+w,\quad m:=d+s,\quad m_p:=m-7.
-  \) &
-  $(t,s,W)$ is public, $\bm f$ is bounded, the bit-decomposition is canonical,
-  and $(b,c)\in\bitsset^t\times\bitsset^s$.
-  \\
-\midrule
-\InstanceEqTopic{eq:tensor-layout}{Bit tensor} &
-  \(\displaystyle
-  \begin{aligned}
-   \Bbit[c][(b\ll w)\mid j]
-     &:=\operatorname{bit}_j(D(b,c)),\\
-   \INT(D(b,c))
-     &:=\sum_{j=0}^{W-1}2^j\Bbit[c][(b\ll w)\mid j].
-  \end{aligned}
-  \) &
-  $\Bbit\in\Ftwo^{2^s\times2^d}$, $0\le j<W$, and
-  $\bm b=\operatorname{vec}(\Bbit)$ has $2^m$ bits.
-  \\
-\midrule
-\InstanceEqTopic{eq:packed-commitment}{Pack and commit} &
-  \(\displaystyle
-  \begin{aligned}
-   P[c2^{d-7}+i_{\hi}]
-     &:=\sum_{v=0}^{127}
-        \Bbit[c][(i_{\hi}\ll7)\mid v]\beta_v,\\
-   O&:=\Enc_{\mathcal C}(P),\qquad \rho:=\Root(O).
-  \end{aligned}
-  \) &
-  $0\le i_{\hi}<2^{d-7}$, $0\le v<128$, and
-  $P\in\K^{2^{m_p}}$.  The seven low index bits select the 128 coefficients of
-  the fixed ordered $\Ftwo$-basis of $\K$.
-  \\
-\InstanceGroup{MLE-derived core claim}
-\InstanceTopic{Core tuple} &
-  \(\displaystyle
-    (\bm w,\bm w',y),\qquad
-    |\bm w|=2^t,\quad |\bm w'|=2^s,\quad y=\mu.
-  \) &
-  $0\le w_b<2^{q_{\rm bits}}$ is an integer;
-  $w'_c,y\in\Fq$.  This is the separable tensor form of one linear claim.
-  \\
-\midrule
-\InstanceTopic{Bit coefficient} &
-  \(\displaystyle
-    u_{c,b,j}:=\pi_q(w_b2^j)w'_c,\qquad
-    i:=(b\ll w)\mid j.
-  \) &
-  $0\le i<2^d$ and $u_{c,b,j}\in\Fq$.  The verifier derives this coefficient
-  using Equation~\eqref{eq:weighted-bit-coeff}; it is never supplied.
-  \\
-\InstanceGroup{Chunking and admissibility}
-\multirow[t]{3}{0.95in}{%
-  \InstanceEqTopic{eq:chunking}{Chunk decomposition}} &
-  \textbf{Parameters.}\enspace
-  \(\displaystyle
-    q_{\rm bits}:=100,\qquad c_w:=127-t-W,\qquad
-    L:=\max\!\left(\left\lceil q_{\rm bits}/c_w\right\rceil,1\right).
-  \) &
-  $0\le\ell<L$; the admissibility rows below imply $c_w>0$.
-  \\
-\cmidrule(l){2-3}
-&
-  \textbf{Digits.}\enspace
-  \(\displaystyle
-  \begin{aligned}
-    \omega_b^{(\ell)}
-      &:=\left\lfloor w_b/2^{c_w\ell}\right\rfloor\bmod2^{c_w},&
-    w_b&=\sum_{\ell=0}^{L-1}2^{c_w\ell}\omega_b^{(\ell)}.
-  \end{aligned}
-  \) &
-  $0\le\omega_b^{(\ell)}<2^{c_w}$.
-  \\
-\cmidrule(l){2-3}
-&
-  \textbf{Columns.}\enspace
-  \(\displaystyle
-    u_c^{(\ell)}:=\sum_b\omega_b^{(\ell)}\INT(D(b,c)).
-  \) &
-  $0\le u_c^{(\ell)}<2^{c_w+t+W}=2^{127}$.
-  \\
-\midrule
-\InstanceEqTopic{eq:shape-admissibility}{Shape and interface} &
-  \(\displaystyle
-    W\in2^{\mathbb N},\qquad d\ge7,\qquad t+W\le126,
-    \qquad 22\le m\le35.
-  \) &
-  Require every implied dimension, canonical public values, and the correct
-  claim variant.
-  \\
-\midrule
-\InstanceEqTopic{eq:generator-condition}{Generator} &
-  \(\displaystyle
-  \begin{aligned}
-    g&\in\K^\times,\qquad \operatorname{ord}(g)=2^{128}-1,\\
-    \operatorname{ord}(g)=2^{128}-1
-      &\iff g^{(2^{128}-1)/p}\ne1
-      \quad\text{for every prime }p\mid2^{128}-1.
-  \end{aligned}
-  \) &
-  Together with $u_c^{(\ell)}<2^{127}$, full order makes
-  $u\mapsto g^u$ injective over every accepted fold.
-  \\
-\end{longtable}
+$\Pi_1$ & separable Lin-BitsDual claim and chunk schedule & exact folds and grand-product claims on $H$ \\
+$\Pi_{\rm GKR}$ & product claims and the fixed product circuit & weighted sum claim on $H$ \\
+$\Pi_{\rm MLE}$ & weighted sum claim on $H$ & $\widetilde H(\bm r_h)=\eta$ \\
+$\operatorname{Adj}_{\bm M}$ & $\bm a_h$ & $\bm a_f=\bm M_{\K}^{\mathsf T}\bm a_h$; no message \\
+$\Pi_{\rm LC}\;(\mathsf{LinCheck}_f)$ & $\langle\bm a_f,\bm f_{\K}\rangle=\eta$ & MLE-shaped claim when required \\
+$\Pi_{\rm iopp}$ & MLE-shaped claim and $O$ & accepted opening or rejection \\
+\bottomrule
+\end{tabularx}
 \endgroup
 
-Equations~\eqref{eq:tensor-layout} and~\eqref{eq:packed-commitment} fix the
-committed coordinate order.  Equations~\eqref{eq:chunking}--
-\eqref{eq:generator-condition} fix the admitted chunk schedule and the range
-on which exponentiation is injective.
+The coefficient protocol $\mathsf{LinCheck}_f$ is omitted when $\bm a_f$
+already has the MLE shape required by the opening protocol.  Omission depends
+only on its shape in the committed packing layout.
 
 \endgroup
