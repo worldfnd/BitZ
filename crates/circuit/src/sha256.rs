@@ -532,11 +532,12 @@ mod tests {
     use std::iter::Sum;
     use std::ops::{Add, AddAssign};
 
+    use num_bigint::BigInt;
     use num_traits::Zero;
 
     use super::*;
     use crate::HintError;
-    use crate::constraints::ConstraintGenerator;
+    use crate::constraints::{ConstraintGenerator, ConstraintMatrices};
     use crate::stats::{Dummy, LeanStats, Stats};
     use crate::witgen::{Witgen, Z};
 
@@ -661,6 +662,21 @@ mod tests {
         circuit.sign_extend_z::<SHA256_Z_LIMBS, 128>(small)
     }
 
+    fn assert_m_w_matches_witgen(matrices: &ConstraintMatrices, witgen: &Witgen) {
+        let from_m = matrices
+            .integer_witness(witgen.witness())
+            .expect("Boolean witness should have the matrix width");
+        let recorded = witgen.integer_witness();
+        assert_eq!(from_m.len(), recorded.bit_len());
+        for (row, value) in from_m.iter().enumerate() {
+            assert_eq!(
+                value,
+                &BigInt::from(recorded.bit(row)),
+                "integer witness differs at M row {row}"
+            );
+        }
+    }
+
     #[test]
     fn compression_matches_the_fips_abc_vector() {
         let block_values: [u32; 16] = [
@@ -746,6 +762,7 @@ mod tests {
         assert_eq!(matrices.m.column_count(), SHA256_2KB_WITNESS_BITS + 1);
         assert_eq!(matrices.a.row_count(), compressions * 184);
         assert_eq!(matrices.a.column_count(), matrices.m.row_count());
+        assert_m_w_matches_witgen(&matrices, &witgen);
         matrices
             .check_witness(witgen.witness())
             .expect("SHA-256 witness should satisfy M/A/B/C");
@@ -801,6 +818,7 @@ mod tests {
         assert_eq!(matrices.b.row_count(), 184);
         assert_eq!(matrices.c.row_count(), 184);
         assert_eq!(matrices.a.column_count(), 20_457);
+        assert_m_w_matches_witgen(&matrices, &witgen);
         matrices
             .check_witness(witgen.witness())
             .expect("SHA-256 compression witness should satisfy M/A/B/C");

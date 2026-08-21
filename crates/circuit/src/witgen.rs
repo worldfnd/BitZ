@@ -296,17 +296,27 @@ impl PackedWitness {
 ///
 /// The runner supports every [`Z<LIMBS>`] width simultaneously; each gadget
 /// chooses its own width through its [`Circuit`] instantiation.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Witgen {
     witness: PackedWitness,
+    integer_witness: PackedWitness,
 }
 
 impl Witgen {
+    fn initial_integer_witness() -> PackedWitness {
+        let mut witness = PackedWitness::with_capacity(1);
+        witness.extend(&[true]);
+        witness
+    }
+
     fn seeded(inputs: &[bool], witness_capacity: usize) -> Self {
         assert!(witness_capacity >= inputs.len());
         let mut witness = PackedWitness::with_capacity(witness_capacity);
         witness.extend(inputs);
-        Self { witness }
+        Self {
+            witness,
+            integer_witness: Self::initial_integer_witness(),
+        }
     }
 
     /// Witness bits accumulated so far.
@@ -314,18 +324,32 @@ impl Witgen {
         &self.witness
     }
 
+    /// Packed values returned by logical `f2z` calls.
+    ///
+    /// Entry zero is the implicit integer constant one. Every later entry is
+    /// the 0/1 result of one `f2z`, in circuit order, so this is exactly `M * w`.
+    pub fn integer_witness(&self) -> &PackedWitness {
+        &self.integer_witness
+    }
+
     /// Consumes the evaluator and returns its packed witness.
     pub fn into_witness(self) -> PackedWitness {
         self.witness
     }
 
+    /// Consumes the evaluator and returns both the Boolean witness and `M * w`.
+    pub fn into_witnesses(self) -> (PackedWitness, PackedWitness) {
+        (self.witness, self.integer_witness)
+    }
+
     /// Constructs the fast witness-generation evaluator.
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             witness: PackedWitness {
                 words: Vec::new(),
                 bit_len: 0,
             },
+            integer_witness: Self::initial_integer_witness(),
         }
     }
 
@@ -348,7 +372,16 @@ impl Witgen {
         assert!(witness_capacity >= input_bits);
         let mut witness = PackedWitness::with_capacity(witness_capacity);
         witness.extend_packed_words(input_words, input_bits);
-        Self { witness }
+        Self {
+            witness,
+            integer_witness: Self::initial_integer_witness(),
+        }
+    }
+}
+
+impl Default for Witgen {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -374,6 +407,7 @@ impl Circuit for Witgen {
     }
 
     fn f2z<const LIMBS: usize>(&mut self, value: bool) -> Z<LIMBS> {
+        self.integer_witness.extend(&[value]);
         if value { Z::one() } else { Z::zero() }
     }
 
@@ -382,6 +416,7 @@ impl Circuit for Witgen {
         bits_le: &<bool as BoolWitness>::Repr<N, M>,
     ) -> (Z<LIMBS>, Z<LIMBS>) {
         assert!(LOW <= N, "low part cannot be wider than the input");
+        self.integer_witness.extend_packed(bits_le);
         (
             Z::from_packed_bits(bits_le),
             Z::from_packed_prefix(bits_le, LOW),
@@ -475,6 +510,24 @@ mod tests {
             PackedBits::<4, 1>::from_array([true, false, true, true])
         );
         assert_eq!(witgen.f2z::<1>(true), Z::<1>::one());
+    }
+
+    #[test]
+    fn records_the_integer_witness_in_logical_f2z_order() {
+        let mut witgen = Witgen::new();
+        let _ = witgen.f2z::<1>(true);
+        let _ = witgen.f2z::<8>(false);
+        let bits = PackedBits::<4, 1>::from_array([false, true, true, false]);
+        let _: (Z<1>, Z<1>) = witgen.f2z_unsigned::<1, 4, 1, 2>(&bits);
+
+        let expected = [true, true, false, false, true, true, false];
+        assert_eq!(witgen.integer_witness().bit_len(), expected.len());
+        assert!(
+            expected
+                .iter()
+                .enumerate()
+                .all(|(index, expected)| witgen.integer_witness().bit(index) == *expected)
+        );
     }
 
     #[test]
