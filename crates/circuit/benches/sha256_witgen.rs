@@ -35,24 +35,24 @@ fn sha256_2kb_witgen(bencher: Bencher) {
     });
 }
 
-const SHA256_30_MIB_BYTES: usize = 30 * 1024 * 1024;
-const SHA256_30_MIB_BITS: usize = SHA256_30_MIB_BYTES * 8;
-const SHA256_30_MIB_WITNESS_BITS: usize = block_aligned_witness_bits(SHA256_30_MIB_BITS);
+const SHA256_1_MIB_BYTES: usize = 1024 * 1024;
+const SHA256_1_MIB_BITS: usize = SHA256_1_MIB_BYTES * 8;
+const SHA256_1_MIB_WITNESS_BITS: usize = block_aligned_witness_bits(SHA256_1_MIB_BITS);
 
 #[divan::bench(sample_count = 10, sample_size = 1)]
-fn sha256_30_mib_witgen(bencher: Bencher) {
-    let message = vec![0_u64; SHA256_30_MIB_BITS / 64];
+fn sha256_1_mib_witgen(bencher: Bencher) {
+    let message = vec![0_u64; SHA256_1_MIB_BITS / 64];
     bencher.bench_local(|| {
         let message = black_box(&message);
         let mut witgen = Witgen::with_packed_inputs_and_capacity(
             message,
-            SHA256_30_MIB_BITS,
-            SHA256_30_MIB_WITNESS_BITS,
+            SHA256_1_MIB_BITS,
+            SHA256_1_MIB_WITNESS_BITS,
         );
-        let digest = sha256_block_aligned_circuit(&mut witgen, SHA256_30_MIB_BITS, |index| {
+        let digest = sha256_block_aligned_circuit(&mut witgen, SHA256_1_MIB_BITS, |index| {
             message[index / 64] >> (index % 64) & 1 == 1
         });
-        assert_eq!(witgen.witness().bit_len(), SHA256_30_MIB_WITNESS_BITS);
+        assert_eq!(witgen.witness().bit_len(), SHA256_1_MIB_WITNESS_BITS);
         black_box((digest, witgen.into_witness()))
     });
 }

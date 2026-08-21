@@ -14,6 +14,7 @@ use std::ops::{Add, AddAssign, Mul, Neg, Sub, SubAssign};
 use num_traits::{One, Zero};
 
 pub mod constraints;
+pub mod matrix_products;
 pub mod sha256;
 pub mod stats;
 pub mod witgen;

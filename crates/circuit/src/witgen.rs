@@ -5,6 +5,7 @@ use std::ops::{Add, AddAssign, Mul, Neg, Sub, SubAssign};
 
 use num_traits::{One, Zero};
 
+use crate::matrix_products::IntegerProducts;
 use crate::{BoolWitness, Circuit, HintResult, PackedBits, WitnessContext};
 
 /// A signed two's-complement integer with a compile-time capacity.
@@ -424,6 +425,114 @@ impl Circuit for Witgen {
     }
 
     fn assert_r1c<const LIMBS: usize>(&mut self, _: Z<LIMBS>, _: Z<LIMBS>, _: Z<LIMBS>) {}
+
+    fn sign_extend_z<const FROM_LIMBS: usize, const TO_LIMBS: usize>(
+        &mut self,
+        value: Z<FROM_LIMBS>,
+    ) -> Z<TO_LIMBS> {
+        value.sign_extend()
+    }
+}
+
+/// Generates `w` and `M * w` while retaining exact integer R1CS inputs.
+///
+/// Unlike [`Witgen`], this makes constraint-side integer arithmetic observable
+/// during the first pass. The recorded values can subsequently be batch
+/// reduced with [`IntegerProducts::reduce_parallel`], avoiding a second circuit
+/// replay at the cost of a slower witness-generation pass.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ProductWitgen {
+    witgen: Witgen,
+    products: IntegerProducts,
+}
+
+impl ProductWitgen {
+    /// Starts with already assigned Boolean input witnesses.
+    pub fn with_inputs(inputs: &[bool]) -> Self {
+        Self {
+            witgen: Witgen::with_inputs(inputs),
+            products: IntegerProducts::default(),
+        }
+    }
+
+    /// Starts with inputs and reserves space for the complete Boolean witness.
+    pub fn with_inputs_and_capacity(inputs: &[bool], witness_capacity: usize) -> Self {
+        Self {
+            witgen: Witgen::with_inputs_and_capacity(inputs, witness_capacity),
+            products: IntegerProducts::default(),
+        }
+    }
+
+    /// Starts from packed inputs and reserves the complete Boolean witness.
+    pub fn with_packed_inputs_and_capacity(
+        input_words: &[u64],
+        input_bits: usize,
+        witness_capacity: usize,
+    ) -> Self {
+        Self {
+            witgen: Witgen::with_packed_inputs_and_capacity(
+                input_words,
+                input_bits,
+                witness_capacity,
+            ),
+            products: IntegerProducts::default(),
+        }
+    }
+
+    /// Packed Boolean witness accumulated so far.
+    pub fn witness(&self) -> &PackedWitness {
+        self.witgen.witness()
+    }
+
+    /// Packed `M * w` accumulated so far.
+    pub fn integer_witness(&self) -> &PackedWitness {
+        self.witgen.integer_witness()
+    }
+
+    /// Exact integer constraint inputs accumulated so far.
+    pub const fn products(&self) -> &IntegerProducts {
+        &self.products
+    }
+
+    /// Consumes the runner into `w`, `M * w`, and exact matrix products.
+    pub fn into_parts(self) -> (PackedWitness, PackedWitness, IntegerProducts) {
+        let (witness, integer_witness) = self.witgen.into_witnesses();
+        (witness, integer_witness, self.products)
+    }
+}
+
+impl Circuit for ProductWitgen {
+    type Bool = bool;
+    type Coefficient<const LIMBS: usize> = Z<LIMBS>;
+    type Z<const LIMBS: usize> = Z<LIMBS>;
+
+    fn hint<const LIMBS: usize, const N: usize, const M: usize, H>(
+        &mut self,
+        hint: H,
+    ) -> PackedBits<N, M>
+    where
+        H: Fn(&dyn WitnessContext<Z<LIMBS>, bool, Z<LIMBS>>) -> HintResult<PackedBits<N, M>>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.witgen.hint(hint)
+    }
+
+    fn f2z<const LIMBS: usize>(&mut self, value: bool) -> Z<LIMBS> {
+        self.witgen.f2z(value)
+    }
+
+    fn f2z_unsigned<const LIMBS: usize, const N: usize, const M: usize, const LOW: usize>(
+        &mut self,
+        bits_le: &<bool as BoolWitness>::Repr<N, M>,
+    ) -> (Z<LIMBS>, Z<LIMBS>) {
+        self.witgen.f2z_unsigned::<LIMBS, N, M, LOW>(bits_le)
+    }
+
+    fn assert_r1c<const LIMBS: usize>(&mut self, a: Z<LIMBS>, b: Z<LIMBS>, c: Z<LIMBS>) {
+        self.products.push(a, b, c);
+    }
 
     fn sign_extend_z<const FROM_LIMBS: usize, const TO_LIMBS: usize>(
         &mut self,
