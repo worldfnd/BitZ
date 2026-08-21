@@ -8,7 +8,9 @@ fn eval(bencher: Bencher, num_vars: usize) {
     let x = field_values::<F128>(num_vars, 1);
     let y = field_values::<F128>(num_vars, 2);
 
-    bencher.bench_local(|| black_box(eq_eval(black_box(x.as_slice()), black_box(y.as_slice()))));
+    bencher.bench_local(|| {
+        black_box(eq_eval(black_box(x.as_slice()), black_box(y.as_slice())).unwrap())
+    });
 }
 
 #[divan::bench(args = LOG_SIZES)]

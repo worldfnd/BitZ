@@ -1,28 +1,58 @@
 use crypto_primitives::ConstField;
-use field::F128;
-use num_traits::ConstOne;
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
 #[cfg(feature = "parallel")]
 use crate::parallel::workload_size;
 
-/// Evaluates the multilinear equality polynomial over F128
+/// Failures produced while evaluating an equality polynomial.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EqEvalError {
+    PointLengthMismatch { expected: usize, actual: usize },
+}
+
+/// Evaluates the multilinear equality polynomial.
 ///
 /// eq(x, y) = ∏_{i=0}^{n-1} [x_i y_i + (1 - x_i)(1 - y_i)].
 ///
 /// On Boolean vectors, eq(x, y) = 1 exactly when x = y, and 0 otherwise.
 ///
-/// Over GF(2^128), characteristic two gives
+/// The implementation uses `O(n)` field operations and constant space. Over
+/// characteristic-two fields, each coordinate factor simplifies to
+/// `1 + x_i + y_i`. Over other fields, it is evaluated as
 ///
-/// eq(x, y) = ∏_{i=0}^{n-1} (1 + x_i + y_i).
-pub fn eq_eval(x: &[F128], y: &[F128]) -> F128 {
-    assert_eq!(x.len(), y.len());
-    let mut result = F128::ONE;
-    for (&a, &b) in x.iter().zip(y.iter()) {
-        result *= F128::ONE + a + b;
+/// `(1 - x_i) + y_i (2 x_i - 1)`,
+///
+/// saving one multiplication per coordinate compared with the defining
+/// expression. Seeding the accumulator with the first coordinate factor gives
+/// `n - 1` multiplications in characteristic two and `2n - 1` otherwise for
+/// nonempty points.
+pub fn eq_eval<F: ConstField + Copy>(left: &[F], right: &[F]) -> Result<F, EqEvalError> {
+    if left.len() != right.len() {
+        return Err(EqEvalError::PointLengthMismatch {
+            expected: left.len(),
+            actual: right.len(),
+        });
     }
-    result
+
+    let one = F::ONE;
+    let mut coordinates = left.iter().copied().zip(right.iter().copied());
+    let Some((first_left, first_right)) = coordinates.next() else {
+        return Ok(one);
+    };
+
+    if one + one == F::ZERO {
+        let first = one + first_left + first_right;
+        return Ok(coordinates.fold(first, |value, (left_i, right_i)| {
+            value * (one + left_i + right_i)
+        }));
+    }
+
+    let coordinate = |left_i: F, right_i: F| (one - left_i) + right_i * (left_i + left_i - one);
+    Ok(coordinates.fold(
+        coordinate(first_left, first_right),
+        |value, (left_i, right_i)| value * coordinate(left_i, right_i),
+    ))
 }
 
 /// Builds the evaluation table of `eq(b, r)` over all Boolean vectors
@@ -44,7 +74,7 @@ pub fn eq_eval(x: &[F128], y: &[F128]) -> F128 {
 /// `b_i = (j >> i) & 1`, so variable `i` corresponds to bit `i` of
 /// the index (little-endian order).
 ///
-/// For `n = 0`, the table is `[F128::ONE]`, corresponding to the
+/// For `n = 0`, the table is `[F::ONE]`, corresponding to the
 /// empty product.
 pub fn eq_table<F: ConstField + Copy>(r: &[F]) -> Vec<F> {
     let n = 1 << r.len();
@@ -86,7 +116,7 @@ pub fn eq_table<F: ConstField + Copy>(r: &[F]) -> Vec<F> {
 
 #[cfg(test)]
 pub mod tests {
-    use super::{eq_eval, eq_table};
+    use super::{EqEvalError, eq_eval, eq_table};
     use crypto_primitives::ConstField;
     use field::{F128, FqDefault};
     use num_traits::{ConstOne, ConstZero};
@@ -170,7 +200,8 @@ pub mod tests {
 
     #[test]
     fn empty_vectors_give_one() {
-        assert_eq!(eq_eval(&[], &[]), F128::ONE);
+        assert_eq!(eq_eval::<F128>(&[], &[]), Ok(F128::ONE));
+        assert_eq!(eq_eval::<FqDefault>(&[], &[]), Ok(FqDefault::ONE));
     }
 
     #[test]
@@ -178,10 +209,10 @@ pub mod tests {
         let zero = F128::ZERO;
         let one = F128::ONE;
 
-        assert_eq!(eq_eval(&[zero], &[zero]), one);
-        assert_eq!(eq_eval(&[zero], &[one]), zero);
-        assert_eq!(eq_eval(&[one], &[zero]), zero);
-        assert_eq!(eq_eval(&[one], &[one]), one);
+        assert_eq!(eq_eval(&[zero], &[zero]), Ok(one));
+        assert_eq!(eq_eval(&[zero], &[one]), Ok(zero));
+        assert_eq!(eq_eval(&[one], &[zero]), Ok(zero));
+        assert_eq!(eq_eval(&[one], &[one]), Ok(one));
     }
 
     #[test]
@@ -193,8 +224,8 @@ pub mod tests {
         let equal = [zero, one, one, zero];
         let different = [zero, one, zero, zero];
 
-        assert_eq!(eq_eval(&x, &equal), one);
-        assert_eq!(eq_eval(&x, &different), zero);
+        assert_eq!(eq_eval(&x, &equal), Ok(one));
+        assert_eq!(eq_eval(&x, &different), Ok(zero));
     }
 
     #[test]
@@ -206,9 +237,14 @@ pub mod tests {
     }
 
     #[test]
-    #[should_panic]
     fn rejects_different_widths() {
-        eq_eval(&[F128::ZERO], &[F128::ZERO, F128::ONE]);
+        assert_eq!(
+            eq_eval(&[F128::ZERO], &[F128::ZERO, F128::ONE]),
+            Err(EqEvalError::PointLengthMismatch {
+                expected: 1,
+                actual: 2,
+            })
+        );
     }
 
     #[test]
@@ -225,7 +261,7 @@ pub mod tests {
             let point: Vec<_> = (0..r.len())
                 .map(|bit| F128::from((index >> bit) & 1 == 1))
                 .collect();
-            sum += eq_eval(&point, &r);
+            sum += eq_eval(&point, &r).unwrap();
         }
 
         assert_eq!(sum, F128::ONE);
@@ -320,8 +356,28 @@ pub mod tests {
                 },
             );
 
-            prop_assert_eq!(eq_eval(&x, &y), expected);
+            prop_assert_eq!(eq_eval(&x, &y), Ok(expected));
             prop_assert_eq!(eq_eval(&x, &y), eq_eval(&y, &x));
+
+            let x_fq: Vec<_> = pairs.iter()
+                .map(|&(x, _)| FqDefault::from(x))
+                .collect();
+            let y_fq: Vec<_> = pairs.iter()
+                .map(|&(_, y)| FqDefault::from(y))
+                .collect();
+            let expected_fq = x_fq.iter().zip(&y_fq).fold(
+                FqDefault::ONE,
+                |acc, (&x_i, &y_i)| {
+                    acc * (
+                        x_i * y_i
+                        + (FqDefault::ONE - x_i)
+                            * (FqDefault::ONE - y_i)
+                    )
+                },
+            );
+
+            prop_assert_eq!(eq_eval(&x_fq, &y_fq), Ok(expected_fq));
+            prop_assert_eq!(eq_eval(&x_fq, &y_fq), eq_eval(&y_fq, &x_fq));
         }
     }
 }

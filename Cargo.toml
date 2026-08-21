@@ -30,6 +30,7 @@ flock-core = { git = "https://github.com/succinctlabs/flock.git", rev = "8790722
 num-bigint = "0.4"
 num-traits = "0.2"
 proptest = "1.11.0"
+rand = "0.9"
 rand_chacha = "0.9"
 rand_core = "0.9"
 rand_pcg = "0.9"

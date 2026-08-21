@@ -6,6 +6,11 @@ use num_traits::{
     Bounded, CheckedAdd, CheckedMul, CheckedNeg, CheckedSub, ConstOne, ConstZero, Inv, One, Pow,
     Zero,
 };
+#[cfg(feature = "rand")]
+use rand::{
+    Rng,
+    distr::{Distribution, StandardUniform},
+};
 use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::iter::{Product, Sum};
 use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign};
@@ -221,6 +226,27 @@ impl<const Q: u128> Fq<Q> {
 impl<const Q: u128> Display for Fq<Q> {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         write!(f, "{} (mod {})", self.0, Q)
+    }
+}
+
+#[cfg(feature = "rand")]
+impl<const Q: u128> Distribution<Fq<Q>> for StandardUniform {
+    fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> Fq<Q> {
+        // Force validation of the const-generic modulus before using it below.
+        let _ = Fq::<Q>::BITS;
+
+        // A u128 range is not generally an exact multiple of Q. Reject its
+        // incomplete final interval before reducing so every residue has the
+        // same number of preimages.
+        let rejection_remainder = (u128::MAX % Q + 1) % Q;
+        let max_accepted = u128::MAX - rejection_remainder;
+
+        loop {
+            let candidate = rng.random::<u128>();
+            if candidate <= max_accepted {
+                return Fq::from(candidate);
+            }
+        }
     }
 }
 
@@ -490,6 +516,8 @@ impl<const Q: u128> ConstBaseField for Fq<Q> {
 mod tests {
     use super::*;
     use crypto_primitives::{BaseField, WithExtensionDegree};
+    #[cfg(feature = "rand")]
+    use rand::Rng;
     use rand_core::{RngCore, SeedableRng};
     use rand_pcg::Pcg64;
 
@@ -620,6 +648,17 @@ mod tests {
         assert_eq!(Fq::<Q100>::from(u128::MAX).lift(), u128::MAX % Q100);
         assert_eq!(Fq::<Q100>::ONE.lift(), 1);
         assert!(Fq::<Q100>::ZERO.is_zero());
+    }
+
+    #[cfg(feature = "rand")]
+    #[test]
+    fn standard_uniform_samples_canonical_field_elements() {
+        let mut rng = Pcg64::seed_from_u64(404);
+
+        for _ in 0..4096 {
+            let sample: FqDefault = rng.random();
+            assert!(sample.lift() < Q100);
+        }
     }
 
     #[test]
