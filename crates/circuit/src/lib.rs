@@ -5,16 +5,17 @@
 //! receives a [`WitnessContext`], through which it can evaluate captured
 //! symbolic witnesses when witness generation is run.
 
+use std::array;
 use std::error::Error;
 use std::fmt::{self, Display};
 use std::iter::Sum;
 use std::ops::{Add, AddAssign, Mul, Neg, Sub, SubAssign};
 
-use ark_ff::BigInteger;
 use num_traits::{One, Zero};
 
 pub mod sha256;
 pub mod stats;
+pub mod witgen;
 
 /// An error raised while evaluating a witness hint.
 ///
@@ -84,6 +85,7 @@ pub trait WitnessContext<ZW, BW, C> {
 /// witness type so backends are not forced to use integers for coefficients.
 pub trait Coefficient:
     Clone
+    + From<u64>
     + Zero
     + One
     + Add<Output = Self>
@@ -94,32 +96,11 @@ pub trait Coefficient:
     + Neg<Output = Self>
     + Sum<Self>
 {
-    /// Constructs a coefficient from an arbitrary-width arkworks integer.
-    ///
-    /// [`BigInteger`] stores little-endian `u64` limbs. This default
-    /// implementation uses only the coefficient's ring operations, so it also
-    /// works for coefficient types that reduce integers modulo some modulus.
-    fn from_big_integer<B: BigInteger>(value: B) -> Self {
-        let mut result = Self::zero();
-        let mut bit_value = Self::one();
-
-        for &limb in value.as_ref() {
-            let mut remaining = limb;
-            for _ in 0..u64::BITS {
-                if remaining & 1 == 1 {
-                    result += bit_value.clone();
-                }
-                remaining >>= 1;
-                bit_value += bit_value.clone();
-            }
-        }
-
-        result
-    }
 }
 
 impl<T> Coefficient for T where
     T: Clone
+        + From<u64>
         + Zero
         + One
         + Add<Output = T>
@@ -167,48 +148,323 @@ where
 {
 }
 
-/// Arithmetic required of a symbolic Boolean witness or F2 linear combination.
-///
-/// Addition has F2 semantics: implementations should interpret it as XOR.
-pub trait BoolWitness:
-    Clone + From<bool> + Zero + Add<Output = Self> + AddAssign + Sum<Self>
+/// Storage and word operations selected by a Boolean witness representation.
+pub trait BoolRepresentation<BW, const N: usize, const M: usize>:
+    Clone + Send + Sync + 'static
+where
+    BW: BoolWitness,
 {
+    /// Number of packed `u64` limbs used by this representation.
+    const LIMBS: usize = M;
+
+    fn from_array(bits: [BW; N]) -> Self;
+    fn from_packed(bits: PackedBits<N, M>) -> Self;
+    fn from_u64(value: u64) -> Self;
+    fn bit(&self, index: usize) -> BW;
+    fn xor(&self, rhs: &Self) -> Self;
+    fn rotate_right(&self, amount: usize) -> Self;
+    fn shift_right(&self, amount: usize) -> Self;
+    fn evaluate<ZW, C>(&self, context: &dyn WitnessContext<ZW, BW, C>) -> PackedBits<N, M>;
 }
 
-impl<T> BoolWitness for T where T: Clone + From<bool> + Zero + Add<Output = T> + AddAssign + Sum<T> {}
+/// Scalar storage for symbolic Boolean witnesses.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ScalarBits<BW, const N: usize>(pub [BW; N]);
+
+impl<BW, const N: usize, const M: usize> BoolRepresentation<BW, N, M> for ScalarBits<BW, N>
+where
+    BW: BoolWitness,
+{
+    fn from_array(bits: [BW; N]) -> Self {
+        assert_eq!(M, N.div_ceil(64), "incorrect packed limb count");
+        Self(bits)
+    }
+
+    fn from_packed(bits: PackedBits<N, M>) -> Self {
+        Self(array::from_fn(|index| BW::from(bits.bit(index))))
+    }
+
+    fn from_u64(value: u64) -> Self {
+        assert_eq!(M, N.div_ceil(64), "incorrect packed limb count");
+        Self(array::from_fn(|bit| {
+            BW::from(bit < 64 && (value >> bit) & 1 == 1)
+        }))
+    }
+
+    fn bit(&self, index: usize) -> BW {
+        self.0[index].clone()
+    }
+
+    fn xor(&self, rhs: &Self) -> Self {
+        Self(array::from_fn(|i| self.0[i].clone().xor(rhs.0[i].clone())))
+    }
+
+    fn rotate_right(&self, amount: usize) -> Self {
+        if N == 0 {
+            return self.clone();
+        }
+        let amount = amount % N;
+        Self(array::from_fn(|i| self.0[(i + amount) % N].clone()))
+    }
+
+    fn shift_right(&self, amount: usize) -> Self {
+        Self(array::from_fn(|i| {
+            i.checked_add(amount)
+                .filter(|&source| source < N)
+                .map_or_else(BW::zero, |source| self.0[source].clone())
+        }))
+    }
+
+    fn evaluate<ZW, C>(&self, context: &dyn WitnessContext<ZW, BW, C>) -> PackedBits<N, M> {
+        PackedBits::from_fn(|index| context.eval_bool(&self.0[index]))
+    }
+}
+
+/// An arbitrary-width bit string packed least-significant-bit first.
+///
+/// Stable Rust cannot yet use `N.div_ceil(64)` directly as an array length, so
+/// `M` is explicit and every constructor asserts `M == N.div_ceil(64)`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PackedBits<const N: usize, const M: usize = 1> {
+    words: [u64; M],
+}
+
+impl<const N: usize, const M: usize> PackedBits<N, M> {
+    pub const BITS: usize = N;
+    pub const LIMBS: usize = M;
+
+    fn assert_width() {
+        assert_eq!(M, N.div_ceil(64), "incorrect packed limb count");
+    }
+
+    /// Constructs an all-zero packed value.
+    pub fn zero() -> Self {
+        Self::assert_width();
+        Self { words: [0; M] }
+    }
+
+    /// Packs an array of Boolean values.
+    pub fn from_array(bits: [bool; N]) -> Self {
+        Self::from_fn(|index| bits[index])
+    }
+
+    /// Builds a packed value by evaluating one function per bit.
+    pub fn from_fn(mut bit: impl FnMut(usize) -> bool) -> Self {
+        Self::assert_width();
+        let mut words = [0_u64; M];
+        for index in 0..N {
+            words[index / 64] |= u64::from(bit(index)) << (index % 64);
+        }
+        Self { words }
+    }
+
+    /// Constructs a packed value whose low 64 bits are `value` and whose
+    /// remaining bits are zero.
+    pub fn from_u64(value: u64) -> Self {
+        Self::assert_width();
+        let mut words = [0; M];
+        if M != 0 {
+            words[0] = value;
+        }
+        if !N.is_multiple_of(64) && M != 0 {
+            words[M - 1] &= (1_u64 << (N % 64)) - 1;
+        }
+        Self { words }
+    }
+
+    /// Packed little-endian storage limbs.
+    pub fn words(&self) -> &[u64] {
+        &self.words
+    }
+
+    /// Returns bit `index`.
+    pub fn bit(&self, index: usize) -> bool {
+        assert!(index < N);
+        self.words()[index / 64] >> (index % 64) & 1 == 1
+    }
+
+    /// Returns the low 64 bits, truncating wider values.
+    pub fn low_u64(&self) -> u64 {
+        self.words().first().copied().unwrap_or(0)
+    }
+
+    /// Returns the value as a `u64` when all upper bits are zero.
+    pub fn to_u64(&self) -> Option<u64> {
+        self.words()
+            .get(1..)
+            .unwrap_or_default()
+            .iter()
+            .all(|word| *word == 0)
+            .then(|| self.low_u64())
+    }
+
+    /// Returns the low `K` bits using `L` limbs.
+    pub fn truncate<const K: usize, const L: usize>(&self) -> PackedBits<K, L> {
+        PackedBits::from_fn(|index| index < N && self.bit(index))
+    }
+}
+
+impl<const N: usize, const M: usize> Default for PackedBits<N, M> {
+    fn default() -> Self {
+        Self::zero()
+    }
+}
+
+impl<const N: usize, const M: usize> BoolRepresentation<bool, N, M> for PackedBits<N, M> {
+    fn from_array(bits: [bool; N]) -> Self {
+        Self::from_array(bits)
+    }
+
+    fn from_packed(bits: PackedBits<N, M>) -> Self {
+        bits
+    }
+
+    fn from_u64(value: u64) -> Self {
+        Self::from_u64(value)
+    }
+
+    fn bit(&self, index: usize) -> bool {
+        self.bit(index)
+    }
+
+    fn xor(&self, rhs: &Self) -> Self {
+        Self {
+            words: array::from_fn(|index| self.words[index] ^ rhs.words[index]),
+        }
+    }
+
+    fn rotate_right(&self, amount: usize) -> Self {
+        if N == 0 {
+            return Self::zero();
+        }
+        let amount = amount % N;
+        if M == 1 {
+            let value = self.low_u64();
+            return if amount == 0 {
+                *self
+            } else {
+                Self::from_u64((value >> amount) | (value << (N - amount)))
+            };
+        }
+        Self::from_fn(|index| self.bit((index + amount) % N))
+    }
+
+    fn shift_right(&self, amount: usize) -> Self {
+        if amount >= N {
+            return Self::zero();
+        }
+        if M == 1 {
+            return Self::from_u64(self.low_u64() >> amount);
+        }
+        Self::from_fn(|index| index + amount < N && self.bit(index + amount))
+    }
+
+    fn evaluate<ZW, C>(&self, _: &dyn WitnessContext<ZW, bool, C>) -> PackedBits<N, M> {
+        *self
+    }
+}
+
+/// Operations required of a symbolic Boolean witness or F2 linear combination.
+pub trait BoolWitness: Clone + From<bool> + Send + Sync + Sized + 'static {
+    /// Backend-selected storage for an `N`-bit word.
+    type Repr<const N: usize, const M: usize>: BoolRepresentation<Self, N, M>;
+
+    /// The additive identity in F2.
+    fn zero() -> Self {
+        Self::from(false)
+    }
+
+    /// Addition in F2.
+    fn xor(self, rhs: Self) -> Self;
+}
+
+impl BoolWitness for bool {
+    type Repr<const N: usize, const M: usize> = PackedBits<N, M>;
+
+    fn xor(self, rhs: Self) -> Self {
+        self ^ rhs
+    }
+}
 
 /// Operations needed to construct an F2Z circuit.
 ///
-/// `ZW`, `BW`, and `C` are deliberately independent: they are respectively the
-/// backend's symbolic Z witnesses, symbolic Boolean witnesses, and Z-side
-/// coefficient/value type.
-pub trait Circuit<ZW, BW, C>
-where
-    C: Coefficient,
-    ZW: ZWitness<C>,
-    BW: BoolWitness,
-{
-    /// Allocates `N` Boolean witnesses whose values are computed by `hint`.
+/// Z witnesses and coefficients are backend-owned type families indexed by a
+/// gadget-local limb bound. This lets one polymorphic circuit combine gadgets
+/// with different evaluation widths without imposing the largest width on the
+/// entire witness generator.
+pub trait Circuit {
+    type Bool: BoolWitness;
+    type Coefficient<const LIMBS: usize>: Coefficient;
+    type Z<const LIMBS: usize>: ZWitness<Self::Coefficient<LIMBS>>;
+
+    /// Allocates `N` Boolean witnesses whose packed values are computed by
+    /// `hint`.
     ///
     /// The closure is called during witness generation, not necessarily while
     /// the circuit is being built.  It can capture symbolic witnesses and use
     /// the supplied sub-context to evaluate them.  Consequently, captured data
     /// must be owned and safe to retain and invoke from a worker thread.
-    fn hint<const N: usize, H>(&mut self, hint: H) -> [BW; N]
+    fn hint<const LIMBS: usize, const N: usize, const M: usize, H>(
+        &mut self,
+        hint: H,
+    ) -> <Self::Bool as BoolWitness>::Repr<N, M>
     where
-        H: Fn(&dyn WitnessContext<ZW, BW, C>) -> HintResult<[bool; N]> + Send + Sync + 'static;
+        H: Fn(
+                &dyn WitnessContext<Self::Z<LIMBS>, Self::Bool, Self::Coefficient<LIMBS>>,
+            ) -> HintResult<PackedBits<N, M>>
+            + Send
+            + Sync
+            + 'static;
 
     /// Converts an F2 linear combination into a constrained Z witness.
-    fn f2z(&mut self, value: BW) -> ZW;
+    fn f2z<const LIMBS: usize>(&mut self, value: Self::Bool) -> Self::Z<LIMBS>;
+
+    /// Lifts a little-endian bit-vector and returns both its full unsigned
+    /// value and the value of its low `LOW` bits.
+    ///
+    /// This is a fusion hook: its default implementation is exactly `N`
+    /// calls to [`Circuit::f2z`] followed by the corresponding linear
+    /// combinations. Value-oriented backends can override it to evaluate a
+    /// packed machine word directly, while layout-building backends retain the
+    /// scalar `f2z` calls and therefore produce the identical circuit.
+    fn f2z_unsigned<const LIMBS: usize, const N: usize, const M: usize, const LOW: usize>(
+        &mut self,
+        bits_le: &<Self::Bool as BoolWitness>::Repr<N, M>,
+    ) -> (Self::Z<LIMBS>, Self::Z<LIMBS>) {
+        assert!(LOW <= N, "low part cannot be wider than the input");
+        let mut full = Self::Z::<LIMBS>::zero();
+        let mut low = Self::Z::<LIMBS>::zero();
+        let mut power = Self::Coefficient::<LIMBS>::one();
+        for index in 0..N {
+            let lifted = self.f2z::<LIMBS>(bits_le.bit(index));
+            let term = lifted * power.clone();
+            full += term.clone();
+            if index < LOW {
+                low += term;
+            }
+            power += power.clone();
+        }
+        (full, low)
+    }
 
     /// Asserts the rank-1 constraint `a * b = c` on the Z side.
-    fn assert_r1c(&mut self, a: ZW, b: ZW, c: ZW);
+    fn assert_r1c<const LIMBS: usize>(
+        &mut self,
+        a: Self::Z<LIMBS>,
+        b: Self::Z<LIMBS>,
+        c: Self::Z<LIMBS>,
+    );
+
+    /// Explicitly changes a Z witness into a wider local representation.
+    fn sign_extend_z<const FROM_LIMBS: usize, const TO_LIMBS: usize>(
+        &mut self,
+        value: Self::Z<FROM_LIMBS>,
+    ) -> Self::Z<TO_LIMBS>;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ark_ff::{BigInteger64, BigInteger128};
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     struct Mod7(i32);
@@ -216,6 +472,12 @@ mod tests {
     impl Mod7 {
         fn new(value: i32) -> Self {
             Self(value.rem_euclid(7))
+        }
+    }
+
+    impl From<u64> for Mod7 {
+        fn from(value: u64) -> Self {
+            Self::new((value % 7) as i32)
         }
     }
 
@@ -393,6 +655,14 @@ mod tests {
         }
     }
 
+    impl BoolWitness for Bit {
+        type Repr<const N: usize, const M: usize> = ScalarBits<Self, N>;
+
+        fn xor(self, rhs: Self) -> Self {
+            self + rhs
+        }
+    }
+
     struct Values;
 
     impl WitnessContext<Z, Bit, Mod7> for Values {
@@ -410,23 +680,34 @@ mod tests {
         constraints: Vec<(Z, Z, Z)>,
     }
 
-    impl Circuit<Z, Bit, Mod7> for TestCircuit {
-        fn hint<const N: usize, H>(&mut self, hint: H) -> [Bit; N]
+    impl Circuit for TestCircuit {
+        type Bool = Bit;
+        type Coefficient<const LIMBS: usize> = Mod7;
+        type Z<const LIMBS: usize> = Z;
+
+        fn hint<const LIMBS: usize, const N: usize, const M: usize, H>(
+            &mut self,
+            hint: H,
+        ) -> ScalarBits<Bit, N>
         where
-            H: Fn(&dyn WitnessContext<Z, Bit, Mod7>) -> HintResult<[bool; N]>
+            H: Fn(&dyn WitnessContext<Z, Bit, Mod7>) -> HintResult<PackedBits<N, M>>
                 + Send
                 + Sync
                 + 'static,
         {
-            hint(&Values).expect("test hint should succeed").map(Bit)
+            ScalarBits::from_packed(hint(&Values).expect("test hint should succeed"))
         }
 
-        fn f2z(&mut self, value: Bit) -> Z {
+        fn f2z<const LIMBS: usize>(&mut self, value: Bit) -> Z {
             Z(Mod7::new(i32::from(value.0)))
         }
 
-        fn assert_r1c(&mut self, a: Z, b: Z, c: Z) {
+        fn assert_r1c<const LIMBS: usize>(&mut self, a: Z, b: Z, c: Z) {
             self.constraints.push((a, b, c));
+        }
+
+        fn sign_extend_z<const FROM_LIMBS: usize, const TO_LIMBS: usize>(&mut self, value: Z) -> Z {
+            value
         }
     }
 
@@ -438,17 +719,18 @@ mod tests {
         let hint_z = z;
         let hint_bit = bit;
 
-        let [high, low] = circuit.hint(move |context| {
+        let result = circuit.hint::<1, 2, 1, _>(move |context| {
             let z = context.eval_z(&hint_z).0;
             let bit = context.eval_bool(&hint_bit);
-            Ok([z >= 4 && bit, z % 2 == 1])
+            Ok(PackedBits::<2, 1>::from_array([z >= 4 && bit, z % 2 == 1]))
         });
+        let [high, low] = result.0;
 
         assert_eq!([high, low], [Bit(true), Bit(true)]);
 
-        let lifted = circuit.f2z(high);
+        let lifted = circuit.f2z::<1>(high);
         let expression = lifted * Mod7::new(3) + Z::from(Mod7::new(2));
-        circuit.assert_r1c(Z::from(Mod7::one()), expression, z);
+        circuit.assert_r1c::<1>(Z::from(Mod7::one()), expression, z);
         assert_eq!(circuit.constraints, vec![(Z(Mod7::one()), z, z)]);
     }
 
@@ -457,17 +739,5 @@ mod tests {
         let error = HintError::new("negative input");
         assert_eq!(error.message(), "negative input");
         assert_eq!(error.to_string(), "negative input");
-    }
-
-    #[test]
-    fn coefficient_accepts_arkworks_big_integers_of_any_width() {
-        assert_eq!(
-            Mod7::from_big_integer(BigInteger64::from(10_u64)),
-            Mod7::new(10)
-        );
-        assert_eq!(
-            Mod7::from_big_integer(BigInteger128::new([0, 1])),
-            Mod7::new(2)
-        );
     }
 }

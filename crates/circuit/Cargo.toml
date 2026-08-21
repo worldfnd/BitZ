@@ -6,5 +6,11 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-ark-ff.workspace = true
 num-traits.workspace = true
+
+[dev-dependencies]
+divan = "0.1.21"
+
+[[bench]]
+name = "sha256_witgen"
+harness = false

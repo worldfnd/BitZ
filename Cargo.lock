@@ -274,7 +274,7 @@ dependencies = [
 name = "circuit"
 version = "0.1.0"
 dependencies = [
- "ark-ff",
+ "divan",
  "num-traits",
 ]
 

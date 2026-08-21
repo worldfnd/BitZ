@@ -4,11 +4,9 @@
 //! as lifted Z bits for integer linear combinations. This follows Freigen's
 //! SHA-256 example, including its doubled `Ch` and `Maj` optimization.
 
+use crate::{BoolRepresentation, BoolWitness, Circuit, HintResult, PackedBits, WitnessContext};
+use num_traits::{One, Zero};
 use std::array;
-
-use ark_ff::BigInteger64;
-
-use crate::{BoolWitness, Circuit, Coefficient, HintResult, WitnessContext, ZWitness};
 
 /// SHA-256 round constants from FIPS 180-4 section 4.2.2.
 pub const ROUND_CONSTANTS: [u32; 64] = [
@@ -33,36 +31,64 @@ pub const SHA256_2KB_MESSAGE_BYTES: usize = 2048;
 /// Number of input bits accepted by [`sha256_2kb_circuit`].
 pub const SHA256_2KB_MESSAGE_BITS: usize = SHA256_2KB_MESSAGE_BYTES * 8;
 
+/// Boolean witnesses allocated by hints in one compression.
+pub const COMPRESSION_HINT_BITS: usize = 48 * 34 + 64 * 70 + 8 * 33;
+
+/// Signed 64-bit Z intermediates are sufficient for every SHA-256 gadget.
+pub const SHA256_Z_LIMBS: usize = 1;
+
+/// Total Boolean witness size, including the 2 KiB message inputs.
+pub const SHA256_2KB_WITNESS_BITS: usize = block_aligned_witness_bits(SHA256_2KB_MESSAGE_BITS);
+
+/// Total witness bits for a block-aligned SHA-256 message.
+pub const fn block_aligned_witness_bits(message_bits: usize) -> usize {
+    assert!(
+        message_bits.is_multiple_of(512),
+        "message must be block-aligned"
+    );
+    message_bits + (message_bits / 512 + 1) * COMPRESSION_HINT_BITS
+}
+
 /// Number of bits in a flattened compression input: one block and one state.
 pub const COMPRESSION_INPUT_BITS: usize = 512 + 256;
 
 /// An F2 word whose bits are stored least-significant first.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Word<BW, const N: usize> {
-    pub bits_le: [BW; N],
+#[derive(Clone)]
+pub struct Word<BW: BoolWitness, const N: usize, const M: usize = 1> {
+    bits_le: BW::Repr<N, M>,
 }
 
-impl<BW, const N: usize> Word<BW, N>
+impl<BW, const N: usize, const M: usize> Word<BW, N, M>
 where
     BW: BoolWitness,
 {
     /// Constructs a word from little-endian bits.
     pub fn new(bits_le: [BW; N]) -> Self {
+        Self {
+            bits_le: BW::Repr::from_array(bits_le),
+        }
+    }
+
+    fn from_repr(bits_le: BW::Repr<N, M>) -> Self {
         Self { bits_le }
     }
 
     /// Constructs a constant word from the low `N` bits of `value`.
     pub fn constant(value: u64) -> Self {
-        assert!(N <= u64::BITS as usize, "word is wider than u64");
         Self {
-            bits_le: array::from_fn(|bit| BW::from((value >> bit) & 1 == 1)),
+            bits_le: BW::Repr::from_u64(value),
         }
+    }
+
+    /// Returns one bit of the word.
+    pub fn bit(&self, index: usize) -> BW {
+        self.bits_le.bit(index)
     }
 
     /// Bitwise XOR, represented by addition over F2.
     pub fn xor(&self, rhs: &Self) -> Self {
         Self {
-            bits_le: array::from_fn(|i| self.bits_le[i].clone() + rhs.bits_le[i].clone()),
+            bits_le: self.bits_le.xor(&rhs.bits_le),
         }
     }
 
@@ -73,84 +99,74 @@ where
 
     /// Rotates the word right by `amount` bits.
     pub fn rotate_right(&self, amount: usize) -> Self {
-        assert!(N != 0, "cannot rotate an empty word");
-        let amount = amount % N;
         Self {
-            bits_le: array::from_fn(|i| self.bits_le[(i + amount) % N].clone()),
+            bits_le: self.bits_le.rotate_right(amount),
         }
     }
 
     /// Shifts the word right, filling high bits with zero.
     pub fn shift_right(&self, amount: usize) -> Self {
         Self {
-            bits_le: array::from_fn(|i| {
-                i.checked_add(amount)
-                    .filter(|&source| source < N)
-                    .map_or_else(BW::zero, |source| self.bits_le[source].clone())
-            }),
+            bits_le: self.bits_le.shift_right(amount),
         }
     }
 }
 
 /// A word paired with the Z-side lift of each of its bits.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct UInt<ZW, BW, const N: usize> {
-    pub word: Word<BW, N>,
-    pub z_bits: [ZW; N],
+#[derive(Clone)]
+pub struct UInt<ZW, BW: BoolWitness, const N: usize, const M: usize = 1> {
+    pub word: Word<BW, N, M>,
+    z_values: ZValues<ZW>,
 }
-
-impl<ZW, BW, const N: usize> UInt<ZW, BW, N> {
-    /// Returns the Z linear combination represented by this unsigned integer.
-    pub fn int_value<C>(&self) -> ZW
-    where
-        C: Coefficient,
-        ZW: ZWitness<C>,
-    {
-        let mut result = ZW::zero();
-        let mut power = C::one();
-        for bit in &self.z_bits {
-            result += bit.clone() * power.clone();
-            power += power.clone();
-        }
-        result
-    }
-}
-
-impl<ZW, BW, const N: usize> UInt<ZW, BW, N>
-where
-    BW: BoolWitness,
-{
-    fn from_word<C, CS>(circuit: &mut CS, word: Word<BW, N>) -> Self
-    where
-        C: Coefficient,
-        ZW: ZWitness<C>,
-        CS: Circuit<ZW, BW, C>,
-    {
-        let z_bits = array::from_fn(|i| circuit.f2z(word.bits_le[i].clone()));
-        Self { word, z_bits }
-    }
-
-    fn constant<C>(value: u64) -> Self
-    where
-        C: Coefficient,
-        ZW: ZWitness<C>,
-    {
-        let word = Word::constant(value);
-        let z_bits = array::from_fn(|bit| {
-            ZW::from(if (value >> bit) & 1 == 1 {
-                C::one()
-            } else {
-                C::zero()
-            })
-        });
-        Self { word, z_bits }
-    }
-}
-
-type UInt32<ZW, BW> = UInt<ZW, BW, 32>;
 
 #[derive(Clone)]
-enum DoubledValue<BW> {
+struct ZValues<ZW> {
+    full: ZW,
+    low_32: ZW,
+}
+
+impl<ZW, BW: BoolWitness, const N: usize, const M: usize> UInt<ZW, BW, N, M> {
+    fn int_value(&self) -> ZW
+    where
+        ZW: Clone,
+    {
+        self.z_values.full.clone()
+    }
+}
+
+type ShaZ<CS> = <CS as Circuit>::Z<SHA256_Z_LIMBS>;
+
+type ShaCoefficient<CS> = <CS as Circuit>::Coefficient<SHA256_Z_LIMBS>;
+
+type UInt32<CS> = UInt<ShaZ<CS>, <CS as Circuit>::Bool, 32>;
+
+fn uint_from_word<CS, const N: usize, const M: usize>(
+    circuit: &mut CS,
+    word: Word<CS::Bool, N, M>,
+) -> UInt<ShaZ<CS>, CS::Bool, N, M>
+where
+    CS: Circuit,
+{
+    let (full, low_32) = circuit.f2z_unsigned::<SHA256_Z_LIMBS, N, M, 32>(&word.bits_le);
+    let z_values = ZValues { full, low_32 };
+    UInt { word, z_values }
+}
+
+fn uint_constant<CS>(value: u64) -> UInt32<CS>
+where
+    CS: Circuit,
+{
+    let word = Word::constant(value);
+    let full = ShaZ::<CS>::from(ShaCoefficient::<CS>::from(value));
+    let z_values = ZValues {
+        low_32: full.clone(),
+        full,
+    };
+    UInt { word, z_values }
+}
+
+#[derive(Clone)]
+enum DoubledValue<BW: BoolWitness> {
     Choice(Word<BW, 32>, Word<BW, 32>, Word<BW, 32>),
     Majority(Word<BW, 32>, Word<BW, 32>, Word<BW, 32>),
 }
@@ -177,93 +193,75 @@ where
     }
 }
 
-fn coefficient<C: Coefficient>(value: u64) -> C {
-    C::from_big_integer(BigInteger64::from(value))
-}
-
-fn evaluate_word<ZW, BW, C, const N: usize>(
+fn evaluate_word<ZW, BW: BoolWitness, C>(
     context: &dyn WitnessContext<ZW, BW, C>,
-    word: &Word<BW, N>,
+    word: &Word<BW, 32>,
 ) -> u64 {
-    assert!(N <= u64::BITS as usize, "word is wider than u64");
-    word.bits_le
-        .iter()
-        .enumerate()
-        .fold(0, |value, (bit, witness)| {
-            value | (u64::from(context.eval_bool(witness)) << bit)
-        })
+    word.bits_le.evaluate(context).low_u64()
 }
 
-fn assert_zero<CS, ZW, BW, C>(circuit: &mut CS, value: ZW)
+fn assert_zero<CS>(circuit: &mut CS, value: ShaZ<CS>)
 where
-    C: Coefficient,
-    ZW: ZWitness<C>,
-    BW: BoolWitness,
-    CS: Circuit<ZW, BW, C>,
+    CS: Circuit,
 {
-    circuit.assert_r1c(ZW::zero(), ZW::zero(), value);
+    circuit.assert_r1c::<SHA256_Z_LIMBS>(ShaZ::<CS>::zero(), ShaZ::<CS>::zero(), value);
 }
 
 /// Decomposes a sum into `WIDTH` bits, constrains the decomposition, and
 /// returns its low 32 bits.
-fn sum_32<const WIDTH: usize, CS, ZW, BW, C>(
+fn sum_32<const WIDTH: usize, const TERMS: usize, CS>(
     circuit: &mut CS,
-    terms: Vec<UInt32<ZW, BW>>,
-) -> UInt32<ZW, BW>
+    terms: [UInt32<CS>; TERMS],
+) -> UInt32<CS>
 where
-    C: Coefficient,
-    ZW: ZWitness<C>,
-    BW: BoolWitness + Send + Sync + 'static,
-    CS: Circuit<ZW, BW, C>,
+    CS: Circuit,
 {
     assert!((32..=u64::BITS as usize).contains(&WIDTH));
     assert!(
-        terms.len() <= 1usize << (WIDTH - 32),
+        TERMS <= 1usize << (WIDTH - 32),
         "sum does not fit its witnessed width"
     );
-    let words: Vec<_> = terms.iter().map(|term| term.word.clone()).collect();
-    let bits = circuit.hint(move |context| {
+    let words: [Word<CS::Bool, 32>; TERMS] = array::from_fn(|i| terms[i].word.clone());
+    let bits = circuit.hint::<SHA256_Z_LIMBS, WIDTH, 1, _>(move |context| {
         let sum = words
             .iter()
             .map(|word| evaluate_word(context, word))
             .sum::<u64>();
-        HintResult::Ok(array::from_fn(|bit| (sum >> bit) & 1 == 1))
+        HintResult::Ok(PackedBits::from_u64(sum))
     });
-    let wide = UInt::<ZW, BW, WIDTH>::from_word(circuit, Word::new(bits));
+    let wide = uint_from_word(circuit, Word::from_repr(bits));
 
     let input_sum = terms
         .into_iter()
-        .fold(ZW::zero(), |sum, term| sum + term.int_value::<C>());
-    assert_zero(circuit, input_sum - wide.int_value::<C>());
+        .fold(ShaZ::<CS>::zero(), |sum, term| sum + term.int_value());
+    assert_zero(circuit, input_sum - wide.int_value());
 
+    let low_32 = wide.z_values.low_32;
+    let z_values = ZValues {
+        full: low_32.clone(),
+        low_32,
+    };
     UInt {
-        word: Word::new(array::from_fn(|i| wide.word.bits_le[i].clone())),
-        z_bits: array::from_fn(|i| wide.z_bits[i].clone()),
+        word: Word::new(array::from_fn(|i| wide.word.bit(i))),
+        z_values,
     }
 }
 
 /// Freigen's optimized sum: Z expressions for `2*Ch` and `2*Maj` are added to
 /// twice the ordinary inputs, then the witnessed quotient by two is constrained.
-fn sum_doubled_32<CS, ZW, BW, C>(
+fn sum_doubled_32<const ORDINARY: usize, const DOUBLED: usize, CS>(
     circuit: &mut CS,
-    ordinary: Vec<UInt32<ZW, BW>>,
-    doubled: Vec<ZW>,
-    doubled_values: Vec<DoubledValue<BW>>,
-) -> UInt32<ZW, BW>
+    ordinary: [UInt32<CS>; ORDINARY],
+    doubled: [ShaZ<CS>; DOUBLED],
+    doubled_values: [DoubledValue<CS::Bool>; DOUBLED],
+) -> UInt32<CS>
 where
-    C: Coefficient,
-    ZW: ZWitness<C>,
-    BW: BoolWitness + Send + Sync + 'static,
-    CS: Circuit<ZW, BW, C>,
+    CS: Circuit,
 {
-    assert_eq!(doubled.len(), doubled_values.len());
-    assert!(
-        ordinary.len() + doubled_values.len() <= 7,
-        "35 bits cannot hold this sum"
-    );
+    assert!(ORDINARY + DOUBLED <= 7, "35 bits cannot hold this sum");
 
-    let words: Vec<_> = ordinary.iter().map(|term| term.word.clone()).collect();
-    let bits = circuit.hint(move |context| {
+    let words: [Word<CS::Bool, 32>; ORDINARY] = array::from_fn(|i| ordinary[i].word.clone());
+    let bits = circuit.hint::<SHA256_Z_LIMBS, 35, 1, _>(move |context| {
         let ordinary = words
             .iter()
             .map(|word| evaluate_word(context, word))
@@ -273,57 +271,49 @@ where
             .map(|value| value.evaluate(context))
             .sum::<u64>();
         let half = ordinary + extras;
-        HintResult::Ok(array::from_fn(|bit| (half >> bit) & 1 == 1))
+        HintResult::Ok(PackedBits::from_u64(half))
     });
-    let half = UInt::<ZW, BW, 35>::from_word(circuit, Word::new(bits));
+    let half = uint_from_word(circuit, Word::from_repr(bits));
 
     let ordinary = ordinary
         .into_iter()
-        .fold(ZW::zero(), |sum, term| sum + term.int_value::<C>());
-    let doubled = doubled.into_iter().fold(ZW::zero(), |sum, term| sum + term);
-    let two = coefficient::<C>(2);
+        .fold(ShaZ::<CS>::zero(), |sum, term| sum + term.int_value());
+    let doubled = doubled
+        .into_iter()
+        .fold(ShaZ::<CS>::zero(), |sum, term| sum + term);
+    let mut two = ShaCoefficient::<CS>::one();
+    two += ShaCoefficient::<CS>::one();
     let total = ordinary * two.clone() + doubled;
-    assert_zero(circuit, total - half.int_value::<C>() * two);
+    assert_zero(circuit, total - half.int_value() * two);
 
+    let low_32 = half.z_values.low_32;
+    let z_values = ZValues {
+        full: low_32.clone(),
+        low_32,
+    };
     UInt {
-        word: Word::new(array::from_fn(|i| half.word.bits_le[i].clone())),
-        z_bits: array::from_fn(|i| half.z_bits[i].clone()),
+        word: Word::new(array::from_fn(|i| half.word.bit(i))),
+        z_values,
     }
 }
 
 /// Returns a Z expression equal to twice SHA-256's `Ch(x, y, z)`.
-fn choice_twice<CS, ZW, BW, C>(
-    circuit: &mut CS,
-    x: &UInt32<ZW, BW>,
-    y: &UInt32<ZW, BW>,
-    z: &UInt32<ZW, BW>,
-) -> ZW
+fn choice_twice<CS>(circuit: &mut CS, x: &UInt32<CS>, y: &UInt32<CS>, z: &UInt32<CS>) -> ShaZ<CS>
 where
-    C: Coefficient,
-    ZW: ZWitness<C>,
-    BW: BoolWitness,
-    CS: Circuit<ZW, BW, C>,
+    CS: Circuit,
 {
-    let xy = UInt::from_word(circuit, x.word.xor(&y.word));
-    let xz = UInt::from_word(circuit, x.word.xor(&z.word));
-    y.int_value::<C>() + z.int_value::<C>() - xy.int_value::<C>() + xz.int_value::<C>()
+    let xy = uint_from_word(circuit, x.word.xor(&y.word));
+    let xz = uint_from_word(circuit, x.word.xor(&z.word));
+    y.int_value() + z.int_value() - xy.int_value() + xz.int_value()
 }
 
 /// Returns a Z expression equal to twice SHA-256's `Maj(x, y, z)`.
-fn majority_twice<CS, ZW, BW, C>(
-    circuit: &mut CS,
-    x: &UInt32<ZW, BW>,
-    y: &UInt32<ZW, BW>,
-    z: &UInt32<ZW, BW>,
-) -> ZW
+fn majority_twice<CS>(circuit: &mut CS, x: &UInt32<CS>, y: &UInt32<CS>, z: &UInt32<CS>) -> ShaZ<CS>
 where
-    C: Coefficient,
-    ZW: ZWitness<C>,
-    BW: BoolWitness,
-    CS: Circuit<ZW, BW, C>,
+    CS: Circuit,
 {
-    let xyz = UInt::from_word(circuit, x.word.xor3(&y.word, &z.word));
-    x.int_value::<C>() + y.int_value::<C>() + z.int_value::<C>() - xyz.int_value::<C>()
+    let xyz = uint_from_word(circuit, x.word.xor3(&y.word, &z.word));
+    x.int_value() + y.int_value() + z.int_value() - xyz.int_value()
 }
 
 /// Applies one SHA-256 compression to a 512-bit block and chaining value.
@@ -332,21 +322,18 @@ where
 /// returned words retain both the Boolean and Z representations so callers may
 /// inspect the generated relation or feed their Boolean representation into the
 /// next compression.
-pub fn compress<CS, ZW, BW, C>(
+pub fn compress<CS>(
     circuit: &mut CS,
-    block: [Word<BW, 32>; 16],
-    state: [Word<BW, 32>; 8],
-) -> [UInt32<ZW, BW>; 8]
+    block: [Word<CS::Bool, 32>; 16],
+    state: [Word<CS::Bool, 32>; 8],
+) -> [UInt32<CS>; 8]
 where
-    C: Coefficient,
-    ZW: ZWitness<C>,
-    BW: BoolWitness + Send + Sync + 'static,
-    CS: Circuit<ZW, BW, C>,
+    CS: Circuit,
 {
-    let state = state.map(|word| UInt::from_word(circuit, word));
-    let mut schedule: Vec<UInt32<ZW, BW>> = Vec::with_capacity(64);
+    let state = state.map(|word| uint_from_word(circuit, word));
+    let mut schedule: Vec<UInt32<CS>> = Vec::with_capacity(64);
     for word in block {
-        schedule.push(UInt::from_word(circuit, word));
+        schedule.push(uint_from_word(circuit, word));
     }
 
     for i in 16..64 {
@@ -354,17 +341,17 @@ where
         let sigma_0 = word_15
             .rotate_right(7)
             .xor3(&word_15.rotate_right(18), &word_15.shift_right(3));
-        let sigma_0 = UInt::from_word(circuit, sigma_0);
+        let sigma_0 = uint_from_word(circuit, sigma_0);
 
         let word_2 = &schedule[i - 2].word;
         let sigma_1 = word_2
             .rotate_right(17)
             .xor3(&word_2.rotate_right(19), &word_2.shift_right(10));
-        let sigma_1 = UInt::from_word(circuit, sigma_1);
+        let sigma_1 = uint_from_word(circuit, sigma_1);
 
-        schedule.push(sum_32::<34, _, _, _, _>(
+        schedule.push(sum_32::<34, 4, _>(
             circuit,
-            vec![
+            [
                 schedule[i - 16].clone(),
                 sigma_0,
                 schedule[i - 7].clone(),
@@ -380,14 +367,14 @@ where
             .word
             .rotate_right(6)
             .xor3(&e.word.rotate_right(11), &e.word.rotate_right(25));
-        let big_sigma_1 = UInt::from_word(circuit, big_sigma_1_word);
+        let big_sigma_1 = uint_from_word(circuit, big_sigma_1_word);
         let choice = choice_twice(circuit, &e, &f, &g);
 
         let big_sigma_0_word = a
             .word
             .rotate_right(2)
             .xor3(&a.word.rotate_right(13), &a.word.rotate_right(22));
-        let big_sigma_0 = UInt::from_word(circuit, big_sigma_0_word);
+        let big_sigma_0 = uint_from_word(circuit, big_sigma_0_word);
         let majority = majority_twice(circuit, &a, &b, &c);
 
         let old_a = a;
@@ -398,22 +385,22 @@ where
         let old_f = f;
         let old_g = g;
         let old_h = h;
-        let round_constant = UInt::constant::<C>(u64::from(ROUND_CONSTANTS[i]));
+        let round_constant = uint_constant::<CS>(u64::from(ROUND_CONSTANTS[i]));
 
         h = old_g.clone();
         g = old_f.clone();
         f = old_e.clone();
         e = sum_doubled_32(
             circuit,
-            vec![
+            [
                 old_d,
                 old_h.clone(),
                 big_sigma_1.clone(),
                 round_constant.clone(),
                 schedule[i].clone(),
             ],
-            vec![choice.clone()],
-            vec![DoubledValue::Choice(
+            [choice.clone()],
+            [DoubledValue::Choice(
                 old_e.word.clone(),
                 old_f.word.clone(),
                 old_g.word.clone(),
@@ -424,15 +411,15 @@ where
         b = old_a.clone();
         a = sum_doubled_32(
             circuit,
-            vec![
+            [
                 old_h,
                 big_sigma_1,
                 round_constant,
                 schedule[i].clone(),
                 big_sigma_0,
             ],
-            vec![choice, majority],
-            vec![
+            [choice, majority],
+            [
                 DoubledValue::Choice(old_e.word.clone(), old_f.word.clone(), old_g.word.clone()),
                 DoubledValue::Majority(old_a.word.clone(), old_b.word.clone(), old_c.word.clone()),
             ],
@@ -440,9 +427,7 @@ where
     }
 
     let working = [a, b, c, d, e, f, g, h];
-    array::from_fn(|i| {
-        sum_32::<33, _, _, _, _>(circuit, vec![state[i].clone(), working[i].clone()])
-    })
+    array::from_fn(|i| sum_32::<33, 2, _>(circuit, [state[i].clone(), working[i].clone()]))
 }
 
 /// Flattened counterpart of [`compress`], matching Freigen's `permCirc'`.
@@ -450,15 +435,12 @@ where
 /// The first 512 input bits are 16 block words and the final 256 bits are eight
 /// state words. Bits within every word, including the output words, are ordered
 /// least-significant first.
-pub fn compression_circuit<CS, ZW, BW, C>(
+pub fn compression_circuit<CS>(
     circuit: &mut CS,
-    input: &[BW; COMPRESSION_INPUT_BITS],
-) -> [BW; 256]
+    input: &[CS::Bool; COMPRESSION_INPUT_BITS],
+) -> [CS::Bool; 256]
 where
-    C: Coefficient,
-    ZW: ZWitness<C>,
-    BW: BoolWitness + Send + Sync + 'static,
-    CS: Circuit<ZW, BW, C>,
+    CS: Circuit,
 {
     let block =
         array::from_fn(|word| Word::new(array::from_fn(|bit| input[word * 32 + bit].clone())));
@@ -466,7 +448,7 @@ where
         Word::new(array::from_fn(|bit| input[512 + word * 32 + bit].clone()))
     });
     let output = compress(circuit, block, state);
-    array::from_fn(|i| output[i / 32].word.bits_le[i % 32].clone())
+    array::from_fn(|i| output[i / 32].word.bit(i % 32))
 }
 
 /// Returns the standard SHA-256 initial state as constant Boolean words.
@@ -481,35 +463,65 @@ where
 ///
 /// Input and output bits use conventional stream order: bytes are ordered from
 /// first to last and bits within each byte are most-significant first.
-pub fn sha256_2kb_circuit<CS, ZW, BW, C>(
+pub fn sha256_2kb_circuit<CS>(
     circuit: &mut CS,
-    message: &[BW; SHA256_2KB_MESSAGE_BITS],
-) -> [BW; 256]
+    message: &[CS::Bool; SHA256_2KB_MESSAGE_BITS],
+) -> [CS::Bool; 256]
 where
-    C: Coefficient,
-    ZW: ZWitness<C>,
-    BW: BoolWitness + Send + Sync + 'static,
-    CS: Circuit<ZW, BW, C>,
+    CS: Circuit,
 {
+    sha256_block_aligned_circuit(circuit, SHA256_2KB_MESSAGE_BITS, |bit| message[bit].clone())
+}
+
+/// Computes SHA-256 for a block-aligned message supplied by a bit getter.
+///
+/// Input and output use conventional stream order. `message_bits` must be a
+/// multiple of 512; the function adds the final SHA-256 padding block.
+pub fn sha256_block_aligned_circuit<CS, F>(
+    circuit: &mut CS,
+    message_bits: usize,
+    message_bit: F,
+) -> [CS::Bool; 256]
+where
+    CS: Circuit,
+    F: Fn(usize) -> CS::Bool,
+{
+    assert!(message_bits.is_multiple_of(512));
+    let encoded_length = u64::try_from(message_bits).expect("SHA-256 message length exceeds u64");
     let mut state = initial_state();
 
-    for block_index in 0..32 {
+    for block_index in 0..message_bits / 512 {
         let block = array::from_fn(|word| {
-            Word::new(array::from_fn(|bit| {
-                let stream_bit = block_index * 512 + word * 32 + (31 - bit);
-                message[stream_bit].clone()
+            Word::new(array::from_fn(|word_bit| {
+                let stream_bit = block_index * 512 + word * 32 + (31 - word_bit);
+                message_bit(stream_bit)
             }))
         });
         state = compress(circuit, block, state).map(|word| word.word);
     }
 
     let padding_values: [u32; 16] = [
-        0x80000000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x00004000,
+        0x80000000,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        (encoded_length >> 32) as u32,
+        encoded_length as u32,
     ];
     let padding = padding_values.map(|word| Word::constant(u64::from(word)));
     let digest = compress(circuit, padding, state);
 
-    array::from_fn(|i| digest[i / 32].word.bits_le[31 - (i % 32)].clone())
+    array::from_fn(|i| digest[i / 32].word.bit(31 - (i % 32)))
 }
 
 #[cfg(test)]
@@ -522,6 +534,7 @@ mod tests {
     use super::*;
     use crate::HintError;
     use crate::stats::{Dummy, LeanStats, Stats};
+    use crate::witgen::{Witgen, Z};
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     struct Bit(bool);
@@ -558,7 +571,15 @@ mod tests {
 
     impl Sum for Bit {
         fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
-            iter.fold(Self::zero(), Add::add)
+            iter.fold(Self(false), Add::add)
+        }
+    }
+
+    impl BoolWitness for Bit {
+        type Repr<const N: usize, const M: usize> = crate::ScalarBits<Self, N>;
+
+        fn xor(self, rhs: Self) -> Self {
+            self + rhs
         }
     }
 
@@ -579,36 +600,61 @@ mod tests {
         assertions: usize,
     }
 
-    impl Circuit<i128, Bit, i128> for EvaluatingCircuit {
-        fn hint<const N: usize, H>(&mut self, hint: H) -> [Bit; N]
+    impl Circuit for EvaluatingCircuit {
+        type Bool = Bit;
+        type Coefficient<const LIMBS: usize> = i128;
+        type Z<const LIMBS: usize> = i128;
+
+        fn hint<const LIMBS: usize, const N: usize, const M: usize, H>(
+            &mut self,
+            hint: H,
+        ) -> crate::ScalarBits<Bit, N>
         where
-            H: Fn(&dyn WitnessContext<i128, Bit, i128>) -> Result<[bool; N], HintError>
+            H: Fn(&dyn WitnessContext<i128, Bit, i128>) -> Result<PackedBits<N, M>, HintError>
                 + Send
                 + Sync
                 + 'static,
         {
-            hint(&Values)
-                .expect("SHA-256 hint should be defined")
-                .map(Bit)
+            crate::ScalarBits::from_packed(hint(&Values).expect("SHA-256 hint should be defined"))
         }
 
-        fn f2z(&mut self, value: Bit) -> i128 {
+        fn f2z<const LIMBS: usize>(&mut self, value: Bit) -> i128 {
             i128::from(value.0)
         }
 
-        fn assert_r1c(&mut self, a: i128, b: i128, c: i128) {
+        fn assert_r1c<const LIMBS: usize>(&mut self, a: i128, b: i128, c: i128) {
             self.assertions += 1;
             assert_eq!(a * b, c, "unsatisfied SHA-256 constraint");
+        }
+
+        fn sign_extend_z<const FROM_LIMBS: usize, const TO_LIMBS: usize>(
+            &mut self,
+            value: i128,
+        ) -> i128 {
+            value
         }
     }
 
     fn value(word: &Word<Bit, 32>) -> u32 {
         word.bits_le
+            .0
             .iter()
             .enumerate()
             .fold(0, |value, (bit, witness)| {
                 value | (u32::from(witness.0) << bit)
             })
+    }
+
+    fn hash_then_widen<CS>(
+        circuit: &mut CS,
+        message: &[CS::Bool; SHA256_2KB_MESSAGE_BITS],
+    ) -> CS::Z<128>
+    where
+        CS: Circuit,
+    {
+        let digest = sha256_2kb_circuit(circuit, message);
+        let small = circuit.f2z::<SHA256_Z_LIMBS>(digest[0].clone());
+        circuit.sign_extend_z::<SHA256_Z_LIMBS, 128>(small)
     }
 
     #[test]
@@ -656,6 +702,31 @@ mod tests {
             ]
         );
         assert_eq!(circuit.assertions, 33 * 184);
+
+        let message = message.map(|bit| bit.0);
+        let mut witgen = Witgen::with_inputs_and_capacity(&message, SHA256_2KB_WITNESS_BITS);
+        let witgen_bits = sha256_2kb_circuit(&mut witgen, &message);
+        let witgen_digest: [u8; 32] = array::from_fn(|byte| {
+            (0..8).fold(0, |value, bit| {
+                value | (u8::from(witgen_bits[byte * 8 + bit]) << (7 - bit))
+            })
+        });
+        assert_eq!(witgen_digest, digest);
+        assert_eq!(witgen.witness().bit_len(), SHA256_2KB_WITNESS_BITS);
+        assert_eq!(
+            witgen.witness().words().len(),
+            SHA256_2KB_WITNESS_BITS.div_ceil(64)
+        );
+        assert!(
+            message
+                .iter()
+                .enumerate()
+                .all(|(index, expected)| witgen.witness().bit(index) == *expected)
+        );
+
+        let mut composed = Witgen::with_inputs_and_capacity(&message, SHA256_2KB_WITNESS_BITS);
+        let wide: Z<128> = hash_then_widen(&mut composed, &message);
+        assert_eq!(wide, Z::<128>::zero());
     }
 
     #[test]

@@ -5,7 +5,7 @@ use std::ops::{Add, AddAssign, Mul, Neg, Sub, SubAssign};
 
 use num_traits::{One, Zero};
 
-use crate::{Circuit, HintResult, WitnessContext};
+use crate::{BoolWitness, Circuit, HintResult, PackedBits, ScalarBits, WitnessContext};
 
 /// A zero-sized placeholder for coefficients and both kinds of witnesses.
 ///
@@ -17,6 +17,20 @@ pub struct Dummy;
 
 impl From<bool> for Dummy {
     fn from(_: bool) -> Self {
+        Self
+    }
+}
+
+impl From<u64> for Dummy {
+    fn from(_: u64) -> Self {
+        Self
+    }
+}
+
+impl BoolWitness for Dummy {
+    type Repr<const N: usize, const M: usize> = ScalarBits<Self, N>;
+
+    fn xor(self, _: Self) -> Self {
         Self
     }
 }
@@ -136,31 +150,51 @@ impl Stats {
     }
 }
 
-impl Circuit<Dummy, Dummy, Dummy> for Stats {
-    fn hint<const N: usize, H>(&mut self, _hint: H) -> [Dummy; N]
+impl Circuit for Stats {
+    type Bool = Dummy;
+    type Coefficient<const LIMBS: usize> = Dummy;
+    type Z<const LIMBS: usize> = Dummy;
+
+    fn hint<const LIMBS: usize, const N: usize, const M: usize, H>(
+        &mut self,
+        _hint: H,
+    ) -> ScalarBits<Dummy, N>
     where
-        H: Fn(&dyn WitnessContext<Dummy, Dummy, Dummy>) -> HintResult<[bool; N]>
+        H: Fn(&dyn WitnessContext<Dummy, Dummy, Dummy>) -> HintResult<PackedBits<N, M>>
             + Send
             + Sync
             + 'static,
     {
+        assert_eq!(M, N.div_ceil(64), "incorrect packed limb count");
         self.witnesses = self
             .witnesses
             .checked_add(N)
             .expect("witness count overflow");
-        [Dummy; N]
+        ScalarBits([Dummy; N])
     }
 
-    fn f2z(&mut self, _: Dummy) -> Dummy {
+    fn f2z<const LIMBS: usize>(&mut self, _: Dummy) -> Dummy {
         self.f2z_calls = self.f2z_calls.checked_add(1).expect("f2z count overflow");
         Dummy
     }
 
-    fn assert_r1c(&mut self, _: Dummy, _: Dummy, _: Dummy) {
+    fn f2z_unsigned<const LIMBS: usize, const N: usize, const M: usize, const LOW: usize>(
+        &mut self,
+        _: &<Dummy as BoolWitness>::Repr<N, M>,
+    ) -> (Dummy, Dummy) {
+        assert!(LOW <= N, "low part cannot be wider than the input");
+        self.f2z_calls = self.f2z_calls.checked_add(N).expect("f2z count overflow");
+        (Dummy, Dummy)
+    }
+
+    fn assert_r1c<const LIMBS: usize>(&mut self, _: Dummy, _: Dummy, _: Dummy) {
         self.constraints = self
             .constraints
             .checked_add(1)
             .expect("constraint count overflow");
+    }
+    fn sign_extend_z<const FROM_LIMBS: usize, const TO_LIMBS: usize>(&mut self, _: Dummy) -> Dummy {
+        Dummy
     }
 }
 
@@ -174,16 +208,18 @@ mod tests {
         value += Dummy;
         value -= Dummy;
         assert_eq!(-value * Dummy, Dummy);
-        assert!(Dummy::zero().is_zero());
+        assert!(<Dummy as Zero>::zero().is_zero());
     }
 
     #[test]
     fn counts_inputs_and_operations() {
         let mut stats = Stats::new(3);
         stats.add_input_witnesses(2);
-        let _: [Dummy; 4] = stats.hint(|_| Ok([false; 4]));
-        stats.f2z(Dummy);
-        stats.assert_r1c(Dummy, Dummy, Dummy);
+        let _: ScalarBits<Dummy, 4> =
+            stats.hint::<1, 4, 1, _>(|_| Ok(PackedBits::<4, 1>::from_u64(0)));
+        stats.f2z::<1>(Dummy);
+        stats.assert_r1c::<1>(Dummy, Dummy, Dummy);
+        assert_eq!(stats.sign_extend_z::<1, 128>(Dummy), Dummy);
 
         assert_eq!(
             stats,
