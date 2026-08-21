@@ -462,7 +462,10 @@ where
 /// Computes SHA-256 for an exactly 2 KiB message.
 ///
 /// Input and output bits use conventional stream order: bytes are ordered from
-/// first to last and bits within each byte are most-significant first.
+/// first to last and bits within each byte are most-significant first. Because
+/// the input is large, callers should normally own it as
+/// `Box<[CS::Bool; SHA256_2KB_MESSAGE_BITS]>`; borrowing it here does not copy
+/// the array or move it onto the stack.
 pub fn sha256_2kb_circuit<CS>(
     circuit: &mut CS,
     message: &[CS::Bool; SHA256_2KB_MESSAGE_BITS],
@@ -533,6 +536,7 @@ mod tests {
 
     use super::*;
     use crate::HintError;
+    use crate::constraints::ConstraintGenerator;
     use crate::stats::{Dummy, LeanStats, Stats};
     use crate::witgen::{Witgen, Z};
 
@@ -680,10 +684,15 @@ mod tests {
 
     #[test]
     fn fixed_2kb_circuit_matches_sha256_stream_order() {
-        let message: [Bit; SHA256_2KB_MESSAGE_BITS] = array::from_fn(|bit| {
-            let byte = (bit / 8) as u8;
-            Bit(byte & (1 << (7 - bit % 8)) != 0)
-        });
+        let message: Box<[Bit]> = (0..SHA256_2KB_MESSAGE_BITS)
+            .map(|bit| {
+                let byte = (bit / 8) as u8;
+                Bit(byte & (1 << (7 - bit % 8)) != 0)
+            })
+            .collect();
+        let message: Box<[Bit; SHA256_2KB_MESSAGE_BITS]> = message
+            .try_into()
+            .unwrap_or_else(|_| unreachable!("message length is fixed"));
         let mut circuit = EvaluatingCircuit::default();
 
         let digest_bits = sha256_2kb_circuit(&mut circuit, &message);
@@ -703,8 +712,12 @@ mod tests {
         );
         assert_eq!(circuit.assertions, 33 * 184);
 
-        let message = message.map(|bit| bit.0);
-        let mut witgen = Witgen::with_inputs_and_capacity(&message, SHA256_2KB_WITNESS_BITS);
+        let message: Box<[bool]> = message.iter().map(|bit| bit.0).collect();
+        let message: Box<[bool; SHA256_2KB_MESSAGE_BITS]> = message
+            .try_into()
+            .unwrap_or_else(|_| unreachable!("message length is fixed"));
+        let mut witgen =
+            Witgen::with_inputs_and_capacity(message.as_ref(), SHA256_2KB_WITNESS_BITS);
         let witgen_bits = sha256_2kb_circuit(&mut witgen, &message);
         let witgen_digest: [u8; 32] = array::from_fn(|byte| {
             (0..8).fold(0, |value, bit| {
@@ -724,7 +737,21 @@ mod tests {
                 .all(|(index, expected)| witgen.witness().bit(index) == *expected)
         );
 
-        let mut composed = Witgen::with_inputs_and_capacity(&message, SHA256_2KB_WITNESS_BITS);
+        let mut generator = ConstraintGenerator::new(SHA256_2KB_MESSAGE_BITS);
+        let symbolic_message = generator.boxed_inputs();
+        let _ = sha256_2kb_circuit(&mut generator, &symbolic_message);
+        let matrices = generator.into_matrices();
+        let compressions = SHA256_2KB_MESSAGE_BITS / 512 + 1;
+        assert_eq!(matrices.m.row_count(), compressions * 20_456 + 1);
+        assert_eq!(matrices.m.column_count(), SHA256_2KB_WITNESS_BITS + 1);
+        assert_eq!(matrices.a.row_count(), compressions * 184);
+        assert_eq!(matrices.a.column_count(), matrices.m.row_count());
+        matrices
+            .check_witness(witgen.witness())
+            .expect("SHA-256 witness should satisfy M/A/B/C");
+
+        let mut composed =
+            Witgen::with_inputs_and_capacity(message.as_ref(), SHA256_2KB_WITNESS_BITS);
         let wide: Z<128> = hash_then_widen(&mut composed, &message);
         assert_eq!(wide, Z::<128>::zero());
     }
@@ -751,5 +778,31 @@ mod tests {
                 r1cs_rows: 184,
             }
         );
+    }
+
+    #[test]
+    fn compression_witness_satisfies_materialized_matrices() {
+        let inputs: [bool; COMPRESSION_INPUT_BITS] =
+            array::from_fn(|bit| bit % 7 == 1 || bit % 13 == 4);
+        let mut witgen = Witgen::with_inputs_and_capacity(
+            &inputs,
+            COMPRESSION_INPUT_BITS + COMPRESSION_HINT_BITS,
+        );
+        let _ = compression_circuit(&mut witgen, &inputs);
+
+        let mut generator = ConstraintGenerator::new(COMPRESSION_INPUT_BITS);
+        let symbolic_inputs = generator.inputs();
+        let _ = compression_circuit(&mut generator, &symbolic_inputs);
+        let matrices = generator.into_matrices();
+
+        assert_eq!(matrices.m.row_count(), 20_457);
+        assert_eq!(matrices.m.column_count(), 7_145);
+        assert_eq!(matrices.a.row_count(), 184);
+        assert_eq!(matrices.b.row_count(), 184);
+        assert_eq!(matrices.c.row_count(), 184);
+        assert_eq!(matrices.a.column_count(), 20_457);
+        matrices
+            .check_witness(witgen.witness())
+            .expect("SHA-256 compression witness should satisfy M/A/B/C");
     }
 }

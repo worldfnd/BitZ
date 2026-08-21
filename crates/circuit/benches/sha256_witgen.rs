@@ -13,19 +13,24 @@ fn main() {
     divan::main();
 }
 
-fn message_bits() -> [bool; SHA256_2KB_MESSAGE_BITS] {
-    std::array::from_fn(|bit| {
-        let byte = (bit / 8) as u8;
-        byte & (1 << (7 - bit % 8)) != 0
-    })
+fn message_bits() -> Box<[bool; SHA256_2KB_MESSAGE_BITS]> {
+    let bits: Box<[bool]> = (0..SHA256_2KB_MESSAGE_BITS)
+        .map(|bit| {
+            let byte = (bit / 8) as u8;
+            byte & (1 << (7 - bit % 8)) != 0
+        })
+        .collect();
+    bits.try_into()
+        .unwrap_or_else(|_| unreachable!("message length is fixed"))
 }
 
 #[divan::bench]
 fn sha256_2kb_witgen(bencher: Bencher) {
     let message = message_bits();
     bencher.bench_local(|| {
-        let mut witgen = Witgen::with_inputs_and_capacity(&message, SHA256_2KB_WITNESS_BITS);
-        let digest = sha256_2kb_circuit(&mut witgen, black_box(&message));
+        let mut witgen =
+            Witgen::with_inputs_and_capacity(message.as_ref(), SHA256_2KB_WITNESS_BITS);
+        let digest = sha256_2kb_circuit(&mut witgen, black_box(message.as_ref()));
         black_box((digest, witgen.into_witness()))
     });
 }
