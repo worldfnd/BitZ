@@ -14,6 +14,7 @@ use ark_ff::BigInteger;
 use num_traits::{One, Zero};
 
 pub mod sha256;
+pub mod stats;
 
 /// An error raised while evaluating a witness hint.
 ///

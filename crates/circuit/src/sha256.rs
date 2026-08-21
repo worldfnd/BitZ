@@ -204,16 +204,23 @@ where
     circuit.assert_r1c(ZW::zero(), ZW::zero(), value);
 }
 
-/// Decomposes a sum into 35 bits, constrains the decomposition, and returns
-/// its low 32 bits. All callers sum at most seven 32-bit values.
-fn sum_32<CS, ZW, BW, C>(circuit: &mut CS, terms: Vec<UInt32<ZW, BW>>) -> UInt32<ZW, BW>
+/// Decomposes a sum into `WIDTH` bits, constrains the decomposition, and
+/// returns its low 32 bits.
+fn sum_32<const WIDTH: usize, CS, ZW, BW, C>(
+    circuit: &mut CS,
+    terms: Vec<UInt32<ZW, BW>>,
+) -> UInt32<ZW, BW>
 where
     C: Coefficient,
     ZW: ZWitness<C>,
     BW: BoolWitness + Send + Sync + 'static,
     CS: Circuit<ZW, BW, C>,
 {
-    assert!(terms.len() <= 7, "35 bits cannot hold this sum");
+    assert!((32..=u64::BITS as usize).contains(&WIDTH));
+    assert!(
+        terms.len() <= 1usize << (WIDTH - 32),
+        "sum does not fit its witnessed width"
+    );
     let words: Vec<_> = terms.iter().map(|term| term.word.clone()).collect();
     let bits = circuit.hint(move |context| {
         let sum = words
@@ -222,7 +229,7 @@ where
             .sum::<u64>();
         HintResult::Ok(array::from_fn(|bit| (sum >> bit) & 1 == 1))
     });
-    let wide = UInt::<ZW, BW, 35>::from_word(circuit, Word::new(bits));
+    let wide = UInt::<ZW, BW, WIDTH>::from_word(circuit, Word::new(bits));
 
     let input_sum = terms
         .into_iter()
@@ -355,7 +362,7 @@ where
             .xor3(&word_2.rotate_right(19), &word_2.shift_right(10));
         let sigma_1 = UInt::from_word(circuit, sigma_1);
 
-        schedule.push(sum_32(
+        schedule.push(sum_32::<34, _, _, _, _>(
             circuit,
             vec![
                 schedule[i - 16].clone(),
@@ -433,7 +440,9 @@ where
     }
 
     let working = [a, b, c, d, e, f, g, h];
-    array::from_fn(|i| sum_32(circuit, vec![state[i].clone(), working[i].clone()]))
+    array::from_fn(|i| {
+        sum_32::<33, _, _, _, _>(circuit, vec![state[i].clone(), working[i].clone()])
+    })
 }
 
 /// Flattened counterpart of [`compress`], matching Freigen's `permCirc'`.
@@ -512,6 +521,7 @@ mod tests {
 
     use super::*;
     use crate::HintError;
+    use crate::stats::{Dummy, LeanStats, Stats};
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     struct Bit(bool);
@@ -646,5 +656,29 @@ mod tests {
             ]
         );
         assert_eq!(circuit.assertions, 33 * 184);
+    }
+
+    #[test]
+    fn compression_layout_exactly_matches_freigen() {
+        let mut stats = Stats::new(COMPRESSION_INPUT_BITS);
+
+        let _ = compression_circuit(&mut stats, &[Dummy; COMPRESSION_INPUT_BITS]);
+
+        assert_eq!(
+            stats,
+            Stats {
+                witnesses: 7_144,
+                f2z_calls: 20_456,
+                constraints: 184,
+            }
+        );
+        assert_eq!(
+            stats.lean_stats(),
+            LeanStats {
+                m_rows: 20_457,
+                m_cols: 7_145,
+                r1cs_rows: 184,
+            }
+        );
     }
 }
