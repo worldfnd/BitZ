@@ -13,6 +13,8 @@ use std::ops::{Add, AddAssign, Mul, Neg, Sub, SubAssign};
 use ark_ff::BigInteger;
 use num_traits::{One, Zero};
 
+pub mod sha256;
+
 /// An error raised while evaluating a witness hint.
 ///
 /// Hints are fallible because their inputs may not be in the domain expected by
