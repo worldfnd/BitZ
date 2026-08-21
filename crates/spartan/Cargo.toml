@@ -1,0 +1,17 @@
+[package]
+name = "spartan"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+field = { path = "../field", features = ["spongefish"] }
+poly = { path = "../poly" }
+rayon = { workspace = true }
+transcript = { path = "../transcript" }
+
+[dev-dependencies]
+field = { path = "../field", features = ["rand"] }
+rand = "0.9"
+rand_pcg = "0.9"

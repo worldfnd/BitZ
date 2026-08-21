@@ -588,6 +588,7 @@ dependencies = [
  "divan",
  "flock-core",
  "num-traits",
+ "rand 0.9.5",
  "rand_core 0.9.5",
  "rand_pcg",
  "spongefish",
@@ -1332,6 +1333,18 @@ name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
+
+[[package]]
+name = "spartan"
+version = "0.1.0"
+dependencies = [
+ "field",
+ "poly",
+ "rand 0.9.5",
+ "rand_pcg",
+ "rayon",
+ "transcript",
+]
 
 [[package]]
 name = "spin"
