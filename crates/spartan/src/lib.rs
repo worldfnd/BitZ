@@ -5,6 +5,7 @@
 pub mod sumcheck;
 
 pub use sumcheck::{
-    OuterSumcheckOutput, OuterSumcheckProof, OuterSumcheckVerifierOutput, R1csProductMles,
-    SumcheckError, SumcheckProof, SumcheckProverOutput, prove_outer_sumcheck,
+    InnerSumcheckOutput, OuterSumcheckOutput, OuterSumcheckProof, OuterSumcheckVerifierOutput,
+    R1csProductMles, SumcheckError, SumcheckProof, SumcheckProverOutput, prove_inner_sumcheck,
+    prove_outer_sumcheck,
 };
