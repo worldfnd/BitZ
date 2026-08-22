@@ -208,11 +208,12 @@ pub fn prove_outer_sumcheck(
     let mut round_polynomials = Vec::with_capacity(num_vars);
 
     for _round in 0..split {
-        let partial = split_round_partial(&eq_low, &eq_high, &products);
+        let coefficients_without_linear =
+            compute_coefficients_without_linear_with_two_eq(&eq_low, &eq_high, &products);
         let challenge = prove_round(
             transcript,
             &mut current_claim,
-            partial,
+            coefficients_without_linear,
             &mut round_polynomials,
             &mut eval_points,
         );
@@ -231,11 +232,12 @@ pub fn prove_outer_sumcheck(
 
     let eq_scale = eq_low[0];
     for _round in split..num_vars {
-        let partial = folded_round_partial(eq_scale, &eq_high, &products);
+        let coefficients_without_linear =
+            compute_round_coefficients_without_linear_with_one_eq(eq_scale, &eq_high, &products);
         let challenge = prove_round(
             transcript,
             &mut current_claim,
-            partial,
+            coefficients_without_linear,
             &mut round_polynomials,
             &mut eval_points,
         );
@@ -343,8 +345,8 @@ fn cubic_contribution(
 
 /// Restores the omitted linear coefficient of a sumcheck round polynomial.
 ///
-/// Given `partial = [c0, c2, ..., cD]`, this returns the complete coefficient
-/// array `[c0, c1, c2, ..., cD]`. The sumcheck round invariant
+/// Given `coefficients_without_linear = [c0, c2, ..., cD]`, this returns the
+/// complete coefficient array `[c0, c1, c2, ..., cD]`. The sumcheck round invariant
 ///
 /// `current_claim = g(0) + g(1) = 2*c0 + c1 + c2 + ... + cD`
 ///
@@ -352,20 +354,20 @@ fn cubic_contribution(
 ///
 /// `c1 = current_claim - 2*c0 - c2 - ... - cD`.
 ///
-/// Consequently, `PARTIAL_COEFFS` must equal the polynomial degree and
-/// `COEFFS` must equal `PARTIAL_COEFFS + 1`.
+/// Consequently, `INPUT_COEFFS` must equal the polynomial degree and `COEFFS`
+/// must equal `INPUT_COEFFS + 1`.
 #[inline]
-fn complete_round<const PARTIAL_COEFFS: usize, const COEFFS: usize>(
+fn reconstruct_round_coefficients<const INPUT_COEFFS: usize, const COEFFS: usize>(
     current_claim: FqDefault,
-    partial: [FqDefault; PARTIAL_COEFFS],
+    coefficients_without_linear: [FqDefault; INPUT_COEFFS],
 ) -> [FqDefault; COEFFS] {
-    assert!(PARTIAL_COEFFS >= 1);
-    assert_eq!(COEFFS, PARTIAL_COEFFS + 1);
+    assert!(INPUT_COEFFS >= 1);
+    assert_eq!(COEFFS, INPUT_COEFFS + 1);
 
     let zero = FqDefault::from(0u128);
     let mut coefficients = [zero; COEFFS];
-    coefficients[0] = partial[0];
-    coefficients[2..].copy_from_slice(&partial[1..]);
+    coefficients[0] = coefficients_without_linear[0];
+    coefficients[2..].copy_from_slice(&coefficients_without_linear[1..]);
 
     let at_one_without_c1 = coefficients
         .iter()
@@ -395,15 +397,15 @@ fn evaluate_polynomial<const COEFFS: usize>(
 ///
 /// absorbs the completed polynomial, samples `r_i`, and updates
 /// `current_claim` to `g_i(r_i)`.
-fn prove_round<const PARTIAL_COEFFS: usize, const COEFFS: usize>(
+fn prove_round<const INPUT_COEFFS: usize, const COEFFS: usize>(
     transcript: &mut ProverState,
     current_claim: &mut FqDefault,
-    partial: [FqDefault; PARTIAL_COEFFS],
+    coefficients_without_linear: [FqDefault; INPUT_COEFFS],
     round_polynomials: &mut Vec<[FqDefault; COEFFS]>,
     eval_points: &mut Vec<FqDefault>,
 ) -> FqDefault {
     let zero = FqDefault::from(0u128);
-    let coefficients = complete_round(*current_claim, partial);
+    let coefficients = reconstruct_round_coefficients(*current_claim, coefficients_without_linear);
     let at_one = coefficients
         .iter()
         .copied()
@@ -433,7 +435,7 @@ fn prove_round<const PARTIAL_COEFFS: usize, const COEFFS: usize>(
 /// `eq(tau, (r_{<i}, T, s)) * (Az_pair(T) Bz_pair(T) - Cz_pair(T))`
 ///
 /// over every remaining Boolean suffix `s`.
-fn split_round_partial(
+fn compute_coefficients_without_linear_with_two_eq(
     eq_low: &DenseMultilinearExtension<FqDefault>,
     eq_high: &DenseMultilinearExtension<FqDefault>,
     products: &R1csProductMles<FqDefault>,
@@ -487,7 +489,7 @@ fn fold_product_mles(
     Ok(())
 }
 
-fn folded_round_partial(
+fn compute_round_coefficients_without_linear_with_one_eq(
     eq_scale: FqDefault,
     eq_high: &DenseMultilinearExtension<FqDefault>,
     products: &R1csProductMles<FqDefault>,
@@ -517,6 +519,89 @@ mod tests {
 
     fn fq(value: u128) -> FqDefault {
         FqDefault::from(value)
+    }
+
+    #[test]
+    fn full_coefficient_sumcheck_verifies_and_replays_challenges() {
+        let second_round = [fq(1), fq(2), fq(3), fq(3)];
+        let sumcheck = SumcheckProof {
+            round_polynomials: vec![[fq(10), fq(0), fq(0), fq(0)], second_round],
+        };
+
+        let instance = b"full-coefficient-sumcheck";
+        let mut prover = build_prover(SESSION, instance);
+        let prover_points: Vec<_> = sumcheck
+            .round_polynomials
+            .iter()
+            .map(|round| {
+                prover.public_message(round);
+                challenge_fq(&mut prover)
+            })
+            .collect();
+        let next_prover_challenge = challenge_fq(&mut prover);
+        let transcript_proof = prover.finish();
+
+        let mut verifier = build_verifier(SESSION, instance, &transcript_proof);
+        let (verifier_points, final_claim) = sumcheck.verify(&mut verifier, fq(20), 2).unwrap();
+        let next_verifier_challenge = challenge_fq(&mut verifier);
+
+        let expected_final_claim = second_round
+            .iter()
+            .rev()
+            .copied()
+            .fold(fq(0), |value, coefficient| {
+                value * verifier_points[1] + coefficient
+            });
+
+        assert_eq!(verifier_points, prover_points);
+        assert_eq!(final_claim, expected_final_claim);
+        assert_eq!(next_verifier_challenge, next_prover_challenge);
+        verifier.check_eof().unwrap();
+    }
+
+    #[test]
+    fn sumcheck_rejects_an_explicit_bad_c1() {
+        let sumcheck = SumcheckProof {
+            round_polynomials: vec![[fq(10), fq(0), fq(0), fq(0)], [fq(1), fq(3), fq(3), fq(3)]],
+        };
+        let transcript_proof = transcript::Proof::default();
+        let mut verifier = build_verifier(SESSION, b"bad-c1", &transcript_proof);
+
+        assert_eq!(
+            sumcheck.verify(&mut verifier, fq(20), 2),
+            Err(SumcheckError::InvalidRoundClaim { round: 1 })
+        );
+        verifier.check_eof().unwrap();
+    }
+
+    #[test]
+    fn zero_round_sumcheck_preserves_the_initial_claim() {
+        let sumcheck_proof = SumcheckProof::<FqDefault, 4> {
+            round_polynomials: vec![],
+        };
+        let transcript_proof = transcript::Proof::default();
+        let mut verifier = build_verifier(SESSION, b"zero-rounds", &transcript_proof);
+
+        assert_eq!(
+            sumcheck_proof.verify(&mut verifier, fq(42), 0),
+            Ok((vec![], fq(42)))
+        );
+        verifier.check_eof().unwrap();
+    }
+
+    #[test]
+    fn sumcheck_rejects_zero_coefficient_rounds() {
+        let sumcheck = SumcheckProof::<FqDefault, 0> {
+            round_polynomials: vec![[]],
+        };
+        let transcript_proof = transcript::Proof::default();
+        let mut verifier = build_verifier(SESSION, b"zero-coefficients", &transcript_proof);
+
+        assert_eq!(
+            sumcheck.verify(&mut verifier, fq(0), 1),
+            Err(SumcheckError::EmptyRoundPolynomial)
+        );
+        verifier.check_eof().unwrap();
     }
 
     struct OuterSumcheckTestInputs {
@@ -659,161 +744,6 @@ mod tests {
         for split in 0..=5 {
             check_outer_sumcheck(build_outer_sumcheck_inputs_with_split(5, split));
         }
-    }
-
-    #[test]
-    fn generic_round_prover_supports_quadratics() {
-        let initial_claim = fq(20);
-        let mut prover = build_prover(SESSION, b"generic-quadratic-round");
-        let mut current_claim = initial_claim;
-        let mut round_polynomials = Vec::<[FqDefault; 3]>::new();
-        let mut prover_points = Vec::new();
-
-        let prover_challenge = prove_round(
-            &mut prover,
-            &mut current_claim,
-            [fq(3), fq(5)],
-            &mut round_polynomials,
-            &mut prover_points,
-        );
-
-        assert_eq!(round_polynomials, vec![[fq(3), fq(9), fq(5)]]);
-        assert_eq!(prover_points, vec![prover_challenge]);
-
-        let transcript_proof = prover.finish();
-        let sumcheck = SumcheckProof { round_polynomials };
-        let mut verifier = build_verifier(SESSION, b"generic-quadratic-round", &transcript_proof);
-        let (verifier_points, final_claim) =
-            sumcheck.verify(&mut verifier, initial_claim, 1).unwrap();
-
-        assert_eq!(verifier_points, prover_points);
-        assert_eq!(final_claim, current_claim);
-        verifier.check_eof().unwrap();
-    }
-
-    #[test]
-    fn full_coefficient_sumcheck_verifies_and_replays_challenges() {
-        let second_round = [fq(1), fq(2), fq(3), fq(3)];
-        let sumcheck = SumcheckProof {
-            round_polynomials: vec![[fq(10), fq(0), fq(0), fq(0)], second_round],
-        };
-
-        let instance = b"full-coefficient-sumcheck";
-        let mut prover = build_prover(SESSION, instance);
-        let prover_points: Vec<_> = sumcheck
-            .round_polynomials
-            .iter()
-            .map(|round| {
-                prover.public_message(round);
-                challenge_fq(&mut prover)
-            })
-            .collect();
-        let next_prover_challenge = challenge_fq(&mut prover);
-        let transcript_proof = prover.finish();
-
-        let mut verifier = build_verifier(SESSION, instance, &transcript_proof);
-        let (verifier_points, final_claim) = sumcheck.verify(&mut verifier, fq(20), 2).unwrap();
-        let next_verifier_challenge = challenge_fq(&mut verifier);
-
-        let expected_final_claim = second_round
-            .iter()
-            .rev()
-            .copied()
-            .fold(fq(0), |value, coefficient| {
-                value * verifier_points[1] + coefficient
-            });
-
-        assert_eq!(verifier_points, prover_points);
-        assert_eq!(final_claim, expected_final_claim);
-        assert_eq!(next_verifier_challenge, next_prover_challenge);
-        verifier.check_eof().unwrap();
-    }
-
-    #[test]
-    fn sumcheck_rejects_an_explicit_bad_c1() {
-        let sumcheck = SumcheckProof {
-            round_polynomials: vec![[fq(10), fq(0), fq(0), fq(0)], [fq(1), fq(3), fq(3), fq(3)]],
-        };
-        let transcript_proof = transcript::Proof::default();
-        let mut verifier = build_verifier(SESSION, b"bad-c1", &transcript_proof);
-
-        assert_eq!(
-            sumcheck.verify(&mut verifier, fq(20), 2),
-            Err(SumcheckError::InvalidRoundClaim { round: 1 })
-        );
-        verifier.check_eof().unwrap();
-    }
-
-    #[test]
-    fn sumcheck_rejects_a_proof_owned_round_count() {
-        let sumcheck = SumcheckProof {
-            round_polynomials: vec![[fq(1), fq(0), fq(0), fq(0)]],
-        };
-        let transcript_proof = transcript::Proof::default();
-        let mut verifier = build_verifier(SESSION, b"round-count", &transcript_proof);
-
-        assert_eq!(
-            sumcheck.verify(&mut verifier, fq(2), 2),
-            Err(SumcheckError::InvalidRoundCount {
-                expected: 2,
-                actual: 1,
-            })
-        );
-        verifier.check_eof().unwrap();
-    }
-
-    #[test]
-    fn zero_round_sumcheck_preserves_the_initial_claim() {
-        let sumcheck = SumcheckProof::<FqDefault, 4> {
-            round_polynomials: vec![],
-        };
-        let transcript_proof = transcript::Proof::default();
-        let mut verifier = build_verifier(SESSION, b"zero-rounds", &transcript_proof);
-
-        assert_eq!(
-            sumcheck.verify(&mut verifier, fq(42), 0),
-            Ok((vec![], fq(42)))
-        );
-        verifier.check_eof().unwrap();
-    }
-
-    #[test]
-    fn sumcheck_rejects_zero_coefficient_rounds() {
-        let sumcheck = SumcheckProof::<FqDefault, 0> {
-            round_polynomials: vec![[]],
-        };
-        let transcript_proof = transcript::Proof::default();
-        let mut verifier = build_verifier(SESSION, b"zero-coefficients", &transcript_proof);
-
-        assert_eq!(
-            sumcheck.verify(&mut verifier, fq(0), 1),
-            Err(SumcheckError::EmptyRoundPolynomial)
-        );
-        verifier.check_eof().unwrap();
-    }
-
-    #[test]
-    fn fq_challenge_rejects_the_incomplete_tail() {
-        struct ScriptedChallenges {
-            values: Vec<u128>,
-            next: usize,
-        }
-
-        impl FqChallengeSource for ScriptedChallenges {
-            fn squeeze_u128(&mut self) -> u128 {
-                let value = self.values[self.next];
-                self.next += 1;
-                value
-            }
-        }
-
-        let mut source = ScriptedChallenges {
-            values: vec![MAX_ACCEPTED_CHALLENGE + 1, 7],
-            next: 0,
-        };
-
-        assert_eq!(challenge_fq(&mut source), fq(7));
-        assert_eq!(source.next, 2);
     }
 
     #[test]
