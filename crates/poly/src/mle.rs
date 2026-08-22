@@ -60,6 +60,12 @@ impl<T> DenseMultilinearExtension<T> {
         debug_assert!(self.evaluations.len().is_power_of_two());
         self.evaluations.len().ilog2() as usize
     }
+
+    /// Consumes the MLE and returns its little-endian Boolean-hypercube
+    /// evaluation table without copying it.
+    pub fn into_evaluations(self) -> Vec<T> {
+        self.evaluations
+    }
 }
 
 impl<F: Field + Copy> DenseMultilinearExtension<F> {
@@ -268,6 +274,13 @@ mod tests {
         let mle = DenseMultilinearExtension::from_evaluations(2, vec![1u32, 2, 3, 4]).unwrap();
 
         assert_eq!(mle.into_iter().collect::<Vec<_>>(), vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn consuming_the_mle_returns_its_evaluation_table() {
+        let mle = DenseMultilinearExtension::from_evaluations(2, vec![1u32, 2, 3, 4]).unwrap();
+
+        assert_eq!(mle.into_evaluations(), vec![1, 2, 3, 4]);
     }
 
     #[test]
