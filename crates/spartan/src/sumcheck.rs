@@ -477,17 +477,14 @@ pub fn prove_inner_sumcheck(
             sum_inner_round_coefficients_without_linear(&batched_matrix, &witness);
 
         for _round in 0..num_vars {
-            let challenge = recover_full_round_polynomial_and_sample_next_challenge::<
-                FqDefault,
-                2,
-                3,
-            >(
-                transcript,
-                &mut current_claim,
-                coefficients_without_linear,
-                &mut round_polynomials,
-                &mut eval_points,
-            );
+            let challenge =
+                recover_full_round_polynomial_and_sample_next_challenge::<FqDefault, 2, 3>(
+                    transcript,
+                    &mut current_claim,
+                    coefficients_without_linear,
+                    &mut round_polynomials,
+                    &mut eval_points,
+                );
 
             let next_len = batched_matrix.len() / 2;
             debug_assert_eq!(witness.len() / 2, next_len);

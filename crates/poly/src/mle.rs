@@ -315,12 +315,12 @@ mod tests {
     fn scaled_mle_claim_verifies_and_exposes_its_terms() {
         let polynomial = DenseMultilinearExtension::from_evaluations(
             1,
-            vec![FqDefault::fromu128(2), FqDefault::fromu128(5)],
+            vec![FqDefault::from(2u128), FqDefault::from(5u128)],
         )
         .unwrap();
-        let point = FqDefault::fromu128(3);
-        let scale = FqDefault::fromu128(7);
-        let value = FqDefault::fromu128(77);
+        let point = FqDefault::from(3u128);
+        let scale = FqDefault::from(7u128);
+        let value = FqDefault::from(77u128);
         let claim = ScaledMleEvaluationClaim::new(vec![point].into_boxed_slice(), scale, value);
 
         assert_eq!(claim.point(), &[point]);
@@ -333,13 +333,13 @@ mod tests {
     fn scaled_mle_claim_rejects_an_incorrect_value() {
         let polynomial = DenseMultilinearExtension::from_evaluations(
             1,
-            vec![FqDefault::fromu128(2), FqDefault::fromu128(5)],
+            vec![FqDefault::from(2u128), FqDefault::from(5u128)],
         )
         .unwrap();
         let claim = ScaledMleEvaluationClaim::new(
-            vec![FqDefault::fromu128(3)].into_boxed_slice(),
-            FqDefault::fromu128(7),
-            FqDefault::fromu128(78),
+            vec![FqDefault::from(3u128)].into_boxed_slice(),
+            FqDefault::from(7u128),
+            FqDefault::from(78u128),
         );
 
         assert_eq!(
@@ -352,13 +352,13 @@ mod tests {
     fn scaled_mle_claim_rejects_a_point_with_the_wrong_width() {
         let polynomial = DenseMultilinearExtension::from_evaluations(
             1,
-            vec![FqDefault::fromu128(2), FqDefault::fromu128(5)],
+            vec![FqDefault::from(2u128), FqDefault::from(5u128)],
         )
         .unwrap();
         let claim = ScaledMleEvaluationClaim::new(
-            vec![FqDefault::fromu128(3), FqDefault::fromu128(11)].into_boxed_slice(),
-            FqDefault::fromu128(7),
-            FqDefault::fromu128(77),
+            vec![FqDefault::from(3u128), FqDefault::from(11u128)].into_boxed_slice(),
+            FqDefault::from(7u128),
+            FqDefault::from(77u128),
         );
 
         assert_eq!(
