@@ -393,7 +393,7 @@ fn modular_vector_mle(
     let mut evaluations: Vec<_> = values
         .values()
         .iter()
-        .map(|&[low, high]| FqDefault::from(u128::from(low) | (u128::from(high) << 64)))
+        .map(|&[low, high]| FqDefault::from_limbs(low, high))
         .collect();
     evaluations.resize(padded_len, zero);
 

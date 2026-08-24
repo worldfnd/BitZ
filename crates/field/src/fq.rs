@@ -194,6 +194,12 @@ impl<const Q: u128> Fq<Q> {
         128 - Q.leading_zeros()
     };
 
+    /// Constructs an element from two little-endian `u64` limbs and reduces it
+    /// modulo `Q`.
+    pub fn from_limbs(low: u64, high: u64) -> Self {
+        Self::from(u128::from(low) | (u128::from(high) << 64))
+    }
+
     const MU: u128 = barrett_mu(Q, Self::BITS);
 
     /// Barrett reduction, Handbook of Applied Cryptography Algorithm 14.42,
@@ -648,6 +654,16 @@ mod tests {
         assert_eq!(Fq::<Q100>::from(u128::MAX).lift(), u128::MAX % Q100);
         assert_eq!(Fq::<Q100>::ONE.lift(), 1);
         assert!(Fq::<Q100>::ZERO.is_zero());
+    }
+
+    #[test]
+    fn from_limbs_packs_little_endian_and_reduces() {
+        assert_eq!(Fq::<Q100>::from_limbs(1, 0).lift(), 1);
+        assert_eq!(Fq::<Q100>::from_limbs(0, 1).lift(), (1u128 << 64) % Q100);
+        assert_eq!(
+            Fq::<Q100>::from_limbs(u64::MAX, u64::MAX).lift(),
+            u128::MAX % Q100
+        );
     }
 
     #[cfg(feature = "rand")]
