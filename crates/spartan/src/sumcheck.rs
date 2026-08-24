@@ -40,21 +40,10 @@ pub enum SumcheckError {
     EmptyRoundPolynomial,
     InvalidRoundCount { expected: usize, actual: usize },
     InvalidRoundClaim { round: usize },
-    InvalidPointLength { expected: usize, actual: usize },
     InvalidTerminalClaim,
     InvalidProductDimensions,
     InvalidEqualityDimensions,
     InvalidMleOperation,
-}
-
-impl From<poly::EqEvalError> for SumcheckError {
-    fn from(error: poly::EqEvalError) -> Self {
-        match error {
-            poly::EqEvalError::PointLengthMismatch { expected, actual } => {
-                Self::InvalidPointLength { expected, actual }
-            }
-        }
-    }
 }
 
 /// Sumcheck round polynomials in coefficient form.
@@ -142,14 +131,12 @@ pub struct R1csProductMles<F> {
     pub cz: DenseMultilinearExtension<F>,
 }
 
-/// Prover messages for the complete Spartan outer sumcheck.
+/// Proof of the equality-weighted R1CS residual sum.
 ///
-/// The cubic rounds reduce the equality-weighted R1CS residual
-///
-/// `sum_x eq(tau, x) * (Az(x) * Bz(x) - Cz(x))`
-///
-/// to a claim at the transcript-derived point `r_x`. After the final round, the
-/// proof supplies the three claimed terminal MLE evaluations needed to check
+/// The cubic rounds reduce
+/// `sum_x eq(tau, x) * (Az(x) * Bz(x) - Cz(x))` to the transcript-derived
+/// point `r_x`. The terminal claims are then absorbed in `Az`, `Bz`, `Cz`
+/// order and must satisfy
 ///
 /// `final_claim = eq(tau, r_x) * (Az(r_x) * Bz(r_x) - Cz(r_x))`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -167,11 +154,6 @@ pub struct OuterSumcheckProof<F> {
     pub bz_mle_claim: F,
 
     /// Claimed terminal evaluation `Cz(r_x)`.
-    ///
-    /// The three MLE claims are absorbed after all cubic round polynomials.
-    /// The outer verifier checks their terminal residual identity; the
-    /// subsequent inner sumcheck ties their batched value to the R1CS matrices
-    /// and assignment.
     pub cz_mle_claim: F,
 }
 
@@ -202,12 +184,7 @@ pub struct OuterSumcheckOutput<F> {
     pub final_claim: F,
 }
 
-/// Result returned after the verifier checks the outer terminal equation.
-///
-/// The verifier returns this only after checking every cubic round reduction
-/// and the terminal equality-weighted R1CS residual identity. The caller uses
-/// the returned point and evaluations to construct the subsequent inner
-/// sumcheck claim.
+/// Transcript-derived point and terminal claims returned after verification.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OuterSumcheckVerifierOutput<F> {
     /// Transcript-sampled outer evaluation point `r_x`, replayed while checking
@@ -221,10 +198,6 @@ pub struct OuterSumcheckVerifierOutput<F> {
     pub bz_mle_claim: F,
 
     /// Claimed terminal evaluation `Cz(r_x)`.
-    ///
-    /// The outer verifier has checked the equality-weighted residual of these
-    /// three claims. Their consistency with the R1CS matrices and assignment
-    /// is deferred to the subsequent inner sumcheck.
     pub cz_mle_claim: F,
 }
 
@@ -240,7 +213,7 @@ impl OuterSumcheckProof<FqDefault> {
             self.sumcheck.verify(transcript, initial_claim, tau.len())?;
 
         transcript.public_message(&[self.az_mle_claim, self.bz_mle_claim, self.cz_mle_claim]);
-        let expected_claim = poly::eq_eval(tau, &eval_points)?
+        let expected_claim = poly::eq_eval(tau, &eval_points)
             * (self.az_mle_claim * self.bz_mle_claim - self.cz_mle_claim);
 
         if final_claim != expected_claim {
