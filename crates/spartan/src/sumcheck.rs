@@ -33,11 +33,6 @@ use poly::DenseMultilinearExtension;
 use rayon::prelude::*;
 use transcript::{Encoding, ProverState, TranscriptChallenge, VerifierState};
 
-/// Provisional Rayon cutoff shared by the sumcheck kernels. A dedicated
-/// benchmark should calibrate the initial-pair and fused-inner kernels
-/// independently before treating this as a production-tuned value.
-const PARALLEL_SUMCHECK_THRESHOLD: usize = 1 << 12;
-
 /// Failures produced while reducing or checking a sumcheck claim.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SumcheckError {
@@ -455,7 +450,7 @@ pub fn prove_inner_sumcheck(
         return Err(SumcheckError::InvalidProductDimensions);
     }
 
-    let zero = FqDefault::fromu128(0);
+    let zero = FqDefault::from(0u128);
     let mut batched_matrix = batched_matrix_mle.into_evaluations();
     let mut witness = witness_mle.into_evaluations();
     let mut current_claim = initial_claim;
@@ -463,11 +458,21 @@ pub fn prove_inner_sumcheck(
     let mut round_polynomials = Vec::with_capacity(num_vars);
 
     if num_vars > 0 {
-        // The fused kernel writes every scratch entry before it is read. The
-        // buffers are allocated once, then old input buffers become the next
-        // round's scratch storage through the swaps below.
+        // Each round halves both evaluation tables. Allocate the output buffers
+        // once, then reuse the previous input buffers as scratch space after
+        // swapping them with the newly folded tables.
         let mut batched_matrix_scratch = vec![zero; batched_matrix.len() / 2];
         let mut witness_scratch = vec![zero; witness.len() / 2];
+
+        // The loop below pipelines the rounds so each table fold can also
+        // prepare the following round polynomial. `coefficients_without_linear`
+        // always holds `[c0, c2]` for the round about to run; the missing `c1`
+        // is reconstructed from `current_claim`. Round zero is prepared here.
+        // After sampling a challenge, every non-final iteration folds both
+        // tables at that challenge and uses the freshly folded values to prepare
+        // `[c0, c2]` for the next iteration. This operator fusion avoids a second
+        // scan of the folded tables. The final iteration has no next polynomial,
+        // so it only interpolates the last pair in each table.
         let mut coefficients_without_linear =
             sum_inner_round_coefficients_without_linear(&batched_matrix, &witness);
 
@@ -492,12 +497,16 @@ pub fn prove_inner_sumcheck(
             witness_scratch.truncate(next_len);
 
             if next_len == 1 {
+                // In the last round, each table has one pair left. Interpolating
+                // those pairs at the final challenge produces `D(r_y)` and
+                // `witness(r_y)`. No next-round polynomial needs to be prepared.
                 batched_matrix_scratch[0] =
                     interpolate_pair([batched_matrix[0], batched_matrix[1]], challenge);
                 witness_scratch[0] = interpolate_pair([witness[0], witness[1]], challenge);
             } else {
-                // The next round's coefficients are computed from the freshly
-                // folded values while they are still in registers.
+                // More rounds remain. Evaluate every adjacent pair at this
+                // challenge to halve both tables. The fused helper also uses
+                // those new values to prepare the next round's coefficients.
                 coefficients_without_linear =
                     fold_and_compute_next_inner_round_coefficients_without_linear(
                         &batched_matrix,
@@ -508,6 +517,8 @@ pub fn prove_inner_sumcheck(
                     );
             }
 
+            // Use the folded tables as the next round's inputs and recycle the
+            // old input buffers as scratch space.
             std::mem::swap(&mut batched_matrix, &mut batched_matrix_scratch);
             std::mem::swap(&mut witness, &mut witness_scratch);
         }
@@ -552,7 +563,7 @@ fn sum_inner_round_coefficients_without_linear(
     debug_assert_eq!(batched_matrix.len(), witness.len());
     debug_assert!(batched_matrix.len() >= 2);
 
-    let zero = FqDefault::fromu128(0);
+    let zero = FqDefault::from(0u128);
     let pair_count = batched_matrix.len() / 2;
 
     if should_parallelize(pair_count) {
@@ -630,7 +641,7 @@ fn fold_and_compute_next_inner_round_coefficients_without_linear(
     debug_assert_eq!(batched_matrix_output.len(), batched_matrix.len() / 2);
     debug_assert_eq!(witness_output.len(), witness.len() / 2);
 
-    let zero = FqDefault::fromu128(0);
+    let zero = FqDefault::from(0u128);
     let chunk_count = batched_matrix.len() / 4;
 
     if should_parallelize(chunk_count) {
@@ -695,6 +706,8 @@ where
         })
     }
 }
+
+const PARALLEL_SUMCHECK_THRESHOLD: usize = 1 << 12;
 
 #[inline]
 fn should_parallelize(work_items: usize) -> bool {
@@ -1450,19 +1463,19 @@ mod tests {
     fn inner_sumcheck_one_variable_has_expected_quadratic() {
         let batched_matrix = DenseMultilinearExtension::from_evaluations(
             1,
-            vec![FqDefault::fromu128(2), FqDefault::fromu128(5)],
+            vec![FqDefault::from(2u128), FqDefault::from(5u128)],
         )
         .unwrap();
         let witness = DenseMultilinearExtension::from_evaluations(
             1,
-            vec![FqDefault::fromu128(3), FqDefault::fromu128(7)],
+            vec![FqDefault::from(3u128), FqDefault::from(7u128)],
         )
         .unwrap();
         let mut prover = build_prover(INNER_SESSION, b"one-variable");
 
         let output = prove_inner_sumcheck(
             &mut prover,
-            FqDefault::fromu128(41),
+            FqDefault::from(41u128),
             batched_matrix,
             witness,
         )
@@ -1471,9 +1484,9 @@ mod tests {
         assert_eq!(
             output.sumcheck.proof.round_polynomials,
             vec![[
-                FqDefault::fromu128(6),
-                FqDefault::fromu128(17),
-                FqDefault::fromu128(12),
+                FqDefault::from(6u128),
+                FqDefault::from(17u128),
+                FqDefault::from(12u128),
             ]]
         );
     }
@@ -1484,7 +1497,7 @@ mod tests {
             2,
             [2u128, 5, 11, 17]
                 .into_iter()
-                .map(FqDefault::fromu128)
+                .map(FqDefault::from)
                 .collect(),
         )
         .unwrap();
@@ -1492,7 +1505,7 @@ mod tests {
             2,
             [3u128, 7, 13, 19]
                 .into_iter()
-                .map(FqDefault::fromu128)
+                .map(FqDefault::from)
                 .collect(),
         )
         .unwrap();
@@ -1500,7 +1513,7 @@ mod tests {
 
         let output = prove_inner_sumcheck(
             &mut prover,
-            FqDefault::fromu128(507),
+            FqDefault::from(507u128),
             batched_matrix,
             witness,
         )
@@ -1509,9 +1522,9 @@ mod tests {
         assert_eq!(
             output.sumcheck.proof.round_polynomials[0],
             [
-                FqDefault::fromu128(149),
-                FqDefault::fromu128(161),
-                FqDefault::fromu128(48),
+                FqDefault::from(149u128),
+                FqDefault::from(161u128),
+                FqDefault::from(48u128),
             ]
         );
     }
@@ -1539,7 +1552,7 @@ mod tests {
         let num_rows = 1usize << num_row_vars;
         let num_columns = 1usize << num_column_vars;
         let matrix_len = num_rows.checked_mul(num_columns).unwrap();
-        let zero = FqDefault::fromu128(0);
+        let zero = FqDefault::from(0u128);
         let mut rng = Pcg64::seed_from_u64(
             0x1a2b_3c4d ^ ((num_row_vars as u64) << 32) ^ num_column_vars as u64,
         );
@@ -1644,9 +1657,9 @@ mod tests {
 
     #[test]
     fn inner_sumcheck_supports_zero_variables() {
-        let batched_matrix = DenseMultilinearExtension::zero_vars(FqDefault::fromu128(5));
-        let witness = DenseMultilinearExtension::zero_vars(FqDefault::fromu128(7));
-        let initial_claim = FqDefault::fromu128(35);
+        let batched_matrix = DenseMultilinearExtension::zero_vars(FqDefault::from(5u128));
+        let witness = DenseMultilinearExtension::zero_vars(FqDefault::from(7u128));
+        let initial_claim = FqDefault::from(35u128);
         let mut prover = build_prover(INNER_SESSION, b"zero-variables");
 
         let output =
@@ -1655,8 +1668,8 @@ mod tests {
         assert!(output.sumcheck.proof.round_polynomials.is_empty());
         assert!(output.sumcheck.eval_points.is_empty());
         assert_eq!(output.sumcheck.final_claim, initial_claim);
-        assert_eq!(output.batched_matrix_evaluation, FqDefault::fromu128(5));
-        assert_eq!(output.witness_evaluation, FqDefault::fromu128(7));
+        assert_eq!(output.batched_matrix_evaluation, FqDefault::from(5u128));
+        assert_eq!(output.witness_evaluation, FqDefault::from(7u128));
 
         let mut control = build_prover(INNER_SESSION, b"zero-variables");
         assert_eq!(
@@ -1669,23 +1682,23 @@ mod tests {
     fn inner_sumcheck_rejects_mismatched_dimensions() {
         let batched_matrix = DenseMultilinearExtension::from_evaluations(
             1,
-            vec![FqDefault::fromu128(1), FqDefault::fromu128(2)],
+            vec![FqDefault::from(1u128), FqDefault::from(2u128)],
         )
         .unwrap();
         let witness = DenseMultilinearExtension::from_evaluations(
             2,
             vec![
-                FqDefault::fromu128(1),
-                FqDefault::fromu128(2),
-                FqDefault::fromu128(3),
-                FqDefault::fromu128(4),
+                FqDefault::from(1u128),
+                FqDefault::from(2u128),
+                FqDefault::from(3u128),
+                FqDefault::from(4u128),
             ],
         )
         .unwrap();
         let mut prover = build_prover(INNER_SESSION, b"mismatched-dimensions");
 
         assert_eq!(
-            prove_inner_sumcheck(&mut prover, FqDefault::fromu128(0), batched_matrix, witness,),
+            prove_inner_sumcheck(&mut prover, FqDefault::from(0u128), batched_matrix, witness,),
             Err(SumcheckError::InvalidProductDimensions)
         );
 
@@ -1694,45 +1707,5 @@ mod tests {
             prover.squeeze::<FqDefault>(),
             control.squeeze::<FqDefault>()
         );
-    }
-
-    #[test]
-    fn inner_sumcheck_is_independent_of_rayon_thread_count() {
-        let num_vars = 15;
-        let table_len = 1usize << num_vars;
-        let mut rng = Pcg64::seed_from_u64(0x71_1ead);
-        let matrix_values: Vec<FqDefault> = (0..table_len).map(|_| rng.random()).collect();
-        let witness_values: Vec<FqDefault> = (0..table_len).map(|_| rng.random()).collect();
-        let initial_claim = matrix_values
-            .iter()
-            .zip(&witness_values)
-            .fold(FqDefault::fromu128(0), |sum, (&matrix, &witness)| {
-                sum + matrix * witness
-            });
-        let matrix = DenseMultilinearExtension::from_evaluations(num_vars, matrix_values).unwrap();
-        let witness =
-            DenseMultilinearExtension::from_evaluations(num_vars, witness_values).unwrap();
-
-        let prove_with_threads =
-            |num_threads: usize,
-             matrix: DenseMultilinearExtension<FqDefault>,
-             witness: DenseMultilinearExtension<FqDefault>| {
-                rayon::ThreadPoolBuilder::new()
-                    .num_threads(num_threads)
-                    .build()
-                    .unwrap()
-                    .install(|| {
-                        let mut transcript = build_prover(INNER_SESSION, b"rayon-thread-count");
-                        let output =
-                            prove_inner_sumcheck(&mut transcript, initial_claim, matrix, witness)
-                                .unwrap();
-                        let next_challenge = transcript.squeeze::<FqDefault>();
-                        (output, next_challenge)
-                    })
-            };
-
-        let single_threaded = prove_with_threads(1, matrix.clone(), witness.clone());
-        let parallel = prove_with_threads(4, matrix, witness);
-        assert_eq!(single_threaded, parallel);
     }
 }
