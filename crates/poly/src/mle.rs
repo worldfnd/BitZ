@@ -23,6 +23,68 @@ pub enum DenseMleError {
     TooManyChallenges,
 }
 
+/// A scaled multilinear-evaluation claim
+/// `scale * polynomial(point) = value`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScaledMleEvaluationClaim<F> {
+    point: Box<[F]>,
+    scale: F,
+    value: F,
+}
+
+/// Why a complete evaluation table does not discharge a
+/// [`ScaledMleEvaluationClaim`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MleClaimError {
+    InvalidPolynomial(DenseMleError),
+    InvalidEvaluation,
+}
+
+impl From<DenseMleError> for MleClaimError {
+    fn from(error: DenseMleError) -> Self {
+        Self::InvalidPolynomial(error)
+    }
+}
+
+impl<F> ScaledMleEvaluationClaim<F>
+where
+    F: Field + Copy,
+{
+    pub fn new(point: Box<[F]>, scale: F, value: F) -> Self {
+        Self {
+            point,
+            scale,
+            value,
+        }
+    }
+
+    pub fn point(&self) -> &[F] {
+        &self.point
+    }
+
+    pub fn scale(&self) -> F {
+        self.scale
+    }
+
+    pub fn value(&self) -> F {
+        self.value
+    }
+
+    /// Directly checks the claim against a complete MLE evaluation table.
+    ///
+    /// This is the witness-aware path used until an opening protocol exists.
+    pub fn nonsuccinct_verify(
+        &self,
+        polynomial: &DenseMultilinearExtension<F>,
+    ) -> Result<(), MleClaimError> {
+        let evaluation = polynomial.evaluate(&self.point)?;
+        if self.scale * evaluation != self.value {
+            return Err(MleClaimError::InvalidEvaluation);
+        }
+        Ok(())
+    }
+}
+
 /// A multilinear polynomial represented by its evaluations on a Boolean cube.
 /// Adapted from Zinc+ `DenseMultilinearExtension`: <https://github.com/NethermindEth/zinc-plus/blob/8dbd6007008b2d10e95e73149ca2fd5b7d8e00f9/poly/src/mle/dense.rs>
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -219,9 +281,11 @@ impl<T> IntoIterator for DenseMultilinearExtension<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::{DenseMleError, DenseMultilinearExtension};
+    use super::{
+        DenseMleError, DenseMultilinearExtension, MleClaimError, ScaledMleEvaluationClaim,
+    };
     use crate::eq::eq_table;
-    use field::F128;
+    use field::{F128, FqDefault};
     use num_traits::{ConstOne, ConstZero};
     use proptest::prelude::*;
 
@@ -245,6 +309,64 @@ mod tests {
                     )
                 })
         })
+    }
+
+    #[test]
+    fn scaled_mle_claim_verifies_and_exposes_its_terms() {
+        let polynomial = DenseMultilinearExtension::from_evaluations(
+            1,
+            vec![FqDefault::fromu128(2), FqDefault::fromu128(5)],
+        )
+        .unwrap();
+        let point = FqDefault::fromu128(3);
+        let scale = FqDefault::fromu128(7);
+        let value = FqDefault::fromu128(77);
+        let claim = ScaledMleEvaluationClaim::new(vec![point].into_boxed_slice(), scale, value);
+
+        assert_eq!(claim.point(), &[point]);
+        assert_eq!(claim.scale(), scale);
+        assert_eq!(claim.value(), value);
+        assert_eq!(claim.nonsuccinct_verify(&polynomial), Ok(()));
+    }
+
+    #[test]
+    fn scaled_mle_claim_rejects_an_incorrect_value() {
+        let polynomial = DenseMultilinearExtension::from_evaluations(
+            1,
+            vec![FqDefault::fromu128(2), FqDefault::fromu128(5)],
+        )
+        .unwrap();
+        let claim = ScaledMleEvaluationClaim::new(
+            vec![FqDefault::fromu128(3)].into_boxed_slice(),
+            FqDefault::fromu128(7),
+            FqDefault::fromu128(78),
+        );
+
+        assert_eq!(
+            claim.nonsuccinct_verify(&polynomial),
+            Err(MleClaimError::InvalidEvaluation)
+        );
+    }
+
+    #[test]
+    fn scaled_mle_claim_rejects_a_point_with_the_wrong_width() {
+        let polynomial = DenseMultilinearExtension::from_evaluations(
+            1,
+            vec![FqDefault::fromu128(2), FqDefault::fromu128(5)],
+        )
+        .unwrap();
+        let claim = ScaledMleEvaluationClaim::new(
+            vec![FqDefault::fromu128(3), FqDefault::fromu128(11)].into_boxed_slice(),
+            FqDefault::fromu128(7),
+            FqDefault::fromu128(77),
+        );
+
+        assert_eq!(
+            claim.nonsuccinct_verify(&polynomial),
+            Err(MleClaimError::InvalidPolynomial(
+                DenseMleError::WrongPointWidth
+            ))
+        );
     }
 
     #[test]
