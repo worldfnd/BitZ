@@ -11,16 +11,14 @@ use crate::parallel::workload_size;
 ///
 /// On Boolean vectors, eq(x, y) = 1 exactly when x = y, and 0 otherwise.
 ///
-/// The implementation uses `O(n)` field operations and constant space. Over
-/// characteristic-two fields, each coordinate factor simplifies to
-/// `1 + x_i + y_i`. Over other fields, it is evaluated as
+/// The implementation uses `O(n)` field operations and constant space. Each
+/// coordinate factor is evaluated as
 ///
 /// `(1 - x_i) + y_i (2 x_i - 1)`,
 ///
 /// saving one multiplication per coordinate compared with the defining
 /// expression. Seeding the accumulator with the first coordinate factor gives
-/// `n - 1` multiplications in characteristic two and `2n - 1` otherwise for
-/// nonempty points.
+/// `2n - 1` multiplications for nonempty points.
 pub fn eq_eval<F: ConstField + Copy>(left: &[F], right: &[F]) -> F {
     assert_eq!(
         left.len(),
@@ -33,13 +31,6 @@ pub fn eq_eval<F: ConstField + Copy>(left: &[F], right: &[F]) -> F {
     let Some((first_left, first_right)) = coordinates.next() else {
         return one;
     };
-
-    if one + one == F::ZERO {
-        let first = one + first_left + first_right;
-        return coordinates.fold(first, |value, (left_i, right_i)| {
-            value * (one + left_i + right_i)
-        });
-    }
 
     let coordinate = |left_i: F, right_i: F| (one - left_i) + right_i * (left_i + left_i - one);
     coordinates.fold(
