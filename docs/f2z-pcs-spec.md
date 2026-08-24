@@ -44,7 +44,7 @@ For $q = 2^{100} - 15$ the last condition is exactly $d \le 27$. §4 derives it.
 
 ## 2. Committed objects
 
-The witness is a tensor $D : \{0,1\}^t \times \{0,1\}^s \to [0, 2^W)$ of bounded integer cells.
+The witness is a tensor $D : \{0,1\}^t \times \{0,1\}^s \to [0, 2^W)$ of bounded integer cells.  [albert: W is always 1. This simplifies a lot the notation]
 
 **Bit tensor.** With $i = (b \ll w) \mid j$ for $0 \le j < W$:
 
@@ -56,7 +56,7 @@ so $B$ is a $2^s \times 2^d$ array of bits, $2^m$ in total. The index order — 
 
 - $B[c,i] \in \{0,1\} \subset \mathbb{Z}$ — integer arithmetic: $\operatorname{INT}$ above, and the column fold $\mu_c$ of §4 and P3.
 - $\pi_2(B[c,i]) \in \mathbb{F}_2$ — packing and commitment, immediately below.
-- $B_{\mathbb{K}} := \iota(B)$ with $\iota := \iota_{2 \to \mathbb{K}} \circ \pi_2$ sending a bit to $0, 1 \in \mathbb{K}$ — the grand-product claim and every MLE of a bit object (P4, P6).
+- $B_{\mathbb{K}} := \iota(B)$ with $\iota := \iota_{2 \to \mathbb{K}} \circ \pi_2$ [*albert*: this map doesn't make sense] sending a bit to $0, 1 \in \mathbb{K}$ — the grand-product claim and every MLE of a bit object (P4, P6).
 
 **Packing and commitment.** For $0 \le i_{\text{hi}} < 2^{d-7}$:
 
@@ -80,24 +80,29 @@ $$\mathsf{ProveF2Z}(\mathsf{pp},\ x_{\text{core}},\ B;\ \mathsf{tr}), \qquad \ma
 
 $$x_{\text{core}} = \bigl((t,s,W),\ (\boldsymbol{w}, \boldsymbol{w}', y),\ g\bigr), \qquad \mathsf{com} = (\rho)$$
 
+
+[albert: what is $\pi$? The verifier does not receive $W$]
+
 $\mathsf{tr}$ arrives carrying the caller's events. F2Z appends and returns it; it does not initialize or finalize it.
 
 **Preconditions.** The caller MUST establish, and V2 re-checks:
 
 1. The claim is about the witness committed under $\rho$.
 2. $\boldsymbol{w} \in \mathbb{Z}^{2^t}$ with $0 \le w_b < 2^{100}$; $\boldsymbol{w}' \in \mathbb{F}_q^{2^s}$; $y \in \mathbb{F}_q$.
-3. The caller's coefficient vector $\boldsymbol{v}$ factors as $v_{c,b} = \pi_q(w_b)\, w'_c$. A general coefficient is outside this profile — see Q8.
+3. The caller's coefficient vector $\boldsymbol{v}$ [albert: what is this? Shouldn't this be an input or something?] factors as $v_{c,b} = \pi_q(w_b)\, w'_c$ [albert: a product of a field element and a non field element? Not well-defined]. A general coefficient is outside this profile — see Q8. [albert: what is "a general coefficient"?]
 4. The claim holds:
 
 $$y = \sum_{c} w'_c\, \pi_q\!\left(\underbrace{\sum_b w_b \operatorname{INT}(D(b,c))}_{\in\, \mathbb{Z}}\right) \quad \text{in } \mathbb{F}_q$$
 
-The bit coefficients are **derived** by F2Z, never transmitted and never taken from the caller:
+The bit coefficients [albert: It's not very good practice to use non-standard expressions without having defined and motivated before, for example "bit coefficient"] are **derived** by F2Z, never transmitted and never taken from the caller: [albert: a no-op because $W=1$]
 
 $$u_{c,b,j} := \pi_q(w_b 2^j)\, w'_c \ \in \mathbb{F}_q, \qquad i = (b \ll w) \mid j$$
 
 For the MLE instantiation — the only one in v1 — the weights come from an evaluation point $(r_1, r_2) \in \mathbb{F}_q^t \times \mathbb{F}_q^s$ as $w_b = \operatorname{can}_q(\operatorname{eq}(b, r_1))$ and $w'_c = \operatorname{eq}(c, r_2)$, with $y$ the claimed MLE value. $w_b$ is an integer representative; §4 depends on that.
 
 > **Open — see Q8.** Nothing here proves that an arbitrary application claim has this separable shape. v1 requires the caller to supply it and rejects otherwise.
+
+[albert: I think the input should have $v$ s input, then the splitting into the w's should be part of the protocol]
 
 ---
 
