@@ -1,10 +1,16 @@
 //! Typed Fiat–Shamir challenge sampling.
 
-use field::Fq;
+use field::{F128, Fq};
 
 use crate::{ProverState, VerifierState};
 
 /// A type that knows how to construct itself from transcript squeezes.
+///
+/// Implementations must deterministically map independent, uniformly random
+/// `u128` inputs to an exactly uniform `Self`, with finite expected input
+/// consumption. Violating this distribution contract can weaken the
+/// soundness of protocols that use the sampled value as a Fiat–Shamir
+/// challenge.
 pub trait TranscriptChallenge: Sized {
     /// Samples a challenge using successive deterministic `u128` squeezes.
     ///
@@ -48,9 +54,16 @@ impl<const Q: u128> TranscriptChallenge for Fq<Q> {
     }
 }
 
+impl TranscriptChallenge for F128 {
+    fn from_squeezes(mut next_u128: impl FnMut() -> u128) -> Self {
+        // Every 128-bit string is exactly one binary-field element.
+        Self::from(next_u128())
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use field::{FqDefault, Q100};
+    use field::{F128, FqDefault, Q100};
 
     use super::TranscriptChallenge;
     use crate::{build_prover, build_verifier};
@@ -80,16 +93,27 @@ mod tests {
     #[test]
     fn prover_and_verifier_squeeze_in_lockstep() {
         let mut prover = build_prover(SESSION, INSTANCE);
-        let prover_challenges = [prover.squeeze::<FqDefault>(), prover.squeeze::<FqDefault>()];
+        let prover_fq = prover.squeeze::<FqDefault>();
+        let prover_f128 = prover.squeeze::<F128>();
         let proof = prover.finish();
 
         let mut verifier = build_verifier(SESSION, INSTANCE, &proof);
-        let verifier_challenges = [
-            verifier.squeeze::<FqDefault>(),
-            verifier.squeeze::<FqDefault>(),
-        ];
+        let verifier_fq = verifier.squeeze::<FqDefault>();
+        let verifier_f128 = verifier.squeeze::<F128>();
 
-        assert_eq!(verifier_challenges, prover_challenges);
+        assert_eq!(verifier_fq, prover_fq);
+        assert_eq!(verifier_f128, prover_f128);
         verifier.check_eof().unwrap();
+    }
+
+    #[test]
+    fn typed_f128_squeeze_matches_direct_decoding() {
+        let mut typed = build_prover(SESSION, INSTANCE);
+        let typed_challenge = typed.squeeze::<F128>();
+
+        let mut direct = build_prover(SESSION, INSTANCE);
+        let direct_challenge = direct.verifier_message::<F128>();
+
+        assert_eq!(typed_challenge, direct_challenge);
     }
 }

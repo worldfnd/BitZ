@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-field = { path = "../field", features = ["spongefish"] }
+crypto-primitives = { workspace = true }
 poly = { path = "../poly" }
 rayon = { workspace = true }
 transcript = { path = "../transcript" }
