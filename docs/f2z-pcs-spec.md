@@ -16,6 +16,8 @@ It deliberately does not contain: the security argument, the relation-algebra fo
 
 $$R = \mathbb{F}_q,\quad q = 2^{100} - 15 \qquad \mathbb{K} = \mathbb{F}_2[X]/(X^{128} + X^7 + X^2 + X + 1) \cong \mathbb{F}_{2^{128}}$$
 
+[albert: $q$ is not a fixed prime. It is random generally. It is of about 106 bits]
+
 Linear claims are evaluated in $R$. Packing, grand products, and the commitment opening happen in $\mathbb{K}$. $(\beta_v)_{v<128}$ with $\beta_v = X^v \bmod (X^{128}+X^7+X^2+X+1)$ is the ordered $\mathbb{F}_2$-basis of $\mathbb{K}$; every packing and coordinate extraction below uses it.
 
 **Maps.** $\pi_q : \mathbb{Z} \to \mathbb{F}_q$ and $\pi_2 : \mathbb{Z} \to \mathbb{F}_2$ are reduction. $\operatorname{can}_q : \mathbb{F}_q \to [0,q)$ returns the unique integer representative — it is what makes the bounded exponent lifts in §4 well defined.
@@ -118,7 +120,7 @@ with $i = (b \ll w) \mid j$ ranging over $2^d$ positions. Since $B[c,i] \in \{0,
 
 $$0 \le \mu_c \le 2^d (q - 1).$$
 
-The verifier learns $\mu_c$ only through $g^{\mu_c}$, so the accepted exponent is unique exactly when no other admissible integer is congruent to it modulo $\operatorname{ord}(g)$. Bounding the gap between a claimed and a true fold by $(2^d + 1)(q-1)$ gives the admissibility condition of §1:
+The verifier learns $\mu_c$ only through $g^{\mu_c}$ [albert: the verivier needs to either know $\mu_c$ or $\mu_c$ mod q  so it can check Item 4 in the preconditions list], so the accepted exponent is unique exactly when no other admissible integer is congruent to it modulo $\operatorname{ord}(g)$. Bounding the gap between a claimed and a true fold by $(2^d + 1)(q-1)$ gives the admissibility condition of §1:
 
 $$(2^d + 1)(q - 1) < \operatorname{ord}(g) = 2^{128} - 1.$$
 
@@ -126,7 +128,9 @@ At $q = 2^{100} - 15$ this is $d \le 27$, leaving $s \ge m - 27$. The verifier r
 
 **No chunking.** v1 requires the shape to satisfy the bound outright; there is one fold, one grand product, and one GKR invocation. Weights are never split into digits.
 
-> **Out of profile.** When the caller's modulus is too large to satisfy the bound — an extension evaluation domain, or a prime field with $q \ge |\mathbb{K}| - 1$ — the paper's construction inserts a projection round: the verifier samples a prime $q'$ from a public set $\mathcal{P}$ with $\max \mathcal{P} < (|\mathbb{K}|-1)/2^d$ (and, for an extension domain, a point $\alpha$), maps the claim into $\mathbb{F}_{q'}$, and continues with $q \gets q'$. v1 fixes $R = \mathbb{F}_q$ with $q = 2^{100}-15 < |\mathbb{K}|-1$, so the round never triggers and is not specified here. See Q5.
+> **Out of profile.** When the caller's modulus is too large to satisfy the bound — an extension evaluation domain, or a prime field with $q \ge |\mathbb{K}| - 1$ [albert: $q \ge (|\mathbb{K}| - 1)/2^t$ (or $/2^d$)] — the paper's construction inserts a projection round: the verifier samples a prime $q'$ from a public set $\mathcal{P}$ with $\max \mathcal{P} < (|\mathbb{K}|-1)/2^d$ (and, for an extension domain, a point $\alpha$), maps the claim into $\mathbb{F}_{q'}$, and continues with $q \gets q'$. v1 fixes $R = \mathbb{F}_q$ with $q = 2^{100}-15 < |\mathbb{K}|-1$, so the round never triggers and is not specified here. See Q5.
+
+[albert: we should probably implement this?]
 
 ---
 
