@@ -27,7 +27,7 @@
 //!
 //! [*More Optimizations to Sum-Check Proving*]: https://eprint.iacr.org/2024/1210.pdf
 
-use field::{FqDefault, Q100};
+use field::FqDefault;
 use poly::DenseMultilinearExtension;
 use rayon::prelude::*;
 use transcript::{ProverState, VerifierState};
@@ -98,7 +98,7 @@ impl<const COEFFS: usize> SumcheckProof<FqDefault, COEFFS> {
                 return Err(SumcheckError::InvalidRoundClaim { round });
             }
 
-            let challenge = challenge_fq(transcript);
+            let challenge = transcript.squeeze::<FqDefault>();
             current_claim = coefficients
                 .iter()
                 .rev()
@@ -226,35 +226,6 @@ impl OuterSumcheckProof<FqDefault> {
             bz_mle_claim: self.bz_mle_claim,
             cz_mle_claim: self.cz_mle_claim,
         })
-    }
-}
-
-pub(crate) trait FqChallengeSource {
-    fn squeeze_u128(&mut self) -> u128;
-}
-
-impl FqChallengeSource for ProverState {
-    fn squeeze_u128(&mut self) -> u128 {
-        self.verifier_message()
-    }
-}
-
-impl FqChallengeSource for VerifierState<'_> {
-    fn squeeze_u128(&mut self) -> u128 {
-        self.verifier_message()
-    }
-}
-
-const REJECTION_REMAINDER: u128 = (u128::MAX % Q100 + 1) % Q100;
-const MAX_ACCEPTED_CHALLENGE: u128 = u128::MAX - REJECTION_REMAINDER;
-
-/// Draws an exactly uniform Q100 element from 128-bit transcript squeezes.
-pub(crate) fn challenge_fq(transcript: &mut impl FqChallengeSource) -> FqDefault {
-    loop {
-        let candidate = transcript.squeeze_u128();
-        if candidate <= MAX_ACCEPTED_CHALLENGE {
-            return FqDefault::from(candidate);
-        }
     }
 }
 
@@ -591,7 +562,7 @@ fn recover_full_round_polynomial_and_sample_next_challenge<
     debug_assert_eq!(*current_claim, coefficients[0] + at_one);
 
     transcript.public_message(&coefficients);
-    let challenge = challenge_fq(transcript);
+    let challenge = transcript.squeeze::<FqDefault>();
     *current_claim = evaluate_polynomial(&coefficients, challenge);
     round_polynomials.push(coefficients);
     eval_points.push(challenge);
@@ -830,15 +801,15 @@ mod tests {
             .iter()
             .map(|round| {
                 prover.public_message(round);
-                challenge_fq(&mut prover)
+                prover.squeeze::<FqDefault>()
             })
             .collect();
-        let next_prover_challenge = challenge_fq(&mut prover);
+        let next_prover_challenge = prover.squeeze::<FqDefault>();
         let transcript_proof = prover.finish();
 
         let mut verifier = build_verifier(SESSION, instance, &transcript_proof);
         let (verifier_points, final_claim) = sumcheck.verify(&mut verifier, fq(20), 2).unwrap();
-        let next_verifier_challenge = challenge_fq(&mut verifier);
+        let next_verifier_challenge = verifier.squeeze::<FqDefault>();
 
         let expected_final_claim = second_round
             .iter()
@@ -1076,7 +1047,7 @@ mod tests {
             ),
             Err(SumcheckError::InvalidProductDimensions)
         );
-        let challenge_after_product_error = challenge_fq(&mut invalid_product_prover);
+        let challenge_after_product_error = invalid_product_prover.squeeze::<FqDefault>();
 
         let mut invalid_equality_prover = build_prover(SESSION, instance);
         let inputs = build_outer_sumcheck_inputs(1);
@@ -1092,10 +1063,10 @@ mod tests {
             ),
             Err(SumcheckError::InvalidEqualityDimensions)
         );
-        let challenge_after_equality_error = challenge_fq(&mut invalid_equality_prover);
+        let challenge_after_equality_error = invalid_equality_prover.squeeze::<FqDefault>();
 
         let mut clean_prover = build_prover(SESSION, instance);
-        let clean_challenge = challenge_fq(&mut clean_prover);
+        let clean_challenge = clean_prover.squeeze::<FqDefault>();
         assert_eq!(challenge_after_product_error, clean_challenge);
         assert_eq!(challenge_after_equality_error, clean_challenge);
     }
