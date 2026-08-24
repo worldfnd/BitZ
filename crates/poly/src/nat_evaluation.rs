@@ -56,7 +56,7 @@ impl<F: ConstField + Copy> LagrangeInterpolationDomain<F> {
         };
 
         #[cfg(not(feature = "parallel"))]
-        let mut weights: Vec<F128> = (0..len).map(|i| lagrange_denominator(&points, i)).collect();
+        let mut weights: Vec<F> = (0..len).map(|i| lagrange_denominator(&points, i)).collect();
 
         batch_invert_nonzero(&mut weights);
 
