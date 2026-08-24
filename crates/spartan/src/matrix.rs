@@ -3,6 +3,7 @@
 use circuit::constraints::{ConstraintMatrices, SparseMatrix};
 use circuit::matrix_products::{IntegerProducts, ModularVector, RuntimeModulus};
 use circuit::witgen::PackedWitness;
+use crypto_primitives::ConstField;
 use field::{FqDefault, Q100};
 use num_bigint::{BigInt, BigUint};
 use num_traits::{Signed, ToPrimitive};
@@ -33,15 +34,18 @@ pub enum SpartanMatrixError {
 /// are performed once during construction rather than inside the prover or
 /// verifier.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PreparedConstraintMatrices {
-    matrices: ConstraintMatrices<FqDefault>,
+pub struct PreparedConstraintMatrices<F> {
+    matrices: ConstraintMatrices<F>,
     digest: [u8; 32],
     num_row_vars: usize,
     num_column_vars: usize,
 }
 
-impl PreparedConstraintMatrices {
-    pub fn new(matrices: ConstraintMatrices<FqDefault>) -> Result<Self, SpartanMatrixError> {
+impl<F> PreparedConstraintMatrices<F>
+where
+    F: ConstField + Copy + Encoding<[u8]>,
+{
+    pub fn new(matrices: ConstraintMatrices<F>) -> Result<Self, SpartanMatrixError> {
         let (num_row_vars, num_column_vars) = r1cs_num_vars(&matrices)?;
         let digest = constraint_matrix_digest(&matrices)?;
 
@@ -53,7 +57,7 @@ impl PreparedConstraintMatrices {
         })
     }
 
-    pub fn matrices(&self) -> &ConstraintMatrices<FqDefault> {
+    pub fn matrices(&self) -> &ConstraintMatrices<F> {
         &self.matrices
     }
 
@@ -68,31 +72,6 @@ impl PreparedConstraintMatrices {
     pub const fn num_column_vars(&self) -> usize {
         self.num_column_vars
     }
-}
-
-/// Spartan-specific operations on the field-valued constraint matrices.
-pub trait SpartanMatrixOperations {
-    /// Constructs
-    ///
-    /// `D(j) = sum_i eq(i,r_x) (A[i,j] + rho B[i,j] + rho^2 C[i,j])`.
-    fn bind_and_batch(
-        &self,
-        row_point: &[FqDefault],
-        rho: FqDefault,
-    ) -> Result<DenseMultilinearExtension<FqDefault>, SpartanMatrixError>;
-
-    /// Directly evaluates
-    ///
-    /// `D(r_y) = A(r_x,r_y) + rho B(r_x,r_y) + rho^2 C(r_x,r_y)`.
-    ///
-    /// This deliberately does not call [`Self::bind_and_batch`], keeping the
-    /// verifier path independent from the prover's dense-table construction.
-    fn evaluate_batched(
-        &self,
-        row_point: &[FqDefault],
-        rho: FqDefault,
-        column_point: &[FqDefault],
-    ) -> Result<FqDefault, SpartanMatrixError>;
 }
 
 /// Reduces a signed integer canonically modulo Q100.
@@ -140,13 +119,16 @@ pub fn build_product_mles(
     })
 }
 
-/// Converts the packed assignment `h = M(1 || f)` into Q100 and pads it with
-/// trailing zeros to the next power-of-two column domain. The first bit must
-/// be the R1CS constant one.
-pub fn build_assignment_mle(
+/// Converts the packed assignment `h = M(1 || f)` into the selected field and
+/// pads it with trailing zeros to the next power-of-two column domain. The
+/// first bit must be the R1CS constant one.
+pub fn build_assignment_mle<F>(
     assignment: &PackedWitness,
     expected_columns: usize,
-) -> Result<DenseMultilinearExtension<FqDefault>, SpartanMatrixError> {
+) -> Result<DenseMultilinearExtension<F>, SpartanMatrixError>
+where
+    F: ConstField + Copy,
+{
     if assignment.bit_len() != expected_columns {
         return Err(SpartanMatrixError::InvalidAssignmentLength {
             expected: expected_columns,
@@ -159,50 +141,32 @@ pub fn build_assignment_mle(
 
     let num_vars = padded_num_vars(expected_columns)?;
     let padded_len = 1usize << num_vars;
-    let zero = FqDefault::from(0u128);
     let mut evaluations = Vec::with_capacity(padded_len);
-    evaluations
-        .extend((0..assignment.bit_len()).map(|index| FqDefault::from(assignment.bit(index))));
-    evaluations.resize(padded_len, zero);
+    evaluations.extend((0..assignment.bit_len()).map(|index| {
+        if assignment.bit(index) {
+            F::ONE
+        } else {
+            F::ZERO
+        }
+    }));
+    evaluations.resize(padded_len, F::ZERO);
 
     DenseMultilinearExtension::from_evaluations(num_vars, evaluations)
         .map_err(|_| SpartanMatrixError::InvalidMleOperation)
 }
 
-impl SpartanMatrixOperations for ConstraintMatrices<FqDefault> {
-    fn bind_and_batch(
+impl<F> PreparedConstraintMatrices<F>
+where
+    F: ConstField + Copy,
+{
+    /// Constructs
+    ///
+    /// `D(j) = sum_i eq(i,r_x) (A[i,j] + rho B[i,j] + rho^2 C[i,j])`.
+    pub fn bind_and_batch(
         &self,
-        row_point: &[FqDefault],
-        rho: FqDefault,
-    ) -> Result<DenseMultilinearExtension<FqDefault>, SpartanMatrixError> {
-        let (num_row_vars, num_column_vars) = r1cs_num_vars(self)?;
-        bind_and_batch_with_num_vars(self, row_point, rho, num_row_vars, num_column_vars)
-    }
-
-    fn evaluate_batched(
-        &self,
-        row_point: &[FqDefault],
-        rho: FqDefault,
-        column_point: &[FqDefault],
-    ) -> Result<FqDefault, SpartanMatrixError> {
-        let (num_row_vars, num_column_vars) = r1cs_num_vars(self)?;
-        evaluate_batched_with_num_vars(
-            self,
-            row_point,
-            rho,
-            column_point,
-            num_row_vars,
-            num_column_vars,
-        )
-    }
-}
-
-impl SpartanMatrixOperations for PreparedConstraintMatrices {
-    fn bind_and_batch(
-        &self,
-        row_point: &[FqDefault],
-        rho: FqDefault,
-    ) -> Result<DenseMultilinearExtension<FqDefault>, SpartanMatrixError> {
+        row_point: &[F],
+        rho: F,
+    ) -> Result<DenseMultilinearExtension<F>, SpartanMatrixError> {
         bind_and_batch_with_num_vars(
             &self.matrices,
             row_point,
@@ -212,12 +176,18 @@ impl SpartanMatrixOperations for PreparedConstraintMatrices {
         )
     }
 
-    fn evaluate_batched(
+    /// Directly evaluates
+    ///
+    /// `D(r_y) = A(r_x,r_y) + rho B(r_x,r_y) + rho^2 C(r_x,r_y)`.
+    ///
+    /// This deliberately does not call [`Self::bind_and_batch`], keeping the
+    /// verifier path independent from the prover's dense-table construction.
+    pub fn evaluate_batched(
         &self,
-        row_point: &[FqDefault],
-        rho: FqDefault,
-        column_point: &[FqDefault],
-    ) -> Result<FqDefault, SpartanMatrixError> {
+        row_point: &[F],
+        rho: F,
+        column_point: &[F],
+    ) -> Result<F, SpartanMatrixError> {
         evaluate_batched_with_num_vars(
             &self.matrices,
             row_point,
@@ -229,13 +199,16 @@ impl SpartanMatrixOperations for PreparedConstraintMatrices {
     }
 }
 
-fn bind_and_batch_with_num_vars(
-    matrices: &ConstraintMatrices<FqDefault>,
-    row_point: &[FqDefault],
-    rho: FqDefault,
+fn bind_and_batch_with_num_vars<F>(
+    matrices: &ConstraintMatrices<F>,
+    row_point: &[F],
+    rho: F,
     num_row_vars: usize,
     num_column_vars: usize,
-) -> Result<DenseMultilinearExtension<FqDefault>, SpartanMatrixError> {
+) -> Result<DenseMultilinearExtension<F>, SpartanMatrixError>
+where
+    F: ConstField + Copy,
+{
     if row_point.len() != num_row_vars {
         return Err(SpartanMatrixError::InvalidRowPointLength {
             expected: num_row_vars,
@@ -243,13 +216,11 @@ fn bind_and_batch_with_num_vars(
         });
     }
 
-    let zero = FqDefault::from(0u128);
-    let one = FqDefault::from(1u128);
     let row_weights = poly::eq_table(row_point);
-    let mut evaluations = vec![zero; 1usize << num_column_vars];
+    let mut evaluations = vec![F::ZERO; 1usize << num_column_vars];
 
     for (matrix, batch_scale) in [
-        (&matrices.a, one),
+        (&matrices.a, F::ONE),
         (&matrices.b, rho),
         (&matrices.c, rho * rho),
     ] {
@@ -265,14 +236,17 @@ fn bind_and_batch_with_num_vars(
         .map_err(|_| SpartanMatrixError::InvalidMleOperation)
 }
 
-fn evaluate_batched_with_num_vars(
-    matrices: &ConstraintMatrices<FqDefault>,
-    row_point: &[FqDefault],
-    rho: FqDefault,
-    column_point: &[FqDefault],
+fn evaluate_batched_with_num_vars<F>(
+    matrices: &ConstraintMatrices<F>,
+    row_point: &[F],
+    rho: F,
+    column_point: &[F],
     num_row_vars: usize,
     num_column_vars: usize,
-) -> Result<FqDefault, SpartanMatrixError> {
+) -> Result<F, SpartanMatrixError>
+where
+    F: ConstField + Copy,
+{
     if row_point.len() != num_row_vars {
         return Err(SpartanMatrixError::InvalidRowPointLength {
             expected: num_row_vars,
@@ -286,14 +260,12 @@ fn evaluate_batched_with_num_vars(
         });
     }
 
-    let zero = FqDefault::from(0u128);
-    let one = FqDefault::from(1u128);
     let row_weights = poly::eq_table(row_point);
     let column_weights = poly::eq_table(column_point);
-    let mut evaluation = zero;
+    let mut evaluation = F::ZERO;
 
     for (matrix, batch_scale) in [
-        (&matrices.a, one),
+        (&matrices.a, F::ONE),
         (&matrices.b, rho),
         (&matrices.c, rho * rho),
     ] {
@@ -308,8 +280,8 @@ fn evaluate_batched_with_num_vars(
     Ok(evaluation)
 }
 
-pub(crate) fn r1cs_num_vars(
-    matrices: &ConstraintMatrices<FqDefault>,
+pub(crate) fn r1cs_num_vars<F>(
+    matrices: &ConstraintMatrices<F>,
 ) -> Result<(usize, usize), SpartanMatrixError> {
     matrices
         .validate_shape()
@@ -322,15 +294,22 @@ pub(crate) fn r1cs_num_vars(
 
 /// Canonically commits the complete public matrix statement before any
 /// Fiat--Shamir challenge is sampled.
-pub(crate) fn constraint_matrix_digest(
-    matrices: &ConstraintMatrices<FqDefault>,
-) -> Result<[u8; 32], SpartanMatrixError> {
+///
+/// The digest domain is intentionally field-neutral. A protocol that supports
+/// more than one field must bind the field choice in its transcript session or
+/// instance; canonical coefficient encodings need not identify their field.
+pub(crate) fn constraint_matrix_digest<F>(
+    matrices: &ConstraintMatrices<F>,
+) -> Result<[u8; 32], SpartanMatrixError>
+where
+    F: ConstField + Copy + Encoding<[u8]>,
+{
     matrices
         .validate_shape()
         .map_err(|_| SpartanMatrixError::InvalidR1csShape)?;
 
     let mut hash = Sha256::new();
-    hash.update(b"f2z/spartan/q100-constraint-matrices/v1");
+    hash.update(b"f2z/spartan/constraint-matrices/v1");
 
     hash.update(b"M");
     hash_usize(&mut hash, matrices.m.row_count())?;
@@ -354,17 +333,23 @@ pub(crate) fn constraint_matrix_digest(
     Ok(hash.finalize().into())
 }
 
-fn hash_sparse_matrix(
+fn hash_sparse_matrix<F>(
     hash: &mut Sha256,
-    matrix: &SparseMatrix<FqDefault>,
-) -> Result<(), SpartanMatrixError> {
+    matrix: &SparseMatrix<F>,
+) -> Result<(), SpartanMatrixError>
+where
+    F: Encoding<[u8]>,
+{
     hash_usize(hash, matrix.row_count())?;
     hash_usize(hash, matrix.column_count())?;
     for row in matrix.rows() {
         hash_usize(hash, row.entries().len())?;
-        for &(column, coefficient) in row.entries() {
-            hash_usize(hash, column)?;
-            hash.update(coefficient.encode().as_ref());
+        for (column, coefficient) in row.entries() {
+            hash_usize(hash, *column)?;
+            let encoding = coefficient.encode();
+            let bytes = encoding.as_ref();
+            hash_usize(hash, bytes.len())?;
+            hash.update(bytes);
         }
     }
     Ok(())
