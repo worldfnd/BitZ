@@ -138,7 +138,7 @@ At $q = 2^{100} - 15$ this is $d \le 27$, leaving $s \ge m - 27$. The verifier r
 
 Six steps, in this order, each running exactly once. There is no loop: one fold, one grand product, one GKR invocation, one linear claim.
 
-This section is the only normative statement of the sequence. Each step gives the prover's action, the message and its channel, and the verifier's obligations in the order they must fire.
+This section is the only normative statement of the sequence [albert: could we avoid these AI expressions that don't mean anything :D ? What is a "normative statement", why can a section be a "statement", and why are the previous sections not "normative statements"?]. Each step gives the prover's action, the message and its channel, and the verifier's obligations in the order they must fire.
 
 ### Step 1 — Commit and bind the statement
 
