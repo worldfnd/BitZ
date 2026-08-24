@@ -28,7 +28,6 @@
 //! [*More Optimizations to Sum-Check Proving*]: https://eprint.iacr.org/2024/1210.pdf
 
 use crypto_primitives::ConstField;
-use field::FqDefault;
 use poly::DenseMultilinearExtension;
 use rayon::prelude::*;
 use transcript::{Encoding, ProverState, TranscriptChallenge, VerifierState};
@@ -439,18 +438,25 @@ impl<F: Copy> R1csProductTableBuffers<F> {
 /// `initial_claim = sum_y batched_matrix(y) * witness(y)`
 ///
 /// over the shared Boolean domain of the two MLEs.
-pub fn prove_inner_sumcheck(
+///
+/// When a protocol supports more than one choice of `F`, its transcript
+/// session or instance must bind that choice so proofs from different fields
+/// occupy distinct Fiat–Shamir domains.
+pub fn prove_inner_sumcheck<F>(
     transcript: &mut ProverState,
-    initial_claim: FqDefault,
-    batched_matrix_mle: DenseMultilinearExtension<FqDefault>,
-    witness_mle: DenseMultilinearExtension<FqDefault>,
-) -> Result<InnerSumcheckOutput<FqDefault>, SumcheckError> {
+    initial_claim: F,
+    batched_matrix_mle: DenseMultilinearExtension<F>,
+    witness_mle: DenseMultilinearExtension<F>,
+) -> Result<InnerSumcheckOutput<F>, SumcheckError>
+where
+    F: ConstField + Copy + Encoding<[u8]> + TranscriptChallenge,
+{
     let num_vars = batched_matrix_mle.num_vars();
     if witness_mle.num_vars() != num_vars {
         return Err(SumcheckError::InvalidProductDimensions);
     }
 
-    let zero = FqDefault::from(0u128);
+    let zero = F::ZERO;
     let mut batched_matrix = batched_matrix_mle.into_evaluations();
     let mut witness = witness_mle.into_evaluations();
     let mut current_claim = initial_claim;
@@ -477,14 +483,13 @@ pub fn prove_inner_sumcheck(
             sum_inner_round_coefficients_without_linear(&batched_matrix, &witness);
 
         for _round in 0..num_vars {
-            let challenge =
-                recover_full_round_polynomial_and_sample_next_challenge::<FqDefault, 2, 3>(
-                    transcript,
-                    &mut current_claim,
-                    coefficients_without_linear,
-                    &mut round_polynomials,
-                    &mut eval_points,
-                );
+            let challenge = recover_full_round_polynomial_and_sample_next_challenge(
+                transcript,
+                &mut current_claim,
+                coefficients_without_linear,
+                &mut round_polynomials,
+                &mut eval_points,
+            );
 
             let next_len = batched_matrix.len() / 2;
             debug_assert_eq!(witness.len() / 2, next_len);
@@ -540,10 +545,13 @@ pub fn prove_inner_sumcheck(
 }
 
 #[inline]
-fn compute_inner_pair_coefficients_without_linear(
-    batched_matrix: [FqDefault; 2],
-    witness: [FqDefault; 2],
-) -> [FqDefault; 2] {
+fn compute_inner_pair_coefficients_without_linear<F>(
+    batched_matrix: [F; 2],
+    witness: [F; 2],
+) -> [F; 2]
+where
+    F: ConstField + Copy,
+{
     let [matrix_zero, matrix_one] = batched_matrix;
     let [witness_zero, witness_one] = witness;
 
@@ -553,14 +561,14 @@ fn compute_inner_pair_coefficients_without_linear(
     ]
 }
 
-fn sum_inner_round_coefficients_without_linear(
-    batched_matrix: &[FqDefault],
-    witness: &[FqDefault],
-) -> [FqDefault; 2] {
+fn sum_inner_round_coefficients_without_linear<F>(batched_matrix: &[F], witness: &[F]) -> [F; 2]
+where
+    F: ConstField + Copy,
+{
     debug_assert_eq!(batched_matrix.len(), witness.len());
     debug_assert!(batched_matrix.len() >= 2);
 
-    let zero = FqDefault::from(0u128);
+    let zero = F::ZERO;
     let pair_count = batched_matrix.len() / 2;
 
     if should_parallelize(pair_count) {
@@ -579,7 +587,7 @@ fn sum_inner_round_coefficients_without_linear(
                     )
                 },
             )
-            .reduce(|| [zero; 2], add_coefficients::<FqDefault, 2>)
+            .reduce(|| [zero; 2], add_coefficients::<F, 2>)
     } else {
         batched_matrix
             .chunks_exact(2)
@@ -597,13 +605,16 @@ fn sum_inner_round_coefficients_without_linear(
 }
 
 #[inline]
-fn fold_inner_chunk(
-    batched_matrix: &[FqDefault],
-    witness: &[FqDefault],
-    batched_matrix_output: &mut [FqDefault],
-    witness_output: &mut [FqDefault],
-    challenge: FqDefault,
-) -> [FqDefault; 2] {
+fn fold_inner_chunk<F>(
+    batched_matrix: &[F],
+    witness: &[F],
+    batched_matrix_output: &mut [F],
+    witness_output: &mut [F],
+    challenge: F,
+) -> [F; 2]
+where
+    F: ConstField + Copy,
+{
     debug_assert_eq!(batched_matrix.len(), 4);
     debug_assert_eq!(witness.len(), 4);
     debug_assert_eq!(batched_matrix_output.len(), 2);
@@ -626,19 +637,22 @@ fn fold_inner_chunk(
 /// Binds the current variable in both tables and simultaneously prepares the
 /// next round's `[c0, c2]`. The challenge has already been sampled, so this
 /// does not move any work across the Fiat-Shamir boundary.
-fn fold_and_compute_next_inner_round_coefficients_without_linear(
-    batched_matrix: &[FqDefault],
-    witness: &[FqDefault],
-    batched_matrix_output: &mut [FqDefault],
-    witness_output: &mut [FqDefault],
-    challenge: FqDefault,
-) -> [FqDefault; 2] {
+fn fold_and_compute_next_inner_round_coefficients_without_linear<F>(
+    batched_matrix: &[F],
+    witness: &[F],
+    batched_matrix_output: &mut [F],
+    witness_output: &mut [F],
+    challenge: F,
+) -> [F; 2]
+where
+    F: ConstField + Copy,
+{
     debug_assert_eq!(batched_matrix.len(), witness.len());
     debug_assert!(batched_matrix.len() >= 4);
     debug_assert_eq!(batched_matrix_output.len(), batched_matrix.len() / 2);
     debug_assert_eq!(witness_output.len(), witness.len() / 2);
 
-    let zero = FqDefault::from(0u128);
+    let zero = F::ZERO;
     let chunk_count = batched_matrix.len() / 4;
 
     if should_parallelize(chunk_count) {
@@ -656,7 +670,7 @@ fn fold_and_compute_next_inner_round_coefficients_without_linear(
                     )
                 },
             )
-            .reduce(|| [zero; 2], add_coefficients::<FqDefault, 2>)
+            .reduce(|| [zero; 2], add_coefficients::<F, 2>)
     } else {
         batched_matrix
             .chunks_exact(4)
@@ -1074,6 +1088,7 @@ mod tests {
     const SESSION: &[u8] = b"spartan/outer-sumcheck/test";
     const F128_SESSION: &[u8] = b"spartan/outer-sumcheck/f128/test";
     const INNER_SESSION: &[u8] = b"spartan/inner-sumcheck/test";
+    const F128_INNER_SESSION: &[u8] = b"spartan/inner-sumcheck/f128/test";
 
     fn fq(value: u128) -> FqDefault {
         FqDefault::from(value)
@@ -1526,41 +1541,57 @@ mod tests {
         );
     }
 
-    struct InnerSumcheckTestInputs {
-        initial_claim: FqDefault,
-        batched_matrix_mle: DenseMultilinearExtension<FqDefault>,
-        witness_mle: DenseMultilinearExtension<FqDefault>,
+    struct InnerSumcheckTestInputs<F> {
+        initial_claim: F,
+        batched_matrix_mle: DenseMultilinearExtension<F>,
+        witness_mle: DenseMultilinearExtension<F>,
     }
 
     #[test]
     fn inner_sumcheck_proves_matrix_products() {
         for num_column_vars in [0, 1, 3, 12, 13] {
-            check_inner_sumcheck(build_inner_sumcheck_inputs(2, num_column_vars));
+            check_inner_sumcheck(
+                INNER_SESSION,
+                build_inner_sumcheck_inputs::<FqDefault>(2, num_column_vars),
+            );
+            check_inner_sumcheck(
+                F128_INNER_SESSION,
+                build_inner_sumcheck_inputs::<F128>(2, num_column_vars),
+            );
         }
     }
 
-    fn build_inner_sumcheck_inputs(
+    fn build_inner_sumcheck_inputs<F>(
         num_row_vars: usize,
         num_column_vars: usize,
-    ) -> InnerSumcheckTestInputs {
+    ) -> InnerSumcheckTestInputs<F>
+    where
+        F: ConstField + Copy,
+    {
         assert!(num_row_vars < usize::BITS as usize);
         assert!(num_column_vars < usize::BITS as usize);
 
         let num_rows = 1usize << num_row_vars;
         let num_columns = 1usize << num_column_vars;
         let matrix_len = num_rows.checked_mul(num_columns).unwrap();
-        let zero = FqDefault::from(0u128);
+        let zero = F::ZERO;
         let mut rng = Pcg64::seed_from_u64(
             0x1a2b_3c4d ^ ((num_row_vars as u64) << 32) ^ num_column_vars as u64,
         );
 
-        let matrix: Vec<FqDefault> = (0..matrix_len).map(|_| rng.random()).collect();
-        let witness_values: Vec<FqDefault> = (0..num_columns).map(|_| rng.random()).collect();
-        let row_point: Vec<FqDefault> = (0..num_row_vars).map(|_| rng.random()).collect();
+        let matrix: Vec<F> = (0..matrix_len)
+            .map(|_| F::from(rng.random::<u128>()))
+            .collect();
+        let witness_values: Vec<F> = (0..num_columns)
+            .map(|_| F::from(rng.random::<u128>()))
+            .collect();
+        let row_point: Vec<F> = (0..num_row_vars)
+            .map(|_| F::from(rng.random::<u128>()))
+            .collect();
         let row_weights = poly::eq_table(&row_point);
 
         // Compute A * w, then evaluate its row MLE at r_x.
-        let matrix_times_witness: Vec<FqDefault> = matrix
+        let matrix_times_witness: Vec<F> = matrix
             .chunks_exact(num_columns)
             .map(|row| {
                 row.iter()
@@ -1576,7 +1607,7 @@ mod tests {
             .fold(zero, |sum, (&weight, &value)| sum + weight * value);
 
         // Bind the row variables: D = A^T * eq(r_x).
-        let batched_matrix_values: Vec<FqDefault> = (0..num_columns)
+        let batched_matrix_values: Vec<F> = (0..num_columns)
             .map(|column| {
                 (0..num_rows).fold(zero, |sum, row| {
                     sum + matrix[row * num_columns + column] * row_weights[row]
@@ -1605,7 +1636,10 @@ mod tests {
         }
     }
 
-    fn check_inner_sumcheck(inputs: InnerSumcheckTestInputs) {
+    fn check_inner_sumcheck<F>(session: &[u8], inputs: InnerSumcheckTestInputs<F>)
+    where
+        F: ConstField + Copy + Encoding<[u8]> + TranscriptChallenge,
+    {
         let InnerSumcheckTestInputs {
             initial_claim,
             batched_matrix_mle,
@@ -1617,21 +1651,21 @@ mod tests {
         let expected_batched_matrix = batched_matrix_mle.clone();
         let expected_witness = witness_mle.clone();
         let instance = (num_vars as u64).to_le_bytes();
-        let mut prover = build_prover(INNER_SESSION, &instance);
+        let mut prover = build_prover(session, &instance);
 
         let output =
             prove_inner_sumcheck(&mut prover, initial_claim, batched_matrix_mle, witness_mle)
                 .unwrap();
-        let next_prover_challenge = prover.squeeze::<FqDefault>();
+        let next_prover_challenge = prover.squeeze::<F>();
         let transcript_proof = prover.finish();
 
-        let mut verifier = build_verifier(INNER_SESSION, &instance, &transcript_proof);
+        let mut verifier = build_verifier(session, &instance, &transcript_proof);
         let (verifier_points, verifier_final_claim) = output
             .sumcheck
             .proof
             .verify(&mut verifier, initial_claim, num_vars)
             .unwrap();
-        let next_verifier_challenge = verifier.squeeze::<FqDefault>();
+        let next_verifier_challenge = verifier.squeeze::<F>();
         verifier.check_eof().unwrap();
 
         assert_eq!(output.sumcheck.proof.round_polynomials.len(), num_vars);

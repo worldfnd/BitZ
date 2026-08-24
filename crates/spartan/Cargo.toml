@@ -7,7 +7,6 @@ license.workspace = true
 
 [dependencies]
 crypto-primitives = { workspace = true }
-field = { path = "../field", features = ["spongefish"] }
 poly = { path = "../poly" }
 rayon = { workspace = true }
 transcript = { path = "../transcript" }
