@@ -1,7 +1,31 @@
-//! Shared Spartan sumcheck interfaces.
+//! Spartan sumcheck proving and verification.
+//!
+//! This module implements the reusable sumcheck reduction and Spartan's
+//! equality-weighted outer sumcheck.
+//!
+//! The prover implements parts of [*More Optimizations to Sum-Check Proving*].
+//!
+//! # Prover optimizations
+//!
+//! 1. **Missing-at-one coefficient reconstruction.** The round kernel computes
+//!    `[c0, c2, c3]` and derives `c1` from `g_i(0) + g_i(1) = claim`. This avoids
+//!    an independent evaluation at `1` and requires neither interpolation nor
+//!    inversion.
+//! 2. **Split equality tables.** `eq(tau, x)` is represented by low/high
+//!    factors. A balanced split stores roughly `2 * 2^(n/2)` entries instead of
+//!    `2^n`, then folds the low and high factors separately.
+//! 3. **Parallel round accumulation.** Large round sums use Rayon, while sums
+//!    below the `2^12` contribution threshold remain sequential.
+//! 4. **Fold/round fusion.** Once round `i` has been absorbed and its challenge
+//!    sampled, the prover folds the active tables and accumulates round
+//!    `i + 1` from those freshly folded values in the same traversal.
+//! 5. **Reusable scratch tables.** Product and equality folds ping-pong between
+//!    preallocated buffers instead of allocating a new destination each round.
 //!
 //! The reusable verifier lives on [`SumcheckProof`]. Protocol-specific code is
 //! responsible for checking the terminal claim produced by that reduction.
+//!
+//! [*More Optimizations to Sum-Check Proving*]: https://eprint.iacr.org/2024/1210.pdf
 
 use field::{FqDefault, Q100};
 use poly::DenseMultilinearExtension;
@@ -40,87 +64,6 @@ impl From<poly::EqEvalError> for SumcheckError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SumcheckProof<F, const COEFFS: usize> {
     pub round_polynomials: Vec<[F; COEFFS]>,
-}
-
-/// Local output produced while writing a sumcheck proof to the transcript.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SumcheckProverOutput<F, const COEFFS: usize> {
-    pub proof: SumcheckProof<F, COEFFS>,
-
-    /// Transcript-derived challenges.
-    pub eval_points: Vec<F>,
-
-    /// Running claim after the final round.
-    pub final_claim: F,
-}
-
-/// Dense Boolean-row MLEs for `Az`, `Bz`, and `Cz`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct R1csProductMles<F> {
-    pub az: DenseMultilinearExtension<F>,
-    pub bz: DenseMultilinearExtension<F>,
-    pub cz: DenseMultilinearExtension<F>,
-}
-
-/// Prover messages for the complete Spartan outer sumcheck.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct OuterSumcheckProof<F> {
-    /// Cubic round polynomials, stored as `[c0, c1, c2, c3]`.
-    pub sumcheck: SumcheckProof<F, 4>,
-
-    /// `[Az(r_x), Bz(r_x), Cz(r_x)]`.
-    pub product_evaluations: [F; 3],
-}
-
-/// Local result of the outer-sumcheck prover.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct OuterSumcheckOutput<F> {
-    pub proof: OuterSumcheckProof<F>,
-
-    /// Transcript-derived outer evaluation point `r_x`.
-    pub eval_points: Vec<F>,
-
-    /// Running claim after the final round.
-    pub final_claim: F,
-}
-
-/// Result returned after the verifier checks the outer terminal equation.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct OuterSumcheckVerifierOutput<F> {
-    /// Transcript-derived outer evaluation point `r_x`.
-    pub eval_points: Vec<F>,
-
-    /// `[Az(r_x), Bz(r_x), Cz(r_x)]` supplied by and absorbed from the proof.
-    pub product_evaluations: [F; 3],
-}
-
-pub(crate) trait FqChallengeSource {
-    fn squeeze_u128(&mut self) -> u128;
-}
-
-impl FqChallengeSource for ProverState {
-    fn squeeze_u128(&mut self) -> u128 {
-        self.verifier_message()
-    }
-}
-
-impl FqChallengeSource for VerifierState<'_> {
-    fn squeeze_u128(&mut self) -> u128 {
-        self.verifier_message()
-    }
-}
-
-const REJECTION_REMAINDER: u128 = (u128::MAX % Q100 + 1) % Q100;
-const MAX_ACCEPTED_CHALLENGE: u128 = u128::MAX - REJECTION_REMAINDER;
-
-/// Draws an exactly uniform Q100 element from 128-bit transcript squeezes.
-pub(crate) fn challenge_fq(transcript: &mut impl FqChallengeSource) -> FqDefault {
-    loop {
-        let candidate = transcript.squeeze_u128();
-        if candidate <= MAX_ACCEPTED_CHALLENGE {
-            return FqDefault::from(candidate);
-        }
-    }
 }
 
 impl<const COEFFS: usize> SumcheckProof<FqDefault, COEFFS> {
@@ -179,38 +122,222 @@ impl<const COEFFS: usize> SumcheckProof<FqDefault, COEFFS> {
     }
 }
 
+/// Local output produced while writing a sumcheck proof to the transcript.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SumcheckProverOutput<F, const COEFFS: usize> {
+    pub proof: SumcheckProof<F, COEFFS>,
+
+    /// Transcript-derived challenges.
+    pub eval_points: Vec<F>,
+
+    /// Running claim after the final round.
+    pub final_claim: F,
+}
+
+/// Dense Boolean-row MLEs for `Az`, `Bz`, and `Cz`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct R1csProductMles<F> {
+    pub az: DenseMultilinearExtension<F>,
+    pub bz: DenseMultilinearExtension<F>,
+    pub cz: DenseMultilinearExtension<F>,
+}
+
+/// Prover messages for the complete Spartan outer sumcheck.
+///
+/// The cubic rounds reduce the equality-weighted R1CS residual
+///
+/// `sum_x eq(tau, x) * (Az(x) * Bz(x) - Cz(x))`
+///
+/// to a claim at the transcript-derived point `r_x`. After the final round, the
+/// proof supplies the three claimed terminal MLE evaluations needed to check
+///
+/// `final_claim = eq(tau, r_x) * (Az(r_x) * Bz(r_x) - Cz(r_x))`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OuterSumcheckProof<F> {
+    /// Cubic round proof for the equality-weighted R1CS residual.
+    ///
+    /// Each round polynomial is stored in coefficient form as
+    /// `[c0, c1, c2, c3]`.
+    pub sumcheck: SumcheckProof<F, 4>,
+
+    /// Claimed terminal evaluation `Az(r_x)`.
+    pub az_mle_claim: F,
+
+    /// Claimed terminal evaluation `Bz(r_x)`.
+    pub bz_mle_claim: F,
+
+    /// Claimed terminal evaluation `Cz(r_x)`.
+    ///
+    /// The three MLE claims are absorbed after all cubic round polynomials.
+    /// The outer verifier checks their terminal residual identity; the
+    /// subsequent inner sumcheck ties their batched value to the R1CS matrices
+    /// and assignment.
+    pub cz_mle_claim: F,
+}
+
+/// Local result of the outer-sumcheck prover.
+///
+/// In each round, the prover absorbs a cubic round polynomial and then samples
+/// one evaluation coordinate from the transcript. In round order, these
+/// coordinates form `r_x = eval_points`. At termination,
+///
+/// `final_claim = eq(tau, r_x) * (Az(r_x) * Bz(r_x) - Cz(r_x))`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OuterSumcheckOutput<F> {
+    /// All transcript-bound outer-sumcheck messages: the cubic round proof and
+    /// terminal evaluations `[Az(r_x), Bz(r_x), Cz(r_x)]`.
+    pub proof: OuterSumcheckProof<F>,
+
+    /// Transcript-sampled outer evaluation point `r_x`, in round order.
+    ///
+    /// This is prover-local derived output, not a separately encoded proof
+    /// message.
+    pub eval_points: Vec<F>,
+
+    /// Terminal running claim after evaluating the last round polynomial at
+    /// the final coordinate of `r_x`.
+    ///
+    /// This value is derived from the round messages and transcript challenges;
+    /// it is not a separate outer-sumcheck proof message.
+    pub final_claim: F,
+}
+
+/// Result returned after the verifier checks the outer terminal equation.
+///
+/// The verifier returns this only after checking every cubic round reduction
+/// and the terminal equality-weighted R1CS residual identity. The caller uses
+/// the returned point and evaluations to construct the subsequent inner
+/// sumcheck claim.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OuterSumcheckVerifierOutput<F> {
+    /// Transcript-sampled outer evaluation point `r_x`, replayed while checking
+    /// the cubic round proof.
+    pub eval_points: Vec<F>,
+
+    /// Claimed terminal evaluation `Az(r_x)`.
+    pub az_mle_claim: F,
+
+    /// Claimed terminal evaluation `Bz(r_x)`.
+    pub bz_mle_claim: F,
+
+    /// Claimed terminal evaluation `Cz(r_x)`.
+    ///
+    /// The outer verifier has checked the equality-weighted residual of these
+    /// three claims. Their consistency with the R1CS matrices and assignment
+    /// is deferred to the subsequent inner sumcheck.
+    pub cz_mle_claim: F,
+}
+
+impl OuterSumcheckProof<FqDefault> {
+    /// Verifies the outer reduction and its terminal R1CS identity.
+    pub fn verify(
+        &self,
+        transcript: &mut VerifierState<'_>,
+        initial_claim: FqDefault,
+        tau: &[FqDefault],
+    ) -> Result<OuterSumcheckVerifierOutput<FqDefault>, SumcheckError> {
+        let (eval_points, final_claim) =
+            self.sumcheck.verify(transcript, initial_claim, tau.len())?;
+
+        transcript.public_message(&[self.az_mle_claim, self.bz_mle_claim, self.cz_mle_claim]);
+        let expected_claim = poly::eq_eval(tau, &eval_points)?
+            * (self.az_mle_claim * self.bz_mle_claim - self.cz_mle_claim);
+
+        if final_claim != expected_claim {
+            return Err(SumcheckError::InvalidTerminalClaim);
+        }
+
+        Ok(OuterSumcheckVerifierOutput {
+            eval_points,
+            az_mle_claim: self.az_mle_claim,
+            bz_mle_claim: self.bz_mle_claim,
+            cz_mle_claim: self.cz_mle_claim,
+        })
+    }
+}
+
+pub(crate) trait FqChallengeSource {
+    fn squeeze_u128(&mut self) -> u128;
+}
+
+impl FqChallengeSource for ProverState {
+    fn squeeze_u128(&mut self) -> u128 {
+        self.verifier_message()
+    }
+}
+
+impl FqChallengeSource for VerifierState<'_> {
+    fn squeeze_u128(&mut self) -> u128 {
+        self.verifier_message()
+    }
+}
+
+const REJECTION_REMAINDER: u128 = (u128::MAX % Q100 + 1) % Q100;
+const MAX_ACCEPTED_CHALLENGE: u128 = u128::MAX - REJECTION_REMAINDER;
+
+/// Draws an exactly uniform Q100 element from 128-bit transcript squeezes.
+pub(crate) fn challenge_fq(transcript: &mut impl FqChallengeSource) -> FqDefault {
+    loop {
+        let candidate = transcript.squeeze_u128();
+        if candidate <= MAX_ACCEPTED_CHALLENGE {
+            return FqDefault::from(candidate);
+        }
+    }
+}
+
 /// Proves a Spartan outer-sumcheck claim.
 ///
 pub fn prove_outer_sumcheck(
     transcript: &mut ProverState,
     initial_claim: FqDefault,
-    (mut eq_low, mut eq_high): (
+    (eq_low, eq_high): (
         DenseMultilinearExtension<FqDefault>,
         DenseMultilinearExtension<FqDefault>,
     ),
-    mut products: R1csProductMles<FqDefault>,
+    products: R1csProductMles<FqDefault>,
 ) -> Result<OuterSumcheckOutput<FqDefault>, SumcheckError> {
     let num_vars = products.az.num_vars();
     if products.bz.num_vars() != num_vars || products.cz.num_vars() != num_vars {
         return Err(SumcheckError::InvalidProductDimensions);
     }
 
-    let split = eq_low.num_vars();
-    if split
+    if eq_low
+        .num_vars()
         .checked_add(eq_high.num_vars())
         .is_none_or(|eq_vars| eq_vars != num_vars)
     {
         return Err(SumcheckError::InvalidEqualityDimensions);
     }
 
+    let zero = FqDefault::from(0u128);
+    let mut eq_low: Vec<_> = eq_low.into_iter().collect();
+    let mut eq_high: Vec<_> = eq_high.into_iter().collect();
+    let mut products = R1csProductTableBuffers::from_mles(products);
+
+    // Each destination is allocated once at half the initial table size. After
+    // a fold, swapping makes the old input allocation the next scratch table.
+    // Every active scratch entry is overwritten before it is read.
+    let mut product_scratch = R1csProductTableBuffers::filled(products.len() / 2, zero);
+    let mut eq_low_scratch = vec![zero; eq_low.len() / 2];
+    let mut eq_high_scratch = vec![zero; eq_high.len() / 2];
+
     let mut current_claim = initial_claim;
     let mut eval_points = Vec::with_capacity(num_vars);
     let mut round_polynomials = Vec::with_capacity(num_vars);
+    let mut coefficients_without_linear = if eq_low.len() > 1 {
+        compute_coefficients_without_linear(&products, factorized_equality_pairs(&eq_low, &eq_high))
+    } else if eq_high.len() > 1 {
+        compute_coefficients_without_linear(&products, scaled_equality_pairs(eq_low[0], &eq_high))
+    } else {
+        [zero; 3]
+    };
 
-    for _round in 0..split {
-        let coefficients_without_linear =
-            compute_coefficients_without_linear_with_two_eq(&eq_low, &eq_high, &products);
-        let challenge = prove_round(
+    // Bind the low equality variables first. The small equality factor is
+    // folded separately because each of its entries is shared by every high
+    // suffix; the product traversal then both folds and prepares the next
+    // round polynomial from register-resident outputs.
+    while eq_low.len() > 1 {
+        let challenge = recover_full_round_polynomial_and_sample_next_challenge(
             transcript,
             &mut current_claim,
             coefficients_without_linear,
@@ -218,23 +345,44 @@ pub fn prove_outer_sumcheck(
             &mut eval_points,
         );
 
-        fold_product_mles(&mut products, challenge)?;
-        eq_low
-            .fold(&[challenge])
-            .map_err(|_| SumcheckError::InvalidMleOperation)?;
+        let next_product_len = products.len() / 2;
+        let next_eq_low_len = eq_low.len() / 2;
+        product_scratch.truncate(next_product_len);
+        eq_low_scratch.truncate(next_eq_low_len);
+        fold_table(&eq_low, &mut eq_low_scratch, challenge);
+
+        if next_eq_low_len > 1 {
+            coefficients_without_linear = fold_products_and_compute_next(
+                &products,
+                &mut product_scratch,
+                challenge,
+                factorized_equality_pairs(&eq_low_scratch, &eq_high),
+            );
+        } else if eq_high.len() > 1 {
+            // Binding the last low variable crosses into the high factor.
+            // `eq_high` is already the next round's active equality table.
+            debug_assert_eq!(next_product_len, eq_high.len());
+            coefficients_without_linear = fold_products_and_compute_next(
+                &products,
+                &mut product_scratch,
+                challenge,
+                scaled_equality_pairs(eq_low_scratch[0], &eq_high),
+            );
+        } else {
+            debug_assert_eq!(next_product_len, 1);
+            fold_product_tables(&products, &mut product_scratch, challenge);
+        }
+
+        products.swap(&mut product_scratch);
+        std::mem::swap(&mut eq_low, &mut eq_low_scratch);
     }
 
-    let expected_bound_len = 1usize << (num_vars - split);
-    debug_assert_eq!(products.az.len(), expected_bound_len);
-    debug_assert_eq!(products.az.len(), products.bz.len());
-    debug_assert_eq!(products.az.len(), products.cz.len());
     debug_assert_eq!(eq_low.len(), 1);
+    debug_assert_eq!(products.len(), eq_high.len());
 
     let eq_scale = eq_low[0];
-    for _round in split..num_vars {
-        let coefficients_without_linear =
-            compute_round_coefficients_without_linear_with_one_eq(eq_scale, &eq_high, &products);
-        let challenge = prove_round(
+    while eq_high.len() > 1 {
+        let challenge = recover_full_round_polynomial_and_sample_next_challenge(
             transcript,
             &mut current_claim,
             coefficients_without_linear,
@@ -242,51 +390,99 @@ pub fn prove_outer_sumcheck(
             &mut eval_points,
         );
 
-        fold_product_mles(&mut products, challenge)?;
-        eq_high
-            .fold(&[challenge])
-            .map_err(|_| SumcheckError::InvalidMleOperation)?;
+        let next_eq_high_len = eq_high.len() / 2;
+        debug_assert_eq!(products.len() / 2, next_eq_high_len);
+        product_scratch.truncate(next_eq_high_len);
+        eq_high_scratch.truncate(next_eq_high_len);
+
+        if next_eq_high_len == 1 {
+            fold_products_and_eq(
+                &products,
+                &mut product_scratch,
+                &eq_high,
+                &mut eq_high_scratch,
+                challenge,
+            );
+        } else {
+            fold_table(&eq_high, &mut eq_high_scratch, challenge);
+            coefficients_without_linear = fold_products_and_compute_next(
+                &products,
+                &mut product_scratch,
+                challenge,
+                scaled_equality_pairs(eq_scale, &eq_high_scratch),
+            );
+        }
+
+        products.swap(&mut product_scratch);
+        std::mem::swap(&mut eq_high, &mut eq_high_scratch);
     }
 
-    let product_evaluations = [products.az[0], products.bz[0], products.cz[0]];
-    let [a, b, c] = product_evaluations;
-    debug_assert_eq!(current_claim, eq_low[0] * eq_high[0] * (a * b - c));
+    let az_mle_claim = products.az[0];
+    let bz_mle_claim = products.bz[0];
+    let cz_mle_claim = products.cz[0];
+    debug_assert_eq!(
+        current_claim,
+        eq_low[0] * eq_high[0] * (az_mle_claim * bz_mle_claim - cz_mle_claim)
+    );
 
-    transcript.public_message(&product_evaluations);
+    transcript.public_message(&[az_mle_claim, bz_mle_claim, cz_mle_claim]);
 
     Ok(OuterSumcheckOutput {
         proof: OuterSumcheckProof {
             sumcheck: SumcheckProof { round_polynomials },
-            product_evaluations,
+            az_mle_claim,
+            bz_mle_claim,
+            cz_mle_claim,
         },
         eval_points,
         final_claim: current_claim,
     })
 }
 
-/// Verifies the outer reduction and its terminal R1CS identity.
-pub fn verify_outer_sumcheck(
-    transcript: &mut VerifierState<'_>,
-    initial_claim: FqDefault,
-    proof: &OuterSumcheckProof<FqDefault>,
-    tau: &[FqDefault],
-) -> Result<OuterSumcheckVerifierOutput<FqDefault>, SumcheckError> {
-    let (eval_points, final_claim) = proof
-        .sumcheck
-        .verify(transcript, initial_claim, tau.len())?;
+/// Owned evaluation tables used by the fused outer-sumcheck kernels.
+struct R1csProductTableBuffers<F> {
+    az: Vec<F>,
+    bz: Vec<F>,
+    cz: Vec<F>,
+}
 
-    transcript.public_message(&proof.product_evaluations);
-    let [a, b, c] = proof.product_evaluations;
-    let expected_claim = poly::eq_eval(tau, &eval_points)? * (a * b - c);
-
-    if final_claim != expected_claim {
-        return Err(SumcheckError::InvalidTerminalClaim);
+impl<F: Copy> R1csProductTableBuffers<F> {
+    fn from_mles(products: R1csProductMles<F>) -> Self {
+        Self {
+            az: products.az.into_iter().collect(),
+            bz: products.bz.into_iter().collect(),
+            cz: products.cz.into_iter().collect(),
+        }
     }
 
-    Ok(OuterSumcheckVerifierOutput {
-        eval_points,
-        product_evaluations: proof.product_evaluations,
-    })
+    fn filled(len: usize, value: F) -> Self {
+        Self {
+            az: vec![value; len],
+            bz: vec![value; len],
+            cz: vec![value; len],
+        }
+    }
+
+    fn len(&self) -> usize {
+        debug_assert_eq!(self.az.len(), self.bz.len());
+        debug_assert_eq!(self.az.len(), self.cz.len());
+        self.az.len()
+    }
+
+    fn truncate(&mut self, len: usize) {
+        debug_assert!(self.az.len() >= len);
+        debug_assert!(self.bz.len() >= len);
+        debug_assert!(self.cz.len() >= len);
+        self.az.truncate(len);
+        self.bz.truncate(len);
+        self.cz.truncate(len);
+    }
+
+    fn swap(&mut self, other: &mut Self) {
+        std::mem::swap(&mut self.az, &mut other.az);
+        std::mem::swap(&mut self.bz, &mut other.bz);
+        std::mem::swap(&mut self.cz, &mut other.cz);
+    }
 }
 
 #[inline]
@@ -303,7 +499,7 @@ fn sum_coefficients<const COEFFS: usize>(
 ) -> [FqDefault; COEFFS] {
     let zero = FqDefault::from(0u128);
 
-    if len >= PARALLEL_SUMCHECK_THRESHOLD {
+    if should_parallelize(len) {
         (0..len)
             .into_par_iter()
             .map(&contribution)
@@ -313,6 +509,11 @@ fn sum_coefficients<const COEFFS: usize>(
             add_coefficients(sum, contribution(index))
         })
     }
+}
+
+#[inline]
+fn should_parallelize(work_items: usize) -> bool {
+    work_items >= PARALLEL_SUMCHECK_THRESHOLD && rayon::current_num_threads() > 1
 }
 
 #[inline]
@@ -397,7 +598,10 @@ fn evaluate_polynomial<const COEFFS: usize>(
 ///
 /// absorbs the completed polynomial, samples `r_i`, and updates
 /// `current_claim` to `g_i(r_i)`.
-fn prove_round<const INPUT_COEFFS: usize, const COEFFS: usize>(
+fn recover_full_round_polynomial_and_sample_next_challenge<
+    const INPUT_COEFFS: usize,
+    const COEFFS: usize,
+>(
     transcript: &mut ProverState,
     current_claim: &mut FqDefault,
     coefficients_without_linear: [FqDefault; INPUT_COEFFS],
@@ -421,90 +625,208 @@ fn prove_round<const INPUT_COEFFS: usize, const COEFFS: usize>(
     challenge
 }
 
-/// Computes `[c0, c2, c3]` from the currently folded product MLEs while the
-/// active variable belongs to `eq_low`.
-///
-/// After challenges `r_{<i}` have been folded in place, each adjacent pair is
-/// the pair of endpoints at the current variable:
-///
-/// `P_pair(T) = P(r_{<i}, T, s)` for `P in {Az, Bz, Cz}`.
-///
-/// The equality endpoints are reconstructed from the corresponding low and
-/// high suffix indices, and the helper sums
-///
-/// `eq(tau, (r_{<i}, T, s)) * (Az_pair(T) Bz_pair(T) - Cz_pair(T))`
-///
-/// over every remaining Boolean suffix `s`.
-fn compute_coefficients_without_linear_with_two_eq(
-    eq_low: &DenseMultilinearExtension<FqDefault>,
-    eq_high: &DenseMultilinearExtension<FqDefault>,
-    products: &R1csProductMles<FqDefault>,
-) -> [FqDefault; 3] {
-    debug_assert!(eq_low.num_vars() > 0);
+/// Returns pairs from the product of the low and high equality tables without
+/// materializing their tensor product.
+fn factorized_equality_pairs<'a>(
+    eq_low: &'a [FqDefault],
+    eq_high: &'a [FqDefault],
+) -> impl Fn(usize) -> [FqDefault; 2] + Sync + 'a {
+    debug_assert!(eq_low.len() > 1);
 
-    let pair_count = products.az.len() / 2;
-    let low_tail_bits = eq_low.num_vars() - 1;
+    let low_tail_bits = eq_low.len().ilog2() as usize - 1;
     let low_tail_mask = if low_tail_bits == 0 {
         0
     } else {
         (1usize << low_tail_bits) - 1
     };
 
-    sum_coefficients(pair_count, |pair| {
-        let index = 2 * pair;
+    move |pair| {
         let low_tail = pair & low_tail_mask;
-        let high_index = pair >> low_tail_bits;
-        let high_weight = eq_high[high_index];
-
-        cubic_contribution(
-            [
-                eq_low[2 * low_tail] * high_weight,
-                eq_low[2 * low_tail + 1] * high_weight,
-            ],
-            [products.az[index], products.az[index + 1]],
-            [products.bz[index], products.bz[index + 1]],
-            [products.cz[index], products.cz[index + 1]],
-        )
-    })
+        let high_weight = eq_high[pair >> low_tail_bits];
+        [
+            eq_low[2 * low_tail] * high_weight,
+            eq_low[2 * low_tail + 1] * high_weight,
+        ]
+    }
 }
 
-/// Binds the current (lowest-index) variable of all three product MLEs to the
-/// transcript challenge.
-fn fold_product_mles(
-    products: &mut R1csProductMles<FqDefault>,
-    challenge: FqDefault,
-) -> Result<(), SumcheckError> {
-    products
-        .az
-        .fold(&[challenge])
-        .map_err(|_| SumcheckError::InvalidMleOperation)?;
-    products
-        .bz
-        .fold(&[challenge])
-        .map_err(|_| SumcheckError::InvalidMleOperation)?;
-    products
-        .cz
-        .fold(&[challenge])
-        .map_err(|_| SumcheckError::InvalidMleOperation)?;
-    Ok(())
+/// Returns adjacent pairs from an equality table, multiplied by the equality
+/// factors that have already been fully bound.
+fn scaled_equality_pairs(
+    scale: FqDefault,
+    eq: &[FqDefault],
+) -> impl Fn(usize) -> [FqDefault; 2] + Sync + '_ {
+    move |pair| {
+        let index = 2 * pair;
+        [scale * eq[index], scale * eq[index + 1]]
+    }
 }
 
-fn compute_round_coefficients_without_linear_with_one_eq(
-    eq_scale: FqDefault,
-    eq_high: &DenseMultilinearExtension<FqDefault>,
-    products: &R1csProductMles<FqDefault>,
+/// Computes `[c0, c2, c3]` from adjacent pairs in the current product tables.
+fn compute_coefficients_without_linear(
+    products: &R1csProductTableBuffers<FqDefault>,
+    equality_pair: impl Fn(usize) -> [FqDefault; 2] + Sync,
 ) -> [FqDefault; 3] {
-    let pair_count = products.az.len() / 2;
+    let pair_count = products.len() / 2;
 
     sum_coefficients(pair_count, |pair| {
         let index = 2 * pair;
         cubic_contribution(
-            [eq_scale * eq_high[index], eq_scale * eq_high[index + 1]],
+            equality_pair(pair),
             [products.az[index], products.az[index + 1]],
             [products.bz[index], products.bz[index + 1]],
             [products.cz[index], products.cz[index + 1]],
         )
     })
+}
+
+#[inline]
+fn interpolate_pair(pair: [FqDefault; 2], challenge: FqDefault) -> FqDefault {
+    let [zero, one] = pair;
+    zero + challenge * (one - zero)
+}
+
+#[inline]
+fn fold_two_pairs(values: &[FqDefault], challenge: FqDefault) -> [FqDefault; 2] {
+    debug_assert_eq!(values.len(), 4);
+    [
+        interpolate_pair([values[0], values[1]], challenge),
+        interpolate_pair([values[2], values[3]], challenge),
+    ]
+}
+
+#[inline]
+fn fold_product_chunk(
+    az: &[FqDefault],
+    bz: &[FqDefault],
+    cz: &[FqDefault],
+    az_output: &mut [FqDefault],
+    bz_output: &mut [FqDefault],
+    cz_output: &mut [FqDefault],
+    challenge: FqDefault,
+) -> [[FqDefault; 2]; 3] {
+    debug_assert_eq!(az_output.len(), 2);
+    debug_assert_eq!(bz_output.len(), 2);
+    debug_assert_eq!(cz_output.len(), 2);
+
+    let folded = [
+        fold_two_pairs(az, challenge),
+        fold_two_pairs(bz, challenge),
+        fold_two_pairs(cz, challenge),
+    ];
+    az_output.copy_from_slice(&folded[0]);
+    bz_output.copy_from_slice(&folded[1]);
+    cz_output.copy_from_slice(&folded[2]);
+    folded
+}
+
+/// Folds one evaluation table into an already initialized destination.
+fn fold_table(input: &[FqDefault], output: &mut [FqDefault], challenge: FqDefault) {
+    debug_assert_eq!(input.len(), 2 * output.len());
+
+    let fold = |(pair, value): (&[FqDefault], &mut FqDefault)| {
+        *value = interpolate_pair([pair[0], pair[1]], challenge);
+    };
+    if should_parallelize(output.len()) {
+        input
+            .par_chunks_exact(2)
+            .zip(output.par_iter_mut())
+            .for_each(fold);
+    } else {
+        input.chunks_exact(2).zip(output.iter_mut()).for_each(fold);
+    }
+}
+
+/// Folds all three product tables into reusable scratch storage.
+fn fold_product_tables(
+    input: &R1csProductTableBuffers<FqDefault>,
+    output: &mut R1csProductTableBuffers<FqDefault>,
+    challenge: FqDefault,
+) {
+    debug_assert_eq!(input.len(), 2 * output.len());
+
+    fold_table(&input.az, &mut output.az, challenge);
+    fold_table(&input.bz, &mut output.bz, challenge);
+    fold_table(&input.cz, &mut output.cz, challenge);
+}
+
+/// Folds all three product tables and accumulates the next round polynomial
+/// from the freshly folded pairs.
+fn fold_products_and_compute_next(
+    input: &R1csProductTableBuffers<FqDefault>,
+    output: &mut R1csProductTableBuffers<FqDefault>,
+    challenge: FqDefault,
+    equality_pair: impl Fn(usize) -> [FqDefault; 2] + Sync,
+) -> [FqDefault; 3] {
+    debug_assert_eq!(input.len(), 2 * output.len());
+
+    let zero = FqDefault::from(0u128);
+    let accumulate = |sum: [FqDefault; 3],
+                      chunk: usize,
+                      az: &[FqDefault],
+                      bz: &[FqDefault],
+                      cz: &[FqDefault],
+                      az_output: &mut [FqDefault],
+                      bz_output: &mut [FqDefault],
+                      cz_output: &mut [FqDefault]| {
+        let [az, bz, cz] =
+            fold_product_chunk(az, bz, cz, az_output, bz_output, cz_output, challenge);
+        add_coefficients(sum, cubic_contribution(equality_pair(chunk), az, bz, cz))
+    };
+
+    let chunk_count = output.len() / 2;
+    if should_parallelize(chunk_count) {
+        (
+            input.az.par_chunks_exact(4),
+            input.bz.par_chunks_exact(4),
+            input.cz.par_chunks_exact(4),
+            output.az.par_chunks_exact_mut(2),
+            output.bz.par_chunks_exact_mut(2),
+            output.cz.par_chunks_exact_mut(2),
+        )
+            .into_par_iter()
+            .enumerate()
+            .fold(
+                || [zero; 3],
+                |sum, (chunk, (az, bz, cz, az_output, bz_output, cz_output))| {
+                    accumulate(sum, chunk, az, bz, cz, az_output, bz_output, cz_output)
+                },
+            )
+            .reduce(|| [zero; 3], add_coefficients::<3>)
+    } else {
+        let mut sum = [zero; 3];
+        for chunk in 0..chunk_count {
+            let input_start = 4 * chunk;
+            let output_start = 2 * chunk;
+            sum = accumulate(
+                sum,
+                chunk,
+                &input.az[input_start..input_start + 4],
+                &input.bz[input_start..input_start + 4],
+                &input.cz[input_start..input_start + 4],
+                &mut output.az[output_start..output_start + 2],
+                &mut output.bz[output_start..output_start + 2],
+                &mut output.cz[output_start..output_start + 2],
+            );
+        }
+        sum
+    }
+}
+
+/// Folds the high equality factor and all product tables together.
+fn fold_products_and_eq(
+    products: &R1csProductTableBuffers<FqDefault>,
+    product_output: &mut R1csProductTableBuffers<FqDefault>,
+    eq: &[FqDefault],
+    eq_output: &mut [FqDefault],
+    challenge: FqDefault,
+) {
+    debug_assert_eq!(products.len(), eq.len());
+    debug_assert_eq!(products.len(), 2 * product_output.len());
+    debug_assert_eq!(eq.len(), 2 * eq_output.len());
+
+    fold_product_tables(products, product_output, challenge);
+    fold_table(eq, eq_output, challenge);
 }
 
 #[cfg(test)]
@@ -677,35 +999,49 @@ mod tests {
         let proof = prover.finish();
 
         let mut verifier = build_verifier(SESSION, &instance, &proof);
-        let verifier_output =
-            verify_outer_sumcheck(&mut verifier, fq(0), &prover_output.proof, &tau).unwrap();
+        let verifier_output = prover_output
+            .proof
+            .verify(&mut verifier, fq(0), &tau)
+            .unwrap();
         verifier.check_eof().unwrap();
 
         assert_eq!(prover_output.eval_points, verifier_output.eval_points);
         assert_eq!(
-            prover_output.proof.product_evaluations,
-            verifier_output.product_evaluations
+            prover_output.proof.az_mle_claim,
+            verifier_output.az_mle_claim
+        );
+        assert_eq!(
+            prover_output.proof.bz_mle_claim,
+            verifier_output.bz_mle_claim
+        );
+        assert_eq!(
+            prover_output.proof.cz_mle_claim,
+            verifier_output.cz_mle_claim
         );
         assert_eq!(
             prover_output.proof.sumcheck.round_polynomials.len(),
             num_vars
         );
         assert_eq!(
-            prover_output.proof.product_evaluations,
-            [
-                expected_products
-                    .az
-                    .evaluate(&prover_output.eval_points)
-                    .unwrap(),
-                expected_products
-                    .bz
-                    .evaluate(&prover_output.eval_points)
-                    .unwrap(),
-                expected_products
-                    .cz
-                    .evaluate(&prover_output.eval_points)
-                    .unwrap(),
-            ]
+            prover_output.proof.az_mle_claim,
+            expected_products
+                .az
+                .evaluate(&prover_output.eval_points)
+                .unwrap()
+        );
+        assert_eq!(
+            prover_output.proof.bz_mle_claim,
+            expected_products
+                .bz
+                .evaluate(&prover_output.eval_points)
+                .unwrap()
+        );
+        assert_eq!(
+            prover_output.proof.cz_mle_claim,
+            expected_products
+                .cz
+                .evaluate(&prover_output.eval_points)
+                .unwrap()
         );
     }
 
@@ -747,21 +1083,70 @@ mod tests {
     }
 
     #[test]
+    fn outer_sumcheck_rejects_dimensions_before_mutating_the_transcript() {
+        let instance = b"invalid-outer-dimensions";
+        let mut invalid_product_prover = build_prover(SESSION, instance);
+        let invalid_products = R1csProductMles {
+            az: DenseMultilinearExtension::zero_vars(fq(1)),
+            bz: DenseMultilinearExtension::from_evaluations(1, vec![fq(2), fq(3)]).unwrap(),
+            cz: DenseMultilinearExtension::zero_vars(fq(4)),
+        };
+        assert_eq!(
+            prove_outer_sumcheck(
+                &mut invalid_product_prover,
+                fq(0),
+                (
+                    DenseMultilinearExtension::zero_vars(fq(1)),
+                    DenseMultilinearExtension::zero_vars(fq(1)),
+                ),
+                invalid_products,
+            ),
+            Err(SumcheckError::InvalidProductDimensions)
+        );
+        let challenge_after_product_error = challenge_fq(&mut invalid_product_prover);
+
+        let mut invalid_equality_prover = build_prover(SESSION, instance);
+        let inputs = build_outer_sumcheck_inputs(1);
+        assert_eq!(
+            prove_outer_sumcheck(
+                &mut invalid_equality_prover,
+                fq(0),
+                (
+                    DenseMultilinearExtension::zero_vars(fq(1)),
+                    DenseMultilinearExtension::zero_vars(fq(1)),
+                ),
+                inputs.products,
+            ),
+            Err(SumcheckError::InvalidEqualityDimensions)
+        );
+        let challenge_after_equality_error = challenge_fq(&mut invalid_equality_prover);
+
+        let mut clean_prover = build_prover(SESSION, instance);
+        let clean_challenge = challenge_fq(&mut clean_prover);
+        assert_eq!(challenge_after_product_error, clean_challenge);
+        assert_eq!(challenge_after_equality_error, clean_challenge);
+    }
+
+    #[test]
     fn outer_verifier_checks_the_zero_round_terminal_claim() {
         let proof = OuterSumcheckProof {
             sumcheck: SumcheckProof {
                 round_polynomials: vec![],
             },
-            product_evaluations: [fq(2), fq(3), fq(6)],
+            az_mle_claim: fq(2),
+            bz_mle_claim: fq(3),
+            cz_mle_claim: fq(6),
         };
         let transcript_proof = transcript::Proof::default();
         let mut verifier = build_verifier(SESSION, b"outer-zero-rounds", &transcript_proof);
 
         assert_eq!(
-            verify_outer_sumcheck(&mut verifier, fq(0), &proof, &[]),
+            proof.verify(&mut verifier, fq(0), &[]),
             Ok(OuterSumcheckVerifierOutput {
                 eval_points: vec![],
-                product_evaluations: proof.product_evaluations,
+                az_mle_claim: proof.az_mle_claim,
+                bz_mle_claim: proof.bz_mle_claim,
+                cz_mle_claim: proof.cz_mle_claim,
             })
         );
         verifier.check_eof().unwrap();
@@ -773,13 +1158,15 @@ mod tests {
             sumcheck: SumcheckProof {
                 round_polynomials: vec![],
             },
-            product_evaluations: [fq(2), fq(3), fq(5)],
+            az_mle_claim: fq(2),
+            bz_mle_claim: fq(3),
+            cz_mle_claim: fq(5),
         };
         let transcript_proof = transcript::Proof::default();
         let mut verifier = build_verifier(SESSION, b"outer-bad-terminal", &transcript_proof);
 
         assert_eq!(
-            verify_outer_sumcheck(&mut verifier, fq(0), &proof, &[]),
+            proof.verify(&mut verifier, fq(0), &[]),
             Err(SumcheckError::InvalidTerminalClaim)
         );
         verifier.check_eof().unwrap();
