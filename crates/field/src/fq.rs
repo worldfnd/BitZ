@@ -92,12 +92,6 @@ impl<const Q: u128> Fq<Q> {
         128 - Q.leading_zeros()
     };
 
-    /// Reduces a `u128` to its canonical representative modulo `Q`.
-    pub const fn fromu128(value: u128) -> Self {
-        let _ = Self::BITS;
-        Self(value % Q)
-    }
-
     const MU: u128 = barrett_mu(Q, Self::BITS);
 
     /// Barrett reduction, Handbook of Applied Cryptography Algorithm 14.42,
@@ -181,7 +175,8 @@ impl<const Q: u128> ConstOne for Fq<Q> {
 /// Reduces its input, so any `u128` is accepted.
 impl<const Q: u128> From<u128> for Fq<Q> {
     fn from(value: u128) -> Self {
-        Self::fromu128(value)
+        let _ = Self::BITS;
+        Self(value % Q)
     }
 }
 
@@ -514,7 +509,6 @@ mod tests {
 
     #[test]
     fn from_u128_reduces() {
-        assert_eq!(Fq::<Q100>::fromu128(Q100 + 1).lift(), 1);
         assert_eq!(Fq::<Q100>::from(Q100).lift(), 0);
         assert_eq!(Fq::<Q100>::from(Q100 + 1).lift(), 1);
         assert_eq!(Fq::<Q100>::from(u128::MAX).lift(), u128::MAX % Q100);
