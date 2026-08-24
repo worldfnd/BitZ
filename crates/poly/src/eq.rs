@@ -2,6 +2,7 @@ use crypto_primitives::ConstField;
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
+use crate::mle::{DenseMleError, DenseMultilinearExtension};
 #[cfg(feature = "parallel")]
 use crate::parallel::workload_size;
 
@@ -98,9 +99,25 @@ pub fn eq_table<F: ConstField + Copy>(r: &[F]) -> Vec<F> {
     table
 }
 
+/// Splits a point and materializes the two equality-polynomial factors used by
+/// the factored Spartan outer sumcheck.
+///
+/// The first MLE covers the low, earlier coordinates and the second covers the
+/// remaining high coordinates. Their tensor product is `eq(·, point)` under
+/// this crate's little-endian variable order.
+pub fn make_equality_factors<F: ConstField + Copy>(
+    point: &[F],
+) -> Result<(DenseMultilinearExtension<F>, DenseMultilinearExtension<F>), DenseMleError> {
+    let split = point.len() / 2;
+    let (low, high) = point.split_at(split);
+    let low = DenseMultilinearExtension::from_evaluations(low.len(), eq_table(low))?;
+    let high = DenseMultilinearExtension::from_evaluations(high.len(), eq_table(high))?;
+    Ok((low, high))
+}
+
 #[cfg(test)]
 pub mod tests {
-    use super::{eq_eval, eq_table};
+    use super::{eq_eval, eq_table, make_equality_factors};
     use crypto_primitives::ConstField;
     use field::{F128, FqDefault};
     use num_traits::{ConstOne, ConstZero};
@@ -121,6 +138,37 @@ pub mod tests {
     fn empty_eq_tables_contain_one() {
         assert_eq!(eq_table::<F128>(&[]), vec![F128::ONE]);
         assert_eq!(eq_table::<FqDefault>(&[]), vec![FqDefault::ONE]);
+    }
+
+    #[test]
+    fn equality_factors_split_low_coordinates_first() {
+        let point = [
+            FqDefault::from(2u128),
+            FqDefault::from(3u128),
+            FqDefault::from(5u128),
+        ];
+        let (low, high) = make_equality_factors(&point).unwrap();
+
+        assert_eq!(low.num_vars(), 1);
+        assert_eq!(
+            low.iter().copied().collect::<Vec<_>>(),
+            eq_table(&point[..1])
+        );
+        assert_eq!(high.num_vars(), 2);
+        assert_eq!(
+            high.iter().copied().collect::<Vec<_>>(),
+            eq_table(&point[1..])
+        );
+    }
+
+    #[test]
+    fn empty_point_has_two_constant_equality_factors() {
+        let (low, high) = make_equality_factors::<F128>(&[]).unwrap();
+
+        assert_eq!(low.num_vars(), 0);
+        assert_eq!(low.iter().copied().collect::<Vec<_>>(), vec![F128::ONE]);
+        assert_eq!(high.num_vars(), 0);
+        assert_eq!(high.iter().copied().collect::<Vec<_>>(), vec![F128::ONE]);
     }
 
     #[test]
