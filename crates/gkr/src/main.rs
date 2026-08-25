@@ -1,3 +1,5 @@
+use prove_playground::Mle;
+
 fn main() {}
 
 fn prove(input: Vec<Field>) {
@@ -10,7 +12,42 @@ fn gpgkr_prove(eval: CircuitEval) {
     prove_layer()
 }
 
-fn prove_layer(challenges: &[Field]) {}
+fn prove_layer(
+    point: &[Field],
+    wnext: &[Field],
+    challenges: &[Field],
+) -> ((Field, Field), Vec<(Field, Field)>) {
+    assert_eq!(wnext.len(), 2 << challenges.len());
+    assert_eq!(point.len(), challenges.len());
+    let mut suffix_table = SuffixTable::new(point);
+    let mut factor = 1;
+
+    let mut sumcheck_transcript = vec![];
+    let mut mle_wnext = Mle::new(wnext);
+
+    for (r, z) in challenges.iter().zip(point) {
+        let eq = suffix_table.pop().unwrap();
+        let mut sum_lo = 0;
+        // let mut sum_hi = 0;
+        let mut sum_inf = 0;
+        let h = mle_wnext.len() / 2;
+
+        for i in 0..eq.len() {
+            let (l0, r0) = (mle_wnext[2 * i], mle_wnext[2 * i + 1]);
+            let (l1, r1) = (mle_wnext[h + 2 * i], mle_wnext[h + 2 * i + 1]);
+            sum_lo += eq[i] * l0 * r0;
+            // sum_hi += eq[i] * l1 * r1;
+            sum_inf += eq[i] * (l1 - l0) * (r1 - r0)
+        }
+
+        sumcheck_transcript.push((factor * sum_lo, factor * sum_inf));
+
+        factor *= r * z + (1 - z) * (1 - r);
+        mle_wnext.fix_variable(*r);
+    }
+
+    ((mle_wnext[0], mle_wnext[1]), sumcheck_transcript)
+}
 
 fn gpgkr_verify() {}
 
@@ -24,12 +61,10 @@ impl SuffixTable {
     // currently has to be consumed in reverse order -> pop. Which is fine
     fn new(point: &[Field]) -> SuffixTable {
         // We do not need to build the table for the first challenge.
-        let mut table = Vec::with_capacity(point.len() - 1);
-        let mut iter = point.iter().skip(1).rev();
-        let last = iter.next().unwrap();
-        let mut prev = Vec::from([(1 - *last), *last]);
+        let mut table = Vec::with_capacity(point.len());
+        let mut prev = Vec::from([1]);
 
-        for z in iter {
+        for z in point.iter().skip(1).rev() {
             let size = prev.len() << 1;
             let mut entry = vec![0; size];
             let (low, hi) = entry.split_at_mut(size >> 1);
