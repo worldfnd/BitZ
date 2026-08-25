@@ -5,7 +5,9 @@
 //! one side sending it.
 
 pub mod shape;
+pub mod statement;
 pub mod table;
 
 pub use shape::{Shape, ShapeError};
+pub use statement::{CoreStatement, EXTENSION_BITS, Root, StatementError};
 pub use table::{BitTable, TableError};
