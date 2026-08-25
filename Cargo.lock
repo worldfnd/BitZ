@@ -309,6 +309,7 @@ dependencies = [
  "crypto-primitives",
  "field",
  "num-traits",
+ "poly",
 ]
 
 [[package]]
@@ -1029,6 +1030,11 @@ dependencies = [
 [[package]]
 name = "prover"
 version = "0.1.0"
+dependencies = [
+ "common",
+ "field",
+ "transcript",
+]
 
 [[package]]
 name = "quick-error"
@@ -1540,6 +1546,11 @@ checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
 [[package]]
 name = "verifier"
 version = "0.1.0"
+dependencies = [
+ "common",
+ "field",
+ "transcript",
+]
 
 [[package]]
 name = "version_check"

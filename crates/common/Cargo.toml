@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 crypto-primitives = { workspace = true }
 field = { workspace = true }
+poly = { workspace = true }
 
 [dev-dependencies]
 num-traits = { workspace = true }

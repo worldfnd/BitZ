@@ -9,6 +9,7 @@ rust-version = "1.97"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
+common = { path = "crates/common" }
 field = { path = "crates/field" }
 poly = { path = "crates/poly" }
 prover = { path = "crates/prover" }
