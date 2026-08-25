@@ -47,6 +47,28 @@ impl CircuitEval {
     }
 }
 
+#[cfg(test)]
 mod tests {
-    
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        // Pairwise multiplication is associative, so folding-by-multiply any
+        // witness layer (including the leaves, padded with the multiplicative
+        // identity 1) must equal folding the original input.
+        #[test]
+        fn eval_preserves_product_across_layers(leaves in prop::collection::vec(-3i32..=3, 0..12)) {
+            let expected = leaves.iter().fold(1, |acc, &x| acc * x);
+
+            let mut eval = Circuit::new(leaves).eval();
+
+            let mut layers_checked = 0;
+            while let Some(layer) = eval.pop() {
+                let folded = layer.iter().fold(1, |acc, &x| acc * x);
+                prop_assert_eq!(folded, expected);
+                layers_checked += 1;
+            }
+            prop_assert!(layers_checked > 0);
+        }
+    }
 }
