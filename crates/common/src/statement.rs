@@ -2,6 +2,7 @@
 
 use crypto_primitives::LiftElement;
 use field::{F128, Fq, gf128::is_generator};
+use spongefish::Encoding;
 
 use crate::Shape;
 
@@ -154,6 +155,34 @@ impl<const Q: u128> CoreStatement<Q> {
     /// The claimed value `mu`.
     pub fn target(&self) -> Fq<Q> {
         self.target
+    }
+}
+
+/// Absorbed as a typed value rather than hand-serialised at each call site.
+///
+/// Every field is fixed width, so distinct statements cannot encode alike and
+/// no length prefix is needed. The caller has already domain-separated the
+/// transcript and absorbed its own statement into it, so neither is repeated
+/// here.
+///
+/// Note what is **not** here: the claim itself. Neither `v^(1)`, `v^(2)` nor
+/// `mu` is encoded, so nothing below binds them; they reach the transcript
+/// only through the caller's own events.
+impl<const Q: u128> Encoding<[u8]> for CoreStatement<Q> {
+    fn encode(&self) -> impl AsRef<[u8]> {
+        let mut frame = [0u8; 80];
+        let mut at = 0;
+        let mut put = |bytes: &[u8]| {
+            frame[at..at + bytes.len()].copy_from_slice(bytes);
+            at += bytes.len();
+        };
+
+        put(&(self.shape.t() as u64).to_le_bytes());
+        put(&(self.shape.s() as u64).to_le_bytes());
+        put(&Q.to_le_bytes());
+        put(&self.generator.to_bytes());
+        put(&self.root.0);
+        frame
     }
 }
 
