@@ -136,7 +136,7 @@ impl Fold {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Root, Shape};
+    use crate::Shape;
     use field::gf128::smallest_generator;
 
     const Q114: u128 = (1 << 114) - 11;
@@ -152,7 +152,6 @@ mod tests {
     fn statement(row_weights: Vec<Fq<Q114>>, column_weights: Vec<Fq<Q114>>) -> CoreStatement<Q114> {
         CoreStatement::new(
             shape(),
-            Root([0u8; 32]),
             smallest_generator(),
             row_weights,
             column_weights,

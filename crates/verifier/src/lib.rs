@@ -6,5 +6,7 @@
 //! implementation detail.
 
 pub mod fold;
+pub mod verify;
 
 pub use fold::{ReceiveError, receive_fold};
+pub use verify::{Reduction, VerifyError, verify};

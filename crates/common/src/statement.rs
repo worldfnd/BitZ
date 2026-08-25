@@ -49,7 +49,6 @@ pub enum StatementError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoreStatement<const Q: u128> {
     shape: Shape,
-    root: Root,
     generator: F128,
     row_weights: Vec<Fq<Q>>,
     column_weights: Vec<Fq<Q>>,
@@ -63,7 +62,6 @@ impl<const Q: u128> CoreStatement<Q> {
     /// `v^(2)`, one per column; `target` is the claimed value `mu`.
     pub fn new(
         shape: Shape,
-        root: Root,
         generator: F128,
         row_weights: Vec<Fq<Q>>,
         column_weights: Vec<Fq<Q>>,
@@ -93,7 +91,6 @@ impl<const Q: u128> CoreStatement<Q> {
 
         Ok(Self {
             shape,
-            root,
             generator,
             row_weights,
             column_weights,
@@ -114,10 +111,6 @@ impl<const Q: u128> CoreStatement<Q> {
     pub fn fold_bound(&self) -> u128 {
         // The gate put `k_1 (Q - 1)` strictly below `|K|`.
         (self.shape.rows() as u128) * (Q - 1)
-    }
-
-    pub fn root(&self) -> Root {
-        self.root
     }
 
     pub fn generator(&self) -> F128 {
@@ -170,7 +163,7 @@ impl<const Q: u128> CoreStatement<Q> {
 /// only through the caller's own events.
 impl<const Q: u128> Encoding<[u8]> for CoreStatement<Q> {
     fn encode(&self) -> impl AsRef<[u8]> {
-        let mut frame = [0u8; 80];
+        let mut frame = [0u8; 48];
         let mut at = 0;
         let mut put = |bytes: &[u8]| {
             frame[at..at + bytes.len()].copy_from_slice(bytes);
@@ -181,7 +174,6 @@ impl<const Q: u128> Encoding<[u8]> for CoreStatement<Q> {
         put(&(self.shape.s() as u64).to_le_bytes());
         put(&Q.to_le_bytes());
         put(&self.generator.to_bytes());
-        put(&self.root.0);
         frame
     }
 }
@@ -204,7 +196,6 @@ mod tests {
     fn statement_at(shape: Shape) -> Result<CoreStatement<Q114>, StatementError> {
         CoreStatement::new(
             shape,
-            root(),
             smallest_generator(),
             vec![Fq::from(1u128); shape.rows()],
             vec![Fq::from(1u128); shape.columns()],
@@ -212,15 +203,10 @@ mod tests {
         )
     }
 
-    fn root() -> Root {
-        Root([7u8; 32])
-    }
-
     fn statement(row_weights: Vec<Fq<Q114>>) -> Result<CoreStatement<Q114>, StatementError> {
         let shape = shape();
         CoreStatement::new(
             shape,
-            root(),
             smallest_generator(),
             row_weights,
             vec![Fq::from(1u128); shape.columns()],
@@ -239,7 +225,6 @@ mod tests {
         let accepted = statement(weights()).unwrap();
         assert_eq!(accepted.row_weights().len(), 1 << 7);
         assert_eq!(accepted.column_weights().len(), 1 << 15);
-        assert_eq!(accepted.root(), root());
     }
 
     #[test]
@@ -258,7 +243,6 @@ mod tests {
         assert_eq!(
             CoreStatement::<Q114>::new(
                 shape,
-                root(),
                 F128::ONE,
                 weights(),
                 vec![Fq::from(1u128); shape.columns()],
@@ -279,7 +263,6 @@ mod tests {
         assert_eq!(
             CoreStatement::<Q114>::new(
                 shape,
-                root(),
                 smallest_generator(),
                 weights(),
                 vec![Fq::from(1u128)],

@@ -60,6 +60,11 @@ impl Shape {
         self.t + self.s
     }
 
+    /// `m_P = m - 7`: the bits indexing the packed field elements.
+    pub fn packed_m(&self) -> usize {
+        self.m() - PACK_BITS as usize
+    }
+
     /// The number of bits in one column, `2^t`, which is also the number of
     /// grand-product factors per column.
     pub fn rows(&self) -> usize {

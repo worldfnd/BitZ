@@ -1,6 +1,7 @@
 //! The committed bit table.
 
 use crate::Shape;
+use field::F128;
 
 /// Bits in a word, and the shift that divides an index into word and offset.
 pub(crate) const WORD_BITS: usize = u64::BITS as usize;
@@ -55,6 +56,24 @@ impl<'a> BitTable<'a> {
         (self.words[index >> WORD_SHIFT] >> (index % WORD_BITS)) & 1 == 1
     }
 
+    /// The packed field elements `P`, one per 128 consecutive bits of a
+    /// column.
+    ///
+    /// `P[j * 2^(t-7) + i_hi] = sum_v f[(i_hi << 7) | v, j] * beta_v` for the
+    /// monomial basis `beta_v = X^v`. In that basis bit `v` of an `F128`'s
+    /// little-endian `lo || hi` *is* the coefficient of `X^v`, so this is a
+    /// reinterpretation of the witness words rather than an evaluation.
+    ///
+    /// `t >= 7` makes a column `2^t >= 128` bits and a multiple of 128, so no
+    /// group of 128 straddles a column boundary; the index order `(c << t) | b`
+    /// then puts `P` in exactly the order above, column major.
+    pub fn pack(&self) -> Vec<F128> {
+        self.words
+            .chunks_exact(2)
+            .map(|pair| F128::new(pair[0], pair[1]))
+            .collect()
+    }
+
     /// The `2^t / 64` words holding one column, in ascending row order.
     ///
     /// A column starts at bit `c * 2^t` and `t >= 7`, so it begins on a word
@@ -99,6 +118,33 @@ mod tests {
                     table.bit(column, row),
                     set.contains(&(row, column)),
                     "B[{column}][{row}]"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn packing_puts_bit_v_of_each_element_at_row_v_of_its_group() {
+        let shape = small_shape();
+        let set = [(0, 0), (5, 0), (127, 0), (64, 3), (2, 9)];
+        let words = with_bits(&shape, &set);
+        let table = BitTable::new(shape, &words).unwrap();
+
+        let packed = table.pack();
+        assert_eq!(packed.len(), 1 << shape.packed_m());
+
+        // Bit v of the element is the coefficient of X^v, so it must be the
+        // row at offset v of the 128 that element covers.
+        let groups_per_column = shape.rows() / 128;
+        for (index, element) in packed.iter().enumerate() {
+            let column = index / groups_per_column;
+            let i_hi = index % groups_per_column;
+            let bits = u128::from(element.lo) | (u128::from(element.hi) << 64);
+            for v in 0..128 {
+                assert_eq!(
+                    (bits >> v) & 1 == 1,
+                    table.bit(column, (i_hi << 7) | v),
+                    "P[{index}] bit {v}"
                 );
             }
         }
