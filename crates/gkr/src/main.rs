@@ -1,8 +1,50 @@
 fn main() {}
 
+fn prove(input: Vec<Field>) {
+    let circuit = Circuit::new(input);
+    let witnesses = circuit.eval();
+}
+
+/// Grand product GKR
+fn gpgkr_prove(eval: CircuitEval) {
+    prove_layer()
+}
+
+fn prove_layer(challenges: &[Field]) {}
+
+fn gpgkr_verify() {}
+
+// Can be allocated as a single table directly.
+// Maybe vectors can be reused?
+// Might be better in combination with split_eq table
+fn suffix_table(point: &[Field]) -> Vec<Vec<Field>> {
+    // We do not need to build the table for the first challenge.
+    let mut table = Vec::with_capacity(point.len() - 1);
+    let mut iter = point.iter().skip(1).rev();
+    let last = iter.next().unwrap();
+    let mut prev = Vec::from([(1 - *last), *last]);
+
+    for z in iter {
+        let size = prev.len() << 1;
+        let mut entry = vec![0; size];
+        let (low, hi) = entry.split_at_mut(size >> 1);
+
+        // Does the lead to a range check?
+        for (i, e) in prev.iter().enumerate() {
+            (low[i], hi[i]) = ((1 - z) * e, z * e)
+        }
+
+        table.push(prev);
+        prev = entry;
+    }
+    table.push(prev);
+    table
+}
+
 type Field = i32;
 
 // A circuit is defined by it's leaf value only because it is a balanced tree
+// TODO: Optimise for circuits that are padded.
 struct Circuit {
     leafs: Vec<Field>,
 }
@@ -16,7 +58,6 @@ impl Circuit {
 
     // Should an evaluation consume?
     fn eval(&self) -> CircuitEval {
-        // Size can be precalculated
         let mut witnesses = Vec::with_capacity(self.leafs.len().ilog2() as usize);
 
         let mut prev_eval = self.leafs.clone();
@@ -37,6 +78,9 @@ impl Circuit {
 }
 
 // Main purpose of the wrapper is to have the order denoted
+// TODO: This can be a single vec that is allocated at the start.
+// The vec vec structure only has to come back for a padded implementation.
+// There can be a traded off between space usage and computation reuse. This one choses speed for memory.
 struct CircuitEval(Vec<Vec<Field>>);
 
 impl CircuitEval {
