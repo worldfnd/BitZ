@@ -24,6 +24,7 @@ divan = "0.1.21"
 flock-core = { git = "https://github.com/succinctlabs/flock.git", rev = "85fc0e7cc002e7ca4dffdff805ba89976e9a5293" }
 num-traits = "0.2"
 proptest = "1.11.0"
+rand_chacha = "0.9"
 rand_core = "0.9"
 rand_pcg = "0.9"
 rayon = "1.10"
