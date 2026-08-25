@@ -6,7 +6,5 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-spongefish = "0.7.4"
-
-[dev-dependencies]
 field = { path = "../field", features = ["spongefish"] }
+spongefish = "0.7.4"
