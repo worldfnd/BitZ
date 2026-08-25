@@ -104,6 +104,26 @@ impl<F: Field + Copy> DenseMultilinearExtension<F> {
         Ok(Self::evaluate_exact(&self.evaluations, r))
     }
 
+    /// Evaluates the multilinear extension of a borrowed table at `r`.
+    ///
+    /// The owned path forces a copy: [`Self::from_evaluations`] takes its
+    /// table by value, so a caller that still needs the table afterwards has
+    /// to clone it just to evaluate.
+    ///
+    /// `evaluate_exact` already borrows, but it is private and its only length
+    /// guard is a `debug_assert` that compiles out in release. This is that
+    /// evaluation behind the same validation [`Self::evaluate`] applies.
+    pub fn evaluate_at(evaluations: &[F], r: &[F]) -> Result<F, DenseMleError> {
+        if r.len() >= usize::BITS as usize {
+            return Err(DenseMleError::InvalidNumVars);
+        }
+        if evaluations.len() != 1 << r.len() {
+            return Err(DenseMleError::WrongPointWidth);
+        }
+
+        Ok(Self::evaluate_exact(evaluations, r))
+    }
+
     #[inline]
     /// Unrolled base cases adapted from WHIR's `eval_exact` (Apache-2.0):
     /// <https://github.com/worldfnd/whir/blob/e0aec15225fd5e63594bdc49566e080a6cab2f24/src/algebra/multilinear.rs#L31-L64>
@@ -239,6 +259,28 @@ mod tests {
                     )
                 })
         })
+    }
+
+    #[test]
+    fn evaluate_at_rejects_a_table_that_is_not_two_to_the_point_width() {
+        let evaluations: Vec<F128> = (1u128..=8).map(F128::from).collect();
+        assert_eq!(
+            DenseMultilinearExtension::evaluate_at(&evaluations, &[F128::ONE]),
+            Err(DenseMleError::WrongPointWidth)
+        );
+        assert_eq!(
+            DenseMultilinearExtension::<F128>::evaluate_at(&[], &[]),
+            Err(DenseMleError::WrongPointWidth)
+        );
+    }
+
+    #[test]
+    fn evaluate_at_reads_back_a_zero_variable_table() {
+        let single = [F128::from(42u128)];
+        assert_eq!(
+            DenseMultilinearExtension::evaluate_at(&single, &[]).unwrap(),
+            F128::from(42u128)
+        );
     }
 
     #[test]
