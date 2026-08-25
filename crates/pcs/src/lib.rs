@@ -41,7 +41,9 @@
 //!
 //! ```
 //! use field::F128;
-//! use pcs::{CommitScheme, HashKind, LigeritoProfile, OpeningQuery, Pcs};
+//! use pcs::{
+//!     CommitScheme, HashKind, LigeritoProfile, OpeningQuery, Pcs, StatementBinding,
+//! };
 //! use transcript::{build_prover, build_verifier};
 //!
 //! const M: usize = 22;
@@ -57,12 +59,23 @@
 //!
 //! let (commitment, prover_data) = pcs.commit(&packed_witness).unwrap();
 //! let mut prover = build_prover(b"pcs-example", b"zero-polynomial");
-//! pcs.prove_lin(&prover_data, packed_witness, &query, &mut prover)
+//! pcs.prove_lin(
+//!     &prover_data,
+//!     packed_witness,
+//!     &query,
+//!     StatementBinding::Bind,
+//!     &mut prover,
+//! )
 //!     .unwrap();
 //! let proof = prover.finish();
 //!
 //! let mut verifier = build_verifier(b"pcs-example", b"zero-polynomial", &proof);
-//! pcs.verify_lin(&commitment, &query, &mut verifier)
+//! pcs.verify_lin(
+//!     &commitment,
+//!     &query,
+//!     StatementBinding::Bind,
+//!     &mut verifier,
+//! )
 //!     .unwrap();
 //! verifier.check_eof().unwrap();
 //! ```
@@ -71,7 +84,7 @@ mod bridge;
 mod challenger;
 mod commitment;
 mod open;
-mod protocol;
+mod utils;
 mod verify;
 
 use field::F128;
@@ -87,6 +100,17 @@ pub struct OpeningQuery {
     pub point: Vec<F128>,
     /// The claimed multilinear evaluation at `point`.
     pub target: F128,
+}
+
+/// Controls statement binding for one opening.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StatementBinding {
+    /// Binds the PCS parameters, commitment, point, and target.
+    Bind,
+    /// Uses a statement that the caller already bound.
+    ///
+    /// The caller must bind the same PCS parameters, commitment, point, and target.
+    AlreadyBound,
 }
 
 /// Errors from commitment and linear-query operations.
@@ -143,6 +167,7 @@ pub trait CommitScheme {
         data: &Self::ProverData,
         packed_witness: Vec<F128>,
         query: &OpeningQuery,
+        statement_binding: StatementBinding,
         transcript: &mut ProverState,
     ) -> Result<(), CommitError>;
 
@@ -151,6 +176,7 @@ pub trait CommitScheme {
         &self,
         commitment: &Self::Commitment,
         query: &OpeningQuery,
+        statement_binding: StatementBinding,
         transcript: &mut VerifierState<'_>,
     ) -> Result<(), CommitError>;
 }
@@ -171,17 +197,26 @@ impl CommitScheme for Pcs {
         data: &Self::ProverData,
         packed_witness: Vec<F128>,
         query: &OpeningQuery,
+        statement_binding: StatementBinding,
         transcript: &mut ProverState,
     ) -> Result<(), CommitError> {
-        open::open(self, data, packed_witness, query, transcript)
+        open::open(
+            self,
+            data,
+            packed_witness,
+            query,
+            statement_binding,
+            transcript,
+        )
     }
 
     fn verify_lin(
         &self,
         commitment: &Self::Commitment,
         query: &OpeningQuery,
+        statement_binding: StatementBinding,
         transcript: &mut VerifierState<'_>,
     ) -> Result<(), CommitError> {
-        verify::verify(self, commitment, query, transcript)
+        verify::verify(self, commitment, query, statement_binding, transcript)
     }
 }

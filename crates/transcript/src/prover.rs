@@ -1,3 +1,4 @@
+use field::F128;
 use spongefish::{Decoding, Encoding, NargSerialize};
 
 use crate::{Proof, PublicTranscript};
@@ -14,6 +15,10 @@ pub struct ProverState {
 impl PublicTranscript for ProverState {
     fn public_message<T: Encoding<[u8]> + ?Sized>(&mut self, message: &T) {
         self.inner.public_message(message);
+    }
+
+    fn verifier_message_f128(&mut self) -> F128 {
+        self.inner.verifier_message()
     }
 }
 

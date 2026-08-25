@@ -8,32 +8,81 @@ use transcript::{ProverState, VerifierState};
 
 const VECTOR_SQUEEZE_TAG: &[u8] = b"pcs/flock/sample-vector/v1";
 const POW_TAG: &[u8] = b"pcs/flock/pow/v1";
+const LIGERITO_BASIS_LABEL: &[u8] = b"flock-ligerito-basis-v0";
+
+#[derive(Clone, Copy)]
+struct OpeningTargetPrefix {
+    expected_target: FlockF128,
+    label_seen: bool,
+}
 
 pub(crate) struct ProverChallenger<'a> {
     transcript: &'a mut ProverState,
+    failed: bool,
+    opening_target: Option<OpeningTargetPrefix>,
 }
 
 impl<'a> ProverChallenger<'a> {
+    #[cfg(test)]
     pub(crate) fn new(transcript: &'a mut ProverState) -> Self {
-        Self { transcript }
+        Self {
+            transcript,
+            failed: false,
+            opening_target: None,
+        }
+    }
+
+    pub(crate) fn new_ligerito(
+        transcript: &'a mut ProverState,
+        expected_target: FlockF128,
+    ) -> Self {
+        Self {
+            transcript,
+            failed: false,
+            opening_target: Some(OpeningTargetPrefix {
+                expected_target,
+                label_seen: false,
+            }),
+        }
+    }
+
+    pub(crate) fn failed(&self) -> bool {
+        self.failed || self.opening_target.is_some()
     }
 }
 
 pub(crate) struct VerifierChallenger<'a, 'proof> {
     transcript: &'a mut VerifierState<'proof>,
     failed: bool,
+    opening_target: Option<OpeningTargetPrefix>,
 }
 
 impl<'a, 'proof> VerifierChallenger<'a, 'proof> {
+    #[cfg(test)]
     pub(crate) fn new(transcript: &'a mut VerifierState<'proof>) -> Self {
         Self {
             transcript,
             failed: false,
+            opening_target: None,
+        }
+    }
+
+    pub(crate) fn new_ligerito(
+        transcript: &'a mut VerifierState<'proof>,
+        expected_target: FlockF128,
+    ) -> Self {
+        Self {
+            transcript,
+            failed: false,
+            opening_target: Some(OpeningTargetPrefix {
+                expected_target,
+                label_seen: false,
+            }),
         }
     }
 
     pub(crate) fn failed(&self) -> bool {
-        self.failed
+        self.failed || self.opening_target.is_some()
     }
 
     fn read<T>(&mut self) -> Option<T>
@@ -52,10 +101,25 @@ impl<'a, 'proof> VerifierChallenger<'a, 'proof> {
 
 impl Challenger for ProverChallenger<'_> {
     fn observe_label(&mut self, label: &[u8]) {
+        if let Some(prefix) = &mut self.opening_target
+            && !prefix.label_seen
+        {
+            if label != LIGERITO_BASIS_LABEL {
+                self.failed = true;
+            }
+            prefix.label_seen = true;
+            return;
+        }
         self.transcript.public_message(label);
     }
 
     fn observe_f128(&mut self, value: FlockF128) {
+        if let Some(prefix) = self.opening_target.take() {
+            if !prefix.label_seen || value != prefix.expected_target {
+                self.failed = true;
+            }
+            return;
+        }
         self.transcript.prover_message(&from_flock_f128(value));
     }
 
@@ -102,10 +166,25 @@ impl Challenger for ProverChallenger<'_> {
 
 impl Challenger for VerifierChallenger<'_, '_> {
     fn observe_label(&mut self, label: &[u8]) {
+        if let Some(prefix) = &mut self.opening_target
+            && !prefix.label_seen
+        {
+            if label != LIGERITO_BASIS_LABEL {
+                self.failed = true;
+            }
+            prefix.label_seen = true;
+            return;
+        }
         self.transcript.public_message(label);
     }
 
     fn observe_f128(&mut self, value: FlockF128) {
+        if let Some(prefix) = self.opening_target.take() {
+            if !prefix.label_seen || value != prefix.expected_target {
+                self.failed = true;
+            }
+            return;
+        }
         if self.read::<LocalF128>() != Some(from_flock_f128(value)) {
             self.failed = true;
         }
@@ -273,6 +352,32 @@ mod tests {
             let mut challenger = VerifierChallenger::new(&mut verifier);
             assert!(!challenger.verify_pow(changed_nonce, BITS));
             assert!(challenger.failed());
+        }
+        verifier.check_eof().unwrap();
+    }
+
+    #[test]
+    fn ligerito_public_target_prefix_adds_no_narg_bytes() {
+        let target = FlockF128::new(1, 2);
+        let next_message = FlockF128::new(3, 4);
+        let mut prover = build_prover(b"pcs-challenger-test", b"public-opening-target");
+        {
+            let mut challenger = ProverChallenger::new_ligerito(&mut prover, target);
+            challenger.observe_label(LIGERITO_BASIS_LABEL);
+            challenger.observe_f128(target);
+            challenger.observe_f128(next_message);
+            assert!(!challenger.failed());
+        }
+        let proof = prover.finish();
+        assert_eq!(proof.narg_string, from_flock_f128(next_message).to_bytes());
+
+        let mut verifier = build_verifier(b"pcs-challenger-test", b"public-opening-target", &proof);
+        {
+            let mut challenger = VerifierChallenger::new_ligerito(&mut verifier, target);
+            challenger.observe_label(LIGERITO_BASIS_LABEL);
+            challenger.observe_f128(target);
+            challenger.observe_f128(next_message);
+            assert!(!challenger.failed());
         }
         verifier.check_eof().unwrap();
     }

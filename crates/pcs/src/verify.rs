@@ -6,11 +6,11 @@
 //! 3. Read and deserialize the bounded opening proof.
 //! 4. Validate the proof shape and require its initial root to match the commitment.
 //! 5. Extract one ring-switch proof and split the point into low and high coordinates.
-//! 6. Replay the ring-switch label and partial evaluations through `VerifierChallenger`.
+//! 6. Replay the tag-4001 ring-switch message.
 //! 7. Check the target against the low-coordinate equality table.
-//! 8. Sample seven ring-switch challenges and compute the packed target `beta0`.
+//! 8. Sample seven tag-4101 challenges and compute the packed target `beta0`.
 //! 9. Build the succinct Ligerito basis evaluator from the high coordinates.
-//! 10. Call `recursive_verifier_with_basis_succinct` against the commitment root.
+//! 10. Bind tag 5001 and call `recursive_verifier_with_basis_succinct`.
 //! 11. Reject Flock failures and transcript mismatches.
 //!
 //! The verifier checks `target = Σ_v eq(r_lo, v) · s_v`.
@@ -19,7 +19,6 @@
 //! `B(y) = Σ_u eq(r_dprime, u) · A(y, u)`.
 //! Ligerito then verifies `Σ_y B(y) · q_pkd(y) = beta0` against the root.
 
-use flock_core::challenger::Challenger;
 use flock_core::field::F128 as FlockF128;
 use flock_core::pcs::ligerito::{VerifierConfig, recursive_verifier_with_basis_succinct};
 use flock_core::pcs::ring_switch::{
@@ -32,13 +31,17 @@ use transcript::VerifierState;
 
 use crate::bridge::as_flock_f128s;
 use crate::challenger::VerifierChallenger;
-use crate::protocol::{RING_SWITCH_LABEL, bind_statement, read_opening_proof};
-use crate::{CommitError, Commitment, OpeningQuery, Pcs};
+use crate::utils::{
+    bind_ring_switch_message, bind_statement, observe_opening_target, read_opening_proof,
+    sample_ring_switch_point,
+};
+use crate::{CommitError, Commitment, OpeningQuery, Pcs, StatementBinding};
 
 pub(crate) fn verify(
     pcs: &Pcs,
     commitment: &Commitment,
     query: &OpeningQuery,
+    statement_binding: StatementBinding,
     transcript: &mut VerifierState<'_>,
 ) -> Result<(), CommitError> {
     // 1. Input Validation
@@ -58,7 +61,9 @@ pub(crate) fn verify(
     let final_log_n = validate_config(&ligerito_config, log_n, pcs.params().log_batch_size)?;
 
     // 2. Bind Statement
-    bind_statement(pcs, commitment.root(), query, transcript);
+    if statement_binding == StatementBinding::Bind {
+        bind_statement(pcs, commitment.root(), query, transcript);
+    }
 
     // 3. Read Opening Proof
     let proof = read_opening_proof(transcript)?;
@@ -75,12 +80,7 @@ pub(crate) fn verify(
     let r_hi = as_flock_f128s(r_hi);
 
     // 6. Replay Ring-Switch Message
-    let mut challenger = VerifierChallenger::new(transcript);
-    challenger.observe_label(RING_SWITCH_LABEL);
-    challenger.observe_f128_slice(&ring_switch.s_hat_v);
-    if challenger.failed() {
-        return Err(CommitError::MalformedProof);
-    }
+    bind_ring_switch_message(transcript, &ring_switch.s_hat_v)?;
 
     // 7. Check Target
     // query.target = Σ_v eq(r_lo, v) · s_hat_v[v].
@@ -92,7 +92,7 @@ pub(crate) fn verify(
 
     // 8. Compute the Ligerito Target
     // beta0 = Σ_u eq(r_dprime, u) · s_hat_u[u].
-    let r_dprime = challenger.sample_f128_vec(LOG_PACKING);
+    let r_dprime = sample_ring_switch_point(transcript);
     let eq_r_dprime = build_eq(&r_dprime);
     let s_hat_u = tensor_algebra_transpose(&ring_switch.s_hat_v);
     let beta0 = inner_product(&s_hat_u, &eq_r_dprime);
@@ -117,6 +117,8 @@ pub(crate) fn verify(
 
     // 10. Verify the Ligerito Claim
     // Verify Σ_y B(y) · q_pkd(y) = beta0 without materializing B.
+    observe_opening_target(transcript, log_n, beta0)?;
+    let mut challenger = VerifierChallenger::new_ligerito(transcript, beta0);
     let valid = recursive_verifier_with_basis_succinct(
         &ligerito_config,
         &proof.ligerito,

@@ -40,4 +40,7 @@ pub use verifier::VerifierState;
 pub trait PublicTranscript {
     /// Absorbs a message both parties already know.
     fn public_message<T: Encoding<[u8]> + ?Sized>(&mut self, message: &T);
+
+    /// Squeezes an `F128` challenge.
+    fn verifier_message_f128(&mut self) -> field::F128;
 }

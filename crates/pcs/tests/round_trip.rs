@@ -1,8 +1,11 @@
 use std::sync::OnceLock;
 
 use field::F128;
-use pcs::{CommitError, CommitScheme, Commitment, HashKind, LigeritoProfile, OpeningQuery, Pcs};
-use transcript::{Proof, build_prover, build_verifier};
+use pcs::{
+    CommitError, CommitScheme, Commitment, HashKind, LigeritoProfile, OpeningQuery, Pcs,
+    StatementBinding,
+};
+use transcript::{Proof, PublicTranscript, build_prover, build_verifier};
 
 const M: usize = 22;
 const SINGLETON: usize = (1 << 21) | (1 << 7) | 0b101_0101;
@@ -39,8 +42,14 @@ impl RealFixture {
 
         let (commitment, data) = pcs.commit(&packed_witness).unwrap();
         let mut prover = build_prover(SESSION, INSTANCE);
-        pcs.prove_lin(&data, packed_witness, &query, &mut prover)
-            .unwrap();
+        pcs.prove_lin(
+            &data,
+            packed_witness,
+            &query,
+            StatementBinding::Bind,
+            &mut prover,
+        )
+        .unwrap();
 
         Self {
             pcs,
@@ -72,6 +81,22 @@ fn singleton_target(point: &[F128], index: usize) -> F128 {
         })
 }
 
+fn bind_outer_statement(
+    transcript: &mut impl PublicTranscript,
+    pcs: &Pcs,
+    commitment: &Commitment,
+    query: &OpeningQuery,
+) {
+    transcript.public_message(b"outer/pcs-opening/v1" as &[u8]);
+    transcript.public_message(pcs);
+    transcript.public_message(commitment.root());
+    transcript.public_message(&(query.point.len() as u64));
+    for coordinate in &query.point {
+        transcript.public_message(coordinate);
+    }
+    transcript.public_message(&query.target);
+}
+
 #[test]
 fn real_pcs_opening_round_trip_succeeds() {
     let fixture = fixture();
@@ -79,9 +104,60 @@ fn real_pcs_opening_round_trip_succeeds() {
 
     fixture
         .pcs
-        .verify_lin(&fixture.commitment, &fixture.query, &mut verifier)
+        .verify_lin(
+            &fixture.commitment,
+            &fixture.query,
+            StatementBinding::Bind,
+            &mut verifier,
+        )
         .unwrap();
     verifier.check_eof().unwrap();
+}
+
+#[test]
+fn real_pcs_accepts_an_already_bound_statement() {
+    let pcs = Pcs::new(M, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
+    let packed_witness = vec![F128::default(); pcs.packed_len()];
+    let query = OpeningQuery {
+        point: vec![F128::from(2u64); M],
+        target: F128::from(0u64),
+    };
+    let (commitment, data) = pcs.commit(&packed_witness).unwrap();
+
+    let mut prover = build_prover(SESSION, b"already-bound");
+    bind_outer_statement(&mut prover, &pcs, &commitment, &query);
+    pcs.prove_lin(
+        &data,
+        packed_witness,
+        &query,
+        StatementBinding::AlreadyBound,
+        &mut prover,
+    )
+    .unwrap();
+    let proof = prover.finish();
+
+    let mut verifier = build_verifier(SESSION, b"already-bound", &proof);
+    bind_outer_statement(&mut verifier, &pcs, &commitment, &query);
+    pcs.verify_lin(
+        &commitment,
+        &query,
+        StatementBinding::AlreadyBound,
+        &mut verifier,
+    )
+    .unwrap();
+    verifier.check_eof().unwrap();
+
+    let mut mismatched_verifier = build_verifier(SESSION, b"already-bound", &proof);
+    bind_outer_statement(&mut mismatched_verifier, &pcs, &commitment, &query);
+    assert!(
+        pcs.verify_lin(
+            &commitment,
+            &query,
+            StatementBinding::Bind,
+            &mut mismatched_verifier,
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -96,7 +172,13 @@ fn real_pcs_rejects_point_length_mismatches() {
 
     let mut prover = build_prover(SESSION, b"wrong-prover-point");
     assert_eq!(
-        pcs.prove_lin(&data, packed_witness, &short_query, &mut prover),
+        pcs.prove_lin(
+            &data,
+            packed_witness,
+            &short_query,
+            StatementBinding::Bind,
+            &mut prover,
+        ),
         Err(CommitError::PointLengthMismatch)
     );
 
@@ -107,7 +189,12 @@ fn real_pcs_rejects_point_length_mismatches() {
     let proof = Proof::default();
     let mut verifier = build_verifier(SESSION, b"wrong-verifier-point", &proof);
     assert_eq!(
-        pcs.verify_lin(&commitment, &long_query, &mut verifier),
+        pcs.verify_lin(
+            &commitment,
+            &long_query,
+            StatementBinding::Bind,
+            &mut verifier,
+        ),
         Err(CommitError::PointLengthMismatch)
     );
 }
@@ -125,7 +212,13 @@ fn real_pcs_rejects_packed_witness_length_mismatches_during_opening() {
     let mut prover = build_prover(SESSION, b"wrong-packed-length");
 
     assert_eq!(
-        pcs.prove_lin(&data, packed_witness, &query, &mut prover),
+        pcs.prove_lin(
+            &data,
+            packed_witness,
+            &query,
+            StatementBinding::Bind,
+            &mut prover,
+        ),
         Err(CommitError::InvalidBitLength)
     );
 }
@@ -143,7 +236,13 @@ fn real_pcs_rejects_mismatched_prover_parameters() {
     let mut prover = build_prover(SESSION, b"mismatched-parameters");
 
     assert!(matches!(
-        other.prove_lin(&data, packed_witness, &query, &mut prover),
+        other.prove_lin(
+            &data,
+            packed_witness,
+            &query,
+            StatementBinding::Bind,
+            &mut prover,
+        ),
         Err(CommitError::InvalidConfiguration(description))
             if description.starts_with("prover data parameters do not match the active PCS")
     ));
@@ -162,7 +261,13 @@ fn real_pcs_prover_rejects_a_false_evaluation_without_consuming_prover_data() {
     let codeword_len = data.codeword_len();
 
     assert_eq!(
-        pcs.prove_lin(&data, packed_witness, &query, &mut prover),
+        pcs.prove_lin(
+            &data,
+            packed_witness,
+            &query,
+            StatementBinding::Bind,
+            &mut prover,
+        ),
         Err(CommitError::InvalidClaim)
     );
     assert_eq!(data.codeword_len(), codeword_len);
@@ -183,13 +288,19 @@ fn real_pcs_rejects_an_opening_for_a_different_packed_witness() {
         point,
     };
     let mut prover = build_prover(SESSION, b"different-packed-witness");
-    pcs.prove_lin(&data, different_witness, &query, &mut prover)
-        .unwrap();
+    pcs.prove_lin(
+        &data,
+        different_witness,
+        &query,
+        StatementBinding::Bind,
+        &mut prover,
+    )
+    .unwrap();
     let proof = prover.finish();
     let mut verifier = build_verifier(SESSION, b"different-packed-witness", &proof);
 
     assert_eq!(
-        pcs.verify_lin(&commitment, &query, &mut verifier),
+        pcs.verify_lin(&commitment, &query, StatementBinding::Bind, &mut verifier,),
         Err(CommitError::VerificationFailed)
     );
 }
@@ -202,9 +313,12 @@ fn real_pcs_rejects_statement_mutations() {
     changed_query.target += F128::from(1u64);
     let mut verifier = build_verifier(SESSION, INSTANCE, &fixture.proof);
     assert_eq!(
-        fixture
-            .pcs
-            .verify_lin(&fixture.commitment, &changed_query, &mut verifier),
+        fixture.pcs.verify_lin(
+            &fixture.commitment,
+            &changed_query,
+            StatementBinding::Bind,
+            &mut verifier,
+        ),
         Err(CommitError::VerificationFailed)
     );
 
@@ -213,9 +327,12 @@ fn real_pcs_rejects_statement_mutations() {
     let changed_commitment = Commitment::from_root(changed_root);
     let mut verifier = build_verifier(SESSION, INSTANCE, &fixture.proof);
     assert_eq!(
-        fixture
-            .pcs
-            .verify_lin(&changed_commitment, &fixture.query, &mut verifier),
+        fixture.pcs.verify_lin(
+            &changed_commitment,
+            &fixture.query,
+            StatementBinding::Bind,
+            &mut verifier,
+        ),
         Err(CommitError::VerificationFailed)
     );
 }
@@ -228,9 +345,12 @@ fn real_pcs_rejects_malformed_transcript_streams() {
     changed_stream.narg_string[0] ^= 1;
     let mut verifier = build_verifier(SESSION, INSTANCE, &changed_stream);
     assert_eq!(
-        fixture
-            .pcs
-            .verify_lin(&fixture.commitment, &fixture.query, &mut verifier),
+        fixture.pcs.verify_lin(
+            &fixture.commitment,
+            &fixture.query,
+            StatementBinding::Bind,
+            &mut verifier,
+        ),
         Err(CommitError::MalformedProof)
     );
 
@@ -238,9 +358,12 @@ fn real_pcs_rejects_malformed_transcript_streams() {
     truncated_hint.hints.pop();
     let mut verifier = build_verifier(SESSION, INSTANCE, &truncated_hint);
     assert_eq!(
-        fixture
-            .pcs
-            .verify_lin(&fixture.commitment, &fixture.query, &mut verifier),
+        fixture.pcs.verify_lin(
+            &fixture.commitment,
+            &fixture.query,
+            StatementBinding::Bind,
+            &mut verifier,
+        ),
         Err(CommitError::MalformedProof)
     );
 
@@ -248,9 +371,12 @@ fn real_pcs_rejects_malformed_transcript_streams() {
     *changed_hint.hints.last_mut().unwrap() ^= 1;
     let mut verifier = build_verifier(SESSION, INSTANCE, &changed_hint);
     assert_eq!(
-        fixture
-            .pcs
-            .verify_lin(&fixture.commitment, &fixture.query, &mut verifier),
+        fixture.pcs.verify_lin(
+            &fixture.commitment,
+            &fixture.query,
+            StatementBinding::Bind,
+            &mut verifier,
+        ),
         Err(CommitError::MalformedProof)
     );
 }
@@ -264,7 +390,12 @@ fn real_pcs_requires_complete_transcript_consumption() {
     let mut verifier = build_verifier(SESSION, INSTANCE, &trailing_narg);
     fixture
         .pcs
-        .verify_lin(&fixture.commitment, &fixture.query, &mut verifier)
+        .verify_lin(
+            &fixture.commitment,
+            &fixture.query,
+            StatementBinding::Bind,
+            &mut verifier,
+        )
         .unwrap();
     assert!(verifier.check_eof().is_err());
 
@@ -274,7 +405,12 @@ fn real_pcs_requires_complete_transcript_consumption() {
 
     fixture
         .pcs
-        .verify_lin(&fixture.commitment, &fixture.query, &mut verifier)
+        .verify_lin(
+            &fixture.commitment,
+            &fixture.query,
+            StatementBinding::Bind,
+            &mut verifier,
+        )
         .unwrap();
     assert!(verifier.check_eof().is_err());
 }

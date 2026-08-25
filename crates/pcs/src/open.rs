@@ -7,11 +7,11 @@
 //! 4. Build the low and high equality tables with Flock's `build_eq_split`.
 //! 5. Compute the 128 partial evaluations with `fold_1b_rows_naive`.
 //! 6. Check the target against the low-coordinate equality table.
-//! 7. Absorb the ring-switch domain label and all partial evaluations.
-//! 8. Sample seven ring-switch challenges and build their equality table.
+//! 7. Bind the tag-4001 ring-switch message.
+//! 8. Sample seven tag-4101 ring-switch challenges and build their equality table.
 //! 9. Transpose the partial evaluations and compute the packed target `beta0`.
 //! 10. Build the packed Ligerito basis with `fold_b128_elems`.
-//! 11. Call `recursive_prover_with_basis` with the retained codeword and Merkle tree.
+//! 11. Bind tag 5001 and call `recursive_prover_with_basis`.
 //! 12. Write a bounded opening proof to the transcript.
 //!
 //! Ring-switch equations, with `r_lo = r[0..7]` and `r_hi = r[7..m]`:
@@ -22,10 +22,12 @@
 
 use crate::bridge::{as_flock_f128s, into_flock_f128s};
 use crate::challenger::ProverChallenger;
-use crate::protocol::{RING_SWITCH_LABEL, bind_statement, write_opening_proof};
-use crate::{CommitError, OpeningQuery, Pcs, ProverData};
+use crate::utils::{
+    bind_ring_switch_message, bind_statement, observe_opening_target, sample_ring_switch_point,
+    write_opening_proof,
+};
+use crate::{CommitError, OpeningQuery, Pcs, ProverData, StatementBinding};
 use field::F128;
-use flock_core::challenger::Challenger;
 use flock_core::pcs::ligerito::recursive_prover_with_basis;
 use flock_core::pcs::ring_switch::{
     build_eq_split, claim_check, fold_1b_rows_naive, fold_b128_elems, inner_product,
@@ -40,6 +42,7 @@ pub(crate) fn open(
     data: &ProverData,
     packed_witness: Vec<F128>,
     query: &OpeningQuery,
+    statement_binding: StatementBinding,
     transcript: &mut ProverState,
 ) -> Result<(), CommitError> {
     // 1. Input Validation
@@ -63,7 +66,9 @@ pub(crate) fn open(
         .map_err(CommitError::InvalidConfiguration)?;
 
     // 2. Bind Statement
-    bind_statement(pcs, &data.commitment().root, query, transcript);
+    if statement_binding == StatementBinding::Bind {
+        bind_statement(pcs, &data.commitment().root, query, transcript);
+    }
     let packed_witness = into_flock_f128s(packed_witness);
     let flock_data = data.flock_data();
 
@@ -89,14 +94,12 @@ pub(crate) fn open(
         return Err(CommitError::InvalidClaim);
     }
 
-    // 7. Record Ring-Switch Message
-    let mut challenger = ProverChallenger::new(transcript);
-    challenger.observe_label(RING_SWITCH_LABEL);
-    challenger.observe_f128_slice(&s_hat_v);
+    // 7. Bind Ring-Switch Message
+    bind_ring_switch_message(transcript, &s_hat_v)?;
 
     // 8. Sample Ring-Switch Challenges
     // eq_r_dprime[u] = eq(r_dprime, u).
-    let r_dprime = challenger.sample_f128_vec(LOG_PACKING);
+    let r_dprime = sample_ring_switch_point(transcript);
     let eq_r_dprime = build_eq(&r_dprime);
     debug_assert_eq!(eq_r_dprime.len(), 1 << LOG_PACKING);
 
@@ -114,6 +117,8 @@ pub(crate) fn open(
 
     // 11. Prove the Ligerito Claim
     // Prove Σ_y b_initial[y] · packed_witness[y] = beta0.
+    observe_opening_target(transcript, r_hi.len(), beta0)?;
+    let mut challenger = ProverChallenger::new_ligerito(transcript, beta0);
     let ligerito_proof = recursive_prover_with_basis(
         &ligerito_config,
         packed_witness,
@@ -123,6 +128,11 @@ pub(crate) fn open(
         &flock_data.merkle_tree,
         &mut challenger,
     );
+    if challenger.failed() {
+        return Err(CommitError::invalid_configuration(
+            "missing Ligerito opening-target prefix",
+        ));
+    }
 
     // 12. Write the Bounded Opening Proof
     let opening_proof = BatchOpeningProofLigerito {
