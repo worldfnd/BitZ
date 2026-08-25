@@ -35,3 +35,9 @@ pub use spongefish::{
     Decoding, Encoding, NargDeserialize, NargSerialize, VerificationError, VerificationResult,
 };
 pub use verifier::VerifierState;
+
+/// Operations shared by prover and verifier transcripts for public messages.
+pub trait PublicTranscript {
+    /// Absorbs a message both parties already know.
+    fn public_message<T: Encoding<[u8]> + ?Sized>(&mut self, message: &T);
+}

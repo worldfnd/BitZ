@@ -37,7 +37,7 @@ use transcript::ProverState;
 
 pub(crate) fn open(
     pcs: &Pcs,
-    data: ProverData,
+    data: &ProverData,
     packed_witness: Vec<F128>,
     query: &OpeningQuery,
     transcript: &mut ProverState,
@@ -50,7 +50,7 @@ pub(crate) fn open(
     if packed_witness.len() != pcs.packed_len() {
         return Err(CommitError::InvalidBitLength);
     }
-    if !params_match(pcs, &data) {
+    if !params_match(pcs, data) {
         return Err(CommitError::invalid_configuration(format!(
             "prover data parameters do not match the active PCS: expected {:?}, got {:?}",
             pcs.params(),
@@ -65,7 +65,7 @@ pub(crate) fn open(
     // 2. Bind Statement
     bind_statement(pcs, &data.commitment().root, query, transcript);
     let packed_witness = into_flock_f128s(packed_witness);
-    let flock_data = data.into_flock_data();
+    let flock_data = data.flock_data();
 
     // 3. Split Point
     let (r_lo, r_hi) = query.point.split_at(LOG_PACKING);
@@ -86,7 +86,7 @@ pub(crate) fn open(
     let evaluation = claim_check(&eq_lo, &s_hat_v);
     let target = as_flock_f128s(core::slice::from_ref(&query.target))[0];
     if evaluation != target {
-        return Err(CommitError::VerificationFailed);
+        return Err(CommitError::InvalidClaim);
     }
 
     // 7. Record Ring-Switch Message

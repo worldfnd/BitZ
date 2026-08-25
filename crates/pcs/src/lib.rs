@@ -31,7 +31,7 @@
 //! - [`CommitScheme`] connects commitment, proving, and verification to project transcripts.
 //!
 //! The caller packs and retains the witness after [`CommitScheme::commit`].
-//! [`CommitScheme::prove_lin`] consumes the packed witness and [`ProverData`] for one opening.
+//! [`CommitScheme::prove_lin`] consumes the packed witness and borrows [`ProverData`].
 //! The caller must use matching transcript session and instance labels.
 //! The caller must also call `VerifierState::check_eof` after successful verification.
 //!
@@ -57,7 +57,7 @@
 //!
 //! let (commitment, prover_data) = pcs.commit(&packed_witness).unwrap();
 //! let mut prover = build_prover(b"pcs-example", b"zero-polynomial");
-//! pcs.prove_lin(prover_data, packed_witness, &query, &mut prover)
+//! pcs.prove_lin(&prover_data, packed_witness, &query, &mut prover)
 //!     .unwrap();
 //! let proof = prover.finish();
 //!
@@ -107,6 +107,8 @@ pub enum CommitError {
     ProofTooLarge,
     /// The linear-query proof did not verify.
     VerificationFailed,
+    /// The prover received an invalid evaluation claim.
+    InvalidClaim,
 }
 
 impl CommitError {
@@ -135,10 +137,10 @@ pub trait CommitScheme {
         packed_witness: &[F128],
     ) -> Result<(Self::Commitment, Self::ProverData), CommitError>;
 
-    /// Consumes the exact packed witness passed to [`Self::commit`] and proves the claim.
+    /// Consumes the exact packed witness and proves the claim without consuming the prover data.
     fn prove_lin(
         &self,
-        data: Self::ProverData,
+        data: &Self::ProverData,
         packed_witness: Vec<F128>,
         query: &OpeningQuery,
         transcript: &mut ProverState,
@@ -166,7 +168,7 @@ impl CommitScheme for Pcs {
 
     fn prove_lin(
         &self,
-        data: Self::ProverData,
+        data: &Self::ProverData,
         packed_witness: Vec<F128>,
         query: &OpeningQuery,
         transcript: &mut ProverState,

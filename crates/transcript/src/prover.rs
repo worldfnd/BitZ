@@ -1,6 +1,6 @@
 use spongefish::{Decoding, Encoding, NargSerialize};
 
-use crate::Proof;
+use crate::{Proof, PublicTranscript};
 
 /// The prover half of the transcript.
 ///
@@ -9,6 +9,12 @@ use crate::Proof;
 pub struct ProverState {
     pub(crate) inner: spongefish::ProverState,
     pub(crate) hints: Vec<u8>,
+}
+
+impl PublicTranscript for ProverState {
+    fn public_message<T: Encoding<[u8]> + ?Sized>(&mut self, message: &T) {
+        self.inner.public_message(message);
+    }
 }
 
 impl ProverState {

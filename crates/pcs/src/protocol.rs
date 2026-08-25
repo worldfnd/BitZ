@@ -2,7 +2,7 @@
 
 use bincode::Options;
 use flock_core::pcs::BatchOpeningProofLigerito;
-use transcript::{Encoding, ProverState, VerifierState};
+use transcript::{ProverState, PublicTranscript, VerifierState};
 
 use crate::{CommitError, OpeningQuery, Pcs};
 
@@ -41,22 +41,6 @@ pub(crate) fn read_opening_proof(
     proof_options()
         .deserialize(&proof_bytes)
         .map_err(|_| CommitError::MalformedProof)
-}
-
-pub(crate) trait PublicTranscript {
-    fn public_message<T: Encoding<[u8]> + ?Sized>(&mut self, message: &T);
-}
-
-impl PublicTranscript for ProverState {
-    fn public_message<T: Encoding<[u8]> + ?Sized>(&mut self, message: &T) {
-        ProverState::public_message(self, message);
-    }
-}
-
-impl PublicTranscript for VerifierState<'_> {
-    fn public_message<T: Encoding<[u8]> + ?Sized>(&mut self, message: &T) {
-        VerifierState::public_message(self, message);
-    }
 }
 
 /// Absorbs the public statement in either transcript.

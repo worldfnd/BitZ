@@ -4,7 +4,7 @@
 //! 1. Require the configured packed-witness length.
 //! 2. Commit the caller-owned packed witness with Flock.
 //! 3. Expose the Merkle root as the public commitment.
-//! 4. Retain Flock prover data for one opening.
+//! 4. Retain Flock prover data for later openings.
 
 use core::mem::size_of;
 
@@ -38,7 +38,7 @@ pub struct Commitment {
     root: [u8; 32],
 }
 
-/// Flock state retained between commitment and one opening.
+/// Flock state retained between commitment and openings.
 pub struct ProverData {
     commitment: FlockCommitment,
     flock_prover_data: FlockProverData,
@@ -146,8 +146,8 @@ impl ProverData {
         self.flock_prover_data.codeword.len()
     }
 
-    pub(crate) fn into_flock_data(self) -> FlockProverData {
-        self.flock_prover_data
+    pub(crate) fn flock_data(&self) -> &FlockProverData {
+        &self.flock_prover_data
     }
 
     pub(crate) fn commitment(&self) -> &FlockCommitment {

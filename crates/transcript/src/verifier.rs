@@ -1,5 +1,7 @@
 use spongefish::{Decoding, Encoding, NargDeserialize, VerificationError, VerificationResult};
 
+use crate::PublicTranscript;
+
 /// The verifier half of the transcript.
 ///
 /// Replays the narg string through the sponge and drains the hint stream
@@ -7,6 +9,12 @@ use spongefish::{Decoding, Encoding, NargDeserialize, VerificationError, Verific
 pub struct VerifierState<'a> {
     pub(crate) inner: spongefish::VerifierState<'a>,
     pub(crate) hints: &'a [u8],
+}
+
+impl PublicTranscript for VerifierState<'_> {
+    fn public_message<T: Encoding<[u8]> + ?Sized>(&mut self, message: &T) {
+        self.inner.public_message(message);
+    }
 }
 
 impl VerifierState<'_> {
