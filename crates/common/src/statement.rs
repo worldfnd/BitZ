@@ -68,12 +68,9 @@ impl<const Q: u128> CoreStatement<Q> {
         column_weights: Vec<Fq<Q>>,
         target: Fq<Q>,
     ) -> Result<Self, StatementError> {
-        // Compile-time: an inadmissible modulus cannot be instantiated at
-        // all, so this is a build failure rather than a panic. Oddness is not
-        // a stand-in for primality -- Q = 2 is prime and still rejected,
-        // because the field layer's reduction requires an odd modulus.
-        const { assert!(Q >= 3, "modulus must be at least 3") };
-        const { assert!(Q % 2 == 1, "modulus must be odd") };
+        // No modulus gate here. `Fq<Q>` asserts that Q is an odd prime below
+        // 2^126 on its own behalf, so naming the type is what enforces it and
+        // an inadmissible modulus never reaches this constructor.
 
         // `Q < |K| / k_1`, equivalently `t + log2 Q < 128`. A fold is at most
         // `k_1 (Q - 1)` and the verifier only ever sees it modulo `ord(g)`, so
