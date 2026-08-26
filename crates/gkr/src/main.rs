@@ -5,11 +5,32 @@ fn main() {}
 fn prove(input: Vec<Field>) {
     let circuit = Circuit::new(input);
     let witnesses = circuit.eval();
+    gpgkr_prove(_, _, witnesses);
 }
 
+// TODO capture the reverse running through eval in it's own iter
+
 /// Grand product GKR
-fn gpgkr_prove(eval: CircuitEval) {
-    prove_layer()
+fn gpgkr_prove(
+    // Captured by a transcript implementation
+    challenges: Vec<Vec<Field>>,
+    line_challenges: Vec<Field>,
+    //
+    mut eval: CircuitEval,
+) -> Vec<((Field, Field), Vec<(Field, Field)>)> {
+    let mut transcripts = vec![];
+    let mut point = vec![];
+    let _last_value = eval.pop().unwrap();
+    for ((wnext, challenge_layer), line_challenge) in
+        eval.0.iter().rev().zip(challenges).zip(line_challenges)
+    {
+        let (line, transcript) = prove_layer(&point, wnext, &challenge_layer);
+        transcripts.push((line, transcript));
+
+        point = challenge_layer;
+        point.push(line_challenge);
+    }
+    transcripts
 }
 
 fn prove_layer(
@@ -34,7 +55,7 @@ fn prove_layer(
         let eq = suffix_table.pop().unwrap();
         let mut sum_0 = 0;
         let mut sum_inf = 0;
-        let h = mle_wnext.len() / 2;
+        let h = mle_wnext.len() / 2; // Same as eq.len()?
 
         // Could this loop be combined with fix_variable of r*?
         // TODO: yes — this loop and mle_wnext.fix_variable(*r) below both read
@@ -67,7 +88,7 @@ fn prove_layer(
     ((mle_wnext[0], mle_wnext[1]), sumcheck_transcript)
 }
 
-fn verify_layer(check_value, point: &[Field], challenges: &[Field]) {}
+fn verify_layer(check_value: Field, point: &[Field], challenges: &[Field]) {}
 
 fn gpgkr_verify() {}
 
