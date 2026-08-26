@@ -58,7 +58,7 @@ pub(crate) fn verify(
         .params()
         .ligerito_verifier_config()
         .map_err(CommitError::InvalidConfiguration)?;
-    let final_log_n = validate_config(&ligerito_config, log_n, pcs.params().log_batch_size)?;
+    let final_log_n = pcs.final_log_n();
 
     // 2. Bind Statement
     if statement_binding == StatementBinding::Bind {

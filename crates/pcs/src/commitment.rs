@@ -27,6 +27,7 @@ const LIGERITO_INITIAL_K: usize = 6;
 #[derive(Clone, Debug)]
 pub struct Pcs {
     params: PcsParams,
+    final_log_n: usize,
 }
 
 /// The public commitment. Trusted parameters remain in [`Pcs`].
@@ -63,9 +64,12 @@ impl Pcs {
         let config = params
             .ligerito_verifier_config()
             .map_err(CommitError::InvalidConfiguration)?;
-        validate_config(&config, params.log_msg_len(), params.log_batch_size)?;
+        let final_log_n = validate_config(&config, params.log_msg_len(), params.log_batch_size)?;
 
-        Ok(Self { params })
+        Ok(Self {
+            params,
+            final_log_n,
+        })
     }
 
     /// Commits to the exact configured number of packed field elements.
@@ -105,6 +109,10 @@ impl Pcs {
 
     pub(crate) fn params(&self) -> &PcsParams {
         &self.params
+    }
+
+    pub(crate) fn final_log_n(&self) -> usize {
+        self.final_log_n
     }
 }
 
