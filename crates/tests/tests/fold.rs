@@ -2,8 +2,8 @@
 
 mod fixtures;
 
-use common::{BitTable, CoreStatement, FoldError};
-use field::{F128, FixedBasePow, Fq, gf128::smallest_generator};
+use common::{BitTable, CoreStatement, F2ZConfig, FoldError};
+use field::{F128, Fq, gf128::smallest_generator};
 use fixtures::{
     Instance, Q, WINDOW, narrow_shape, prover_transcript, verifier_transcript, wide_shape,
 };
@@ -15,9 +15,9 @@ use verifier::{ReceiveError, receive_fold};
 fn prove(instance: &Instance) -> (common::Fold, Proof) {
     let mut transcript = prover_transcript();
     let round = send_fold(
+        &instance.config,
         &instance.statement,
         &instance.table(),
-        &instance.generator,
         &mut transcript,
     )
     .unwrap();
@@ -41,7 +41,7 @@ fn the_two_sides_agree_on_every_shape_the_profile_admits() {
         let (sent, proof) = prove(&instance);
 
         let mut transcript = verifier_transcript(&proof);
-        let received = receive_fold(&instance.statement, &instance.generator, &mut transcript)
+        let received = receive_fold(&instance.config, &instance.statement, &mut transcript)
             .expect("honest proof");
 
         assert_eq!(sent, received, "t = {}", shape.t());
@@ -60,7 +60,7 @@ fn the_proof_carries_only_the_folds() {
 
     assert_eq!(
         proof.narg_string.len(),
-        16 * instance.statement.shape().columns()
+        16 * instance.config.shape().columns()
     );
     assert!(proof.hints.is_empty());
 }
@@ -75,7 +75,7 @@ fn the_challenge_depends_on_the_folds() {
 
     let echoed = forge(&round.folds);
     let mut transcript = verifier_transcript(&echoed);
-    let replayed: Vec<u128> = (0..instance.statement.shape().columns())
+    let replayed: Vec<u128> = (0..instance.config.shape().columns())
         .map(|_| {
             transcript
                 .prover_message::<[u8; 16]>()
@@ -85,7 +85,7 @@ fn the_challenge_depends_on_the_folds() {
         .collect();
     assert_eq!(replayed, round.folds);
 
-    let zeta: Vec<F128> = (0..instance.statement.shape().s())
+    let zeta: Vec<F128> = (0..instance.config.shape().s())
         .map(|_| transcript.verifier_message())
         .collect();
     assert_eq!(zeta, round.zeta);
@@ -100,28 +100,27 @@ fn a_fold_at_the_bound_is_accepted_and_one_past_it_is_not() {
     let table = BitTable::new(shape, &words).unwrap();
 
     let fold = (shape.rows() as u128) * (Q - 1);
-    let statement = CoreStatement::<Q>::new(
-        shape,
-        smallest_generator(),
+    let config = F2ZConfig::<Q>::new(shape, smallest_generator(), WINDOW).unwrap();
+    let statement = CoreStatement::new(
+        &config,
         vec![Fq::from(Q - 1); shape.rows()],
         vec![Fq::from(1u128); shape.columns()],
         Fq::from(fold) * Fq::from(shape.columns() as u128),
     )
     .unwrap();
-    let generator = FixedBasePow::new(smallest_generator(), WINDOW);
 
     let mut transcript = prover_transcript();
-    let round = send_fold(&statement, &table, &generator, &mut transcript).unwrap();
+    let round = send_fold(&config, &statement, &table, &mut transcript).unwrap();
     assert!(round.folds.iter().all(|&value| value == fold));
 
     let proof = transcript.finish();
     let mut transcript = verifier_transcript(&proof);
-    assert!(receive_fold(&statement, &generator, &mut transcript).is_ok());
+    assert!(receive_fold(&config, &statement, &mut transcript).is_ok());
 
     let over = forge(&vec![fold + 1; shape.columns()]);
     let mut transcript = verifier_transcript(&over);
     assert_eq!(
-        receive_fold(&statement, &generator, &mut transcript),
+        receive_fold(&config, &statement, &mut transcript),
         Err(ReceiveError::FoldOutOfRange)
     );
 }
@@ -131,13 +130,13 @@ fn the_range_check_fires_before_the_reconstruction() {
     // A proof violating both. The order is fixed, so the earlier obligation is
     // the one that must be reported.
     let instance = Instance::honest(narrow_shape(), 6);
-    let shape = instance.statement.shape();
-    let over = vec![instance.statement.fold_bound() + 1; shape.columns()];
+    let shape = instance.config.shape();
+    let over = vec![instance.config.fold_bound() + 1; shape.columns()];
 
     let forged = forge(&over);
     let mut transcript = verifier_transcript(&forged);
     assert_eq!(
-        receive_fold(&instance.statement, &instance.generator, &mut transcript),
+        receive_fold(&instance.config, &instance.statement, &mut transcript),
         Err(ReceiveError::FoldOutOfRange)
     );
     // The same folds also fail the reconstruction, so the assertion above is
@@ -157,7 +156,7 @@ fn folds_that_do_not_reconstruct_the_target_are_rejected() {
     let retargeted = instance.with_target(instance.statement.target() + Fq::from(1u128));
     let mut transcript = verifier_transcript(&proof);
     assert_eq!(
-        receive_fold(&retargeted, &instance.generator, &mut transcript),
+        receive_fold(&instance.config, &retargeted, &mut transcript),
         Err(ReceiveError::TargetMismatch)
     );
 }
@@ -170,40 +169,14 @@ fn a_witness_of_a_different_shape_is_refused_before_anything_is_written() {
     let mut transcript = prover_transcript();
     assert_eq!(
         send_fold(
+            &instance.config,
             &instance.statement,
             &other.table(),
-            &instance.generator,
             &mut transcript
         ),
         Err(SendError::ShapeMismatch)
     );
     assert!(transcript.finish().narg_string.is_empty());
-}
-
-#[test]
-fn a_comb_built_on_another_base_is_refused_by_both_sides() {
-    let instance = Instance::honest(narrow_shape(), 9);
-    // A different base of full order: the statement's own gate cannot tell
-    // this apart, only the binding check can.
-    let other = FixedBasePow::new(smallest_generator().square(), WINDOW);
-
-    let mut transcript = prover_transcript();
-    assert_eq!(
-        send_fold(
-            &instance.statement,
-            &instance.table(),
-            &other,
-            &mut transcript
-        ),
-        Err(SendError::GeneratorMismatch)
-    );
-
-    let (_, proof) = prove(&instance);
-    let mut transcript = verifier_transcript(&proof);
-    assert_eq!(
-        receive_fold(&instance.statement, &other, &mut transcript),
-        Err(ReceiveError::GeneratorMismatch)
-    );
 }
 
 #[test]
@@ -215,7 +188,7 @@ fn a_truncated_proof_is_refused_rather_than_read_past() {
     short.narg_string.truncate(proof.narg_string.len() - 16);
     let mut transcript = verifier_transcript(&short);
     assert_eq!(
-        receive_fold(&instance.statement, &instance.generator, &mut transcript),
+        receive_fold(&instance.config, &instance.statement, &mut transcript),
         Err(ReceiveError::MalformedProof)
     );
 }
@@ -224,26 +197,25 @@ fn a_truncated_proof_is_refused_rather_than_read_past() {
 fn an_all_zero_witness_folds_to_zero_and_still_round_trips() {
     let shape = narrow_shape();
     let words = vec![0u64; (1 << shape.m()) / 64];
-    let statement = CoreStatement::<Q>::new(
-        shape,
-        smallest_generator(),
+    let config = F2ZConfig::<Q>::new(shape, smallest_generator(), WINDOW).unwrap();
+    let statement = CoreStatement::new(
+        &config,
         vec![Fq::from(Q - 1); shape.rows()],
         vec![Fq::from(3u128); shape.columns()],
         Fq::from(0u128),
     )
     .unwrap();
-    let generator = FixedBasePow::new(smallest_generator(), WINDOW);
     let table = BitTable::new(shape, &words).unwrap();
 
     let mut transcript = prover_transcript();
-    let round = send_fold(&statement, &table, &generator, &mut transcript).unwrap();
+    let round = send_fold(&config, &statement, &table, &mut transcript).unwrap();
     assert!(round.folds.iter().all(|&fold| fold == 0));
     assert!(round.images.iter().all(|&image| image == F128::new(1, 0)));
 
     let proof = transcript.finish();
     let mut transcript = verifier_transcript(&proof);
     assert_eq!(
-        receive_fold(&statement, &generator, &mut transcript).unwrap(),
+        receive_fold(&config, &statement, &mut transcript).unwrap(),
         round
     );
 }

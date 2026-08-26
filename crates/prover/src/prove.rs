@@ -1,7 +1,6 @@
 //! `ProveF2Z`.
 
-use common::{BitTable, CoreStatement, OpeningClaim, ReductionInput, Root};
-use field::FixedBasePow;
+use common::{BitTable, CoreStatement, F2ZConfig, OpeningClaim, ReductionInput, Root};
 use transcript::ProverState;
 
 use crate::{SendError, send_fold};
@@ -37,18 +36,22 @@ pub trait Reduction<const Q: u128> {
 /// [`common::BitTable::pack`] and passes the root in as `com`. The transcript
 /// arrives carrying the caller's events; this appends and hands it back.
 pub fn prove<const Q: u128, R: Reduction<Q>>(
+    config: &F2ZConfig<Q>,
     statement: &CoreStatement<Q>,
     com: Root,
     table: &BitTable<'_>,
-    generator: &FixedBasePow,
     reduction: &R,
     transcript: &mut ProverState,
 ) -> Result<OpeningClaim, ProveError<R::Error>> {
     // Step 1: bind. Absorbing the root here is not redundant with the opening
     // scheme, whose batched opening binds it only in its own statement mode --
     // and that fires at Step 5.3, long after the fold has squeezed.
+    //
+    // The claim itself is not bound: neither `v^(1)`, `v^(2)` nor `mu` reaches
+    // the sponge here, only the parameters. They enter through the caller's
+    // own events.
     transcript.public_message(&com.0);
-    transcript.public_message(statement);
+    transcript.public_message(config);
 
     // TODO: Step 5.0, reduce the modulus, is absent. It runs when q is too
     // large for the shape, and a const modulus parameter cannot express its
@@ -56,13 +59,14 @@ pub fn prove<const Q: u128, R: Reduction<Q>>(
     // rejects anything else.
 
     // Step 5.1: fold each column into an integer exponent.
-    let fold = send_fold(statement, table, generator, transcript).map_err(ProveError::Fold)?;
+    let fold = send_fold(config, statement, table, transcript).map_err(ProveError::Fold)?;
 
     // Steps 5.2 and 5.2a: the grand product over the folds, then the sumcheck
     // that turns its affine leaf into a claim on the committed bits.
     //
     // TODO(#8): both live behind `Reduction`, which nothing implements yet.
     let input = ReductionInput {
+        config,
         statement,
         commitment: com,
         fold: &fold,

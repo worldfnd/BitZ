@@ -17,10 +17,10 @@ fn the_two_sides_agree_on_every_shape_the_profile_admits() {
 
         let mut transcript = prover_transcript();
         let proved = prove(
+            &instance.config,
             &instance.statement,
             instance.com,
             &instance.table(),
-            &instance.generator,
             &EchoReduction,
             &mut transcript,
         )
@@ -29,9 +29,9 @@ fn the_two_sides_agree_on_every_shape_the_profile_admits() {
 
         let mut transcript = verifier_transcript(&proof);
         let verified = verify(
+            &instance.config,
             &instance.statement,
             instance.com,
-            &instance.generator,
             &EchoReduction,
             &mut transcript,
         )
@@ -54,10 +54,10 @@ fn the_commitment_is_bound_before_the_first_challenge() {
 
     let mut transcript = prover_transcript();
     let proved = prove(
+        &instance.config,
         &instance.statement,
         instance.com,
         &instance.table(),
-        &instance.generator,
         &EchoReduction,
         &mut transcript,
     )
@@ -66,9 +66,9 @@ fn the_commitment_is_bound_before_the_first_challenge() {
 
     let mut transcript = verifier_transcript(&proof);
     let verified = verify(
+        &instance.config,
         &instance.statement,
         Root([0xffu8; 32]),
-        &instance.generator,
         &EchoReduction,
         &mut transcript,
     )
@@ -83,10 +83,10 @@ fn the_statement_is_bound_before_the_first_challenge() {
 
     let mut transcript = prover_transcript();
     prove(
+        &instance.config,
         &instance.statement,
         instance.com,
         &instance.table(),
-        &instance.generator,
         &EchoReduction,
         &mut transcript,
     )
@@ -100,9 +100,9 @@ fn the_statement_is_bound_before_the_first_challenge() {
     let mut transcript = verifier_transcript(&proof);
     assert_eq!(
         verify(
+            &instance.config,
             &retargeted,
             instance.com,
-            &instance.generator,
             &EchoReduction,
             &mut transcript,
         ),

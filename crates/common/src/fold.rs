@@ -1,9 +1,9 @@
 //! The column fold, and the round state both sides hold once it closes.
 
-use field::{F128, FixedBasePow, Fq};
+use field::{F128, Fq};
 use poly::DenseMultilinearExtension;
 
-use crate::{BitTable, CoreStatement, Shape, table::WORD_BITS};
+use crate::{BitTable, CoreStatement, F2ZConfig, Shape, table::WORD_BITS};
 
 /// A round whose parts do not describe the shape they belong to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,14 +46,11 @@ pub fn fold_column(table: &BitTable<'_>, exponents: &[u128], column: usize) -> u
 ///
 /// Derived, never transmitted. There are only `k_1` of these — at most `2^14`
 /// under the sizing constraint — so unlike the columns they are cheap to hold.
-pub fn row_images<const Q: u128>(
-    statement: &CoreStatement<Q>,
-    generator: &FixedBasePow,
-) -> Vec<F128> {
+pub fn row_images<const Q: u128>(config: &F2ZConfig<Q>, statement: &CoreStatement<Q>) -> Vec<F128> {
     statement
         .row_exponents()
         .into_iter()
-        .map(|exponent| generator.pow(exponent))
+        .map(|exponent| config.comb().pow(exponent))
         .collect()
 }
 
@@ -70,7 +67,7 @@ pub fn reconstruct<const Q: u128>(
     statement: &CoreStatement<Q>,
     folds: &[u128],
 ) -> Result<Fq<Q>, FoldError> {
-    if folds.len() != statement.shape().columns() {
+    if folds.len() != statement.column_weights().len() {
         return Err(FoldError::ColumnCountMismatch);
     }
     Ok(statement
@@ -149,15 +146,12 @@ mod tests {
         Shape::new(7, 15).unwrap()
     }
 
+    fn config() -> F2ZConfig<Q114> {
+        F2ZConfig::new(shape(), smallest_generator(), WINDOW).unwrap()
+    }
+
     fn statement(row_weights: Vec<Fq<Q114>>, column_weights: Vec<Fq<Q114>>) -> CoreStatement<Q114> {
-        CoreStatement::new(
-            shape(),
-            smallest_generator(),
-            row_weights,
-            column_weights,
-            Fq::from(0u128),
-        )
-        .unwrap()
+        CoreStatement::new(&config(), row_weights, column_weights, Fq::from(0u128)).unwrap()
     }
 
     fn witness(shape: &Shape, bits: &[(usize, usize)]) -> Vec<u64> {
@@ -204,7 +198,7 @@ mod tests {
 
         assert_eq!(
             fold_column(&table, &statement.row_exponents(), 0),
-            statement.fold_bound()
+            config().fold_bound()
         );
     }
 
@@ -252,9 +246,9 @@ mod tests {
         let shape = shape();
         let weights: Vec<Fq<Q114>> = (0..shape.rows()).map(|row| Fq::from(row as u128)).collect();
         let statement = statement(weights, vec![Fq::from(1u128); shape.columns()]);
-        let generator = FixedBasePow::new(smallest_generator(), WINDOW);
+        let config = config();
 
-        let images = row_images(&statement, &generator);
+        let images = row_images(&config, &statement);
         assert_eq!(images.len(), shape.rows());
         assert_eq!(images[0], F128::new(1, 0));
         assert_eq!(images[1], smallest_generator());

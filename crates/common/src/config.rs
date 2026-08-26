@@ -4,7 +4,9 @@ use field::{F128, FixedBasePow, gf128::is_generator};
 use spongefish::Encoding;
 
 use crate::Shape;
-use crate::statement::EXTENSION_BITS;
+
+/// `log2 |K|`. The extension is `F_2^128`, so a fold has 128 bits of room.
+const EXTENSION_BITS: u32 = 128;
 
 /// A configuration one of the pre-claim gates rejects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

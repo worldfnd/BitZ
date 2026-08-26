@@ -1,16 +1,14 @@
 //! The fold round: send the column folds, then take the challenge.
 
-use common::{BitTable, CoreStatement, Fold, FoldError, fold_column, row_images};
-use field::{F128, FixedBasePow};
+use common::{BitTable, CoreStatement, F2ZConfig, Fold, FoldError, fold_column, row_images};
+use field::F128;
 use transcript::ProverState;
 
 /// A fold the prover cannot produce.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SendError {
-    /// The witness is not shaped the way the statement says it is.
+    /// The witness is not shaped the way the configuration says it is.
     ShapeMismatch,
-    /// The comb table was built on a different base than the statement's `g`.
-    GeneratorMismatch,
     /// The round's parts disagree about the shape.
     Fold(FoldError),
 }
@@ -32,25 +30,18 @@ pub enum SendError {
 /// only because it derives from the statement's shape; the wire profile is
 /// where a length-delimited vector record would belong.
 pub fn send_fold<const Q: u128>(
+    config: &F2ZConfig<Q>,
     statement: &CoreStatement<Q>,
     table: &BitTable<'_>,
-    generator: &FixedBasePow,
     transcript: &mut ProverState,
 ) -> Result<Fold, SendError> {
-    // The weights are indexed by the statement's row count while the bits are
+    // The weights are sized by the configured row count while the bits are
     // read at the table's. Disagreement is a panic, a silently wrong fold, or
     // a desynchronised transcript depending on which way it goes.
-    if table.shape() != statement.shape() {
+    if table.shape() != config.shape() {
         return Err(SendError::ShapeMismatch);
     }
-    // The statement's generator is checked for full order, but nothing else
-    // ties it to the comb table the caller passes in. Without this a comb
-    // built on any other base produces a self-consistent proof of the wrong
-    // claim. `pow(1)` reads the base straight out of the table.
-    if generator.pow(1) != statement.generator() {
-        return Err(SendError::GeneratorMismatch);
-    }
-    let shape = statement.shape();
+    let shape = config.shape();
 
     // Lifted once: the fold reads it per set bit across every column.
     let exponents = statement.row_exponents();
@@ -62,8 +53,8 @@ pub fn send_fold<const Q: u128>(
         transcript.prover_message(&fold.to_le_bytes());
     }
 
-    let images: Vec<F128> = folds.iter().map(|&fold| generator.pow(fold)).collect();
-    let row_images = row_images(statement, generator);
+    let images: Vec<F128> = folds.iter().map(|&fold| config.comb().pow(fold)).collect();
+    let row_images = row_images(config, statement);
     let zeta = (0..shape.s())
         .map(|_| transcript.verifier_message())
         .collect();

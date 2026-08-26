@@ -1,7 +1,6 @@
 //! `VerifyF2Z`.
 
-use common::{CoreStatement, OpeningClaim, ReductionInput, Root};
-use field::FixedBasePow;
+use common::{CoreStatement, F2ZConfig, OpeningClaim, ReductionInput, Root};
 use transcript::VerifierState;
 
 use crate::{ReceiveError, receive_fold};
@@ -33,28 +32,29 @@ pub trait Reduction<const Q: u128> {
 /// The transcript arrives carrying the caller's events; this appends and hands
 /// it back.
 pub fn verify<const Q: u128, R: Reduction<Q>>(
+    config: &F2ZConfig<Q>,
     statement: &CoreStatement<Q>,
     com: Root,
-    generator: &FixedBasePow,
     reduction: &R,
     transcript: &mut VerifierState<'_>,
 ) -> Result<OpeningClaim, VerifyError<R::Error>> {
     // Step 1: the admissibility and precondition checks have already run --
     // the shape gates in Shape::new, the modulus in Fq's own const assertions,
-    // the generator's order and the weight counts in CoreStatement::new. What
-    // is left is binding, before any challenge.
+    // the generator's order in F2ZConfig::new and the weight counts in
+    // CoreStatement::new. What is left is binding, before any challenge.
     transcript.public_message(&com.0);
-    transcript.public_message(statement);
+    transcript.public_message(config);
 
     // TODO: Step 5.0, reduce the modulus, is absent, as on the prover.
 
     // Step 5.1: read the folds, range-check them, reconstruct against mu.
-    let fold = receive_fold(statement, generator, transcript).map_err(VerifyError::Fold)?;
+    let fold = receive_fold(config, statement, transcript).map_err(VerifyError::Fold)?;
 
     // Steps 5.2 and 5.2a, replayed.
     //
     // TODO(#8): both live behind `Reduction`, which nothing implements yet.
     let input = ReductionInput {
+        config,
         statement,
         commitment: com,
         fold: &fold,

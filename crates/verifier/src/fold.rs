@@ -1,8 +1,8 @@
 //! The fold round: read the column folds, check them, then take the
 //! challenge.
 
-use common::{CoreStatement, Fold, FoldError, reconstruct, row_images};
-use field::{F128, FixedBasePow};
+use common::{CoreStatement, F2ZConfig, Fold, FoldError, reconstruct, row_images};
+use field::F128;
 use transcript::VerifierState;
 
 /// A fold the verifier rejects.
@@ -10,8 +10,6 @@ use transcript::VerifierState;
 pub enum ReceiveError {
     /// A record is missing or does not decode.
     MalformedProof,
-    /// The comb table was built on a different base than the statement's `g`.
-    GeneratorMismatch,
     /// A fold is above `k_1 (q - 1)`, where its image stops determining it.
     FoldOutOfRange,
     /// The folds do not reconstruct the claimed target.
@@ -34,18 +32,11 @@ pub enum ReceiveError {
 /// in the sponge before either check; what the ordering protects is the
 /// challenge, which must not be reachable until both have passed.
 pub fn receive_fold<const Q: u128>(
+    config: &F2ZConfig<Q>,
     statement: &CoreStatement<Q>,
-    generator: &FixedBasePow,
     transcript: &mut VerifierState<'_>,
 ) -> Result<Fold, ReceiveError> {
-    // The statement's generator is checked for full order, but nothing else
-    // ties it to the comb table the caller passes in. Without this a comb
-    // built on any other base accepts a self-consistent proof of the wrong
-    // claim. `pow(1)` reads the base straight out of the table.
-    if generator.pow(1) != statement.generator() {
-        return Err(ReceiveError::GeneratorMismatch);
-    }
-    let shape = statement.shape();
+    let shape = config.shape();
 
     let folds = (0..shape.columns())
         .map(|_| {
@@ -56,15 +47,15 @@ pub fn receive_fold<const Q: u128>(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    if folds.iter().any(|&fold| fold > statement.fold_bound()) {
+    if folds.iter().any(|&fold| fold > config.fold_bound()) {
         return Err(ReceiveError::FoldOutOfRange);
     }
     if reconstruct(statement, &folds).map_err(ReceiveError::Fold)? != statement.target() {
         return Err(ReceiveError::TargetMismatch);
     }
 
-    let images: Vec<F128> = folds.iter().map(|&fold| generator.pow(fold)).collect();
-    let row_images = row_images(statement, generator);
+    let images: Vec<F128> = folds.iter().map(|&fold| config.comb().pow(fold)).collect();
+    let row_images = row_images(config, statement);
     let zeta = (0..shape.s())
         .map(|_| transcript.verifier_message())
         .collect();

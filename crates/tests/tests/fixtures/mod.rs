@@ -4,9 +4,9 @@
 //! so a helper only one of them uses is dead code in the others.
 #![allow(dead_code)]
 
-use common::{BitTable, CoreStatement, Fold, OpeningClaim, ReductionInput, Root, Shape};
+use common::{BitTable, CoreStatement, F2ZConfig, Fold, OpeningClaim, ReductionInput, Root, Shape};
 use crypto_primitives::LiftElement;
-use field::{F128, FixedBasePow, Fq, gf128::smallest_generator};
+use field::{F128, Fq, gf128::smallest_generator};
 use rand_chacha::ChaCha8Rng;
 use rand_core::{RngCore, SeedableRng};
 use transcript::{Proof, ProverState, VerifierState, build_prover, build_verifier};
@@ -20,10 +20,10 @@ pub const WINDOW: u32 = 8;
 
 /// An instance whose claim actually holds.
 pub struct Instance {
+    pub config: F2ZConfig<Q>,
     pub statement: CoreStatement<Q>,
     pub com: Root,
     pub words: Vec<u64>,
-    pub generator: FixedBasePow,
 }
 
 impl Instance {
@@ -36,6 +36,7 @@ impl Instance {
     /// runs.
     pub fn honest(shape: Shape, seed: u64) -> Self {
         let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        let config = F2ZConfig::<Q>::new(shape, smallest_generator(), WINDOW).unwrap();
 
         let words: Vec<u64> = (0..(1 << shape.m()) / 64).map(|_| rng.next_u64()).collect();
         let row_weights: Vec<Fq<Q>> = (0..shape.rows())
@@ -57,32 +58,24 @@ impl Instance {
             })
             .sum();
 
-        let statement = CoreStatement::new(
-            shape,
-            smallest_generator(),
-            row_weights,
-            column_weights,
-            target,
-        )
-        .unwrap();
+        let statement = CoreStatement::new(&config, row_weights, column_weights, target).unwrap();
 
         Self {
+            config,
             statement,
             com: Root([9u8; 32]),
             words,
-            generator: FixedBasePow::new(smallest_generator(), WINDOW),
         }
     }
 
     pub fn table(&self) -> BitTable<'_> {
-        BitTable::new(*self.statement.shape(), &self.words).unwrap()
+        BitTable::new(*self.config.shape(), &self.words).unwrap()
     }
 
     /// The same instance under a different claimed value.
     pub fn with_target(&self, target: Fq<Q>) -> CoreStatement<Q> {
         CoreStatement::new(
-            *self.statement.shape(),
-            self.statement.generator(),
+            &self.config,
             self.statement.row_weights().to_vec(),
             self.statement.column_weights().to_vec(),
             target,
@@ -139,7 +132,7 @@ impl prover::Reduction<Q> for EchoReduction {
         _table: &BitTable<'_>,
         transcript: &mut ProverState,
     ) -> Result<OpeningClaim, Self::Error> {
-        let point = (0..input.statement.shape().m())
+        let point = (0..input.config.shape().m())
             .map(|_| transcript.verifier_message())
             .collect();
         Ok(claim(point, input.fold))
@@ -154,7 +147,7 @@ impl verifier::Reduction<Q> for EchoReduction {
         input: &ReductionInput<'_, Q>,
         transcript: &mut VerifierState<'_>,
     ) -> Result<OpeningClaim, Self::Error> {
-        let point = (0..input.statement.shape().m())
+        let point = (0..input.config.shape().m())
             .map(|_| transcript.verifier_message())
             .collect();
         Ok(claim(point, input.fold))

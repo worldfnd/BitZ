@@ -6,7 +6,7 @@
 
 use field::F128;
 
-use crate::{CoreStatement, Fold, Root};
+use crate::{CoreStatement, F2ZConfig, Fold, Root};
 
 /// A multilinear evaluation claim on the committed bits: `f~(point) = target`.
 ///
@@ -26,8 +26,9 @@ pub struct OpeningClaim {
 /// The images `g^{eta_j}` and the row images `y_i` are already in [`Fold`],
 /// along with the challenge and the batched output claim, so this carries a
 /// reference rather than restating them.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct ReductionInput<'a, const Q: u128> {
+    pub config: &'a F2ZConfig<Q>,
     pub statement: &'a CoreStatement<Q>,
     pub commitment: Root,
     pub fold: &'a Fold,
