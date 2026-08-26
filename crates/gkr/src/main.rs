@@ -1,3 +1,5 @@
+use std::mem;
+
 use prove_playground::Mle;
 
 fn main() {}
@@ -5,30 +7,57 @@ fn main() {}
 fn prove(input: Vec<Field>) {
     let circuit = Circuit::new(input);
     let witnesses = circuit.eval();
-    gpgkr_prove(_, _, witnesses);
+
+    let mut c = Challenge::new();
+
+    gpgkr_prove(&mut c, witnesses);
+}
+
+struct Challenge {
+    counter: Field,
+    build_up: Vec<Field>,
+    all: Vec<Vec<Field>>,
+}
+
+impl Challenge {
+    fn new() -> Self {
+        Challenge {
+            counter: 0,
+            build_up: vec![],
+            all: vec![],
+        }
+    }
+
+    fn get_challenge(&mut self) -> Field {
+        let val = self.counter;
+        self.build_up.push(val);
+        self.counter += 1;
+        val
+    }
+
+    fn new_frame(&mut self) -> Vec<Field> {
+        let vec = mem::take(&mut self.build_up);
+        self.all.push(vec.clone());
+        vec
+    }
 }
 
 // TODO capture the reverse running through eval in it's own iter
 
 /// Grand product GKR
 fn gpgkr_prove(
-    // Captured by a transcript implementation
-    challenges: Vec<Vec<Field>>,
-    line_challenges: Vec<Field>,
-    //
+    c: &mut Challenge,
     mut eval: CircuitEval,
 ) -> Vec<((Field, Field), Vec<(Field, Field)>)> {
     let mut transcripts = vec![];
     let mut point = vec![];
     let _last_value = eval.pop().unwrap();
-    for ((wnext, challenge_layer), line_challenge) in
-        eval.0.iter().rev().zip(challenges).zip(line_challenges)
-    {
-        let (line, transcript) = prove_layer(&point, wnext, &challenge_layer);
-        transcripts.push((line, transcript));
+    for wnext in eval.0.iter().rev() {
+        transcripts.push(prove_layer(&point, wnext, c));
 
-        point = challenge_layer;
-        point.push(line_challenge);
+        // sample extra challenge for the next round
+        let _ = c.get_challenge();
+        point = c.new_frame();
     }
     transcripts
 }
@@ -36,10 +65,8 @@ fn gpgkr_prove(
 fn prove_layer(
     point: &[Field],
     wnext: &[Field],
-    challenges: &[Field],
+    c: &mut Challenge,
 ) -> ((Field, Field), Vec<(Field, Field)>) {
-    assert_eq!(wnext.len(), 2 << challenges.len());
-    assert_eq!(point.len(), challenges.len());
     let mut suffix_table = SuffixTable::new(point);
     let mut factor = 1;
 
@@ -48,7 +75,8 @@ fn prove_layer(
     // Taking `wnext: Vec<Field>` by value and moving it in would avoid the copy.
     let mut mle_wnext = Mle::new(wnext);
 
-    for (r, z) in challenges.iter().zip(point) {
+    for z in point {
+        let r = c.get_challenge();
         // Last table to be popped is just 1. Feels like that can be optimised. Would save two multiplications.
         // TODO: special-case eq.len() == 1 (final round) to skip the `eq[i] *`
         // multiplications below entirely.
@@ -82,7 +110,7 @@ fn prove_layer(
         sumcheck_transcript.push((factor * sum_0, factor * sum_inf));
 
         factor *= r * z + (1 - z) * (1 - r);
-        mle_wnext.fix_variable(*r);
+        mle_wnext.fix_variable(r);
     }
 
     ((mle_wnext[0], mle_wnext[1]), sumcheck_transcript)
