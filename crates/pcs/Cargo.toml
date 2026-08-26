@@ -6,11 +6,11 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-bincode = "1.3"
-blake3 = "1.8"
+bincode = { workspace = true }
+blake3 = { workspace = true }
 field = { path = "../field", features = ["spongefish"] }
 flock-core = { workspace = true }
 transcript = { path = "../transcript" }
 
 [dev-dependencies]
-proptest = "1.11.0"
+proptest = { workspace = true }
