@@ -1,7 +1,7 @@
 use field::F128;
 use spongefish::{Decoding, Encoding, NargSerialize};
 
-use crate::{Proof, PublicTranscript};
+use crate::{Proof, PublicTranscript, bytes::ProverMessageBytes};
 
 /// The prover half of the transcript.
 ///
@@ -31,6 +31,12 @@ impl ProverState {
     /// Absorbs a message and writes it to the narg string.
     pub fn prover_message<T: Encoding<[u8]> + NargSerialize + ?Sized>(&mut self, message: &T) {
         self.inner.prover_message(message);
+    }
+
+    /// Absorbs and writes one length-prefixed byte string.
+    pub fn prover_message_bytes(&mut self, bytes: &[u8]) {
+        self.inner
+            .prover_message(&ProverMessageBytes::<{ u32::MAX as usize }>::new(bytes));
     }
 
     /// Squeezes a challenge.

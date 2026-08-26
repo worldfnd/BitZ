@@ -23,6 +23,7 @@
 //! - **F5** Field wire formats are fixed in `field::codec`, one canonical
 //!   form per element.
 
+mod bytes;
 mod domain;
 mod proof;
 mod prover;

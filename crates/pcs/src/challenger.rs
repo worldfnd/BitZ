@@ -9,6 +9,7 @@ use transcript::{ProverState, VerifierState};
 const VECTOR_SQUEEZE_TAG: &[u8] = b"pcs/flock/sample-vector/v1";
 const POW_TAG: &[u8] = b"pcs/flock/pow/v1";
 const LIGERITO_BASIS_LABEL: &[u8] = b"flock-ligerito-basis-v0";
+const MAX_OBSERVED_BYTES: usize = 32;
 
 #[derive(Clone, Copy)]
 struct OpeningTargetPrefix {
@@ -133,11 +134,7 @@ impl Challenger for ProverChallenger<'_> {
     }
 
     fn observe_bytes(&mut self, bytes: &[u8]) {
-        self.transcript
-            .prover_message(&u32::try_from(bytes.len()).expect("observed byte slice exceeds u32"));
-        for byte in bytes {
-            self.transcript.prover_message(&[*byte]);
-        }
+        self.transcript.prover_message_bytes(bytes);
     }
 
     fn sample_f128(&mut self) -> FlockF128 {
@@ -201,14 +198,9 @@ impl Challenger for VerifierChallenger<'_, '_> {
     }
 
     fn observe_bytes(&mut self, bytes: &[u8]) {
-        let len = u32::try_from(bytes.len()).expect("observed byte slice exceeds u32");
-        if self.read::<u32>() != Some(len) {
-            self.failed = true;
-        }
-        for &byte in bytes {
-            if self.read::<[u8; 1]>() != Some([byte]) {
-                self.failed = true;
-            }
+        match self.transcript.prover_message_bytes::<MAX_OBSERVED_BYTES>() {
+            Ok(observed) if observed == bytes => {}
+            Ok(_) | Err(_) => self.failed = true,
         }
     }
 
@@ -389,7 +381,7 @@ mod tests {
         fn challenger_methods_round_trip(
             scalar_words in (any::<u64>(), any::<u64>()),
             slice_words in prop::collection::vec((any::<u64>(), any::<u64>()), 0..16),
-            bytes in prop::collection::vec(any::<u8>(), 0..64),
+            bytes in prop::collection::vec(any::<u8>(), 0..=MAX_OBSERVED_BYTES),
             sample_count in 0usize..8,
             pow_bits in 0u32..=6,
         ) {

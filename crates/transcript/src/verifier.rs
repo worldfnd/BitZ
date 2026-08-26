@@ -1,7 +1,7 @@
 use field::F128;
 use spongefish::{Decoding, Encoding, NargDeserialize, VerificationError, VerificationResult};
 
-use crate::PublicTranscript;
+use crate::{PublicTranscript, bytes::ProverMessageBytes};
 
 /// The verifier half of the transcript.
 ///
@@ -32,6 +32,13 @@ impl VerifierState<'_> {
     /// canonical re-encoding.
     pub fn prover_message<T: Encoding<[u8]> + NargDeserialize>(&mut self) -> VerificationResult<T> {
         self.inner.prover_message()
+    }
+
+    /// Reads and absorbs one bounded, length-prefixed byte string.
+    pub fn prover_message_bytes<const MAX_LEN: usize>(&mut self) -> VerificationResult<Vec<u8>> {
+        self.inner
+            .prover_message::<ProverMessageBytes<MAX_LEN>>()
+            .map(ProverMessageBytes::into_bytes)
     }
 
     /// Squeezes a challenge.
