@@ -447,7 +447,9 @@ fn rows_match(rows: &[Vec<FlockF128>], expected_rows: usize, expected_width: usi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{HashKind, LigeritoProfile};
+    use crate::{CommitScheme, HashKind, LigeritoProfile};
+    use field::F128 as LocalF128;
+    use transcript::{build_prover, build_verifier};
 
     fn registered_config() -> (VerifierConfig, usize, usize) {
         let pcs = Pcs::new(22, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
@@ -532,5 +534,59 @@ mod tests {
         assert!(rows_match(&[vec![zero; 4], vec![zero; 4]], 2, 4));
         assert!(!rows_match(&[vec![zero; 4]], 2, 4));
         assert!(!rows_match(&[vec![zero; 3], vec![zero; 4]], 2, 4));
+    }
+
+    #[test]
+    fn proof_shape_validation_rejects_prover_supplied_dimension_mismatches() {
+        const SESSION: &[u8] = b"pcs-proof-shape-test";
+        const INSTANCE: &[u8] = b"zero-polynomial";
+        let pcs = Pcs::new(22, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
+        let packed_witness = vec![LocalF128::default(); pcs.packed_len()];
+        let (commitment, data) = pcs.commit(&packed_witness).unwrap();
+        let query = OpeningQuery {
+            point: vec![LocalF128::from(2u64); 22],
+            target: LocalF128::default(),
+        };
+        let mut prover = build_prover(SESSION, INSTANCE);
+        pcs.prove_lin(
+            &data,
+            packed_witness,
+            &query,
+            StatementBinding::Bind,
+            &mut prover,
+        )
+        .unwrap();
+        let transcript_proof = prover.finish();
+        let mut verifier = build_verifier(SESSION, INSTANCE, &transcript_proof);
+        let valid = read_opening_proof(&mut verifier).unwrap();
+        let config = pcs.params().ligerito_verifier_config().unwrap();
+        let final_log_n =
+            validate_config(&config, 22 - LOG_PACKING, pcs.params().log_batch_size).unwrap();
+        let root = *commitment.root();
+        assert_eq!(
+            validate_proof_shape(&valid, &config, final_log_n, &root),
+            Ok(())
+        );
+
+        type ProofMutation = fn(&mut BatchOpeningProofLigerito);
+        let mutations: [(&str, ProofMutation); 3] = [
+            ("ring-switch count", |proof| proof.ring_switches.clear()),
+            ("recursive-root count", |proof| {
+                proof.ligerito.recursive_roots.pop();
+            }),
+            ("opened-row width", |proof| {
+                proof.ligerito.initial_proof.opened_rows[0].pop();
+            }),
+        ];
+
+        for (case, mutate) in mutations {
+            let mut proof = valid.clone();
+            mutate(&mut proof);
+            assert_eq!(
+                validate_proof_shape(&proof, &config, final_log_n, &root),
+                Err(CommitError::VerificationFailed),
+                "{case}",
+            );
+        }
     }
 }
