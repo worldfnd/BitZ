@@ -25,8 +25,8 @@ struct RealFixture {
 }
 
 impl RealFixture {
-    fn build() -> Self {
-        let pcs = Pcs::new(&shape(), LigeritoProfile::Fast, HashKind::Blake3).unwrap();
+    fn build(profile: LigeritoProfile) -> Self {
+        let pcs = Pcs::new(&shape(), profile, HashKind::Blake3).unwrap();
         // One nonzero bit gives the expected MLE value a simple independent formula.
         let mut packed_witness = vec![F128::default(); pcs.packed_len()];
         let packed_index = SINGLETON / 128;
@@ -67,7 +67,7 @@ impl RealFixture {
 
 fn fixture() -> &'static RealFixture {
     static FIXTURE: OnceLock<RealFixture> = OnceLock::new();
-    FIXTURE.get_or_init(RealFixture::build)
+    FIXTURE.get_or_init(|| RealFixture::build(LigeritoProfile::Fast))
 }
 
 fn singleton_target(point: &[F128], index: usize) -> F128 {
@@ -105,6 +105,23 @@ fn bind_outer_statement(
 #[test]
 fn real_pcs_opening_round_trip_succeeds() {
     let fixture = fixture();
+    let mut verifier = build_verifier(SESSION, INSTANCE, &fixture.proof);
+
+    fixture
+        .pcs
+        .verify_lin(
+            &fixture.commitment,
+            &fixture.query,
+            StatementBinding::Bind,
+            &mut verifier,
+        )
+        .unwrap();
+    verifier.check_eof().unwrap();
+}
+
+#[test]
+fn slim_profile_opening_round_trip_exercises_pow() {
+    let fixture = RealFixture::build(LigeritoProfile::Slim);
     let mut verifier = build_verifier(SESSION, INSTANCE, &fixture.proof);
 
     fixture
