@@ -15,7 +15,7 @@ use field::F128;
 pub use flock_core::hash::HashKind;
 use flock_core::pcs::Commitment as FlockCommitment;
 use flock_core::pcs::ligerito::LigeritoProfile;
-use flock_core::pcs::{LOG_PACKING, PcsParams, ProverData as FlockProverData};
+use flock_core::pcs::{PcsParams, ProverData as FlockProverData};
 use transcript::Encoding;
 
 /// Initial Ligerito fold size required by Flock's registered security profiles.
@@ -28,8 +28,6 @@ const MAX_LIGERITO_M: usize = 35;
 #[derive(Clone, Debug)]
 pub struct Pcs {
     params: PcsParams,
-    // number of bits we commit to
-    bit_len: usize,
 }
 
 /// The public commitment. Trusted parameters remain in [`Pcs`].
@@ -56,9 +54,11 @@ impl Pcs {
             )));
         }
 
-        let bit_len = 1usize.checked_shl(m as u32).ok_or_else(|| {
-            CommitError::invalid_configuration(format!("bit length 2^{m} does not fit usize"))
-        })?;
+        if 1usize.checked_shl(m as u32).is_none() {
+            return Err(CommitError::invalid_configuration(format!(
+                "bit length 2^{m} does not fit usize"
+            )));
+        }
         let params = PcsParams {
             m,
             log_inv_rate: security_profile.log_inv_rate(),
@@ -71,7 +71,7 @@ impl Pcs {
             .map_err(CommitError::InvalidConfiguration)?;
         validate_config(&config, params.log_msg_len(), params.log_batch_size)?;
 
-        Ok(Self { params, bit_len })
+        Ok(Self { params })
     }
 
     /// Commits to the exact configured number of packed field elements.
@@ -101,12 +101,12 @@ impl Pcs {
     }
 
     pub fn bit_len(&self) -> usize {
-        self.bit_len
+        1usize << self.params.m
     }
 
     /// Returns the required number of packed `F128` elements.
     pub fn packed_len(&self) -> usize {
-        self.bit_len >> LOG_PACKING
+        1usize << self.params.log_msg_len()
     }
 
     pub(crate) fn params(&self) -> &PcsParams {
