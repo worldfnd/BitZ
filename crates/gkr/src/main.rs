@@ -23,24 +23,42 @@ fn prove_layer(
     let mut factor = 1;
 
     let mut sumcheck_transcript = vec![];
+    // TODO: wnext is taken by reference, so this clones the whole (largest) table.
+    // Taking `wnext: Vec<Field>` by value and moving it in would avoid the copy.
     let mut mle_wnext = Mle::new(wnext);
 
     for (r, z) in challenges.iter().zip(point) {
+        // Last table to be popped is just 1. Feels like that can be optimised. Would save two multiplications.
+        // TODO: special-case eq.len() == 1 (final round) to skip the `eq[i] *`
+        // multiplications below entirely.
         let eq = suffix_table.pop().unwrap();
-        let mut sum_lo = 0;
-        // let mut sum_hi = 0;
+        let mut sum_0 = 0;
         let mut sum_inf = 0;
         let h = mle_wnext.len() / 2;
 
+        // Could this loop be combined with fix_variable of r*?
+        // TODO: yes — this loop and mle_wnext.fix_variable(*r) below both read
+        // l0/r0/l1/r1 for every gate, i.e. two full passes over mle_wnext per
+        // round. Fuse them: compute the folded values
+        // (l0 + r*(l1-l0), r0 + r*(r1-r0)) right here and write into a
+        // half-sized buffer, then drop the separate fix_variable call.
+        //
+        // TODO: independent across i, so this loop is embarrassingly
+        // parallel — a rayon par_iter + reduction would scale it across cores.
         for i in 0..eq.len() {
+            // Two sequential cache access lines
+            // TODO: mle_wnext[2*i..] and mle_wnext[h+2*i..] are h elements
+            // apart, so every iteration bounces between two distant cache
+            // lines. Inherent to the split-at-midpoint MLE layout
+            // (Mle::fix_variable splits at n/2) — fixing it means changing
+            // the table layout, not just this loop.
             let (l0, r0) = (mle_wnext[2 * i], mle_wnext[2 * i + 1]);
             let (l1, r1) = (mle_wnext[h + 2 * i], mle_wnext[h + 2 * i + 1]);
-            sum_lo += eq[i] * l0 * r0;
-            // sum_hi += eq[i] * l1 * r1;
+            sum_0 += eq[i] * l0 * r0;
             sum_inf += eq[i] * (l1 - l0) * (r1 - r0)
         }
 
-        sumcheck_transcript.push((factor * sum_lo, factor * sum_inf));
+        sumcheck_transcript.push((factor * sum_0, factor * sum_inf));
 
         factor *= r * z + (1 - z) * (1 - r);
         mle_wnext.fix_variable(*r);
@@ -48,6 +66,8 @@ fn prove_layer(
 
     ((mle_wnext[0], mle_wnext[1]), sumcheck_transcript)
 }
+
+fn verify_layer(check_value, point: &[Field], challenges: &[Field]) {}
 
 fn gpgkr_verify() {}
 
