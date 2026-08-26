@@ -1,5 +1,6 @@
 use std::sync::OnceLock;
 
+use common::Shape;
 use field::F128;
 use pcs::{
     CommitError, CommitScheme, Commitment, HashKind, LigeritoProfile, OpeningQuery, Pcs,
@@ -12,6 +13,10 @@ const SINGLETON: usize = (1 << 21) | (1 << 7) | 0b101_0101;
 const SESSION: &[u8] = b"pcs-interface-test";
 const INSTANCE: &[u8] = b"m22-singleton-opening";
 
+fn shape() -> Shape {
+    Shape::new(7, M - 7).unwrap()
+}
+
 struct RealFixture {
     pcs: Pcs,
     commitment: Commitment,
@@ -21,7 +26,7 @@ struct RealFixture {
 
 impl RealFixture {
     fn build() -> Self {
-        let pcs = Pcs::new(M, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
+        let pcs = Pcs::new(&shape(), LigeritoProfile::Fast, HashKind::Blake3).unwrap();
         // One nonzero bit gives the expected MLE value a simple independent formula.
         let mut packed_witness = vec![F128::default(); pcs.packed_len()];
         let packed_index = SINGLETON / 128;
@@ -116,7 +121,7 @@ fn real_pcs_opening_round_trip_succeeds() {
 
 #[test]
 fn real_pcs_accepts_an_already_bound_statement() {
-    let pcs = Pcs::new(M, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
+    let pcs = Pcs::new(&shape(), LigeritoProfile::Fast, HashKind::Blake3).unwrap();
     let packed_witness = vec![F128::default(); pcs.packed_len()];
     let query = OpeningQuery {
         point: vec![F128::from(2u64); M],
@@ -162,7 +167,7 @@ fn real_pcs_accepts_an_already_bound_statement() {
 
 #[test]
 fn real_pcs_rejects_point_length_mismatches() {
-    let pcs = Pcs::new(M, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
+    let pcs = Pcs::new(&shape(), LigeritoProfile::Fast, HashKind::Blake3).unwrap();
     let packed_witness = vec![F128::default(); pcs.packed_len()];
     let (commitment, data) = pcs.commit(&packed_witness).unwrap();
     let short_query = OpeningQuery {
@@ -201,7 +206,7 @@ fn real_pcs_rejects_point_length_mismatches() {
 
 #[test]
 fn real_pcs_rejects_packed_witness_length_mismatches_during_opening() {
-    let pcs = Pcs::new(M, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
+    let pcs = Pcs::new(&shape(), LigeritoProfile::Fast, HashKind::Blake3).unwrap();
     let mut packed_witness = vec![F128::default(); pcs.packed_len()];
     let (_, data) = pcs.commit(&packed_witness).unwrap();
     packed_witness.pop();
@@ -225,10 +230,10 @@ fn real_pcs_rejects_packed_witness_length_mismatches_during_opening() {
 
 #[test]
 fn real_pcs_rejects_mismatched_prover_parameters() {
-    let source = Pcs::new(M, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
+    let source = Pcs::new(&shape(), LigeritoProfile::Fast, HashKind::Blake3).unwrap();
     let packed_witness = vec![F128::default(); source.packed_len()];
     let (_, data) = source.commit(&packed_witness).unwrap();
-    let other = Pcs::new(M, LigeritoProfile::Slim, HashKind::Blake3).unwrap();
+    let other = Pcs::new(&shape(), LigeritoProfile::Slim, HashKind::Blake3).unwrap();
     let query = OpeningQuery {
         point: vec![F128::from(2u64); M],
         target: F128::from(0u64),
@@ -250,7 +255,7 @@ fn real_pcs_rejects_mismatched_prover_parameters() {
 
 #[test]
 fn real_pcs_prover_rejects_a_false_evaluation_without_consuming_prover_data() {
-    let pcs = Pcs::new(M, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
+    let pcs = Pcs::new(&shape(), LigeritoProfile::Fast, HashKind::Blake3).unwrap();
     let packed_witness = vec![F128::default(); pcs.packed_len()];
     let (_, data) = pcs.commit(&packed_witness).unwrap();
     let query = OpeningQuery {
@@ -275,7 +280,7 @@ fn real_pcs_prover_rejects_a_false_evaluation_without_consuming_prover_data() {
 
 #[test]
 fn real_pcs_rejects_an_opening_for_a_different_packed_witness() {
-    let pcs = Pcs::new(M, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
+    let pcs = Pcs::new(&shape(), LigeritoProfile::Fast, HashKind::Blake3).unwrap();
     let packed_witness = vec![F128::default(); pcs.packed_len()];
     let (commitment, data) = pcs.commit(&packed_witness).unwrap();
     let mut different_witness = packed_witness;

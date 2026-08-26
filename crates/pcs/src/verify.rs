@@ -448,11 +448,13 @@ fn rows_match(rows: &[Vec<FlockF128>], expected_rows: usize, expected_width: usi
 mod tests {
     use super::*;
     use crate::{CommitScheme, HashKind, LigeritoProfile};
+    use common::Shape;
     use field::F128 as LocalF128;
     use transcript::{build_prover, build_verifier};
 
     fn registered_config() -> (VerifierConfig, usize, usize) {
-        let pcs = Pcs::new(22, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
+        let shape = Shape::new(7, 15).unwrap();
+        let pcs = Pcs::new(&shape, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
         let config = pcs.params().ligerito_verifier_config().unwrap();
         (
             config,
@@ -540,7 +542,8 @@ mod tests {
     fn proof_shape_validation_rejects_prover_supplied_dimension_mismatches() {
         const SESSION: &[u8] = b"pcs-proof-shape-test";
         const INSTANCE: &[u8] = b"zero-polynomial";
-        let pcs = Pcs::new(22, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
+        let shape = Shape::new(7, 15).unwrap();
+        let pcs = Pcs::new(&shape, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
         let packed_witness = vec![LocalF128::default(); pcs.packed_len()];
         let (commitment, data) = pcs.commit(&packed_witness).unwrap();
         let query = OpeningQuery {

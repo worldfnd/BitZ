@@ -40,6 +40,7 @@
 //! This example uses the zero polynomial, so its evaluation is zero at every point.
 //!
 //! ```
+//! use common::Shape;
 //! use field::F128;
 //! use pcs::{
 //!     CommitScheme, HashKind, LigeritoProfile, OpeningQuery, Pcs, StatementBinding,
@@ -47,7 +48,8 @@
 //! use transcript::{build_prover, build_verifier};
 //!
 //! const M: usize = 22;
-//! let pcs = Pcs::new(M, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
+//! let shape = Shape::new(7, 15).unwrap();
+//! let pcs = Pcs::new(&shape, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
 //! let packed_witness = vec![F128::default(); pcs.packed_len()];
 //! let point = (0..M)
 //!     .map(|coordinate| F128::from(coordinate as u64 + 2))

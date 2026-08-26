@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 bincode = { workspace = true }
 blake3 = { workspace = true }
+common = { workspace = true }
 field = { path = "../field", features = ["spongefish"] }
 flock-core = { workspace = true }
 transcript = { path = "../transcript" }
