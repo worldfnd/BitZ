@@ -1,6 +1,6 @@
 //! The fold round: send the column folds, then take the challenge.
 
-use common::{BitTable, CoreStatement, F2ZConfig, Fold, FoldError, fold_column, row_images};
+use common::{BitTable, F2ZConfig, Fold, FoldError, LinearClaim, fold_column, row_images};
 use field::F128;
 use transcript::ProverState;
 
@@ -27,11 +27,11 @@ pub enum SendError {
 /// establish.
 ///
 /// Each fold is one record. The count is not itself absorbed, which is safe
-/// only because it derives from the statement's shape; the wire profile is
+/// only because it derives from the configured shape; the wire profile is
 /// where a length-delimited vector record would belong.
 pub fn send_fold<const Q: u128>(
     config: &F2ZConfig<Q>,
-    statement: &CoreStatement<Q>,
+    claim: &LinearClaim<Q>,
     table: &BitTable<'_>,
     transcript: &mut ProverState,
 ) -> Result<Fold, SendError> {
@@ -44,7 +44,7 @@ pub fn send_fold<const Q: u128>(
     let shape = config.shape();
 
     // Lifted once: the fold reads it per set bit across every column.
-    let exponents = statement.row_exponents();
+    let exponents = claim.row_exponents();
     let folds: Vec<u128> = (0..shape.columns())
         .map(|column| fold_column(table, &exponents, column))
         .collect();
@@ -54,7 +54,7 @@ pub fn send_fold<const Q: u128>(
     }
 
     let images: Vec<F128> = folds.iter().map(|&fold| config.comb().pow(fold)).collect();
-    let row_images = row_images(config, statement);
+    let row_images = row_images(config, claim);
     let zeta = (0..shape.s())
         .map(|_| transcript.verifier_message())
         .collect();

@@ -1,6 +1,6 @@
 //! `ProveF2Z`.
 
-use common::{BitTable, CoreStatement, F2ZConfig, OpeningClaim, ReductionInput, Root};
+use common::{BitTable, LinearClaim, F2ZConfig, OpeningClaim, ReductionInput, Root};
 use transcript::ProverState;
 
 use crate::{SendError, send_fold};
@@ -37,7 +37,7 @@ pub trait Reduction<const Q: u128> {
 /// arrives carrying the caller's events; this appends and hands it back.
 pub fn prove<const Q: u128, R: Reduction<Q>>(
     config: &F2ZConfig<Q>,
-    statement: &CoreStatement<Q>,
+    claim: &LinearClaim<Q>,
     com: Root,
     table: &BitTable<'_>,
     reduction: &R,
@@ -55,11 +55,11 @@ pub fn prove<const Q: u128, R: Reduction<Q>>(
 
     // TODO: Step 5.0, reduce the modulus, is absent. It runs when q is too
     // large for the shape, and a const modulus parameter cannot express its
-    // `q <- q'`. Callers must supply an admissible q; CoreStatement::new
+    // `q <- q'`. Callers must supply an admissible q; LinearClaim::new
     // rejects anything else.
 
     // Step 5.1: fold each column into an integer exponent.
-    let fold = send_fold(config, statement, table, transcript).map_err(ProveError::Fold)?;
+    let fold = send_fold(config, claim, table, transcript).map_err(ProveError::Fold)?;
 
     // Steps 5.2 and 5.2a: the grand product over the folds, then the sumcheck
     // that turns its affine leaf into a claim on the committed bits.
@@ -67,7 +67,7 @@ pub fn prove<const Q: u128, R: Reduction<Q>>(
     // TODO(#8): both live behind `Reduction`, which nothing implements yet.
     let input = ReductionInput {
         config,
-        statement,
+        claim,
         commitment: com,
         fold: &fold,
     };

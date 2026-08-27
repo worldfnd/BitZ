@@ -4,7 +4,7 @@
 //! so a helper only one of them uses is dead code in the others.
 #![allow(dead_code)]
 
-use common::{BitTable, CoreStatement, F2ZConfig, Fold, OpeningClaim, ReductionInput, Root, Shape};
+use common::{BitTable, F2ZConfig, Fold, LinearClaim, OpeningClaim, ReductionInput, Root, Shape};
 use crypto_primitives::LiftElement;
 use field::{F128, Fq, gf128::smallest_generator};
 use rand_chacha::ChaCha8Rng;
@@ -21,7 +21,7 @@ pub const WINDOW: u32 = 8;
 /// An instance whose claim actually holds.
 pub struct Instance {
     pub config: F2ZConfig<Q>,
-    pub statement: CoreStatement<Q>,
+    pub claim: LinearClaim<Q>,
     pub com: Root,
     pub words: Vec<u64>,
 }
@@ -58,11 +58,11 @@ impl Instance {
             })
             .sum();
 
-        let statement = CoreStatement::new(&config, row_weights, column_weights, target).unwrap();
+        let claim = LinearClaim::new(&config, row_weights, column_weights, target).unwrap();
 
         Self {
             config,
-            statement,
+            claim,
             com: Root([9u8; 32]),
             words,
         }
@@ -73,11 +73,11 @@ impl Instance {
     }
 
     /// The same instance under a different claimed value.
-    pub fn with_target(&self, target: Fq<Q>) -> CoreStatement<Q> {
-        CoreStatement::new(
+    pub fn with_target(&self, target: Fq<Q>) -> LinearClaim<Q> {
+        LinearClaim::new(
             &self.config,
-            self.statement.row_weights().to_vec(),
-            self.statement.column_weights().to_vec(),
+            self.claim.row_weights().to_vec(),
+            self.claim.column_weights().to_vec(),
             target,
         )
         .unwrap()

@@ -18,7 +18,7 @@ fn the_two_sides_agree_on_every_shape_the_profile_admits() {
         let mut transcript = prover_transcript();
         let proved = prove(
             &instance.config,
-            &instance.statement,
+            &instance.claim,
             instance.com,
             &instance.table(),
             &EchoReduction,
@@ -30,7 +30,7 @@ fn the_two_sides_agree_on_every_shape_the_profile_admits() {
         let mut transcript = verifier_transcript(&proof);
         let verified = verify(
             &instance.config,
-            &instance.statement,
+            &instance.claim,
             instance.com,
             &EchoReduction,
             &mut transcript,
@@ -55,7 +55,7 @@ fn the_commitment_is_bound_before_the_first_challenge() {
     let mut transcript = prover_transcript();
     let proved = prove(
         &instance.config,
-        &instance.statement,
+        &instance.claim,
         instance.com,
         &instance.table(),
         &EchoReduction,
@@ -67,7 +67,7 @@ fn the_commitment_is_bound_before_the_first_challenge() {
     let mut transcript = verifier_transcript(&proof);
     let verified = verify(
         &instance.config,
-        &instance.statement,
+        &instance.claim,
         Root([0xffu8; 32]),
         &EchoReduction,
         &mut transcript,
@@ -84,7 +84,7 @@ fn the_statement_is_bound_before_the_first_challenge() {
     let mut transcript = prover_transcript();
     prove(
         &instance.config,
-        &instance.statement,
+        &instance.claim,
         instance.com,
         &instance.table(),
         &EchoReduction,
@@ -93,10 +93,10 @@ fn the_statement_is_bound_before_the_first_challenge() {
     .unwrap();
     let proof = transcript.finish();
 
-    // Same folds, same commitment, a statement that differs only in its
+    // Same folds, same commitment, a claim that differs only in its
     // claimed value. The fold's own reconstruction rejects it, which is the
     // check the binding backs up rather than replaces.
-    let retargeted = instance.with_target(instance.statement.target() + Fq::from(1u128));
+    let retargeted = instance.with_target(instance.claim.target() + Fq::from(1u128));
     let mut transcript = verifier_transcript(&proof);
     assert_eq!(
         verify(

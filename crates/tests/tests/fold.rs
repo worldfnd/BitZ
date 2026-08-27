@@ -2,7 +2,7 @@
 
 mod fixtures;
 
-use common::{BitTable, CoreStatement, F2ZConfig, FoldError};
+use common::{BitTable, F2ZConfig, FoldError, LinearClaim};
 use field::{F128, Fq, gf128::smallest_generator};
 use fixtures::{
     Instance, Q, WINDOW, narrow_shape, prover_transcript, verifier_transcript, wide_shape,
@@ -16,7 +16,7 @@ fn prove(instance: &Instance) -> (common::Fold, Proof) {
     let mut transcript = prover_transcript();
     let round = send_fold(
         &instance.config,
-        &instance.statement,
+        &instance.claim,
         &instance.table(),
         &mut transcript,
     )
@@ -41,8 +41,8 @@ fn the_two_sides_agree_on_every_shape_the_profile_admits() {
         let (sent, proof) = prove(&instance);
 
         let mut transcript = verifier_transcript(&proof);
-        let received = receive_fold(&instance.config, &instance.statement, &mut transcript)
-            .expect("honest proof");
+        let received =
+            receive_fold(&instance.config, &instance.claim, &mut transcript).expect("honest proof");
 
         assert_eq!(sent, received, "t = {}", shape.t());
         assert_eq!(received.row_images.len(), shape.rows());
@@ -101,7 +101,7 @@ fn a_fold_at_the_bound_is_accepted_and_one_past_it_is_not() {
 
     let fold = (shape.rows() as u128) * (Q - 1);
     let config = F2ZConfig::<Q>::new(shape, smallest_generator(), WINDOW).unwrap();
-    let statement = CoreStatement::new(
+    let claim = LinearClaim::new(
         &config,
         vec![Fq::from(Q - 1); shape.rows()],
         vec![Fq::from(1u128); shape.columns()],
@@ -110,17 +110,17 @@ fn a_fold_at_the_bound_is_accepted_and_one_past_it_is_not() {
     .unwrap();
 
     let mut transcript = prover_transcript();
-    let round = send_fold(&config, &statement, &table, &mut transcript).unwrap();
+    let round = send_fold(&config, &claim, &table, &mut transcript).unwrap();
     assert!(round.folds.iter().all(|&value| value == fold));
 
     let proof = transcript.finish();
     let mut transcript = verifier_transcript(&proof);
-    assert!(receive_fold(&config, &statement, &mut transcript).is_ok());
+    assert!(receive_fold(&config, &claim, &mut transcript).is_ok());
 
     let over = forge(&vec![fold + 1; shape.columns()]);
     let mut transcript = verifier_transcript(&over);
     assert_eq!(
-        receive_fold(&config, &statement, &mut transcript),
+        receive_fold(&config, &claim, &mut transcript),
         Err(ReceiveError::FoldOutOfRange)
     );
 }
@@ -136,14 +136,14 @@ fn the_range_check_fires_before_the_reconstruction() {
     let forged = forge(&over);
     let mut transcript = verifier_transcript(&forged);
     assert_eq!(
-        receive_fold(&instance.config, &instance.statement, &mut transcript),
+        receive_fold(&instance.config, &instance.claim, &mut transcript),
         Err(ReceiveError::FoldOutOfRange)
     );
     // The same folds also fail the reconstruction, so the assertion above is
     // about ordering and not about only one check being violated.
     assert_ne!(
-        common::reconstruct(&instance.statement, &over),
-        Ok(instance.statement.target())
+        common::reconstruct(&instance.claim, &over),
+        Ok(instance.claim.target())
     );
 }
 
@@ -152,8 +152,8 @@ fn folds_that_do_not_reconstruct_the_target_are_rejected() {
     let instance = Instance::honest(narrow_shape(), 5);
     let (_, proof) = prove(&instance);
 
-    // The proof is honest; the statement it is replayed against is not.
-    let retargeted = instance.with_target(instance.statement.target() + Fq::from(1u128));
+    // The proof is honest; the claim it is replayed against is not.
+    let retargeted = instance.with_target(instance.claim.target() + Fq::from(1u128));
     let mut transcript = verifier_transcript(&proof);
     assert_eq!(
         receive_fold(&instance.config, &retargeted, &mut transcript),
@@ -170,7 +170,7 @@ fn a_witness_of_a_different_shape_is_refused_before_anything_is_written() {
     assert_eq!(
         send_fold(
             &instance.config,
-            &instance.statement,
+            &instance.claim,
             &other.table(),
             &mut transcript
         ),
@@ -188,7 +188,7 @@ fn a_truncated_proof_is_refused_rather_than_read_past() {
     short.narg_string.truncate(proof.narg_string.len() - 16);
     let mut transcript = verifier_transcript(&short);
     assert_eq!(
-        receive_fold(&instance.config, &instance.statement, &mut transcript),
+        receive_fold(&instance.config, &instance.claim, &mut transcript),
         Err(ReceiveError::MalformedProof)
     );
 }
@@ -198,7 +198,7 @@ fn an_all_zero_witness_folds_to_zero_and_still_round_trips() {
     let shape = narrow_shape();
     let words = vec![0u64; (1 << shape.m()) / 64];
     let config = F2ZConfig::<Q>::new(shape, smallest_generator(), WINDOW).unwrap();
-    let statement = CoreStatement::new(
+    let claim = LinearClaim::new(
         &config,
         vec![Fq::from(Q - 1); shape.rows()],
         vec![Fq::from(3u128); shape.columns()],
@@ -208,14 +208,14 @@ fn an_all_zero_witness_folds_to_zero_and_still_round_trips() {
     let table = BitTable::new(shape, &words).unwrap();
 
     let mut transcript = prover_transcript();
-    let round = send_fold(&config, &statement, &table, &mut transcript).unwrap();
+    let round = send_fold(&config, &claim, &table, &mut transcript).unwrap();
     assert!(round.folds.iter().all(|&fold| fold == 0));
     assert!(round.images.iter().all(|&image| image == F128::new(1, 0)));
 
     let proof = transcript.finish();
     let mut transcript = verifier_transcript(&proof);
     assert_eq!(
-        receive_fold(&config, &statement, &mut transcript).unwrap(),
+        receive_fold(&config, &claim, &mut transcript).unwrap(),
         round
     );
 }

@@ -20,10 +20,9 @@ pub enum ShapeError {
 
 /// The instance shape `(t, s)`.
 ///
-/// `t` indexes the bits of a column and `s` the columns. This is geometry
-/// only: the modulus is not here, because the one gate coupling it to the
-/// shape needs `q` in the type where the claim already carries it. See
-/// [`crate::CoreStatement`].
+/// `t` indexes the bits of a column and `s` the columns. Geometry only: the
+/// modulus sits in [`crate::F2ZConfig`], with the one gate that couples the
+/// two.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Shape {
     t: usize,

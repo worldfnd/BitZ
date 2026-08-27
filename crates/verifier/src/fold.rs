@@ -1,7 +1,7 @@
 //! The fold round: read the column folds, check them, then take the
 //! challenge.
 
-use common::{CoreStatement, F2ZConfig, Fold, FoldError, reconstruct, row_images};
+use common::{F2ZConfig, Fold, FoldError, LinearClaim, reconstruct, row_images};
 use field::F128;
 use transcript::VerifierState;
 
@@ -33,7 +33,7 @@ pub enum ReceiveError {
 /// challenge, which must not be reachable until both have passed.
 pub fn receive_fold<const Q: u128>(
     config: &F2ZConfig<Q>,
-    statement: &CoreStatement<Q>,
+    claim: &LinearClaim<Q>,
     transcript: &mut VerifierState<'_>,
 ) -> Result<Fold, ReceiveError> {
     let shape = config.shape();
@@ -50,12 +50,12 @@ pub fn receive_fold<const Q: u128>(
     if folds.iter().any(|&fold| fold > config.fold_bound()) {
         return Err(ReceiveError::FoldOutOfRange);
     }
-    if reconstruct(statement, &folds).map_err(ReceiveError::Fold)? != statement.target() {
+    if reconstruct(claim, &folds).map_err(ReceiveError::Fold)? != claim.target() {
         return Err(ReceiveError::TargetMismatch);
     }
 
     let images: Vec<F128> = folds.iter().map(|&fold| config.comb().pow(fold)).collect();
-    let row_images = row_images(config, statement);
+    let row_images = row_images(config, claim);
     let zeta = (0..shape.s())
         .map(|_| transcript.verifier_message())
         .collect();

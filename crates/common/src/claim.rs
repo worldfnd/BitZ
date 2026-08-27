@@ -1,4 +1,4 @@
-//! The core statement: the claim F2Z is asked to discharge.
+//! The linear claim F2Z is asked to discharge.
 
 use crypto_primitives::LiftElement;
 use field::Fq;
@@ -12,9 +12,9 @@ use crate::F2ZConfig;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Root(pub [u8; 32]);
 
-/// A statement one of the pre-transcript checks rejects.
+/// A claim one of the pre-transcript checks rejects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StatementError {
+pub enum ClaimError {
     /// There is not one weight per row.
     RowWeightCountMismatch,
     /// There is not one weight per column.
@@ -31,13 +31,13 @@ pub enum StatementError {
 ///
 /// The parameters live in [`F2ZConfig`]; this is only the claim against them.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CoreStatement<const Q: u128> {
+pub struct LinearClaim<const Q: u128> {
     row_weights: Vec<Fq<Q>>,
     column_weights: Vec<Fq<Q>>,
     target: Fq<Q>,
 }
 
-impl<const Q: u128> CoreStatement<Q> {
+impl<const Q: u128> LinearClaim<Q> {
     /// Checks the weights against `config` and returns the claim.
     ///
     /// `row_weights` is `v^(1)`, one element per row; `column_weights` is
@@ -47,12 +47,12 @@ impl<const Q: u128> CoreStatement<Q> {
         row_weights: Vec<Fq<Q>>,
         column_weights: Vec<Fq<Q>>,
         target: Fq<Q>,
-    ) -> Result<Self, StatementError> {
+    ) -> Result<Self, ClaimError> {
         if row_weights.len() != config.shape().rows() {
-            return Err(StatementError::RowWeightCountMismatch);
+            return Err(ClaimError::RowWeightCountMismatch);
         }
         if column_weights.len() != config.shape().columns() {
-            return Err(StatementError::ColumnWeightCountMismatch);
+            return Err(ClaimError::ColumnWeightCountMismatch);
         }
 
         Ok(Self {
@@ -110,9 +110,9 @@ mod tests {
         F2ZConfig::new(Shape::new(7, 15).unwrap(), smallest_generator(), WINDOW).unwrap()
     }
 
-    fn statement(row_weights: Vec<Fq<Q114>>) -> Result<CoreStatement<Q114>, StatementError> {
+    fn claim(row_weights: Vec<Fq<Q114>>) -> Result<LinearClaim<Q114>, ClaimError> {
         let config = config();
-        CoreStatement::new(
+        LinearClaim::new(
             &config,
             row_weights,
             vec![Fq::from(1u128); config.shape().columns()],
@@ -128,7 +128,7 @@ mod tests {
 
     #[test]
     fn accepts_a_well_formed_statement() {
-        let accepted = statement(weights()).unwrap();
+        let accepted = claim(weights()).unwrap();
         assert_eq!(accepted.row_weights().len(), 1 << 7);
         assert_eq!(accepted.column_weights().len(), 1 << 15);
     }
@@ -136,14 +136,14 @@ mod tests {
     #[test]
     fn rejects_weight_vectors_that_do_not_fit_the_shape() {
         assert_eq!(
-            statement(vec![Fq::from(1u128)]).err(),
-            Some(StatementError::RowWeightCountMismatch)
+            claim(vec![Fq::from(1u128)]).err(),
+            Some(ClaimError::RowWeightCountMismatch)
         );
 
         let config = config();
         assert_eq!(
-            CoreStatement::new(&config, weights(), vec![Fq::from(1u128)], Fq::from(0u128)).err(),
-            Some(StatementError::ColumnWeightCountMismatch)
+            LinearClaim::new(&config, weights(), vec![Fq::from(1u128)], Fq::from(0u128)).err(),
+            Some(ClaimError::ColumnWeightCountMismatch)
         );
     }
 
@@ -156,7 +156,7 @@ mod tests {
         weights[4] = Fq::from(Q114);
         weights[5] = Fq::from(Q114 + 6);
 
-        let exponents = statement(weights).unwrap().row_exponents();
+        let exponents = claim(weights).unwrap().row_exponents();
         assert_eq!(exponents[3], Q114 - 1);
         assert_eq!(exponents[4], 0);
         assert_eq!(exponents[5], 6);

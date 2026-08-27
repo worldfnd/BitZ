@@ -3,7 +3,7 @@
 use field::{F128, Fq};
 use poly::DenseMultilinearExtension;
 
-use crate::{BitTable, CoreStatement, F2ZConfig, Shape, table::WORD_BITS};
+use crate::{BitTable, F2ZConfig, LinearClaim, Shape, table::WORD_BITS};
 
 /// A round whose parts do not describe the shape they belong to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,7 +20,7 @@ pub enum FoldError {
 /// Walks the column's words and adds the exponent of each set bit, rather than
 /// reading `k_1` bits one at a time.
 ///
-/// `exponents` must be the statement's own — [`CoreStatement::row_exponents`].
+/// `exponents` must be the claim's own — [`LinearClaim::row_exponents`].
 /// That is what makes the sum safe: each is below `q` and there are `k_1` of
 /// them, so it is at most `k_1 (q - 1)`, which admissibility put below `|K|`.
 pub fn fold_column(table: &BitTable<'_>, exponents: &[u128], column: usize) -> u128 {
@@ -46,8 +46,8 @@ pub fn fold_column(table: &BitTable<'_>, exponents: &[u128], column: usize) -> u
 ///
 /// Derived, never transmitted. There are only `k_1` of these — at most `2^14`
 /// under the sizing constraint — so unlike the columns they are cheap to hold.
-pub fn row_images<const Q: u128>(config: &F2ZConfig<Q>, statement: &CoreStatement<Q>) -> Vec<F128> {
-    statement
+pub fn row_images<const Q: u128>(config: &F2ZConfig<Q>, claim: &LinearClaim<Q>) -> Vec<F128> {
+    claim
         .row_exponents()
         .into_iter()
         .map(|exponent| config.comb().pow(exponent))
@@ -64,13 +64,13 @@ pub fn row_images<const Q: u128>(config: &F2ZConfig<Q>, statement: &CoreStatemen
 /// otherwise sum over a prefix and return a value that is right for no
 /// instance -- and for the common `y = 0` it would look correct.
 pub fn reconstruct<const Q: u128>(
-    statement: &CoreStatement<Q>,
+    claim: &LinearClaim<Q>,
     folds: &[u128],
 ) -> Result<Fq<Q>, FoldError> {
-    if folds.len() != statement.column_weights().len() {
+    if folds.len() != claim.column_weights().len() {
         return Err(FoldError::ColumnCountMismatch);
     }
-    Ok(statement
+    Ok(claim
         .column_weights()
         .iter()
         .zip(folds)
@@ -81,7 +81,7 @@ pub fn reconstruct<const Q: u128>(
 /// The state both sides hold once the fold round closes.
 ///
 /// Only `folds` is transmitted. Everything else is derived from it, from the
-/// statement, or from the transcript, so the two sides must arrive at
+/// claim, or from the transcript, so the two sides must arrive at
 /// identical values.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fold {
@@ -150,8 +150,8 @@ mod tests {
         F2ZConfig::new(shape(), smallest_generator(), WINDOW).unwrap()
     }
 
-    fn statement(row_weights: Vec<Fq<Q114>>, column_weights: Vec<Fq<Q114>>) -> CoreStatement<Q114> {
-        CoreStatement::new(&config(), row_weights, column_weights, Fq::from(0u128)).unwrap()
+    fn claim(row_weights: Vec<Fq<Q114>>, column_weights: Vec<Fq<Q114>>) -> LinearClaim<Q114> {
+        LinearClaim::new(&config(), row_weights, column_weights, Fq::from(0u128)).unwrap()
     }
 
     fn witness(shape: &Shape, bits: &[(usize, usize)]) -> Vec<u64> {
@@ -168,27 +168,24 @@ mod tests {
         let shape = shape();
         let weights: Vec<u128> = (0..shape.rows()).map(|row| (row as u128) * 1_000).collect();
         let field_weights: Vec<Fq<Q114>> = weights.iter().map(|&w| Fq::from(w)).collect();
-        let statement = statement(field_weights, vec![Fq::from(1u128); shape.columns()]);
+        let claim = claim(field_weights, vec![Fq::from(1u128); shape.columns()]);
 
         let words = witness(&shape, &[(1, 0), (5, 0), (127, 0), (64, 4)]);
         let table = BitTable::new(shape, &words).unwrap();
 
         assert_eq!(
-            fold_column(&table, &statement.row_exponents(), 0),
+            fold_column(&table, &claim.row_exponents(), 0),
             weights[1] + weights[5] + weights[127]
         );
-        assert_eq!(
-            fold_column(&table, &statement.row_exponents(), 4),
-            weights[64]
-        );
-        assert_eq!(fold_column(&table, &statement.row_exponents(), 9), 0);
+        assert_eq!(fold_column(&table, &claim.row_exponents(), 4), weights[64]);
+        assert_eq!(fold_column(&table, &claim.row_exponents(), 9), 0);
     }
 
     #[test]
     fn the_widest_fold_reaches_the_shape_bound_without_overflowing() {
         let shape = shape();
         // Every weight at `q - 1` and every bit of the column set.
-        let statement = statement(
+        let claim = claim(
             vec![Fq::from(Q114 - 1); shape.rows()],
             vec![Fq::from(1u128); shape.columns()],
         );
@@ -197,7 +194,7 @@ mod tests {
         let table = BitTable::new(shape, &words).unwrap();
 
         assert_eq!(
-            fold_column(&table, &statement.row_exponents(), 0),
+            fold_column(&table, &claim.row_exponents(), 0),
             config().fold_bound()
         );
     }
@@ -208,7 +205,7 @@ mod tests {
         let weights: Vec<Fq<Q114>> = (0..shape.rows())
             .map(|row| Fq::from((row as u128 + 1) * (Q114 / 137)))
             .collect();
-        let statement = statement(weights, vec![Fq::from(1u128); shape.columns()]);
+        let claim = claim(weights, vec![Fq::from(1u128); shape.columns()]);
 
         let bits: Vec<(usize, usize)> = (0..shape.rows())
             .filter(|row| row % 3 == 0 || row % 7 == 1)
@@ -219,15 +216,15 @@ mod tests {
 
         let expected: u128 = (0..shape.rows())
             .filter(|&row| table.bit(6, row))
-            .map(|row| statement.row_exponents()[row])
+            .map(|row| claim.row_exponents()[row])
             .sum();
-        assert_eq!(fold_column(&table, &statement.row_exponents(), 6), expected);
+        assert_eq!(fold_column(&table, &claim.row_exponents(), 6), expected);
     }
 
     #[test]
     fn the_reconstruction_reduces_a_fold_that_runs_past_the_modulus() {
         let shape = shape();
-        let statement = statement(
+        let claim = claim(
             vec![Fq::from(1u128); shape.rows()],
             vec![Fq::from(1u128); shape.columns()],
         );
@@ -235,20 +232,20 @@ mod tests {
         // One column folding to exactly `q` contributes nothing.
         let mut folds = vec![0u128; shape.columns()];
         folds[0] = Q114;
-        assert_eq!(reconstruct(&statement, &folds), Ok(Fq::from(0u128)));
+        assert_eq!(reconstruct(&claim, &folds), Ok(Fq::from(0u128)));
 
         folds[0] = Q114 + 5;
-        assert_eq!(reconstruct(&statement, &folds), Ok(Fq::from(5u128)));
+        assert_eq!(reconstruct(&claim, &folds), Ok(Fq::from(5u128)));
     }
 
     #[test]
     fn the_row_images_are_the_generator_raised_to_each_weight() {
         let shape = shape();
         let weights: Vec<Fq<Q114>> = (0..shape.rows()).map(|row| Fq::from(row as u128)).collect();
-        let statement = statement(weights, vec![Fq::from(1u128); shape.columns()]);
+        let claim = claim(weights, vec![Fq::from(1u128); shape.columns()]);
         let config = config();
 
-        let images = row_images(&config, &statement);
+        let images = row_images(&config, &claim);
         assert_eq!(images.len(), shape.rows());
         assert_eq!(images[0], F128::new(1, 0));
         assert_eq!(images[1], smallest_generator());
@@ -258,7 +255,7 @@ mod tests {
     #[test]
     fn the_reconstruction_refuses_a_fold_vector_that_is_not_one_per_column() {
         let shape = shape();
-        let statement = statement(
+        let claim = claim(
             vec![Fq::from(1u128); shape.rows()],
             vec![Fq::from(1u128); shape.columns()],
         );
@@ -266,15 +263,15 @@ mod tests {
         // The dangerous case: a short vector would sum over a prefix, and at
         // the common `y = 0` an empty one would look correct.
         assert_eq!(
-            reconstruct(&statement, &[]),
+            reconstruct(&claim, &[]),
             Err(FoldError::ColumnCountMismatch)
         );
         assert_eq!(
-            reconstruct(&statement, &vec![0u128; shape.columns() - 1]),
+            reconstruct(&claim, &vec![0u128; shape.columns() - 1]),
             Err(FoldError::ColumnCountMismatch)
         );
         assert_eq!(
-            reconstruct(&statement, &vec![0u128; shape.columns() + 1]),
+            reconstruct(&claim, &vec![0u128; shape.columns() + 1]),
             Err(FoldError::ColumnCountMismatch)
         );
     }
