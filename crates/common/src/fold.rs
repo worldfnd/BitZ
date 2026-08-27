@@ -51,11 +51,13 @@ pub fn fold_column(table: &BitTable<'_>, exponents: &[u128], column: usize) -> u
 ///
 /// Derived, never transmitted. There are only `k_1` of these — at most `2^14`
 /// under the sizing constraint — so unlike the columns they are cheap to hold.
-pub fn row_images<const Q: u128>(comb: &FixedBasePow, claim: &LinearClaim<Q>) -> Vec<F128> {
-    claim
-        .row_exponents()
-        .into_iter()
-        .map(|exponent| comb.pow(exponent))
+///
+/// Takes the exponents rather than the claim: the fold has already lifted
+/// them, and lifting is a pass over `k_1` weights.
+pub fn row_images(comb: &FixedBasePow, exponents: &[u128]) -> Vec<F128> {
+    exponents
+        .iter()
+        .map(|&exponent| comb.pow(exponent))
         .collect()
 }
 
@@ -267,7 +269,7 @@ mod tests {
         let claim = claim(weights, vec![Fq::from(1u128); shape.columns()]);
         let comb = comb();
 
-        let images = row_images(&comb, &claim);
+        let images = row_images(&comb, &claim.row_exponents());
         assert_eq!(images.len(), shape.rows());
         assert_eq!(images[0], F128::new(1, 0));
         assert_eq!(images[1], smallest_generator());

@@ -57,7 +57,7 @@ impl<const Q: u128> F2ZProver<Q> {
         }
 
         let images: Vec<F128> = folds.iter().map(|&fold| self.comb().pow(fold)).collect();
-        let row_images = row_images(self.comb(), claim);
+        let row_images = row_images(self.comb(), &exponents);
         let zeta = (0..shape.log_columns())
             .map(|_| transcript.verifier_message())
             .collect();
