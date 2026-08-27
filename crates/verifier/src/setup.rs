@@ -8,6 +8,7 @@ use field::FixedBasePow;
 /// The bound is precomputed here rather than on the parameters because the
 /// verifier is its only reader: the prover never range-checks a fold it
 /// produced itself.
+#[derive(Debug)]
 pub struct F2ZVerifier<const Q: u128> {
     params: F2ZParams<Q>,
     comb: FixedBasePow,

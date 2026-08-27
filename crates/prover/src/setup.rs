@@ -7,6 +7,7 @@ use field::FixedBasePow;
 ///
 /// Deriving the comb here is what removes the pairing check the two used to
 /// need: there is no second generator for the comb to disagree with.
+#[derive(Debug)]
 pub struct F2ZProver<const Q: u128> {
     params: F2ZParams<Q>,
     comb: FixedBasePow,

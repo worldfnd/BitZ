@@ -1,5 +1,7 @@
 //! Exponentiation, inversion, and the primitive-element test.
 
+use std::fmt::{Debug, Formatter, Result as FmtResult};
+
 use super::{F128, kernel};
 use num_traits::{ConstOne, Inv, Pow, Zero};
 
@@ -134,6 +136,18 @@ pub fn smallest_generator() -> F128 {
 pub struct FixedBasePow {
     table: Vec<Vec<F128>>,
     win: u32,
+}
+
+/// The base and the window, not the table: that is `ceil(128 / win) * 2^win`
+/// elements, 4096 of them at the window the tests use.
+impl Debug for FixedBasePow {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> FmtResult {
+        formatter
+            .debug_struct("FixedBasePow")
+            .field("base", &self.pow(1))
+            .field("win", &self.win)
+            .finish_non_exhaustive()
+    }
 }
 
 impl FixedBasePow {
