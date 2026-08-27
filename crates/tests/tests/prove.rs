@@ -5,13 +5,14 @@ mod fixtures;
 use common::Root;
 use field::Fq;
 use fixtures::{
-    EchoReduction, Instance, narrow_shape, prover_transcript, verifier_transcript, wide_shape,
+    EchoReduction, Instance, large_shape, narrow_shape, prover_transcript, verifier_transcript,
+    wide_shape,
 };
 use verifier::{ReceiveError, VerifyError};
 
 #[test]
 fn the_two_sides_agree_on_every_shape_the_profile_admits() {
-    for shape in [narrow_shape(), wide_shape()] {
+    for shape in [narrow_shape(), wide_shape(), large_shape()] {
         let instance = Instance::honest(shape, 31);
 
         let mut transcript = prover_transcript();

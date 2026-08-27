@@ -113,6 +113,13 @@ pub fn wide_shape() -> Shape {
     Shape::new(13, 9).unwrap()
 }
 
+/// `m = 28`, the smallest shape past the profile's floor: 8192 rows over
+/// 32768 columns, a 32 MiB witness. Every other fixture sits at the floor, so
+/// this is the only one whose cost scales the way a real instance does.
+pub fn large_shape() -> Shape {
+    Shape::new(13, 15).unwrap()
+}
+
 const SESSION: &str = "f2z-tests";
 const INSTANCE: &str = "fold-round-trip";
 
