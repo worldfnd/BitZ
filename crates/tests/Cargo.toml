@@ -10,8 +10,6 @@ publish = false
 doctest = false
 
 [dependencies]
-
-[dev-dependencies]
 common = { workspace = true }
 crypto-primitives = { workspace = true }
 field = { workspace = true, features = ["spongefish"] }

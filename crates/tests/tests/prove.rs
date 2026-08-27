@@ -1,10 +1,8 @@
 //! The top-level prove and verify, against a stubbed reduction.
 
-mod fixtures;
-
 use common::Root;
 use field::Fq;
-use fixtures::{
+use tests::{
     EchoReduction, Instance, large_shape, narrow_shape, prover_transcript, verifier_transcript,
     wide_shape,
 };

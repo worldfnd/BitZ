@@ -1,13 +1,11 @@
 //! The fold round, prover against verifier.
 
-mod fixtures;
-
 use common::{F2ZParams, FoldError, LinearClaim};
 use field::{F128, Fq, gf128::smallest_generator};
-use fixtures::{
+use prover::{F2ZProver, SendError};
+use tests::{
     Instance, Q, WINDOW, narrow_shape, prover_transcript, verifier_transcript, wide_shape,
 };
-use prover::{F2ZProver, SendError};
 use transcript::Proof;
 use verifier::{F2ZVerifier, ReceiveError};
 
