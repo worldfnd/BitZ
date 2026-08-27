@@ -1,9 +1,7 @@
-use std::{
-    fmt::Binary,
-    ops::{Deref, DerefMut},
-};
+use std::cell::{Cell, UnsafeCell};
+use std::mem;
 
-use prove_playground::*;
+use prove_playground::Mle;
 
 fn main() {}
 
@@ -15,52 +13,83 @@ fn prove(input: Vec<Field>) {
     // (0, 1, 2, ... over `m` layers), so the total is the triangular
     // number m*(m+1)/2.
     let m = circuit.leafs.len().ilog2() as usize;
-    let c = Challenge::with_capacity(m);
+    let c = Challenge::with_capacity(m * (m + 1) / 2);
 
     gpgkr_prove(&c, witnesses);
 }
 
+struct Challenge {
+    frame_pointer: Cell<usize>,
+    len: Cell<usize>,
+    all: UnsafeCell<Box<[Field]>>,
+}
+
+impl Challenge {
+    fn with_capacity(cap: usize) -> Self {
+        Challenge {
+            frame_pointer: Cell::new(0),
+            len: Cell::new(0),
+            all: UnsafeCell::new(vec![0; cap].into_boxed_slice()),
+        }
+    }
+
+    fn get_challenge(&self) -> Field {
+        let i = self.len.get();
+        let val = i as Field;
+        // SAFETY: `all` is fixed-size and never reallocated, so a raw
+        // write can't invalidate a slice returned by `new_frame` — those
+        // only ever cover `0..len` as of when they were taken, and `len`
+        // only grows, so this write (at index `i == len`) never lands
+        // inside a range any live slice covers. The pointer is derived
+        // from a shared reference to the box so this never claims
+        // exclusive access to the whole allocation, only to slot `i`.
+        unsafe {
+            let boxed: &Box<[Field]> = &*self.all.get();
+            assert!(i < boxed.len(), "exceeded preallocated challenge capacity");
+            let slot = boxed.as_ptr().add(i) as *mut Field;
+            slot.write(val);
+        }
+        self.len.set(i + 1);
+        val
+    }
+
+    fn new_frame(&self) -> &[Field] {
+        let start = self.frame_pointer.get();
+        let end = self.len.get();
+        self.frame_pointer.set(end);
+        // SAFETY: see `get_challenge` — this range is never written again.
+        unsafe {
+            let boxed: &Box<[Field]> = &*self.all.get();
+            &boxed[start..end]
+        }
+    }
+}
+
 /// Grand product GKR
-///
-/// Returns two preallocated buffers that are only ever appended to (no
-/// reallocation once the loop below starts):
-/// - `round01[i]` is layer `i`'s terminal `(w0, w1)` pair, one per layer.
-/// - `sumcheck` is every layer's sumcheck transcript back to back, widening
-///   as it goes: layer `i`'s point has `i` challenges, so it contributes `i`
-///   entries, right after layer `i - 1`'s `i - 1` entries. Total size is the
-///   triangular number `m * (m - 1) / 2`.
-fn gpgkr_prove(
-    c: &Challenge,
-    mut eval: CircuitEval,
-) -> (Vec<(Field, Field)>, TriangularArray<(Field, Field)>) {
+fn gpgkr_prove(c: &Challenge, mut eval: CircuitEval) -> Vec<((Field, Field), Vec<(Field, Field)>)> {
+    let mut transcripts = vec![];
+    let mut point = c.new_frame();
     let _last_value = eval.pop().unwrap();
-    let m = eval.len();
-
-    let mut round01 = Vec::with_capacity(m);
-    let mut sumcheck = TriangularArray::with_capacity(m.saturating_sub(1));
-
-    let first_point = [];
-    let mut point: &[i32] = &first_point;
-    for (i, wnext) in eval.into_iter().enumerate() {
-        round01.push(prove_layer(point, wnext, c, &mut sumcheck));
+    for wnext in eval.iter() {
+        transcripts.push(prove_layer(&point, wnext, c));
 
         // sample extra challenge for the next round
         let _ = c.get_challenge();
-        point = c.build_point(i);
+        point = c.new_frame();
     }
-    (round01, sumcheck)
+    transcripts
 }
 
-fn prove_layer(
-    point: &[Field],
-    wnext: Vec<Field>,
-    c: &Challenge,
-    sumcheck: &mut TriangularArray<(Field, Field)>,
-) -> (Field, Field) {
+type Transcript = ((Field, Field), Vec<(Field, Field)>);
+
+fn prove_layer(point: &[Field], wnext: &[Field], c: &Challenge) -> Transcript {
     let mut suffix_table = SuffixTable::new(point);
     let mut factor = 1;
 
-    let mut mle_next = wnext;
+    let mut sumcheck_transcript = vec![];
+    // TODO: wnext is taken by reference, so this clones the whole (largest) table.
+    // Taking `wnext: Vec<Field>` by value and moving it in would avoid the copy.
+    let mut mle_wnext = Mle::new(wnext);
 
     for z in point {
         let r = c.get_challenge();
@@ -70,98 +99,56 @@ fn prove_layer(
         let eq = suffix_table.pop().unwrap();
         let mut sum_0 = 0;
         let mut sum_inf = 0;
-        let h = mle_next.len() / 2; // Same as mle.next/2?
+        let h = mle_wnext.len() / 2; // Same as eq.len()?
 
-        // Fused loop of TODO find different way of writing this
+        // Could this loop be combined with fix_variable of r*?
+        // TODO: yes — this loop and mle_wnext.fix_variable(*r) below both read
+        // l0/r0/l1/r1 for every gate, i.e. two full passes over mle_wnext per
+        // round. Fuse them: compute the folded values
+        // (l0 + r*(l1-l0), r0 + r*(r1-r0)) right here and write into a
+        // half-sized buffer, then drop the separate fix_variable call.
+        //
+        // TODO: independent across i, so this loop is embarrassingly
+        // parallel — a rayon par_iter + reduction would scale it across cores.
         for i in 0..eq.len() {
             // Two sequential cache access lines
-            let (l0, r0) = (mle_next[2 * i], mle_next[2 * i + 1]);
-            let (l1, r1) = (mle_next[h + 2 * i], mle_next[h + 2 * i + 1]);
+            // TODO: mle_wnext[2*i..] and mle_wnext[h+2*i..] are h elements
+            // apart, so every iteration bounces between two distant cache
+            // lines. Inherent to the split-at-midpoint MLE layout
+            // (Mle::fix_variable splits at n/2) — fixing it means changing
+            // the table layout, not just this loop.
+            let (l0, r0) = (mle_wnext[2 * i], mle_wnext[2 * i + 1]);
+            let (l1, r1) = (mle_wnext[h + 2 * i], mle_wnext[h + 2 * i + 1]);
             sum_0 += eq[i] * l0 * r0;
-            sum_inf += eq[i] * (l1 - l0) * (r1 - r0);
-
-            // MLE folding
-            mle_next[2 * i] = mle_next[2 * i] + r * (mle_next[h + 2 * i] - mle_next[2 * i]);
-            mle_next[2 * i + 1] =
-                mle_next[2 * i + 1] + r * (mle_next[h + 2 * i + 1] - mle_next[2 * i + 1])
+            sum_inf += eq[i] * (l1 - l0) * (r1 - r0)
         }
-        mle_next.truncate(h);
 
-        // should factor be included? because aren't we just reintroducing the problem?
-        sumcheck.push((factor * sum_0, factor * sum_inf));
+        sumcheck_transcript.push((factor * sum_0, factor * sum_inf));
 
         factor *= r * z + (1 - z) * (1 - r);
+        mle_wnext.fix_variable(r);
     }
 
-    (mle_next[0], mle_next[1])
+    ((mle_wnext[0], mle_wnext[1]), sumcheck_transcript)
 }
 
 fn gpgkr_verify(
     final_value: Field,
     circuit: Circuit,
-    challenges: TriangularArray<Field>,
-    round01: Vec<(Field, Field)>,
-    sumcheck: TriangularArray<(Field, Field)>,
-) -> bool {
-    let mut claim = final_value;
-    // TODO: this only verifies the connections between layers 0..m-2. The
-    // deepest layer's (w0, w1) — round01[m-1] — is never read, and nothing
-    // evaluates the actual leaf MLE at the final `point` to cross-check it.
-    // As-is, a prover can claim any (w0, w1) for the leaf layer and this
-    // still returns true.
-    let rounds = circuit.leafs.len().ilog2() - 1;
-
-    let start_point = [];
-    let mut point: &[Field] = &start_point;
-    let start_sumcheck = [];
-    let mut sumcheck_round: &[(Field, Field)] = &start_sumcheck;
-
-    for i in 0..rounds as usize {
-        let next_point = challenges.round(i);
-        let (r, sumcheck_challenge) = next_point.split_last().unwrap();
-
-        let (factor, sumcheck_final) =
-            verify_round(claim, point, sumcheck_round, sumcheck_challenge);
-
-        let claim_lr = round01[i];
-        // Check if line polynomial hits same spot as sumcheck check
-        // VERIFY that this is necessary to connect one gkr round to another
-        if (factor * claim_lr.0 * claim_lr.1) != sumcheck_final {
-            return false;
-        }
-        // Reduce both claims to a single claim
-        claim = claim_lr.0 + r * (claim_lr.1 - claim_lr.0);
-        point = next_point;
-        sumcheck_round = sumcheck.round(i);
+    challenges: Vec<Vec<Field>>,
+    transcripts: Vec<Transcript>,
+) {
+    for (c, ((w0, w1), t)) in challenges.iter().zip(transcripts) {
+        // split c in init and last
+        // The init is for checking the transscript.
+        // The values in the transcript are s0 and sinf so these need to work with final value
+        //
+        // The sumcheck if for checking the sum. And the w0 and w1 are the new claims that need to be checked. Which the next step will combine into a single one.
+        //
+        // w0 and w1 are the terminal values / leaves that remain after folding the wnext mle
+        // w0 = w_next(challenges, 0) | w1 = w_next(challenges, 1)
+        // last together with these values make for the next claim.
     }
-
-    // Deal with input layer
-
-    true
-}
-
-fn verify_round(
-    mut claim: Field,
-    point: &[Field],
-    sumcheck: &[(Field, Field)],
-    sumcheck_challenge: &[Field],
-) -> (Field, Field) {
-    let mut prefix = 1;
-    assert_eq!(sumcheck_challenge.len(), point.len());
-
-    for ((r, z), (sum0, suminf)) in sumcheck_challenge.iter().zip(point).zip(sumcheck) {
-        let eqjsum0 = (1 - z) * sum0;
-        let eqjsum1 = claim - eqjsum0;
-        let sum1 = eqjsum1 / z;
-
-        // TODO rewrite
-        let factor = r * z + (1 - r) * (1 - z);
-        // TODO factor r
-        claim = factor * (sum0 + r * (sum1 - sum0) + r * (r - 1) * suminf);
-
-        prefix *= factor;
-    }
-    (prefix, claim)
 }
 
 struct SuffixTable(Vec<Vec<Field>>);
@@ -200,6 +187,8 @@ impl SuffixTable {
         self.0.pop()
     }
 }
+
+type Field = i32;
 
 // A circuit is defined by it's leaf value only because it is a balanced tree
 // TODO: Optimise for circuits that are padded.
@@ -248,12 +237,8 @@ impl CircuitEval {
         self.0.pop()
     }
 
-    fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    fn into_iter(self) -> impl Iterator<Item = Vec<Field>> {
-        self.0.into_iter().rev()
+    fn iter(&self) -> impl Iterator<Item = &Vec<Field>> {
+        self.0.iter().rev()
     }
 }
 
