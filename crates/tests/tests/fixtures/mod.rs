@@ -107,10 +107,10 @@ pub fn narrow_shape() -> Shape {
     Shape::new(7, 15).unwrap()
 }
 
-/// `m = 22` at the widest row count this `q` admits: 16384 rows over 256 words
-/// per column, with folds pressed against the u128 ceiling.
+/// `m = 22` at the widest row count this `q` admits: 8192 rows over 64 packed
+/// elements per column, with folds pressed against the u128 ceiling.
 pub fn wide_shape() -> Shape {
-    Shape::new(14, 8).unwrap()
+    Shape::new(13, 9).unwrap()
 }
 
 const SESSION: &str = "f2z-tests";

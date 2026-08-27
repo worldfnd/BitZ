@@ -5,13 +5,10 @@ use spongefish::Encoding;
 
 use crate::{BitTable, Shape, TableError};
 
-/// `log2 |K|`. The extension is `F_2^128`, so a fold has 128 bits of room.
-const EXTENSION_BITS: u32 = 128;
-
 /// A parameter set one of the pre-claim gates rejects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParamsError {
-    /// `Q` is at or above `|K| / k_1`, so two folds could collide in the
+    /// `(k_1 + 1)(Q - 1)` reaches `ord(g)`, so two folds could collide in the
     /// exponent.
     FoldBoundExceeded,
     /// The generator's order is not the full group, so a fold is not the only
@@ -38,11 +35,21 @@ impl<const Q: u128> F2ZParams<Q> {
         // `Fq<Q>` asserts Q is an odd prime below 2^126 on its own behalf, so
         // no modulus gate is needed here.
 
-        // `Q < |K| / k_1`, equivalently `t + log2 Q < 128`: a fold is at most
-        // `k_1 (Q - 1)` and is only ever seen modulo `ord(g)`, so it is unique
-        // exactly while the range fits inside the group. A shift because
-        // `2^128` does not fit a u128; `t >= 7` keeps it in range.
-        if Q >> (EXTENSION_BITS - shape.t() as u32) != 0 {
+        // `ord(g) > (k_1 + 1)(Q - 1)`, the paper's requisite. A fold is an
+        // integer at most `k_1 (Q - 1)` while the value it is compared against
+        // is at most `Q - 1`, so the two differ by at most the sum; the
+        // exponent is only ever seen modulo `ord(g)`, and a gap that never
+        // reaches the group order cannot close.
+        //
+        // Overflow is itself a rejection: past `2^128 - 1` there is no room
+        // left. `ord(g)` is `u128::MAX`, the full order the generator gate
+        // below establishes.
+        let Some(gap) = (Q - 1).checked_mul(shape.rows() as u128 + 1) else {
+            return Err(ParamsError::FoldBoundExceeded);
+        };
+        // A `u128` cannot exceed `ord(g)`, so equalling it is the only way
+        // left to reach it.
+        if gap == u128::MAX {
             return Err(ParamsError::FoldBoundExceeded);
         }
         if !is_generator(generator) {
@@ -114,10 +121,12 @@ mod tests {
 
     #[test]
     fn rejects_a_shape_the_modulus_is_too_large_for() {
-        // `t = 14` is the widest row count this prime admits; 15 is not.
-        assert!(params_at(Shape::new(14, 21).unwrap()).is_ok());
+        // `t = 13` is the widest row count this prime admits; 14 is not. The
+        // `+1` is what separates the two: `k_1 (Q - 1)` alone would still fit
+        // at `t = 14`.
+        assert!(params_at(Shape::new(13, 22).unwrap()).is_ok());
         assert_eq!(
-            params_at(Shape::new(15, 20).unwrap()).err(),
+            params_at(Shape::new(14, 21).unwrap()).err(),
             Some(ParamsError::FoldBoundExceeded)
         );
     }
@@ -152,7 +161,7 @@ mod tests {
     #[test]
     fn a_different_parameter_encodes_differently() {
         let narrow = params_at(shape()).unwrap();
-        let wide = params_at(Shape::new(14, 8).unwrap()).unwrap();
+        let wide = params_at(Shape::new(13, 9).unwrap()).unwrap();
 
         assert_ne!(
             narrow.encode().as_ref().to_vec(),
