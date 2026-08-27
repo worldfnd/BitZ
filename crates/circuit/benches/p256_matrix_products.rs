@@ -1,4 +1,4 @@
-//! `M`, `ABC(Mw)`, and `rM` toys for the standalone prehashed P-256 verifier.
+//! Witgen, `M`, `ABC(Mw)`, and `rM` for the prehashed P-256 verifier.
 //!
 //! Run with `cargo bench -p circuit --bench p256_matrix_products`.
 
@@ -39,6 +39,20 @@ fn prime_128() -> BigUint {
 fn prepare_parallel_reduction() {
     let _ = rayon::ThreadPoolBuilder::new().build_global();
     rayon::broadcast(|_| {});
+}
+
+/// Generate `w`, `M * w`, and exact integer `A/B/C(M * w)`.
+#[divan::bench]
+fn p256_witgen(bencher: Bencher) {
+    prepare();
+    let inputs = support::p256::valid_input();
+    bencher.bench_local(|| {
+        let inputs = black_box(inputs.as_ref());
+        let mut witgen =
+            ProductWitgen::with_inputs_and_capacity(inputs, VERIFY_DIGEST_WITNESS_BITS);
+        verify_digest_circuit(&mut witgen, inputs);
+        black_box(witgen.into_parts())
+    });
 }
 
 /// Generate the sparse representation of `M` used to compute `rM`.

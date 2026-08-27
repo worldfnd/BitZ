@@ -1,4 +1,4 @@
-//! `M`, `ABC(Mw)`, and `rM` toys for a signed 2 KiB message.
+//! Witgen, `M`, `ABC(Mw)`, and `rM` for a signed 2 KiB message.
 //!
 //! Run with `cargo bench -p circuit --bench ecdsa_sha256_matrix_products`.
 
@@ -40,6 +40,19 @@ fn prime_128() -> BigUint {
 fn prepare_parallel_reduction() {
     let _ = rayon::ThreadPoolBuilder::new().build_global();
     rayon::broadcast(|_| {});
+}
+
+/// Generate `w`, `M * w`, and exact integer `A/B/C(M * w)`.
+#[divan::bench]
+fn ecdsa_sha256_2kb_witgen(bencher: Bencher) {
+    prepare();
+    let inputs = support::ecdsa_sha256::valid_input();
+    bencher.bench_local(|| {
+        let inputs = black_box(inputs.as_ref());
+        let mut witgen = ProductWitgen::with_inputs_and_capacity(inputs, VERIFY_2KB_WITNESS_BITS);
+        verify_2kb_message_circuit(&mut witgen, inputs);
+        black_box(witgen.into_parts())
+    });
 }
 
 /// Generate the sparse representation of `M` used to compute `rM`.

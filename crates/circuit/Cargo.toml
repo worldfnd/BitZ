@@ -16,23 +16,11 @@ rayon.workspace = true
 divan = "0.1.21"
 
 [[bench]]
-name = "sha256_witgen"
-harness = false
-
-[[bench]]
 name = "sha256_matrix_products"
 harness = false
 
 [[bench]]
-name = "p256_witgen"
-harness = false
-
-[[bench]]
 name = "p256_matrix_products"
-harness = false
-
-[[bench]]
-name = "ecdsa_sha256_witgen"
 harness = false
 
 [[bench]]
