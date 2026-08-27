@@ -16,27 +16,41 @@ fn prove(input: Vec<Field>) {
 }
 
 /// Grand product GKR
-fn gpgkr_prove(c: &Challenge, mut eval: CircuitEval) -> Vec<((Field, Field), Vec<(Field, Field)>)> {
-    let mut transcripts = vec![];
-    let mut point = c.new_frame();
+///
+/// Returns two preallocated buffers that are only ever appended to (no
+/// reallocation once the loop below starts):
+/// - `round01[i]` is layer `i`'s terminal `(w0, w1)` pair, one per layer.
+/// - `sumcheck` is every layer's sumcheck transcript back to back, widening
+///   as it goes: layer `i`'s point has `i` challenges, so it contributes `i`
+///   entries, right after layer `i - 1`'s `i - 1` entries. Total size is the
+///   triangular number `m * (m - 1) / 2`.
+fn gpgkr_prove(c: &Challenge, mut eval: CircuitEval) -> (Vec<(Field, Field)>, Vec<(Field, Field)>) {
     let _last_value = eval.pop().unwrap();
+    let m = eval.len();
+
+    let mut round01 = Vec::with_capacity(m);
+    let mut sumcheck = Vec::with_capacity(m.saturating_sub(1) * m / 2);
+
+    let mut point = c.new_frame();
     for wnext in eval.iter() {
-        transcripts.push(prove_layer(&point, wnext, c));
+        round01.push(prove_layer(&point, wnext, c, &mut sumcheck));
 
         // sample extra challenge for the next round
         let _ = c.get_challenge();
         point = c.new_frame();
     }
-    transcripts
+    (round01, sumcheck)
 }
 
-type Transcript = ((Field, Field), Vec<(Field, Field)>);
-
-fn prove_layer(point: &[Field], wnext: &[Field], c: &Challenge) -> Transcript {
+fn prove_layer(
+    point: &[Field],
+    wnext: &[Field],
+    c: &Challenge,
+    sumcheck: &mut Vec<(Field, Field)>,
+) -> (Field, Field) {
     let mut suffix_table = SuffixTable::new(point);
     let mut factor = 1;
 
-    let mut sumcheck_transcript = vec![];
     // TODO: wnext is taken by reference, so this clones the whole (largest) table.
     // Taking `wnext: Vec<Field>` by value and moving it in would avoid the copy.
     let mut mle_wnext = Mle::new(wnext);
@@ -73,22 +87,29 @@ fn prove_layer(point: &[Field], wnext: &[Field], c: &Challenge) -> Transcript {
             sum_inf += eq[i] * (l1 - l0) * (r1 - r0)
         }
 
-        sumcheck_transcript.push((factor * sum_0, factor * sum_inf));
+        sumcheck.push((factor * sum_0, factor * sum_inf));
 
         factor *= r * z + (1 - z) * (1 - r);
         mle_wnext.fix_variable(r);
     }
 
-    ((mle_wnext[0], mle_wnext[1]), sumcheck_transcript)
+    (mle_wnext[0], mle_wnext[1])
 }
 
 fn gpgkr_verify(
     final_value: Field,
     circuit: Circuit,
     challenges: Vec<Vec<Field>>,
-    transcripts: Vec<Transcript>,
+    round01: Vec<(Field, Field)>,
+    sumcheck: Vec<(Field, Field)>,
 ) {
-    for (c, ((w0, w1), t)) in challenges.iter().zip(transcripts) {
+    let mut cursor = 0;
+    for (i, (c, (w0, w1))) in challenges.iter().zip(round01).enumerate() {
+        // Layer i's point has i challenges, so its slice of `sumcheck` is i
+        // entries wide, right after layer i - 1's slice.
+        let t = &sumcheck[cursor..cursor + i];
+        cursor += i;
+
         // split c in init and last
         // The init is for checking the transscript.
         // The values in the transcript are s0 and sinf so these need to work with final value
@@ -183,6 +204,10 @@ impl CircuitEval {
     // If circuit evaluation needs to stay an alternative is to wrap it in an iterator to keep track of the location
     fn pop(&mut self) -> Option<Vec<Field>> {
         self.0.pop()
+    }
+
+    fn len(&self) -> usize {
+        self.0.len()
     }
 
     fn iter(&self) -> impl Iterator<Item = &Vec<Field>> {
