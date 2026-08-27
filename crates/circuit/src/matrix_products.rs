@@ -9,7 +9,7 @@
 use std::array;
 use std::cmp::Ordering;
 
-use num_bigint::BigUint;
+use num_bigint::{BigInt, BigUint, Sign};
 use num_traits::{One, Zero};
 use rayon::prelude::*;
 
@@ -54,7 +54,7 @@ impl<const PRIME_LIMBS: usize> RuntimeModulus<PRIME_LIMBS> {
         )
     }
 
-    fn reduce(&self, value: &StoredInteger) -> [u64; PRIME_LIMBS] {
+    pub(crate) fn reduce(&self, value: &StoredInteger) -> [u64; PRIME_LIMBS] {
         if value.words.is_empty() {
             return [0; PRIME_LIMBS];
         }
@@ -295,12 +295,52 @@ pub struct MatrixProducts<const PRIME_LIMBS: usize> {
 ///
 /// Every matrix row has a materialized [`StoredInteger`]. Zero uses an empty
 /// boxed slice, so it does not perform a separate limb allocation.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct StoredInteger {
     words: Box<[u64]>,
 }
 
 impl StoredInteger {
+    /// Stores an arbitrary-precision integer as normalized two's-complement limbs.
+    pub(crate) fn from_bigint(value: &BigInt) -> Self {
+        if value.is_zero() {
+            return Self {
+                words: Box::default(),
+            };
+        }
+
+        let (sign, bytes) = value.to_bytes_le();
+        let mut magnitude = BigUint::from_bytes_le(&bytes).to_u64_digits();
+        if sign == Sign::Minus {
+            for word in &mut magnitude {
+                *word = !*word;
+            }
+            let mut carry = true;
+            for word in &mut magnitude {
+                let (value, overflow) = word.overflowing_add(u64::from(carry));
+                *word = value;
+                carry = overflow;
+            }
+            if magnitude.last().is_none_or(|word| word >> 63 == 0) {
+                magnitude.push(u64::MAX);
+            }
+        } else if magnitude.last().is_some_and(|word| word >> 63 == 1) {
+            magnitude.push(0);
+        }
+        while magnitude.len() > 1 {
+            let top = magnitude[magnitude.len() - 1];
+            let next_is_negative = magnitude[magnitude.len() - 2] >> 63 == 1;
+            if (top == 0 && !next_is_negative) || (top == u64::MAX && next_is_negative) {
+                magnitude.pop();
+            } else {
+                break;
+            }
+        }
+        Self {
+            words: magnitude.into_boxed_slice(),
+        }
+    }
+
     /// Stores a gadget-local fixed integer without changing its value.
     pub fn from_fixed<const LIMBS: usize>(value: Integer<LIMBS>) -> Self {
         if value.is_zero() {
@@ -497,6 +537,23 @@ mod tests {
                 runtime_modulus.reduce(&stored),
                 biguint_words::<2>(&expected.to_biguint().unwrap())
             );
+        }
+    }
+
+    #[test]
+    fn arbitrary_bigints_round_trip_through_stored_integers() {
+        let boundary = BigInt::one() << 128_usize;
+        let wide = &boundary + BigInt::from(7_u8);
+        for value in [
+            BigInt::zero(),
+            BigInt::one(),
+            -BigInt::one(),
+            BigInt::one() << 63_usize,
+            -(BigInt::one() << 63_usize),
+            wide.clone(),
+            -wide,
+        ] {
+            assert_eq!(stored_bigint(&StoredInteger::from_bigint(&value)), value);
         }
     }
 

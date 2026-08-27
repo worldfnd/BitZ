@@ -1,4 +1,4 @@
-//! Witgen, `M`, `ABC(Mw)`, and `rM` for a signed 2 KiB message.
+//! Witgen, matrix projections, and Wengert `r(A+xB+x²C)` for SHA-256 + ECDSA.
 //!
 //! Run with `cargo bench -p circuit --bench ecdsa_sha256_matrix_products`.
 
@@ -9,12 +9,17 @@ use circuit::ecdsa_sha256::{
 };
 use circuit::matrix_products::RuntimeModulus;
 use circuit::matrix_transpose::{MTransposeGenerator, MaterializedMTranspose};
+use circuit::matrix_wengert::{WengertGenerator, WengertTape};
 use circuit::p256::prepare;
 use circuit::witgen::ProductWitgen;
 use divan::{Bencher, black_box};
 use field::F128;
 use num_bigint::BigUint;
 use num_traits::One;
+use std::sync::Once;
+
+static REPORT_WENGERT_TAPE: Once = Once::new();
+static REPORT_M_TRANSPOSE: Once = Once::new();
 
 fn main() {
     divan::main();
@@ -25,6 +30,45 @@ fn build_transpose() -> MaterializedMTranspose {
     let inputs = generator.take_boxed_inputs();
     verify_2kb_message_circuit(&mut generator, &inputs);
     generator.finish()
+}
+
+fn report_m_transpose(transpose: &MaterializedMTranspose) {
+    let bytes = transpose.payload_bytes();
+    REPORT_M_TRANSPOSE.call_once(|| {
+        eprintln!(
+            "SHA-256 + P-256 ECDSA M (stored as M^T): {bytes} bytes ({:.2} MiB), \
+             {} nonzeros, {} M rows x {} M columns",
+            bytes as f64 / (1024.0 * 1024.0),
+            transpose.nonzero_count(),
+            transpose.row_count(),
+            transpose.column_count(),
+        );
+    });
+}
+
+fn build_wengert_tape() -> WengertTape {
+    let mut generator = WengertGenerator::new(VERIFY_2KB_INPUT_BITS);
+    let inputs = generator.take_boxed_inputs();
+    verify_2kb_message_circuit(&mut generator, &inputs);
+    generator.finish()
+}
+
+fn report_wengert_tape(tape: &WengertTape) {
+    let bytes = tape.payload_bytes();
+    REPORT_WENGERT_TAPE.call_once(|| {
+        eprintln!(
+            "SHA-256 + P-256 ECDSA Wengert tape: {bytes} bytes ({:.2} MiB), {} nodes, \
+             {} edges, {} reverse levels, {} coefficients, \
+             {} rows x {} columns",
+            bytes as f64 / (1024.0 * 1024.0),
+            tape.node_count(),
+            tape.edge_count(),
+            tape.level_count(),
+            tape.coefficient_count(),
+            tape.row_count(),
+            tape.column_count(),
+        );
+    });
 }
 
 fn prime_128() -> BigUint {
@@ -53,12 +97,18 @@ fn ecdsa_sha256_2kb_witgen(bencher: Bencher) {
 #[divan::bench]
 fn ecdsa_sha256_2kb_m(bencher: Bencher) {
     prepare();
-    bencher.bench_local(|| {
-        let mut generator = MTransposeGenerator::new(VERIFY_2KB_INPUT_BITS);
-        let inputs = generator.take_boxed_inputs();
-        verify_2kb_message_circuit(&mut generator, &inputs);
-        black_box(generator.finish())
-    });
+    let reference_transpose = build_transpose();
+    report_m_transpose(&reference_transpose);
+    bencher.bench_local(|| black_box(build_transpose()));
+}
+
+/// Preprocess the modulus-independent tape for `r * (A + x B + x^2 C)`.
+#[divan::bench]
+fn ecdsa_sha256_2kb_abc_wengert_tape(bencher: Bencher) {
+    prepare();
+    let reference_tape = build_wengert_tape();
+    report_wengert_tape(&reference_tape);
+    bencher.bench_local(|| black_box(build_wengert_tape()));
 }
 
 /// Reduce precomputed exact integer `A(M*w)`, `B(M*w)`, and `C(M*w)` values.
@@ -82,6 +132,7 @@ fn ecdsa_sha256_2kb_rm(bencher: Bencher) {
     prepare();
     prepare_parallel_reduction();
     let transpose = build_transpose();
+    report_m_transpose(&transpose);
     let challenges: Vec<_> = (0..transpose.row_count())
         .map(|index| {
             F128::new(
@@ -91,4 +142,37 @@ fn ecdsa_sha256_2kb_rm(bencher: Bencher) {
         })
         .collect();
     bencher.bench_local(|| black_box(transpose.apply(black_box(&challenges)).unwrap()));
+}
+
+/// Apply the preprocessed reverse-mode tape modulo a runtime prime.
+#[divan::bench]
+fn ecdsa_sha256_2kb_rabc(bencher: Bencher) {
+    prepare();
+    prepare_parallel_reduction();
+    let tape = build_wengert_tape();
+    report_wengert_tape(&tape);
+    let challenges: Vec<_> = (0..tape.row_count())
+        .map(|index| {
+            [
+                (index as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15),
+                (index as u64).wrapping_mul(0xd1b5_4a32_d192_ed03),
+            ]
+        })
+        .collect();
+    let x = [0x243f_6a88_85a3_08d3, 0x1319_8a2e_0370_7344];
+    let modulus = RuntimeModulus::<2>::new(prime_128()).unwrap();
+    let encoder = tape.prepare(&modulus).unwrap();
+    let challenges: Vec<_> = challenges
+        .into_iter()
+        .map(|challenge| encoder.to_montgomery(challenge))
+        .collect();
+    let x = encoder.to_montgomery(x);
+    drop(encoder);
+    bencher.bench_local(|| {
+        let mut evaluator = tape.prepare(black_box(&modulus)).unwrap();
+        let output = evaluator
+            .apply(black_box(&challenges), black_box(x))
+            .unwrap();
+        black_box(output);
+    });
 }
