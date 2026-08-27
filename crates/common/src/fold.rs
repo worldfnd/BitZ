@@ -146,9 +146,11 @@ impl Fold {
 
 #[cfg(test)]
 mod tests {
+    use field::gf128::smallest_generator;
+    use num_traits::{ConstOne, ConstZero};
+
     use super::*;
     use crate::{F2ZParams, Shape};
-    use field::gf128::smallest_generator;
 
     const Q114: u128 = (1 << 114) - 11;
     /// Comb window: `FixedBasePow` always covers the full 128-bit exponent
@@ -173,7 +175,7 @@ mod tests {
     }
 
     fn witness(shape: &Shape, bits: &[(usize, usize)]) -> Vec<F128> {
-        let mut packed = vec![F128::new(0, 0); (1 << shape.log_bits()) / PACKED_BITS];
+        let mut packed = vec![F128::ZERO; (1 << shape.log_bits()) / PACKED_BITS];
         for &(row, column) in bits {
             let index = (column << shape.log_rows()) | row;
             let element = &mut packed[index >> 7];
@@ -271,7 +273,7 @@ mod tests {
 
         let images = row_images(&comb, &claim.row_exponents());
         assert_eq!(images.len(), shape.rows());
-        assert_eq!(images[0], F128::new(1, 0));
+        assert_eq!(images[0], F128::ONE);
         assert_eq!(images[1], smallest_generator());
         assert_eq!(images[2], smallest_generator() * smallest_generator());
     }
@@ -388,7 +390,7 @@ mod tests {
             &shape,
             vec![0; shape.columns()],
             images.clone(),
-            vec![F128::new(1, 0); shape.rows()],
+            vec![F128::ONE; shape.rows()],
             zeta.clone(),
         )
         .unwrap();
@@ -396,16 +398,13 @@ mod tests {
         // `sum_c nu_c * eq(c, zeta)`, the extension written out directly.
         let expected: F128 = (0..shape.columns())
             .map(|column| {
-                let weight = zeta
-                    .iter()
-                    .enumerate()
-                    .fold(F128::new(1, 0), |acc, (bit, &z)| {
-                        let set = (column >> bit) & 1 == 1;
-                        acc * if set { z } else { F128::new(1, 0) + z }
-                    });
+                let weight = zeta.iter().enumerate().fold(F128::ONE, |acc, (bit, &z)| {
+                    let set = (column >> bit) & 1 == 1;
+                    acc * if set { z } else { F128::ONE + z }
+                });
                 images[column] * weight
             })
-            .fold(F128::new(0, 0), |acc, term| acc + term);
+            .fold(F128::ZERO, |acc, term| acc + term);
         assert_eq!(round.e0, expected);
     }
 }

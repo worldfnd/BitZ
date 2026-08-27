@@ -88,6 +88,8 @@ impl<'a> BitTable<'a> {
 
 #[cfg(test)]
 mod tests {
+    use num_traits::ConstZero;
+
     use super::*;
 
     /// `m = 22`: 128 rows per column, 32768 columns.
@@ -97,7 +99,7 @@ mod tests {
 
     /// Sets the rows named by `bits` as `(row, column)` in a zeroed witness.
     fn with_bits(shape: &Shape, bits: &[(usize, usize)]) -> Vec<F128> {
-        let mut packed = vec![F128::new(0, 0); (1 << shape.log_bits()) / PACKED_BITS];
+        let mut packed = vec![F128::ZERO; (1 << shape.log_bits()) / PACKED_BITS];
         for &(row, column) in bits {
             let index = (column << shape.log_rows()) | row;
             let element = &mut packed[index >> 7];
@@ -160,7 +162,7 @@ mod tests {
     fn rejects_a_witness_of_the_wrong_length() {
         let shape = small_shape();
         assert_eq!(
-            BitTable::new(shape, &[F128::new(0, 0); 8]).err(),
+            BitTable::new(shape, &[F128::ZERO; 8]).err(),
             Some(TableError::BitCountMismatch)
         );
     }
@@ -173,12 +175,7 @@ mod tests {
 
         assert_eq!(table.column(3).len(), shape.rows() / PACKED_BITS);
         assert_eq!(table.column(3), [F128::new(0b101, 1)]);
-        assert!(
-            table
-                .column(4)
-                .iter()
-                .all(|element| *element == F128::new(0, 0))
-        );
+        assert!(table.column(4).iter().all(|element| *element == F128::ZERO));
     }
 
     #[test]

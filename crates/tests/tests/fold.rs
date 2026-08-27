@@ -2,6 +2,7 @@
 
 use common::{F2ZParams, FoldError, LinearClaim};
 use field::{F128, Fq, gf128::smallest_generator};
+use num_traits::{ConstOne, ConstZero};
 use prover::{F2ZProver, SendError};
 use tests::{
     Instance, Q, WINDOW, narrow_shape, prover_transcript, verifier_transcript, wide_shape,
@@ -196,7 +197,7 @@ fn a_truncated_proof_is_refused_rather_than_read_past() {
 #[test]
 fn an_all_zero_witness_folds_to_zero_and_still_round_trips() {
     let shape = narrow_shape();
-    let packed = vec![F128::new(0, 0); (1 << shape.log_bits()) / 128];
+    let packed = vec![F128::ZERO; (1 << shape.log_bits()) / 128];
     let params = F2ZParams::<Q>::new(shape, smallest_generator()).unwrap();
     let prover = F2ZProver::new(params, WINDOW);
     let verifier = F2ZVerifier::new(params, WINDOW);
@@ -212,7 +213,7 @@ fn an_all_zero_witness_folds_to_zero_and_still_round_trips() {
     let mut transcript = prover_transcript();
     let round = prover.send_fold(&claim, &table, &mut transcript).unwrap();
     assert!(round.folds.iter().all(|&fold| fold == 0));
-    assert!(round.images.iter().all(|&image| image == F128::new(1, 0)));
+    assert!(round.images.iter().all(|&image| image == F128::ONE));
 
     let proof = transcript.finish();
     let mut transcript = verifier_transcript(&proof);
@@ -231,9 +232,9 @@ fn a_round_is_refused_when_its_parts_do_not_match_the_shape() {
         common::Fold::new(
             &shape,
             vec![0; shape.columns()],
-            vec![F128::new(1, 0); shape.columns()],
+            vec![F128::ONE; shape.columns()],
             Vec::new(),
-            vec![F128::new(1, 0); shape.log_columns()],
+            vec![F128::ONE; shape.log_columns()],
         ),
         Err(FoldError::RowCountMismatch)
     );

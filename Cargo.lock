@@ -1426,6 +1426,7 @@ dependencies = [
  "common",
  "crypto-primitives",
  "field",
+ "num-traits",
  "prover",
  "rand_chacha 0.9.0",
  "rand_core 0.9.5",
