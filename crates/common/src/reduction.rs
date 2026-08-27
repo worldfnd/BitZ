@@ -1,8 +1,8 @@
 //! The seam between the fold and the opening.
 //!
-//! Steps 5.2 and 5.2a — the grand product and the sumcheck that normalizes its
-//! affine leaf — are not implemented here. What is here is the contract: what
-//! that reduction is handed, and what it must hand back.
+//! Step 4 — the grand product and the sumcheck that normalizes its affine leaf
+//! — is not implemented here. What is here is the contract: what that reduction
+//! is handed, and what it must hand back.
 
 use field::F128;
 
@@ -21,7 +21,7 @@ pub struct OpeningClaim {
     pub target: F128,
 }
 
-/// Everything the reduction reads, which is the bundle Step 5.2 names.
+/// Everything the reduction reads, which is the bundle Step 4 names.
 ///
 /// The images `g^{eta_j}` and the row images `y_i` are already in [`Fold`],
 /// along with the challenge and the batched output claim, so this carries a
