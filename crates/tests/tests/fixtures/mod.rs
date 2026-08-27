@@ -23,7 +23,7 @@ pub struct Instance {
     pub config: F2ZConfig<Q>,
     pub claim: LinearClaim<Q>,
     pub com: Root,
-    pub words: Vec<u64>,
+    pub packed: Vec<F128>,
 }
 
 impl Instance {
@@ -38,7 +38,9 @@ impl Instance {
         let mut rng = ChaCha8Rng::seed_from_u64(seed);
         let config = F2ZConfig::<Q>::new(shape, smallest_generator(), WINDOW).unwrap();
 
-        let words: Vec<u64> = (0..(1 << shape.m()) / 64).map(|_| rng.next_u64()).collect();
+        let packed: Vec<F128> = (0..(1 << shape.m()) / 128)
+            .map(|_| F128::new(rng.next_u64(), rng.next_u64()))
+            .collect();
         let row_weights: Vec<Fq<Q>> = (0..shape.rows())
             .map(|_| Fq::from(sample_below_q(&mut rng)))
             .collect();
@@ -46,7 +48,7 @@ impl Instance {
             .map(|_| Fq::from(sample_below_q(&mut rng)))
             .collect();
 
-        let table = BitTable::new(shape, &words).unwrap();
+        let table = BitTable::new(shape, &packed).unwrap();
         let exponents: Vec<u128> = row_weights.iter().map(|weight| weight.lift()).collect();
         let target: Fq<Q> = (0..shape.columns())
             .map(|column| {
@@ -64,12 +66,12 @@ impl Instance {
             config,
             claim,
             com: Root([9u8; 32]),
-            words,
+            packed,
         }
     }
 
     pub fn table(&self) -> BitTable<'_> {
-        BitTable::new(*self.config.shape(), &self.words).unwrap()
+        BitTable::new(*self.config.shape(), &self.packed).unwrap()
     }
 
     /// The same instance under a different claimed value.

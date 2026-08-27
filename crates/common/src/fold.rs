@@ -3,7 +3,7 @@
 use field::{F128, Fq};
 use poly::DenseMultilinearExtension;
 
-use crate::{BitTable, F2ZConfig, LinearClaim, Shape, table::WORD_BITS};
+use crate::{BitTable, F2ZConfig, LinearClaim, Shape, table::PACKED_BITS};
 
 /// A round whose parts do not describe the shape they belong to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,8 +17,9 @@ pub enum FoldError {
 
 /// `eta_j = sum_i pi_q^{-1}(v^(1)_i) f_ij`, over the integers.
 ///
-/// Walks the column's words and adds the exponent of each set bit, rather than
-/// reading `k_1` bits one at a time.
+/// Walks the column's packed elements and adds the exponent of each set bit,
+/// rather than reading `k_1` bits one at a time. `F128` is only a 128-bit
+/// container here; no field arithmetic happens.
 ///
 /// `exponents` must be the claim's own — [`LinearClaim::row_exponents`].
 /// That is what makes the sum safe: each is below `q` and there are `k_1` of
@@ -28,16 +29,20 @@ pub fn fold_column(table: &BitTable<'_>, exponents: &[u128], column: usize) -> u
         .column(column)
         .iter()
         .enumerate()
-        .map(|(index, &word)| {
-            let base = index * WORD_BITS;
-            let mut remaining = word;
-            let mut total = 0u128;
-            while remaining != 0 {
-                total += exponents[base + remaining.trailing_zeros() as usize];
-                // Clears the lowest set bit.
-                remaining &= remaining - 1;
-            }
-            total
+        .map(|(index, element)| {
+            let base = index * PACKED_BITS;
+            [(0, element.lo), (64, element.hi)]
+                .into_iter()
+                .map(|(half, mut remaining)| {
+                    let mut total = 0u128;
+                    while remaining != 0 {
+                        total += exponents[base + half + remaining.trailing_zeros() as usize];
+                        // Clears the lowest set bit.
+                        remaining &= remaining - 1;
+                    }
+                    total
+                })
+                .sum::<u128>()
         })
         .sum()
 }
@@ -154,13 +159,19 @@ mod tests {
         LinearClaim::new(&config(), row_weights, column_weights, Fq::from(0u128)).unwrap()
     }
 
-    fn witness(shape: &Shape, bits: &[(usize, usize)]) -> Vec<u64> {
-        let mut words = vec![0u64; (1 << shape.m()) / WORD_BITS];
+    fn witness(shape: &Shape, bits: &[(usize, usize)]) -> Vec<F128> {
+        let mut packed = vec![F128::new(0, 0); (1 << shape.m()) / PACKED_BITS];
         for &(row, column) in bits {
             let index = (column << shape.t()) | row;
-            words[index >> 6] |= 1u64 << (index % WORD_BITS);
+            let element = &mut packed[index >> 7];
+            let offset = index % PACKED_BITS;
+            if offset < 64 {
+                element.lo |= 1u64 << offset;
+            } else {
+                element.hi |= 1u64 << (offset - 64);
+            }
         }
-        words
+        packed
     }
 
     #[test]
@@ -170,8 +181,8 @@ mod tests {
         let field_weights: Vec<Fq<Q114>> = weights.iter().map(|&w| Fq::from(w)).collect();
         let claim = claim(field_weights, vec![Fq::from(1u128); shape.columns()]);
 
-        let words = witness(&shape, &[(1, 0), (5, 0), (127, 0), (64, 4)]);
-        let table = BitTable::new(shape, &words).unwrap();
+        let packed = witness(&shape, &[(1, 0), (5, 0), (127, 0), (64, 4)]);
+        let table = BitTable::new(shape, &packed).unwrap();
 
         assert_eq!(
             fold_column(&table, &claim.row_exponents(), 0),
@@ -190,8 +201,8 @@ mod tests {
             vec![Fq::from(1u128); shape.columns()],
         );
         let all: Vec<(usize, usize)> = (0..shape.rows()).map(|row| (row, 0)).collect();
-        let words = witness(&shape, &all);
-        let table = BitTable::new(shape, &words).unwrap();
+        let packed = witness(&shape, &all);
+        let table = BitTable::new(shape, &packed).unwrap();
 
         assert_eq!(
             fold_column(&table, &claim.row_exponents(), 0),
@@ -211,8 +222,8 @@ mod tests {
             .filter(|row| row % 3 == 0 || row % 7 == 1)
             .map(|row| (row, 6))
             .collect();
-        let words = witness(&shape, &bits);
-        let table = BitTable::new(shape, &words).unwrap();
+        let packed = witness(&shape, &bits);
+        let table = BitTable::new(shape, &packed).unwrap();
 
         let expected: u128 = (0..shape.rows())
             .filter(|&row| table.bit(6, row))

@@ -96,8 +96,8 @@ fn a_fold_at_the_bound_is_accepted_and_one_past_it_is_not() {
     // Every weight at `q - 1` and every bit set puts the fold exactly on
     // `k_1 (q - 1)`, the largest value the verifier may accept.
     let shape = narrow_shape();
-    let words = vec![u64::MAX; (1 << shape.m()) / 64];
-    let table = BitTable::new(shape, &words).unwrap();
+    let packed = vec![F128::new(u64::MAX, u64::MAX); (1 << shape.m()) / 128];
+    let table = BitTable::new(shape, &packed).unwrap();
 
     let fold = (shape.rows() as u128) * (Q - 1);
     let config = F2ZConfig::<Q>::new(shape, smallest_generator(), WINDOW).unwrap();
@@ -196,7 +196,7 @@ fn a_truncated_proof_is_refused_rather_than_read_past() {
 #[test]
 fn an_all_zero_witness_folds_to_zero_and_still_round_trips() {
     let shape = narrow_shape();
-    let words = vec![0u64; (1 << shape.m()) / 64];
+    let packed = vec![F128::new(0, 0); (1 << shape.m()) / 128];
     let config = F2ZConfig::<Q>::new(shape, smallest_generator(), WINDOW).unwrap();
     let claim = LinearClaim::new(
         &config,
@@ -205,7 +205,7 @@ fn an_all_zero_witness_folds_to_zero_and_still_round_trips() {
         Fq::from(0u128),
     )
     .unwrap();
-    let table = BitTable::new(shape, &words).unwrap();
+    let table = BitTable::new(shape, &packed).unwrap();
 
     let mut transcript = prover_transcript();
     let round = send_fold(&config, &claim, &table, &mut transcript).unwrap();
