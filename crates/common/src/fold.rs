@@ -2,6 +2,8 @@
 
 use field::{F128, FixedBasePow, Fq};
 use poly::DenseMultilinearExtension;
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
 
 use crate::{BitTable, LinearClaim, Shape, table::PACKED_BITS};
 
@@ -45,6 +47,44 @@ pub fn fold_column(table: &BitTable<'_>, exponents: &[u128], column: usize) -> u
                 .sum::<u128>()
         })
         .sum()
+}
+
+/// Every column's fold, in column order.
+///
+/// Columns are independent and read disjoint slices of the witness, so the
+/// only sharing is the read-only `exponents`.
+pub fn fold_columns(table: &BitTable<'_>, exponents: &[u128]) -> Vec<u128> {
+    let columns = 0..table.shape().columns();
+    #[cfg(feature = "parallel")]
+    {
+        columns
+            .into_par_iter()
+            .map(|column| fold_column(table, exponents, column))
+            .collect()
+    }
+    #[cfg(not(feature = "parallel"))]
+    {
+        columns
+            .map(|column| fold_column(table, exponents, column))
+            .collect()
+    }
+}
+
+/// `g^{eta_j}`, one per column.
+///
+/// Derived on both sides rather than transmitted. There are `k_2` of these --
+/// at most `2^21` -- and each is a windowed exponentiation over the whole
+/// 128-bit range, so this is what the round costs once the fold itself runs in
+/// parallel.
+pub fn column_images(comb: &FixedBasePow, folds: &[u128]) -> Vec<F128> {
+    #[cfg(feature = "parallel")]
+    {
+        folds.par_iter().map(|&fold| comb.pow(fold)).collect()
+    }
+    #[cfg(not(feature = "parallel"))]
+    {
+        folds.iter().map(|&fold| comb.pow(fold)).collect()
+    }
 }
 
 /// `y_i = g^{pi_q^{-1}(v^(1)_i)}`, one per row.

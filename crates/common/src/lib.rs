@@ -12,7 +12,9 @@ pub mod shape;
 pub mod table;
 
 pub use claim::{ClaimError, LinearClaim, Root};
-pub use fold::{Fold, FoldError, fold_column, reconstruct, row_images};
+pub use fold::{
+    Fold, FoldError, column_images, fold_column, fold_columns, reconstruct, row_images,
+};
 pub use params::{F2ZParams, ParamsError};
 pub use reduction::{OpeningClaim, ReductionInput};
 pub use shape::{Shape, ShapeError};

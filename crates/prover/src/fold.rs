@@ -1,9 +1,6 @@
 //! The fold round: send the column folds, then take the challenge.
 
-use common::{BitTable, Fold, FoldError, LinearClaim, fold_column, row_images};
-use field::F128;
-#[cfg(feature = "parallel")]
-use rayon::prelude::*;
+use common::{BitTable, Fold, FoldError, LinearClaim, column_images, fold_columns, row_images};
 
 use crate::F2ZProver;
 use transcript::ProverState;
@@ -50,23 +47,13 @@ impl<const Q: u128> F2ZProver<Q> {
 
         // Lifted once: the fold reads it per set bit across every column.
         let exponents = claim.row_exponents();
-        // Columns are independent and read disjoint slices.
-        #[cfg(feature = "parallel")]
-        let folds: Vec<u128> = (0..shape.columns())
-            .into_par_iter()
-            .map(|column| fold_column(table, &exponents, column))
-            .collect();
-
-        #[cfg(not(feature = "parallel"))]
-        let folds: Vec<u128> = (0..shape.columns())
-            .map(|column| fold_column(table, &exponents, column))
-            .collect();
+        let folds = fold_columns(table, &exponents);
 
         for fold in &folds {
             transcript.prover_message(&fold.to_le_bytes());
         }
 
-        let images: Vec<F128> = folds.iter().map(|&fold| self.comb().pow(fold)).collect();
+        let images = column_images(self.comb(), &folds);
         let row_images = row_images(self.comb(), &exponents);
         let zeta = (0..shape.log_columns())
             .map(|_| transcript.verifier_message())

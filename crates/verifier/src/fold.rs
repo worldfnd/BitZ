@@ -1,8 +1,7 @@
 //! The fold round: read the column folds, check them, then take the
 //! challenge.
 
-use common::{Fold, FoldError, LinearClaim, reconstruct, row_images};
-use field::F128;
+use common::{Fold, FoldError, LinearClaim, column_images, reconstruct, row_images};
 
 use crate::F2ZVerifier;
 use transcript::VerifierState;
@@ -57,7 +56,7 @@ impl<const Q: u128> F2ZVerifier<Q> {
             return Err(ReceiveError::TargetMismatch);
         }
 
-        let images: Vec<F128> = folds.iter().map(|&fold| self.comb().pow(fold)).collect();
+        let images = column_images(self.comb(), &folds);
         let row_images = row_images(self.comb(), &claim.row_exponents());
         let zeta = (0..shape.log_columns())
             .map(|_| transcript.verifier_message())
