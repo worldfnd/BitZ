@@ -1,12 +1,9 @@
-//! The F2Z verifier.
-//!
-//! Written from the specification rather than against the prover: it shares
-//! only `common`, so a check that happens to agree with how the prover
-//! computed something is agreeing with the protocol, not with an
-//! implementation detail.
+//! The F2Z verifier, written from the spec rather than from the prover.
 
 pub mod fold;
+pub mod setup;
 pub mod verify;
 
-pub use fold::{ReceiveError, receive_fold};
-pub use verify::{Reduction, VerifyError, verify};
+pub use fold::ReceiveError;
+pub use setup::F2ZVerifier;
+pub use verify::{Reduction, VerifyError};

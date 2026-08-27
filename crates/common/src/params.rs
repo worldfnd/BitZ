@@ -1,16 +1,16 @@
-//! The protocol configuration: everything both sides fix before a claim exists.
+//! The protocol parameters: everything both sides fix before a claim exists.
 
-use field::{F128, FixedBasePow, gf128::is_generator};
+use field::{F128, gf128::is_generator};
 use spongefish::Encoding;
 
-use crate::Shape;
+use crate::{BitTable, Shape, TableError};
 
 /// `log2 |K|`. The extension is `F_2^128`, so a fold has 128 bits of room.
 const EXTENSION_BITS: u32 = 128;
 
-/// A configuration one of the pre-claim gates rejects.
+/// A parameter set one of the pre-claim gates rejects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConfigError {
+pub enum ParamsError {
     /// `Q` is at or above `|K| / k_1`, so two folds could collide in the
     /// exponent.
     FoldBoundExceeded,
@@ -19,23 +19,22 @@ pub enum ConfigError {
     GeneratorOrderNotFull,
 }
 
-/// The shape, the modulus and the generator, with the comb derived from them.
+/// The shape, the modulus and the generator: what a proof is fixed against.
+///
+/// The two roles derive their own setups from this, so neither can be built
+/// against parameters the other did not see.
 ///
 /// `Q` is a const parameter, not a field: the weights are `Fq<Q>`, whose
 /// modulus lives in the type.
-pub struct F2ZConfig<const Q: u128> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct F2ZParams<const Q: u128> {
     shape: Shape,
     generator: F128,
-    comb: FixedBasePow,
 }
 
-impl<const Q: u128> F2ZConfig<Q> {
-    /// Runs the gates and builds the comb.
-    ///
-    /// # Panics
-    ///
-    /// [`FixedBasePow::new`] requires `window` in `1..=16`.
-    pub fn new(shape: Shape, generator: F128, window: u32) -> Result<Self, ConfigError> {
+impl<const Q: u128> F2ZParams<Q> {
+    /// Runs the gates that need only the parameters.
+    pub fn new(shape: Shape, generator: F128) -> Result<Self, ParamsError> {
         // `Fq<Q>` asserts Q is an odd prime below 2^126 on its own behalf, so
         // no modulus gate is needed here.
 
@@ -44,17 +43,21 @@ impl<const Q: u128> F2ZConfig<Q> {
         // exactly while the range fits inside the group. A shift because
         // `2^128` does not fit a u128; `t >= 7` keeps it in range.
         if Q >> (EXTENSION_BITS - shape.t() as u32) != 0 {
-            return Err(ConfigError::FoldBoundExceeded);
+            return Err(ParamsError::FoldBoundExceeded);
         }
         if !is_generator(generator) {
-            return Err(ConfigError::GeneratorOrderNotFull);
+            return Err(ParamsError::GeneratorOrderNotFull);
         }
 
-        Ok(Self {
-            shape,
-            generator,
-            comb: FixedBasePow::new(generator, window),
-        })
+        Ok(Self { shape, generator })
+    }
+
+    /// Views a packed witness through the configured shape.
+    ///
+    /// The only way to build a [`BitTable`], so a table can never be shaped by
+    /// anything but a checked parameter set.
+    pub fn table<'a>(&self, packed: &'a [F128]) -> Result<BitTable<'a>, TableError> {
+        BitTable::new(self.shape, packed)
     }
 
     pub fn shape(&self) -> &Shape {
@@ -65,10 +68,6 @@ impl<const Q: u128> F2ZConfig<Q> {
         self.generator
     }
 
-    pub fn comb(&self) -> &FixedBasePow {
-        &self.comb
-    }
-
     /// The largest fold the verifier may accept, `k_1 (Q - 1)`.
     ///
     /// [`Self::new`]'s gate puts it below `ord(g)`.
@@ -77,10 +76,8 @@ impl<const Q: u128> F2ZConfig<Q> {
     }
 }
 
-/// Binds the parameters, not the comb, which is a function of the generator.
-///
-/// Every field is fixed width, so distinct configurations cannot encode alike.
-impl<const Q: u128> Encoding<[u8]> for F2ZConfig<Q> {
+/// Every field is fixed width, so distinct parameter sets cannot encode alike.
+impl<const Q: u128> Encoding<[u8]> for F2ZParams<Q> {
     fn encode(&self) -> impl AsRef<[u8]> {
         let mut frame = [0u8; 48];
         let mut at = 0;
@@ -106,10 +103,8 @@ mod tests {
     /// The largest prime below `2^114`, the top of the sampling range.
     const Q114: u128 = (1 << 114) - 11;
 
-    const WINDOW: u32 = 8;
-
-    fn config_at(shape: Shape) -> Result<F2ZConfig<Q114>, ConfigError> {
-        F2ZConfig::new(shape, smallest_generator(), WINDOW)
+    fn params_at(shape: Shape) -> Result<F2ZParams<Q114>, ParamsError> {
+        F2ZParams::new(shape, smallest_generator())
     }
 
     /// `m = 22`: 128 rows per column, 32768 columns.
@@ -120,38 +115,31 @@ mod tests {
     #[test]
     fn rejects_a_shape_the_modulus_is_too_large_for() {
         // `t = 14` is the widest row count this prime admits; 15 is not.
-        assert!(config_at(Shape::new(14, 21).unwrap()).is_ok());
+        assert!(params_at(Shape::new(14, 21).unwrap()).is_ok());
         assert_eq!(
-            config_at(Shape::new(15, 20).unwrap()).err(),
-            Some(ConfigError::FoldBoundExceeded)
+            params_at(Shape::new(15, 20).unwrap()).err(),
+            Some(ParamsError::FoldBoundExceeded)
         );
     }
 
     #[test]
     fn rejects_a_generator_of_partial_order() {
         assert_eq!(
-            F2ZConfig::<Q114>::new(shape(), F128::ONE, WINDOW).err(),
-            Some(ConfigError::GeneratorOrderNotFull)
+            F2ZParams::<Q114>::new(shape(), F128::ONE).err(),
+            Some(ParamsError::GeneratorOrderNotFull)
         );
     }
 
     #[test]
-    fn the_comb_is_built_on_the_generator_it_names() {
-        // `pow(1)` reads the base straight out of the comb.
-        let config = config_at(shape()).unwrap();
-        assert_eq!(config.comb().pow(1), config.generator());
-    }
-
-    #[test]
     fn the_fold_bound_is_the_widest_column_sum() {
-        let config = config_at(shape()).unwrap();
-        assert_eq!(config.fold_bound(), 128 * (Q114 - 1));
+        let params = params_at(shape()).unwrap();
+        assert_eq!(params.fold_bound(), 128 * (Q114 - 1));
     }
 
     #[test]
     fn the_encoding_covers_every_parameter_and_no_derived_value() {
-        let config = config_at(shape()).unwrap();
-        let encoded = config.encode();
+        let params = params_at(shape()).unwrap();
+        let encoded = params.encode();
         let encoded = encoded.as_ref();
 
         assert_eq!(encoded.len(), 48);
@@ -163,8 +151,8 @@ mod tests {
 
     #[test]
     fn a_different_parameter_encodes_differently() {
-        let narrow = config_at(shape()).unwrap();
-        let wide = config_at(Shape::new(14, 8).unwrap()).unwrap();
+        let narrow = params_at(shape()).unwrap();
+        let wide = params_at(Shape::new(14, 8).unwrap()).unwrap();
 
         assert_ne!(
             narrow.encode().as_ref().to_vec(),

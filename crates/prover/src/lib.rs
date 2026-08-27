@@ -2,6 +2,8 @@
 
 pub mod fold;
 pub mod prove;
+pub mod setup;
 
-pub use fold::{SendError, send_fold};
-pub use prove::{ProveError, Reduction, prove};
+pub use fold::SendError;
+pub use prove::{ProveError, Reduction};
+pub use setup::F2ZProver;

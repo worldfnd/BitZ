@@ -1,8 +1,10 @@
 //! The fold round: read the column folds, check them, then take the
 //! challenge.
 
-use common::{F2ZConfig, Fold, FoldError, LinearClaim, reconstruct, row_images};
+use common::{Fold, FoldError, LinearClaim, reconstruct, row_images};
 use field::F128;
+
+use crate::F2ZVerifier;
 use transcript::VerifierState;
 
 /// A fold the verifier rejects.
@@ -18,47 +20,49 @@ pub enum ReceiveError {
     Fold(FoldError),
 }
 
-/// Reads the fold round and checks it.
-///
-/// The proof carries only the folds; their images are derived here rather than
-/// transmitted, so there is no image to disagree with a fold and no check that
-/// they match. What replaces that check is the range bound: `u -> g^u` is
-/// injective only over `[0, k_1(q-1)]`, so a fold outside it would not
-/// determine the image the grand product then proves.
-///
-/// The obligations fire in the order the protocol fixes — every fold is
-/// range-checked, then the reconstruction ties them back to `mu`, and only
-/// then is the challenge drawn. Reading a record absorbs it, so the folds are
-/// in the sponge before either check; what the ordering protects is the
-/// challenge, which must not be reachable until both have passed.
-pub fn receive_fold<const Q: u128>(
-    config: &F2ZConfig<Q>,
-    claim: &LinearClaim<Q>,
-    transcript: &mut VerifierState<'_>,
-) -> Result<Fold, ReceiveError> {
-    let shape = config.shape();
+impl<const Q: u128> F2ZVerifier<Q> {
+    /// Reads the fold round and checks it.
+    ///
+    /// The proof carries only the folds; their images are derived here rather than
+    /// transmitted, so there is no image to disagree with a fold and no check that
+    /// they match. What replaces that check is the range bound: `u -> g^u` is
+    /// injective only over `[0, k_1(q-1)]`, so a fold outside it would not
+    /// determine the image the grand product then proves.
+    ///
+    /// The obligations fire in the order the protocol fixes — every fold is
+    /// range-checked, then the reconstruction ties them back to `mu`, and only
+    /// then is the challenge drawn. Reading a record absorbs it, so the folds are
+    /// in the sponge before either check; what the ordering protects is the
+    /// challenge, which must not be reachable until both have passed.
+    pub fn receive_fold(
+        &self,
+        claim: &LinearClaim<Q>,
+        transcript: &mut VerifierState<'_>,
+    ) -> Result<Fold, ReceiveError> {
+        let shape = self.params().shape();
 
-    let folds = (0..shape.columns())
-        .map(|_| {
-            transcript
-                .prover_message::<[u8; 16]>()
-                .map(u128::from_le_bytes)
-                .map_err(|_| ReceiveError::MalformedProof)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+        let folds = (0..shape.columns())
+            .map(|_| {
+                transcript
+                    .prover_message::<[u8; 16]>()
+                    .map(u128::from_le_bytes)
+                    .map_err(|_| ReceiveError::MalformedProof)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
 
-    if folds.iter().any(|&fold| fold > config.fold_bound()) {
-        return Err(ReceiveError::FoldOutOfRange);
+        if folds.iter().any(|&fold| fold > self.fold_bound()) {
+            return Err(ReceiveError::FoldOutOfRange);
+        }
+        if reconstruct(claim, &folds).map_err(ReceiveError::Fold)? != claim.target() {
+            return Err(ReceiveError::TargetMismatch);
+        }
+
+        let images: Vec<F128> = folds.iter().map(|&fold| self.comb().pow(fold)).collect();
+        let row_images = row_images(self.comb(), claim);
+        let zeta = (0..shape.s())
+            .map(|_| transcript.verifier_message())
+            .collect();
+
+        Fold::new(shape, folds, images, row_images, zeta).map_err(ReceiveError::Fold)
     }
-    if reconstruct(claim, &folds).map_err(ReceiveError::Fold)? != claim.target() {
-        return Err(ReceiveError::TargetMismatch);
-    }
-
-    let images: Vec<F128> = folds.iter().map(|&fold| config.comb().pow(fold)).collect();
-    let row_images = row_images(config, claim);
-    let zeta = (0..shape.s())
-        .map(|_| transcript.verifier_message())
-        .collect();
-
-    Fold::new(shape, folds, images, row_images, zeta).map_err(ReceiveError::Fold)
 }

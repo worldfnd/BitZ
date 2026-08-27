@@ -1,9 +1,9 @@
 //! `VerifyF2Z`.
 
-use common::{LinearClaim, F2ZConfig, OpeningClaim, ReductionInput, Root};
+use common::{LinearClaim, OpeningClaim, ReductionInput, Root};
 use transcript::VerifierState;
 
-use crate::{ReceiveError, receive_fold};
+use crate::{F2ZVerifier, ReceiveError};
 
 /// A proof the verifier rejects.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,48 +27,52 @@ pub trait Reduction<const Q: u128> {
     ) -> Result<OpeningClaim, Self::Error>;
 }
 
-/// Replays the proof of the caller's linear claim about the committed bits.
-///
-/// The transcript arrives carrying the caller's events; this appends and hands
-/// it back.
-pub fn verify<const Q: u128, R: Reduction<Q>>(
-    config: &F2ZConfig<Q>,
-    claim: &LinearClaim<Q>,
-    com: Root,
-    reduction: &R,
-    transcript: &mut VerifierState<'_>,
-) -> Result<OpeningClaim, VerifyError<R::Error>> {
-    // Step 1: the admissibility and precondition checks have already run --
-    // the shape gates in Shape::new, the modulus in Fq's own const assertions,
-    // the generator's order in F2ZConfig::new and the weight counts in
-    // LinearClaim::new. What is left is binding, before any challenge.
-    transcript.public_message(&com.0);
-    transcript.public_message(config);
+impl<const Q: u128> F2ZVerifier<Q> {
+    /// Replays the proof of the caller's linear claim about the committed bits.
+    ///
+    /// The transcript arrives carrying the caller's events; this appends and
+    /// hands it back.
+    pub fn verify<R: Reduction<Q>>(
+        &self,
+        claim: &LinearClaim<Q>,
+        com: Root,
+        reduction: &R,
+        transcript: &mut VerifierState<'_>,
+    ) -> Result<OpeningClaim, VerifyError<R::Error>> {
+        // Step 1: the admissibility and precondition checks have already run --
+        // the shape gates in Shape::new, the modulus in Fq's own const assertions,
+        // the generator's order in F2ZConfig::new and the weight counts in
+        // LinearClaim::new. What is left is binding, before any challenge.
+        transcript.public_message(&com.0);
+        transcript.public_message(self.params());
 
-    // TODO: Step 5.0, reduce the modulus, is absent, as on the prover.
+        // TODO: Step 5.0, reduce the modulus, is absent, as on the prover.
 
-    // Step 5.1: read the folds, range-check them, reconstruct against mu.
-    let fold = receive_fold(config, claim, transcript).map_err(VerifyError::Fold)?;
+        // Step 5.1: read the folds, range-check them, reconstruct against mu.
+        let fold = self
+            .receive_fold(claim, transcript)
+            .map_err(VerifyError::Fold)?;
 
-    // Steps 5.2 and 5.2a, replayed.
-    //
-    // TODO(#8): both live behind `Reduction`, which nothing implements yet.
-    let input = ReductionInput {
-        config,
-        claim,
-        commitment: com,
-        fold: &fold,
-    };
-    let claim = reduction
-        .reduce(&input, transcript)
-        .map_err(VerifyError::Reduction)?;
+        // Steps 5.2 and 5.2a, replayed.
+        //
+        // TODO(#8): both live behind `Reduction`, which nothing implements yet.
+        let input = ReductionInput {
+            params: self.params(),
+            claim,
+            commitment: com,
+            fold: &fold,
+        };
+        let claim = reduction
+            .reduce(&input, transcript)
+            .map_err(VerifyError::Reduction)?;
 
-    // Step 5.2b is conditional and a merged forest does not need it.
+        // Step 5.2b is conditional and a merged forest does not need it.
 
-    // TODO(#15): Step 5.3 is absent, so returning Ok is not accepting a proof:
-    // this hands back the claim the opening would discharge rather than
-    // discharging it. The tail becomes `verify_lin_batch(commitment, &[claim],
-    // AlreadyBound, transcript)` then `check_eof`, and only then is the return
-    // an acceptance.
-    Ok(claim)
+        // TODO(#15): Step 5.3 is absent, so returning Ok is not accepting a proof:
+        // this hands back the claim the opening would discharge rather than
+        // discharging it. The tail becomes `verify_lin_batch(commitment, &[claim],
+        // AlreadyBound, transcript)` then `check_eof`, and only then is the return
+        // an acceptance.
+        Ok(claim)
+    }
 }

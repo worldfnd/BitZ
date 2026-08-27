@@ -4,7 +4,7 @@
 //! so a helper only one of them uses is dead code in the others.
 #![allow(dead_code)]
 
-use common::{BitTable, F2ZConfig, Fold, LinearClaim, OpeningClaim, ReductionInput, Root, Shape};
+use common::{BitTable, F2ZParams, Fold, LinearClaim, OpeningClaim, ReductionInput, Root, Shape};
 use crypto_primitives::LiftElement;
 use field::{F128, Fq, gf128::smallest_generator};
 use rand_chacha::ChaCha8Rng;
@@ -20,7 +20,9 @@ pub const WINDOW: u32 = 8;
 
 /// An instance whose claim actually holds.
 pub struct Instance {
-    pub config: F2ZConfig<Q>,
+    pub params: F2ZParams<Q>,
+    pub prover: prover::F2ZProver<Q>,
+    pub verifier: verifier::F2ZVerifier<Q>,
     pub claim: LinearClaim<Q>,
     pub com: Root,
     pub packed: Vec<F128>,
@@ -36,7 +38,7 @@ impl Instance {
     /// runs.
     pub fn honest(shape: Shape, seed: u64) -> Self {
         let mut rng = ChaCha8Rng::seed_from_u64(seed);
-        let config = F2ZConfig::<Q>::new(shape, smallest_generator(), WINDOW).unwrap();
+        let params = F2ZParams::<Q>::new(shape, smallest_generator()).unwrap();
 
         let packed: Vec<F128> = (0..(1 << shape.m()) / 128)
             .map(|_| F128::new(rng.next_u64(), rng.next_u64()))
@@ -48,7 +50,7 @@ impl Instance {
             .map(|_| Fq::from(sample_below_q(&mut rng)))
             .collect();
 
-        let table = BitTable::new(shape, &packed).unwrap();
+        let table = params.table(&packed).unwrap();
         let exponents: Vec<u128> = row_weights.iter().map(|weight| weight.lift()).collect();
         let target: Fq<Q> = (0..shape.columns())
             .map(|column| {
@@ -60,10 +62,12 @@ impl Instance {
             })
             .sum();
 
-        let claim = LinearClaim::new(&config, row_weights, column_weights, target).unwrap();
+        let claim = LinearClaim::new(&params, row_weights, column_weights, target).unwrap();
 
         Self {
-            config,
+            params,
+            prover: prover::F2ZProver::new(params, WINDOW),
+            verifier: verifier::F2ZVerifier::new(params, WINDOW),
             claim,
             com: Root([9u8; 32]),
             packed,
@@ -71,13 +75,13 @@ impl Instance {
     }
 
     pub fn table(&self) -> BitTable<'_> {
-        BitTable::new(*self.config.shape(), &self.packed).unwrap()
+        self.params.table(&self.packed).unwrap()
     }
 
     /// The same instance under a different claimed value.
     pub fn with_target(&self, target: Fq<Q>) -> LinearClaim<Q> {
         LinearClaim::new(
-            &self.config,
+            &self.params,
             self.claim.row_weights().to_vec(),
             self.claim.column_weights().to_vec(),
             target,
@@ -134,7 +138,7 @@ impl prover::Reduction<Q> for EchoReduction {
         _table: &BitTable<'_>,
         transcript: &mut ProverState,
     ) -> Result<OpeningClaim, Self::Error> {
-        let point = (0..input.config.shape().m())
+        let point = (0..input.params.shape().m())
             .map(|_| transcript.verifier_message())
             .collect();
         Ok(claim(point, input.fold))
@@ -149,7 +153,7 @@ impl verifier::Reduction<Q> for EchoReduction {
         input: &ReductionInput<'_, Q>,
         transcript: &mut VerifierState<'_>,
     ) -> Result<OpeningClaim, Self::Error> {
-        let point = (0..input.config.shape().m())
+        let point = (0..input.params.shape().m())
             .map(|_| transcript.verifier_message())
             .collect();
         Ok(claim(point, input.fold))

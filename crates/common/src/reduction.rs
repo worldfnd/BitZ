@@ -6,7 +6,7 @@
 
 use field::F128;
 
-use crate::{F2ZConfig, Fold, LinearClaim, Root};
+use crate::{F2ZParams, Fold, LinearClaim, Root};
 
 /// A multilinear evaluation claim on the committed bits: `f~(point) = target`.
 ///
@@ -28,7 +28,7 @@ pub struct OpeningClaim {
 /// reference rather than restating them.
 #[derive(Clone, Copy)]
 pub struct ReductionInput<'a, const Q: u128> {
-    pub config: &'a F2ZConfig<Q>,
+    pub params: &'a F2ZParams<Q>,
     pub claim: &'a LinearClaim<Q>,
     pub commitment: Root,
     pub fold: &'a Fold,

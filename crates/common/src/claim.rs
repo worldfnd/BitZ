@@ -3,7 +3,7 @@
 use crypto_primitives::LiftElement;
 use field::Fq;
 
-use crate::F2ZConfig;
+use crate::F2ZParams;
 
 /// A Merkle root over the committed codeword.
 ///
@@ -29,7 +29,7 @@ pub enum ClaimError {
 /// does not split that way cannot use this profile: the fold exponentiates
 /// `v^(1)` and reconstructs over `v^(2)`, so it consumes the two separately.
 ///
-/// The parameters live in [`F2ZConfig`]; this is only the claim against them.
+/// The parameters live in [`F2ZParams`]; this is only the claim against them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinearClaim<const Q: u128> {
     row_weights: Vec<Fq<Q>>,
@@ -43,15 +43,15 @@ impl<const Q: u128> LinearClaim<Q> {
     /// `row_weights` is `v^(1)`, one element per row; `column_weights` is
     /// `v^(2)`, one per column; `target` is the claimed value `mu`.
     pub fn new(
-        config: &F2ZConfig<Q>,
+        params: &F2ZParams<Q>,
         row_weights: Vec<Fq<Q>>,
         column_weights: Vec<Fq<Q>>,
         target: Fq<Q>,
     ) -> Result<Self, ClaimError> {
-        if row_weights.len() != config.shape().rows() {
+        if row_weights.len() != params.shape().rows() {
             return Err(ClaimError::RowWeightCountMismatch);
         }
-        if column_weights.len() != config.shape().columns() {
+        if column_weights.len() != params.shape().columns() {
             return Err(ClaimError::ColumnWeightCountMismatch);
         }
 
@@ -103,25 +103,23 @@ mod tests {
     /// The largest prime below `2^114`, the top of the sampling range.
     const Q114: u128 = (1 << 114) - 11;
 
-    const WINDOW: u32 = 8;
-
     /// `m = 22`: 128 rows per column, 32768 columns.
-    fn config() -> F2ZConfig<Q114> {
-        F2ZConfig::new(Shape::new(7, 15).unwrap(), smallest_generator(), WINDOW).unwrap()
+    fn params() -> F2ZParams<Q114> {
+        F2ZParams::new(Shape::new(7, 15).unwrap(), smallest_generator()).unwrap()
     }
 
     fn claim(row_weights: Vec<Fq<Q114>>) -> Result<LinearClaim<Q114>, ClaimError> {
-        let config = config();
+        let params = params();
         LinearClaim::new(
-            &config,
+            &params,
             row_weights,
-            vec![Fq::from(1u128); config.shape().columns()],
+            vec![Fq::from(1u128); params.shape().columns()],
             Fq::from(0u128),
         )
     }
 
     fn weights() -> Vec<Fq<Q114>> {
-        (0..config().shape().rows())
+        (0..params().shape().rows())
             .map(|row| Fq::from(row as u128))
             .collect()
     }
@@ -140,9 +138,9 @@ mod tests {
             Some(ClaimError::RowWeightCountMismatch)
         );
 
-        let config = config();
+        let params = params();
         assert_eq!(
-            LinearClaim::new(&config, weights(), vec![Fq::from(1u128)], Fq::from(0u128)).err(),
+            LinearClaim::new(&params, weights(), vec![Fq::from(1u128)], Fq::from(0u128)).err(),
             Some(ClaimError::ColumnWeightCountMismatch)
         );
     }

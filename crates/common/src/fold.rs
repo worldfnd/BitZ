@@ -1,9 +1,9 @@
 //! The column fold, and the round state both sides hold once it closes.
 
-use field::{F128, Fq};
+use field::{F128, FixedBasePow, Fq};
 use poly::DenseMultilinearExtension;
 
-use crate::{BitTable, F2ZConfig, LinearClaim, Shape, table::PACKED_BITS};
+use crate::{BitTable, LinearClaim, Shape, table::PACKED_BITS};
 
 /// A round whose parts do not describe the shape they belong to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,11 +51,11 @@ pub fn fold_column(table: &BitTable<'_>, exponents: &[u128], column: usize) -> u
 ///
 /// Derived, never transmitted. There are only `k_1` of these — at most `2^14`
 /// under the sizing constraint — so unlike the columns they are cheap to hold.
-pub fn row_images<const Q: u128>(config: &F2ZConfig<Q>, claim: &LinearClaim<Q>) -> Vec<F128> {
+pub fn row_images<const Q: u128>(comb: &FixedBasePow, claim: &LinearClaim<Q>) -> Vec<F128> {
     claim
         .row_exponents()
         .into_iter()
-        .map(|exponent| config.comb().pow(exponent))
+        .map(|exponent| comb.pow(exponent))
         .collect()
 }
 
@@ -138,7 +138,7 @@ impl Fold {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Shape;
+    use crate::{F2ZParams, Shape};
     use field::gf128::smallest_generator;
 
     const Q114: u128 = (1 << 114) - 11;
@@ -151,12 +151,16 @@ mod tests {
         Shape::new(7, 15).unwrap()
     }
 
-    fn config() -> F2ZConfig<Q114> {
-        F2ZConfig::new(shape(), smallest_generator(), WINDOW).unwrap()
+    fn params() -> F2ZParams<Q114> {
+        F2ZParams::new(shape(), smallest_generator()).unwrap()
+    }
+
+    fn comb() -> FixedBasePow {
+        FixedBasePow::new(smallest_generator(), WINDOW)
     }
 
     fn claim(row_weights: Vec<Fq<Q114>>, column_weights: Vec<Fq<Q114>>) -> LinearClaim<Q114> {
-        LinearClaim::new(&config(), row_weights, column_weights, Fq::from(0u128)).unwrap()
+        LinearClaim::new(&params(), row_weights, column_weights, Fq::from(0u128)).unwrap()
     }
 
     fn witness(shape: &Shape, bits: &[(usize, usize)]) -> Vec<F128> {
@@ -206,7 +210,7 @@ mod tests {
 
         assert_eq!(
             fold_column(&table, &claim.row_exponents(), 0),
-            config().fold_bound()
+            params().fold_bound()
         );
     }
 
@@ -254,9 +258,9 @@ mod tests {
         let shape = shape();
         let weights: Vec<Fq<Q114>> = (0..shape.rows()).map(|row| Fq::from(row as u128)).collect();
         let claim = claim(weights, vec![Fq::from(1u128); shape.columns()]);
-        let config = config();
+        let comb = comb();
 
-        let images = row_images(&config, &claim);
+        let images = row_images(&comb, &claim);
         assert_eq!(images.len(), shape.rows());
         assert_eq!(images[0], F128::new(1, 0));
         assert_eq!(images[1], smallest_generator());

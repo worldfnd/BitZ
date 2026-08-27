@@ -7,8 +7,7 @@ use field::Fq;
 use fixtures::{
     EchoReduction, Instance, narrow_shape, prover_transcript, verifier_transcript, wide_shape,
 };
-use prover::prove;
-use verifier::{ReceiveError, VerifyError, verify};
+use verifier::{ReceiveError, VerifyError};
 
 #[test]
 fn the_two_sides_agree_on_every_shape_the_profile_admits() {
@@ -16,26 +15,28 @@ fn the_two_sides_agree_on_every_shape_the_profile_admits() {
         let instance = Instance::honest(shape, 31);
 
         let mut transcript = prover_transcript();
-        let proved = prove(
-            &instance.config,
-            &instance.claim,
-            instance.com,
-            &instance.table(),
-            &EchoReduction,
-            &mut transcript,
-        )
-        .expect("honest instance");
+        let proved = instance
+            .prover
+            .prove(
+                &instance.claim,
+                instance.com,
+                &instance.table(),
+                &EchoReduction,
+                &mut transcript,
+            )
+            .expect("honest instance");
         let proof = transcript.finish();
 
         let mut transcript = verifier_transcript(&proof);
-        let verified = verify(
-            &instance.config,
-            &instance.claim,
-            instance.com,
-            &EchoReduction,
-            &mut transcript,
-        )
-        .expect("honest proof");
+        let verified = instance
+            .verifier
+            .verify(
+                &instance.claim,
+                instance.com,
+                &EchoReduction,
+                &mut transcript,
+            )
+            .expect("honest proof");
 
         assert_eq!(proved, verified, "t = {}", shape.t());
         assert_eq!(proved.point.len(), shape.m());
@@ -53,26 +54,28 @@ fn the_commitment_is_bound_before_the_first_challenge() {
     let instance = Instance::honest(narrow_shape(), 32);
 
     let mut transcript = prover_transcript();
-    let proved = prove(
-        &instance.config,
-        &instance.claim,
-        instance.com,
-        &instance.table(),
-        &EchoReduction,
-        &mut transcript,
-    )
-    .unwrap();
+    let proved = instance
+        .prover
+        .prove(
+            &instance.claim,
+            instance.com,
+            &instance.table(),
+            &EchoReduction,
+            &mut transcript,
+        )
+        .unwrap();
     let proof = transcript.finish();
 
     let mut transcript = verifier_transcript(&proof);
-    let verified = verify(
-        &instance.config,
-        &instance.claim,
-        Root([0xffu8; 32]),
-        &EchoReduction,
-        &mut transcript,
-    )
-    .expect("every record still decodes and every check still passes");
+    let verified = instance
+        .verifier
+        .verify(
+            &instance.claim,
+            Root([0xffu8; 32]),
+            &EchoReduction,
+            &mut transcript,
+        )
+        .expect("every record still decodes and every check still passes");
 
     assert_ne!(proved.point, verified.point);
 }
@@ -82,15 +85,16 @@ fn the_statement_is_bound_before_the_first_challenge() {
     let instance = Instance::honest(narrow_shape(), 33);
 
     let mut transcript = prover_transcript();
-    prove(
-        &instance.config,
-        &instance.claim,
-        instance.com,
-        &instance.table(),
-        &EchoReduction,
-        &mut transcript,
-    )
-    .unwrap();
+    instance
+        .prover
+        .prove(
+            &instance.claim,
+            instance.com,
+            &instance.table(),
+            &EchoReduction,
+            &mut transcript,
+        )
+        .unwrap();
     let proof = transcript.finish();
 
     // Same folds, same commitment, a claim that differs only in its
@@ -99,13 +103,9 @@ fn the_statement_is_bound_before_the_first_challenge() {
     let retargeted = instance.with_target(instance.claim.target() + Fq::from(1u128));
     let mut transcript = verifier_transcript(&proof);
     assert_eq!(
-        verify(
-            &instance.config,
-            &retargeted,
-            instance.com,
-            &EchoReduction,
-            &mut transcript,
-        ),
+        instance
+            .verifier
+            .verify(&retargeted, instance.com, &EchoReduction, &mut transcript,),
         Err(VerifyError::Fold(ReceiveError::TargetMismatch))
     );
 }
