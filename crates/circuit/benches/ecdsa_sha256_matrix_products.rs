@@ -10,7 +10,7 @@ use circuit::ecdsa_sha256::{
 use circuit::matrix_products::RuntimeModulus;
 use circuit::matrix_transpose::{MTransposeGenerator, MaterializedMTranspose};
 use circuit::p256::prepare;
-use circuit::witgen::{PackedWitness, ProductWitgen, Witgen};
+use circuit::witgen::ProductWitgen;
 use divan::{Bencher, black_box};
 use field::F128;
 use num_bigint::BigUint;
@@ -20,14 +20,8 @@ fn main() {
     divan::main();
 }
 
-fn build_witness(inputs: &[bool; VERIFY_2KB_INPUT_BITS]) -> PackedWitness {
-    let mut witgen = Witgen::with_inputs_and_capacity(inputs, VERIFY_2KB_WITNESS_BITS);
-    verify_2kb_message_circuit(&mut witgen, inputs);
-    witgen.into_witness()
-}
-
-fn build_transpose(witness: &PackedWitness) -> MaterializedMTranspose {
-    let mut generator = MTransposeGenerator::new(witness, VERIFY_2KB_INPUT_BITS);
+fn build_transpose() -> MaterializedMTranspose {
+    let mut generator = MTransposeGenerator::new(VERIFY_2KB_INPUT_BITS);
     let inputs = generator.take_boxed_inputs();
     verify_2kb_message_circuit(&mut generator, &inputs);
     generator.finish()
@@ -59,10 +53,8 @@ fn ecdsa_sha256_2kb_witgen(bencher: Bencher) {
 #[divan::bench]
 fn ecdsa_sha256_2kb_m(bencher: Bencher) {
     prepare();
-    let inputs = support::ecdsa_sha256::valid_input();
-    let witness = build_witness(&inputs);
     bencher.bench_local(|| {
-        let mut generator = MTransposeGenerator::new(black_box(&witness), VERIFY_2KB_INPUT_BITS);
+        let mut generator = MTransposeGenerator::new(VERIFY_2KB_INPUT_BITS);
         let inputs = generator.take_boxed_inputs();
         verify_2kb_message_circuit(&mut generator, &inputs);
         black_box(generator.finish())
@@ -89,9 +81,7 @@ fn ecdsa_sha256_2kb_abc_mw(bencher: Bencher) {
 fn ecdsa_sha256_2kb_rm(bencher: Bencher) {
     prepare();
     prepare_parallel_reduction();
-    let inputs = support::ecdsa_sha256::valid_input();
-    let witness = build_witness(&inputs);
-    let transpose = build_transpose(&witness);
+    let transpose = build_transpose();
     let challenges: Vec<_> = (0..transpose.row_count())
         .map(|index| {
             F128::new(

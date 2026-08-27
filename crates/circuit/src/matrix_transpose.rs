@@ -1,8 +1,8 @@
 //! Materialization and multiplication of the transposed Boolean matrix.
 //!
-//! [`MTransposeGenerator`] replays a packed Boolean witness while building a
-//! compact row-major representation of `M^T`. [`MaterializedMTranspose`] computes
-//! `r * M` as parallel, disjoint column gathers over the GHASH field.
+//! [`MTransposeGenerator`] builds a compact row-major representation of `M^T`
+//! from circuit structure alone. [`MaterializedMTranspose`] computes `r * M`
+//! as parallel, disjoint column gathers over the GHASH field.
 
 use std::error::Error;
 use std::fmt::{self, Display};
@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use field::F128;
 use rayon::prelude::*;
 
-use crate::witgen::{PackedWitness, Z};
+use crate::witgen::Z;
 use crate::{BoolWitness, Circuit, HintResult, PackedBits, ScalarBits, WitnessContext};
 
 const PARALLEL_MATRIX_NNZ_THRESHOLD: usize = 1 << 15;
@@ -21,10 +21,10 @@ const MATRIX_INLINE_SUPPORT: usize = 4;
 const MATRIX_ARENA_SUPPORT: u8 = u8::MAX;
 static NEXT_MATRIX_ID: AtomicU64 = AtomicU64::new(1);
 
-/// A Boolean value paired with its canonical sparse F2 expression.
+/// A canonical sparse F2 expression.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MatrixBit {
-    value: bool,
+    constant_term: bool,
     support_len: u8,
     support: [u32; MATRIX_INLINE_SUPPORT],
     matrix_id: u32,
@@ -35,27 +35,27 @@ impl MatrixBit {
         let mut support = [0; MATRIX_INLINE_SUPPORT];
         support[0] = 0;
         Self {
-            value,
+            constant_term: value,
             support_len: u8::from(value),
             support,
             matrix_id: 0,
         }
     }
 
-    fn inline(value: bool, support: &[u32], matrix_id: u32) -> Self {
+    fn inline(support: &[u32], matrix_id: u32) -> Self {
         debug_assert!(support.len() <= MATRIX_INLINE_SUPPORT);
         let mut inline = [0; MATRIX_INLINE_SUPPORT];
         inline[..support.len()].copy_from_slice(support);
         Self {
-            value,
+            constant_term: support.first() == Some(&0),
             support_len: support.len() as u8,
             support: inline,
             matrix_id,
         }
     }
 
-    const fn value(&self) -> bool {
-        self.value
+    const fn constant_term(&self) -> bool {
+        self.constant_term
     }
 }
 
@@ -130,13 +130,13 @@ impl MTransposeRecorder {
         }
     }
 
-    pub(crate) fn witness(&self, index: usize, value: bool) -> MatrixBit {
+    pub(crate) fn witness(&self, index: usize) -> MatrixBit {
         assert!(
             index < self.witness_count,
             "Boolean witness is not allocated"
         );
         MatrixBit {
-            value,
+            constant_term: false,
             support_len: 1,
             support: [
                 u32::try_from(index + 1).expect("too many Boolean witnesses for M"),
@@ -148,14 +148,14 @@ impl MTransposeRecorder {
         }
     }
 
-    pub(crate) fn allocate_witness(&mut self, value: bool) -> MatrixBit {
+    pub(crate) fn allocate_witness(&mut self) -> MatrixBit {
         let index = self.witness_count;
         self.witness_count = self
             .witness_count
             .checked_add(1)
             .filter(|count| *count < u32::MAX as usize)
             .expect("too many Boolean witnesses for M");
-        self.witness(index, value)
+        self.witness(index)
     }
 
     fn check_owner(&self, value: MatrixBit) {
@@ -176,9 +176,9 @@ impl MTransposeRecorder {
         }
     }
 
-    fn bit_from_support(&mut self, value: bool, support: &[u32]) -> MatrixBit {
+    fn bit_from_support(&mut self, support: &[u32]) -> MatrixBit {
         if support.len() <= MATRIX_INLINE_SUPPORT {
-            return MatrixBit::inline(value, support, self.id);
+            return MatrixBit::inline(support, self.id);
         }
         let expression = self.expression_offsets.len() - 1;
         self.expression_entries.extend_from_slice(support);
@@ -187,7 +187,7 @@ impl MTransposeRecorder {
                 .expect("too many Boolean-expression entries for M"),
         );
         MatrixBit {
-            value,
+            constant_term: support.first() == Some(&0),
             support_len: MATRIX_ARENA_SUPPORT,
             support: [
                 u32::try_from(expression).expect("too many Boolean expressions for M"),
@@ -202,12 +202,11 @@ impl MTransposeRecorder {
     pub(crate) fn xor(&mut self, lhs: MatrixBit, rhs: MatrixBit) -> MatrixBit {
         self.check_owner(lhs);
         self.check_owner(rhs);
-        let value = lhs.value ^ rhs.value;
         if lhs.support_len == 0 {
-            return MatrixBit { value, ..rhs };
+            return rhs;
         }
         if rhs.support_len == 0 {
-            return MatrixBit { value, ..lhs };
+            return lhs;
         }
 
         let left = self.support(&lhs);
@@ -215,13 +214,13 @@ impl MTransposeRecorder {
         if left.len() + right.len() <= 2 * MATRIX_INLINE_SUPPORT {
             let mut merged = [0; 2 * MATRIX_INLINE_SUPPORT];
             let len = symmetric_difference(left, right, &mut merged);
-            return self.bit_from_support(value, &merged[..len]);
+            return self.bit_from_support(&merged[..len]);
         }
 
         let mut merged = vec![0; left.len() + right.len()];
         let len = symmetric_difference(left, right, &mut merged);
         merged.truncate(len);
-        self.bit_from_support(value, &merged)
+        self.bit_from_support(&merged)
     }
 
     pub(crate) fn push_row(&mut self, value: &MatrixBit) {
@@ -384,32 +383,21 @@ impl Display for MatrixApplyError {
 
 impl Error for MatrixApplyError {}
 
-/// Replays a packed Boolean witness while materializing compact `M^T`.
+/// Materializes compact `M^T` from a circuit's static Boolean structure.
 #[derive(Debug)]
-pub struct MTransposeGenerator<'a> {
-    witness: &'a PackedWitness,
-    next_witness: usize,
+pub struct MTransposeGenerator {
     recorder: MTransposeRecorder,
     inputs: Box<[MatrixBit]>,
 }
 
-impl<'a> MTransposeGenerator<'a> {
-    /// Creates a matrix generator for a previously generated witness.
-    pub fn new(witness: &'a PackedWitness, input_count: usize) -> Self {
-        assert!(
-            input_count <= witness.bit_len(),
-            "input count exceeds Boolean witness length"
-        );
+impl MTransposeGenerator {
+    /// Creates a matrix generator with preallocated Boolean input columns.
+    pub fn new(input_count: usize) -> Self {
         let recorder = MTransposeRecorder::with_witnesses(input_count);
         let inputs = (0..input_count)
-            .map(|index| recorder.witness(index, witness.bit(index)))
+            .map(|index| recorder.witness(index))
             .collect();
-        Self {
-            witness,
-            next_witness: input_count,
-            recorder,
-            inputs,
-        }
+        Self { recorder, inputs }
     }
 
     /// Moves every input into a fixed-size boxed array without cloning.
@@ -427,16 +415,11 @@ impl<'a> MTransposeGenerator<'a> {
 
     /// Finishes the compact transposed Boolean matrix.
     pub fn finish(self) -> MaterializedMTranspose {
-        assert_eq!(
-            self.next_witness,
-            self.witness.bit_len(),
-            "circuit did not consume the complete Boolean witness"
-        );
         self.recorder.finish()
     }
 }
 
-impl Circuit for MTransposeGenerator<'_> {
+impl Circuit for MTransposeGenerator {
     type Bool = MatrixBit;
     type Coefficient<const LIMBS: usize> = Z<LIMBS>;
     type Z<const LIMBS: usize> = Z<LIMBS>;
@@ -459,22 +442,12 @@ impl Circuit for MTransposeGenerator<'_> {
             + Sync
             + 'static,
     {
-        let end = self
-            .next_witness
-            .checked_add(N)
-            .filter(|end| *end <= self.witness.bit_len())
-            .expect("circuit allocated more bits than the Boolean witness contains");
-        let start = self.next_witness;
-        self.next_witness = end;
-        ScalarBits(std::array::from_fn(|index| {
-            self.recorder
-                .allocate_witness(self.witness.bit(start + index))
-        }))
+        ScalarBits(std::array::from_fn(|_| self.recorder.allocate_witness()))
     }
 
     fn f2z<const LIMBS: usize>(&mut self, value: MatrixBit) -> Z<LIMBS> {
         self.recorder.push_row(&value);
-        Z::from(u64::from(value.value()))
+        Z::from(u64::from(value.constant_term()))
     }
 
     fn f2z_unsigned<const LIMBS: usize, const N: usize, const M: usize, const LOW: usize>(
@@ -485,7 +458,7 @@ impl Circuit for MTransposeGenerator<'_> {
         let values: [bool; N] = std::array::from_fn(|index| {
             let bit = &bits_le.0[index];
             self.recorder.push_row(bit);
-            bit.value()
+            bit.constant_term()
         });
         (Z::from_le_bits(&values), Z::from_le_bits(&values[..LOW]))
     }
@@ -504,7 +477,6 @@ impl Circuit for MTransposeGenerator<'_> {
 mod tests {
     use crate::constraints::ConstraintGenerator;
     use crate::sha256::{COMPRESSION_HINT_BITS, COMPRESSION_INPUT_BITS, compression_circuit};
-    use crate::witgen::Witgen;
     use crate::{BoolRepresentation, BoolWitness, Circuit};
 
     use super::*;
@@ -544,17 +516,12 @@ mod tests {
 
     #[test]
     fn materialized_transpose_matches_constraint_generation() {
-        let values = [true, false, true];
-        let mut witgen = Witgen::with_inputs(&values);
-        example_circuit(&mut witgen, &values);
-        let witness = witgen.into_witness();
-
-        let mut materializer = MTransposeGenerator::new(&witness, values.len());
+        let mut materializer = MTransposeGenerator::new(3);
         let inputs = materializer.take_boxed_inputs();
         example_circuit(&mut materializer, &inputs);
         let transpose = materializer.finish();
 
-        let mut generator = ConstraintGenerator::new(values.len());
+        let mut generator = ConstraintGenerator::new(3);
         let symbolic = generator.inputs();
         example_circuit(&mut generator, &symbolic);
         let matrices = generator.into_matrices();
@@ -573,27 +540,16 @@ mod tests {
     }
 
     #[test]
-    fn materializes_a_full_sha256_compression_from_its_witness() {
-        let inputs: [bool; COMPRESSION_INPUT_BITS] =
-            std::array::from_fn(|index| index % 7 == 1 || index % 13 == 4);
-        let capacity = COMPRESSION_INPUT_BITS + COMPRESSION_HINT_BITS;
-
-        let mut witgen = Witgen::with_inputs_and_capacity(&inputs, capacity);
-        let expected = compression_circuit(&mut witgen, &inputs);
-        let witness = witgen.into_witness();
-
-        let mut materializer = MTransposeGenerator::new(&witness, inputs.len());
+    fn materializes_a_full_sha256_compression_from_structure() {
+        let mut materializer = MTransposeGenerator::new(COMPRESSION_INPUT_BITS);
         let matrix_inputs = materializer.take_boxed_inputs();
-        let actual = compression_circuit(&mut materializer, &matrix_inputs);
-        assert!(
-            actual
-                .iter()
-                .zip(expected)
-                .all(|(actual, expected)| actual.value() == expected)
-        );
+        let _ = compression_circuit(&mut materializer, &matrix_inputs);
 
         let transpose = materializer.finish();
-        assert_eq!(transpose.column_count(), 7_145);
+        assert_eq!(
+            transpose.column_count(),
+            COMPRESSION_INPUT_BITS + COMPRESSION_HINT_BITS + 1
+        );
         assert_eq!(transpose.row_count(), 20_457);
         assert_eq!(transpose.nonzero_count(), 42_361);
         assert!(transpose.payload_bytes() < 194 * 1024);
@@ -604,8 +560,8 @@ mod tests {
         const WIDTH: usize = 4096;
         let mut recorder = MTransposeRecorder::with_witnesses(WIDTH);
         for index in 0..WIDTH / 2 {
-            let left = recorder.witness(index, index % 2 == 0);
-            let right = recorder.witness(index + WIDTH / 2, index % 3 == 0);
+            let left = recorder.witness(index);
+            let right = recorder.witness(index + WIDTH / 2);
             let root = recorder.xor(left, right);
             recorder.push_row(&root);
         }
@@ -627,7 +583,7 @@ mod tests {
         let mut recorder = MTransposeRecorder::with_witnesses(6);
         let mut expression = MatrixBit::from(false);
         for index in 0..6 {
-            expression = recorder.xor(expression, recorder.witness(index, index % 2 == 0));
+            expression = recorder.xor(expression, recorder.witness(index));
         }
         recorder.push_row(&expression);
         let transpose = recorder.finish();

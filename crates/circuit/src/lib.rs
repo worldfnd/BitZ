@@ -22,6 +22,9 @@ pub mod sha256;
 pub mod stats;
 pub mod witgen;
 
+#[cfg(test)]
+mod projection_tests;
+
 /// An error raised while evaluating a witness hint.
 ///
 /// Hints are fallible because their inputs may not be in the domain expected by

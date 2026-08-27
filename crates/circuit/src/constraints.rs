@@ -211,14 +211,14 @@ impl BoolLinearCombination {
         &self.witnesses
     }
 
-    fn witness(index: usize) -> Self {
+    pub(crate) fn witness(index: usize) -> Self {
         Self {
             constant: false,
             witnesses: BTreeSet::from([index]),
         }
     }
 
-    fn xor(mut self, rhs: Self) -> Self {
+    pub(crate) fn xor(mut self, rhs: Self) -> Self {
         self.constant ^= rhs.constant;
         for witness in rhs.witnesses {
             if !self.witnesses.insert(witness) {

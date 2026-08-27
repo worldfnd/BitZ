@@ -10,7 +10,7 @@ use circuit::sha256::{
     SHA256_2KB_MESSAGE_BITS, SHA256_2KB_WITNESS_BITS, block_aligned_witness_bits,
     sha256_2kb_circuit, sha256_block_aligned_circuit,
 };
-use circuit::witgen::{PackedWitness, ProductWitgen, Witgen};
+use circuit::witgen::ProductWitgen;
 use divan::{Bencher, black_box};
 use field::F128;
 use num_bigint::BigUint;
@@ -20,14 +20,8 @@ fn main() {
     divan::main();
 }
 
-fn build_witness(message: &[bool; SHA256_2KB_MESSAGE_BITS]) -> PackedWitness {
-    let mut witgen = Witgen::with_inputs_and_capacity(message, SHA256_2KB_WITNESS_BITS);
-    let _ = sha256_2kb_circuit(&mut witgen, message);
-    witgen.into_witness()
-}
-
-fn build_transpose(witness: &PackedWitness) -> MaterializedMTranspose {
-    let mut generator = MTransposeGenerator::new(witness, SHA256_2KB_MESSAGE_BITS);
+fn build_transpose() -> MaterializedMTranspose {
+    let mut generator = MTransposeGenerator::new(SHA256_2KB_MESSAGE_BITS);
     let inputs = generator.take_boxed_inputs();
     let _ = sha256_2kb_circuit(&mut generator, &inputs);
     generator.finish()
@@ -78,10 +72,8 @@ fn sha256_1_mib_witgen(bencher: Bencher) {
 /// Generate the sparse representation of `M` used to compute `rM`.
 #[divan::bench]
 fn sha256_2kb_m(bencher: Bencher) {
-    let message = support::sha256::message_2kb();
-    let witness = build_witness(&message);
     bencher.bench_local(|| {
-        let mut generator = MTransposeGenerator::new(black_box(&witness), SHA256_2KB_MESSAGE_BITS);
+        let mut generator = MTransposeGenerator::new(SHA256_2KB_MESSAGE_BITS);
         let inputs = generator.take_boxed_inputs();
         let digest = sha256_2kb_circuit(&mut generator, &inputs);
         black_box((digest, generator.finish()))
@@ -106,9 +98,7 @@ fn sha256_2kb_abc_mw(bencher: Bencher) {
 #[divan::bench]
 fn sha256_2kb_rm(bencher: Bencher) {
     prepare_parallel_reduction();
-    let message = support::sha256::message_2kb();
-    let witness = build_witness(&message);
-    let transpose = build_transpose(&witness);
+    let transpose = build_transpose();
     let challenges: Vec<_> = (0..transpose.row_count())
         .map(|index| {
             F128::new(
