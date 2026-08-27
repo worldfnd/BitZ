@@ -274,6 +274,7 @@ dependencies = [
 name = "circuit"
 version = "0.1.0"
 dependencies = [
+ "crypto-bigint",
  "divan",
  "field",
  "num-bigint 0.4.8",

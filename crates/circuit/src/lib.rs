@@ -14,8 +14,10 @@ use std::ops::{Add, AddAssign, Mul, Neg, Sub, SubAssign};
 use num_traits::{One, Zero};
 
 pub mod constraints;
+pub mod ecdsa_sha256;
 pub mod matrix_products;
 pub mod matrix_transpose;
+pub mod p256;
 pub mod sha256;
 pub mod stats;
 pub mod witgen;
@@ -77,6 +79,15 @@ pub trait WitnessContext<ZW, BW, C> {
     /// Evaluates a Z-side symbolic witness (or linear combination).
     fn eval_z(&self, witness: &ZW) -> C;
 
+    /// Borrows the exact little-endian two's-complement storage of a Z-side
+    /// value when the backend has a fixed-width integer representation.
+    ///
+    /// This lets arithmetic-heavy hints avoid allocating a `BigInt` merely to
+    /// inspect a value. Symbolic backends may retain the default.
+    fn eval_z_words<'a>(&self, _witness: &'a ZW) -> Option<&'a [u64]> {
+        None
+    }
+
     /// Evaluates an F2-side symbolic witness (or linear combination).
     fn eval_bool(&self, witness: &BW) -> bool;
 }
@@ -123,6 +134,9 @@ impl<T> Coefficient for T where
 /// operation even when the coefficient type comes from another crate.
 pub trait ZWitness<C: Coefficient>:
     Clone
+    + Send
+    + Sync
+    + 'static
     + From<C>
     + Zero
     + Add<Output = Self>
@@ -139,6 +153,9 @@ impl<T, C> ZWitness<C> for T
 where
     C: Coefficient,
     T: Clone
+        + Send
+        + Sync
+        + 'static
         + From<C>
         + Zero
         + Add<Output = T>
@@ -164,6 +181,13 @@ where
     fn from_packed(bits: PackedBits<N, M>) -> Self;
     fn from_u64(value: u64) -> Self;
     fn bit(&self, index: usize) -> BW;
+    fn slice<const K: usize, const L: usize>(
+        &self,
+        offset: usize,
+    ) -> <BW as BoolWitness>::Repr<K, L> {
+        assert!(offset.checked_add(K).is_some_and(|end| end <= N));
+        <BW as BoolWitness>::Repr::from_array(array::from_fn(|index| self.bit(offset + index)))
+    }
     fn xor<CS>(&self, circuit: &mut CS, rhs: &Self) -> Self
     where
         CS: Circuit<Bool = BW>;
@@ -282,6 +306,15 @@ impl<const N: usize, const M: usize> PackedBits<N, M> {
         Self { words }
     }
 
+    /// Constructs a packed value from little-endian `u64` limbs.
+    pub fn from_words(mut words: [u64; M]) -> Self {
+        Self::assert_width();
+        if !N.is_multiple_of(64) && M != 0 {
+            words[M - 1] &= (1_u64 << (N % 64)) - 1;
+        }
+        Self { words }
+    }
+
     /// Packed little-endian storage limbs.
     pub fn words(&self) -> &[u64] {
         &self.words
@@ -335,6 +368,22 @@ impl<const N: usize, const M: usize> BoolRepresentation<bool, N, M> for PackedBi
 
     fn bit(&self, index: usize) -> bool {
         self.bit(index)
+    }
+
+    fn slice<const K: usize, const L: usize>(&self, offset: usize) -> PackedBits<K, L> {
+        assert!(offset.checked_add(K).is_some_and(|end| end <= N));
+        let first_word = offset / 64;
+        let shift = offset % 64;
+        PackedBits::from_words(array::from_fn(|index| {
+            let source = first_word + index;
+            let low = self.words.get(source).copied().unwrap_or(0) >> shift;
+            let high = if shift == 0 {
+                0
+            } else {
+                self.words.get(source + 1).copied().unwrap_or(0) << (64 - shift)
+            };
+            low | high
+        }))
     }
 
     fn xor<CS>(&self, _: &mut CS, rhs: &Self) -> Self
@@ -402,6 +451,23 @@ pub trait Circuit {
     type Bool: BoolWitness;
     type Coefficient<const LIMBS: usize>: Coefficient;
     type Z<const LIMBS: usize>: ZWitness<Self::Coefficient<LIMBS>>;
+
+    /// Constructs a nonnegative coefficient from little-endian machine words.
+    ///
+    /// The default only relies on ring operations. Fixed-integer backends
+    /// should override this to copy limbs directly.
+    fn coefficient_from_le_words<const LIMBS: usize>(words: &[u64]) -> Self::Coefficient<LIMBS> {
+        let mut radix = Self::Coefficient::<LIMBS>::one();
+        for _ in 0..64 {
+            radix += radix.clone();
+        }
+        words
+            .iter()
+            .rev()
+            .fold(Self::Coefficient::<LIMBS>::zero(), |value, word| {
+                value * radix.clone() + Self::Coefficient::<LIMBS>::from(*word)
+            })
+    }
 
     /// Adds two Boolean expressions over F2.
     ///

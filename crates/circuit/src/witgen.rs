@@ -20,6 +20,15 @@ pub struct Z<const LIMBS: usize = 1> {
 }
 
 impl<const LIMBS: usize> Z<LIMBS> {
+    /// Constructs a nonnegative integer from little-endian machine words.
+    pub fn from_le_words(words: &[u64]) -> Self {
+        let mut output = [0; LIMBS];
+        for (output, input) in output.iter_mut().zip(words) {
+            *output = *input;
+        }
+        Self { words: output }
+    }
+
     /// Constructs a nonnegative integer from little-endian bits.
     pub fn from_le_bits(bits: &[bool]) -> Self {
         let mut words = [0; LIMBS];
@@ -207,6 +216,10 @@ impl<const LIMBS: usize> WitnessContext<Z<LIMBS>, bool, Z<LIMBS>> for ValueConte
         *witness
     }
 
+    fn eval_z_words<'a>(&self, witness: &'a Z<LIMBS>) -> Option<&'a [u64]> {
+        Some(witness.words())
+    }
+
     fn eval_bool(&self, witness: &bool) -> bool {
         *witness
     }
@@ -303,6 +316,92 @@ pub struct Witgen {
     integer_witness: PackedWitness,
 }
 
+/// Executes hints and accumulates only the Boolean witness `w`.
+///
+/// Z-side values are still evaluated because later hints depend on them, but
+/// the `M * w` image and rank-1 products are deliberately not retained. This
+/// is the baseline witness-generation backend used to measure the cost of
+/// witness generation independently from output recording.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct WitnessOnly {
+    witness: PackedWitness,
+}
+
+impl WitnessOnly {
+    /// Starts with already assigned Boolean inputs and reserves the complete
+    /// Boolean witness capacity.
+    pub fn with_inputs_and_capacity(inputs: &[bool], witness_capacity: usize) -> Self {
+        assert!(witness_capacity >= inputs.len());
+        let mut witness = PackedWitness::with_capacity(witness_capacity);
+        witness.extend(inputs);
+        Self { witness }
+    }
+
+    /// Packed Boolean witness accumulated so far.
+    pub const fn witness(&self) -> &PackedWitness {
+        &self.witness
+    }
+
+    /// Consumes the evaluator into the packed Boolean witness.
+    pub fn into_witness(self) -> PackedWitness {
+        self.witness
+    }
+}
+
+impl Circuit for WitnessOnly {
+    type Bool = bool;
+    type Coefficient<const LIMBS: usize> = Z<LIMBS>;
+    type Z<const LIMBS: usize> = Z<LIMBS>;
+
+    fn coefficient_from_le_words<const LIMBS: usize>(words: &[u64]) -> Z<LIMBS> {
+        Z::from_le_words(words)
+    }
+
+    fn xor(&mut self, lhs: bool, rhs: bool) -> bool {
+        lhs ^ rhs
+    }
+
+    fn hint<const LIMBS: usize, const N: usize, const M: usize, H>(
+        &mut self,
+        hint: H,
+    ) -> PackedBits<N, M>
+    where
+        H: Fn(&dyn WitnessContext<Z<LIMBS>, bool, Z<LIMBS>>) -> HintResult<PackedBits<N, M>>
+            + Send
+            + Sync
+            + 'static,
+    {
+        let bits =
+            hint(&ValueContext).unwrap_or_else(|error| panic!("witness hint failed: {error}"));
+        self.witness.extend_packed(&bits);
+        bits
+    }
+
+    fn f2z<const LIMBS: usize>(&mut self, value: bool) -> Z<LIMBS> {
+        if value { Z::one() } else { Z::zero() }
+    }
+
+    fn f2z_unsigned<const LIMBS: usize, const N: usize, const M: usize, const LOW: usize>(
+        &mut self,
+        bits_le: &<bool as BoolWitness>::Repr<N, M>,
+    ) -> (Z<LIMBS>, Z<LIMBS>) {
+        assert!(LOW <= N, "low part cannot be wider than the input");
+        (
+            Z::from_packed_bits(bits_le),
+            Z::from_packed_prefix(bits_le, LOW),
+        )
+    }
+
+    fn assert_r1c<const LIMBS: usize>(&mut self, _: Z<LIMBS>, _: Z<LIMBS>, _: Z<LIMBS>) {}
+
+    fn sign_extend_z<const FROM_LIMBS: usize, const TO_LIMBS: usize>(
+        &mut self,
+        value: Z<FROM_LIMBS>,
+    ) -> Z<TO_LIMBS> {
+        value.sign_extend()
+    }
+}
+
 impl Witgen {
     fn initial_integer_witness() -> PackedWitness {
         let mut witness = PackedWitness::with_capacity(1);
@@ -390,6 +489,10 @@ impl Circuit for Witgen {
     type Bool = bool;
     type Coefficient<const LIMBS: usize> = Z<LIMBS>;
     type Z<const LIMBS: usize> = Z<LIMBS>;
+
+    fn coefficient_from_le_words<const LIMBS: usize>(words: &[u64]) -> Z<LIMBS> {
+        Z::from_le_words(words)
+    }
 
     fn xor(&mut self, lhs: bool, rhs: bool) -> bool {
         lhs ^ rhs
@@ -510,6 +613,10 @@ impl Circuit for ProductWitgen {
     type Coefficient<const LIMBS: usize> = Z<LIMBS>;
     type Z<const LIMBS: usize> = Z<LIMBS>;
 
+    fn coefficient_from_le_words<const LIMBS: usize>(words: &[u64]) -> Z<LIMBS> {
+        Z::from_le_words(words)
+    }
+
     fn xor(&mut self, lhs: bool, rhs: bool) -> bool {
         lhs ^ rhs
     }
@@ -581,6 +688,12 @@ mod tests {
             (0..WIDTH)
                 .all(|index| shifted.bit(index) == (index + 81 < WIDTH && expected(index + 81)))
         );
+
+        let sliced = <PackedBits<WIDTH, 4> as crate::BoolRepresentation<bool, WIDTH, 4>>::slice::<
+            65,
+            2,
+        >(&bits, 63);
+        assert!((0..65).all(|index| sliced.bit(index) == expected(index + 63)));
 
         let integer = Z::<4>::from_packed_bits(&bits);
         assert_eq!(integer.words(), bits.words());

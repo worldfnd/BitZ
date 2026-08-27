@@ -1,12 +1,14 @@
-//! `M`, `ABC(Mw)`, and `rM` toys for the 2 KiB SHA-256 circuit.
+//! `M`, `ABC(Mw)`, and `rM` toys for the standalone prehashed P-256 verifier.
 //!
-//! Run with `cargo bench -p circuit --bench sha256_matrix_products`.
+//! Run with `cargo bench -p circuit --bench p256_matrix_products`.
 
 mod support;
 
 use circuit::matrix_products::RuntimeModulus;
 use circuit::matrix_transpose::{MTransposeGenerator, MaterializedMTranspose};
-use circuit::sha256::{SHA256_2KB_MESSAGE_BITS, SHA256_2KB_WITNESS_BITS, sha256_2kb_circuit};
+use circuit::p256::{
+    VERIFY_DIGEST_INPUT_BITS, VERIFY_DIGEST_WITNESS_BITS, prepare, verify_digest_circuit,
+};
 use circuit::witgen::{PackedWitness, ProductWitgen, Witgen};
 use divan::{Bencher, black_box};
 use field::F128;
@@ -17,16 +19,16 @@ fn main() {
     divan::main();
 }
 
-fn build_witness(message: &[bool; SHA256_2KB_MESSAGE_BITS]) -> PackedWitness {
-    let mut witgen = Witgen::with_inputs_and_capacity(message, SHA256_2KB_WITNESS_BITS);
-    let _ = sha256_2kb_circuit(&mut witgen, message);
+fn build_witness(inputs: &[bool; VERIFY_DIGEST_INPUT_BITS]) -> PackedWitness {
+    let mut witgen = Witgen::with_inputs_and_capacity(inputs, VERIFY_DIGEST_WITNESS_BITS);
+    verify_digest_circuit(&mut witgen, inputs);
     witgen.into_witness()
 }
 
 fn build_transpose(witness: &PackedWitness) -> MaterializedMTranspose {
-    let mut generator = MTransposeGenerator::new(witness, SHA256_2KB_MESSAGE_BITS);
+    let mut generator = MTransposeGenerator::new(witness, VERIFY_DIGEST_INPUT_BITS);
     let inputs = generator.take_boxed_inputs();
-    let _ = sha256_2kb_circuit(&mut generator, &inputs);
+    verify_digest_circuit(&mut generator, &inputs);
     generator.finish()
 }
 
@@ -41,25 +43,27 @@ fn prepare_parallel_reduction() {
 
 /// Generate the sparse representation of `M` used to compute `rM`.
 #[divan::bench]
-fn sha256_2kb_m(bencher: Bencher) {
-    let message = support::sha256::message_2kb();
-    let witness = build_witness(&message);
+fn p256_m(bencher: Bencher) {
+    prepare();
+    let inputs = support::p256::valid_input();
+    let witness = build_witness(&inputs);
     bencher.bench_local(|| {
-        let mut generator = MTransposeGenerator::new(black_box(&witness), SHA256_2KB_MESSAGE_BITS);
+        let mut generator = MTransposeGenerator::new(black_box(&witness), VERIFY_DIGEST_INPUT_BITS);
         let inputs = generator.take_boxed_inputs();
-        let digest = sha256_2kb_circuit(&mut generator, &inputs);
-        black_box((digest, generator.finish()))
+        verify_digest_circuit(&mut generator, &inputs);
+        black_box(generator.finish())
     });
 }
 
 /// Reduce precomputed exact integer `A(M*w)`, `B(M*w)`, and `C(M*w)` values.
 #[divan::bench]
-fn sha256_2kb_abc_mw(bencher: Bencher) {
+fn p256_abc_mw(bencher: Bencher) {
+    prepare();
     prepare_parallel_reduction();
-    let message = support::sha256::message_2kb();
+    let inputs = support::p256::valid_input();
     let mut witgen =
-        ProductWitgen::with_inputs_and_capacity(message.as_ref(), SHA256_2KB_WITNESS_BITS);
-    let _ = sha256_2kb_circuit(&mut witgen, &message);
+        ProductWitgen::with_inputs_and_capacity(inputs.as_ref(), VERIFY_DIGEST_WITNESS_BITS);
+    verify_digest_circuit(&mut witgen, &inputs);
     let (_, _, integer_products) = witgen.into_parts();
     let modulus = RuntimeModulus::<2>::new(prime_128()).unwrap();
     bencher.bench_local(|| {
@@ -68,10 +72,11 @@ fn sha256_2kb_abc_mw(bencher: Bencher) {
 }
 
 #[divan::bench]
-fn sha256_2kb_rm(bencher: Bencher) {
+fn p256_rm(bencher: Bencher) {
+    prepare();
     prepare_parallel_reduction();
-    let message = support::sha256::message_2kb();
-    let witness = build_witness(&message);
+    let inputs = support::p256::valid_input();
+    let witness = build_witness(&inputs);
     let transpose = build_transpose(&witness);
     let challenges: Vec<_> = (0..transpose.row_count())
         .map(|index| {

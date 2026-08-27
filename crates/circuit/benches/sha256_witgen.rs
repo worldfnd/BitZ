@@ -1,10 +1,12 @@
-//! Witness-generation time for block-aligned SHA-256 circuits.
+//! Generate `w` and `M * w` for block-aligned SHA-256 circuits.
 //!
 //! Run with `cargo bench -p circuit --bench sha256_witgen`.
 
+mod support;
+
 use circuit::sha256::{
-    SHA256_2KB_MESSAGE_BITS, SHA256_2KB_WITNESS_BITS, block_aligned_witness_bits,
-    sha256_2kb_circuit, sha256_block_aligned_circuit,
+    SHA256_2KB_WITNESS_BITS, block_aligned_witness_bits, sha256_2kb_circuit,
+    sha256_block_aligned_circuit,
 };
 use circuit::witgen::Witgen;
 use divan::{Bencher, black_box};
@@ -13,25 +15,14 @@ fn main() {
     divan::main();
 }
 
-fn message_bits() -> Box<[bool; SHA256_2KB_MESSAGE_BITS]> {
-    let bits: Box<[bool]> = (0..SHA256_2KB_MESSAGE_BITS)
-        .map(|bit| {
-            let byte = (bit / 8) as u8;
-            byte & (1 << (7 - bit % 8)) != 0
-        })
-        .collect();
-    bits.try_into()
-        .unwrap_or_else(|_| unreachable!("message length is fixed"))
-}
-
 #[divan::bench]
 fn sha256_2kb_witgen(bencher: Bencher) {
-    let message = message_bits();
+    let message = support::sha256::message_2kb();
     bencher.bench_local(|| {
         let mut witgen =
             Witgen::with_inputs_and_capacity(message.as_ref(), SHA256_2KB_WITNESS_BITS);
         let digest = sha256_2kb_circuit(&mut witgen, black_box(message.as_ref()));
-        black_box((digest, witgen.into_witness()))
+        black_box((digest, witgen.into_witnesses()))
     });
 }
 
@@ -53,6 +44,6 @@ fn sha256_1_mib_witgen(bencher: Bencher) {
             message[index / 64] >> (index % 64) & 1 == 1
         });
         assert_eq!(witgen.witness().bit_len(), SHA256_1_MIB_WITNESS_BITS);
-        black_box((digest, witgen.into_witness()))
+        black_box((digest, witgen.into_witnesses()))
     });
 }

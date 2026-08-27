@@ -441,6 +441,10 @@ impl Circuit for MTransposeGenerator<'_> {
     type Coefficient<const LIMBS: usize> = Z<LIMBS>;
     type Z<const LIMBS: usize> = Z<LIMBS>;
 
+    fn coefficient_from_le_words<const LIMBS: usize>(words: &[u64]) -> Z<LIMBS> {
+        Z::from_le_words(words)
+    }
+
     fn xor(&mut self, lhs: MatrixBit, rhs: MatrixBit) -> MatrixBit {
         self.recorder.xor(lhs, rhs)
     }
