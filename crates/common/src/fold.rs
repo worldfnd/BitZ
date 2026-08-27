@@ -92,8 +92,10 @@ pub fn reconstruct<const Q: u128>(
 pub struct Fold {
     /// The column folds `eta_j`, as integers.
     pub folds: Vec<u128>,
-    /// `g^{eta_j}`, derived on both sides rather than transmitted.
-    pub images: Vec<F128>,
+    /// `g^{eta_j}` over `j in {0,1}^s`, derived on both sides rather than
+    /// transmitted. The grand product reads the table; `e0` is its extension
+    /// at `zeta`.
+    pub images: DenseMultilinearExtension<F128>,
     /// `y_i = g^{pi_q^{-1}(v^(1)_i)}`, one per row.
     pub row_images: Vec<F128>,
     /// The challenge drawn after the images are bound.
@@ -119,10 +121,15 @@ impl Fold {
         if row_images.len() != shape.rows() {
             return Err(FoldError::RowCountMismatch);
         }
-        if folds.len() != shape.columns() || images.len() != shape.columns() {
+        if folds.len() != shape.columns() {
             return Err(FoldError::ColumnCountMismatch);
         }
-        let e0 = DenseMultilinearExtension::evaluate_at(&images, &zeta)
+        // `2^s` evaluations and a point of width `s`: both counts the round
+        // otherwise has to assert for itself.
+        let images = DenseMultilinearExtension::from_evaluations(shape.s(), images)
+            .map_err(|_| FoldError::ColumnCountMismatch)?;
+        let e0 = images
+            .evaluate(&zeta)
             .map_err(|_| FoldError::ColumnCountMismatch)?;
 
         Ok(Self {
