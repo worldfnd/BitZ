@@ -28,22 +28,21 @@ fn the_two_sides_agree_on_every_shape_the_profile_admits() {
             .expect("honest instance");
         let proof = transcript.finish();
 
-        let mut transcript = verifier_transcript(&proof);
+        // `verify` consumes the transcript and asserts both streams are spent,
+        // so an honest round trip failing here would mean a stray record. Not
+        // an acceptance: step 6 is absent, so nothing has discharged the claim.
         let verified = instance
             .verifier
             .verify(
                 &instance.claim,
                 instance.com,
                 &EchoReduction,
-                &mut transcript,
+                verifier_transcript(&proof),
             )
             .expect("honest proof");
 
         assert_eq!(proved, verified, "t = {}", shape.log_rows());
         assert_eq!(proved.point.len(), shape.log_bits());
-        // Not an acceptance: step 5.3 is absent, so the opening the claim
-        // feeds has not run and there is nothing yet to exhaust the streams.
-        transcript.check_eof().expect("nothing beyond the fold yet");
     }
 }
 
@@ -67,14 +66,13 @@ fn the_commitment_is_bound_before_the_first_challenge() {
         .unwrap();
     let proof = transcript.finish();
 
-    let mut transcript = verifier_transcript(&proof);
     let verified = instance
         .verifier
         .verify(
             &instance.claim,
             Root([0xffu8; 32]),
             &EchoReduction,
-            &mut transcript,
+            verifier_transcript(&proof),
         )
         .expect("every record still decodes and every check still passes");
 
@@ -102,11 +100,42 @@ fn the_statement_is_bound_before_the_first_challenge() {
     // claimed value. The fold's own reconstruction rejects it, which is the
     // check the binding backs up rather than replaces.
     let retargeted = instance.with_target(instance.claim.target() + Fq::from(1u128));
-    let mut transcript = verifier_transcript(&proof);
     assert_eq!(
-        instance
-            .verifier
-            .verify(&retargeted, instance.com, &EchoReduction, &mut transcript,),
+        instance.verifier.verify(
+            &retargeted,
+            instance.com,
+            &EchoReduction,
+            verifier_transcript(&proof)
+        ),
         Err(VerifyError::Fold(ReceiveError::TargetMismatch))
+    );
+}
+
+#[test]
+fn a_proof_with_trailing_bytes_is_refused() {
+    let instance = Instance::honest(narrow_shape(), 34);
+
+    let mut transcript = prover_transcript();
+    instance
+        .prover
+        .prove(
+            &instance.claim,
+            instance.com,
+            &instance.table(),
+            &EchoReduction,
+            &mut transcript,
+        )
+        .unwrap();
+    let mut proof = transcript.finish();
+    proof.hints.push(0);
+
+    assert_eq!(
+        instance.verifier.verify(
+            &instance.claim,
+            instance.com,
+            &EchoReduction,
+            verifier_transcript(&proof)
+        ),
+        Err(VerifyError::TrailingData)
     );
 }

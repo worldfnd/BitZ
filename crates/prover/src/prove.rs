@@ -14,8 +14,8 @@ pub enum ProveError<E> {
     Reduction(E),
 }
 
-/// Steps 5.2 and 5.2a: the grand product, and the sumcheck that turns its
-/// affine leaf into a claim on the committed bits.
+/// Step 4: the grand product, and the sumcheck that turns its affine leaf
+/// into a claim on the committed bits.
 ///
 /// TODO: #8 implements this. Until then the round trip stubs it, so the
 /// transcript order below is exercised and the reduction's argument is not.
@@ -46,7 +46,7 @@ impl<const Q: u128> F2ZProver<Q> {
     ) -> Result<OpeningClaim, ProveError<R::Error>> {
         // Step 1: bind. Absorbing the root here is not redundant with the opening
         // scheme, whose batched opening binds it only in its own statement mode --
-        // and that fires at Step 5.3, long after the fold has squeezed.
+        // and that fires at step 6, long after the fold has squeezed.
         //
         // The claim itself is not bound: neither `v^(1)`, `v^(2)` nor `mu` reaches
         // the sponge here, only the parameters. They enter through the caller's
@@ -54,18 +54,18 @@ impl<const Q: u128> F2ZProver<Q> {
         transcript.public_message(&com.0);
         transcript.public_message(self.params());
 
-        // TODO: Step 5.0, reduce the modulus, is absent. It runs when q is too
+        // TODO: step 2, reducing the modulus, is absent. It runs when q is too
         // large for the shape, and a const modulus parameter cannot express its
         // `q <- q'`. Callers must supply an admissible q; LinearClaim::new
         // rejects anything else.
 
-        // Step 5.1: fold each column into an integer exponent.
+        // Step 3: fold each column into an integer exponent.
         let fold = self
             .send_fold(claim, table, transcript)
             .map_err(ProveError::Fold)?;
 
-        // Steps 5.2 and 5.2a: the grand product over the folds, then the sumcheck
-        // that turns its affine leaf into a claim on the committed bits.
+        // Step 4: the grand product over the folds, then the sumcheck that
+        // turns its affine leaf into a claim on the committed bits.
         //
         // TODO(#8): both live behind `Reduction`, which nothing implements yet.
         let input = ReductionInput {
@@ -78,11 +78,11 @@ impl<const Q: u128> F2ZProver<Q> {
             .reduce(&input, table, transcript)
             .map_err(ProveError::Reduction)?;
 
-        // Step 5.2b, batching the per-column claims, is conditional and a
+        // Step 5, batching the per-column claims, is conditional and a
         // merged-forest grand product does not need it: it draws its challenge
         // once across all columns, so the claims never separate.
 
-        // TODO(#15): Step 5.3, the ring switch and the opening, is absent, so this
+        // TODO(#15): step 6, the ring switch and the opening, is absent, so this
         // hands back the claim the opening would consume instead of consuming it
         // -- a caller that stops here has proved nothing. The tail becomes
         // `prove_lin_batch(data, packed, &[claim], AlreadyBound, transcript)`.
