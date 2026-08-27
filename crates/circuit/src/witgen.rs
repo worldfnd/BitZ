@@ -391,6 +391,10 @@ impl Circuit for Witgen {
     type Coefficient<const LIMBS: usize> = Z<LIMBS>;
     type Z<const LIMBS: usize> = Z<LIMBS>;
 
+    fn xor(&mut self, lhs: bool, rhs: bool) -> bool {
+        lhs ^ rhs
+    }
+
     fn hint<const LIMBS: usize, const N: usize, const M: usize, H>(
         &mut self,
         hint: H,
@@ -505,6 +509,10 @@ impl Circuit for ProductWitgen {
     type Bool = bool;
     type Coefficient<const LIMBS: usize> = Z<LIMBS>;
     type Z<const LIMBS: usize> = Z<LIMBS>;
+
+    fn xor(&mut self, lhs: bool, rhs: bool) -> bool {
+        lhs ^ rhs
+    }
 
     fn hint<const LIMBS: usize, const N: usize, const M: usize, H>(
         &mut self,

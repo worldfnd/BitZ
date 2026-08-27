@@ -15,6 +15,7 @@ use num_traits::{One, Zero};
 
 pub mod constraints;
 pub mod matrix_products;
+pub mod matrix_transpose;
 pub mod sha256;
 pub mod stats;
 pub mod witgen;
@@ -163,7 +164,9 @@ where
     fn from_packed(bits: PackedBits<N, M>) -> Self;
     fn from_u64(value: u64) -> Self;
     fn bit(&self, index: usize) -> BW;
-    fn xor(&self, rhs: &Self) -> Self;
+    fn xor<CS>(&self, circuit: &mut CS, rhs: &Self) -> Self
+    where
+        CS: Circuit<Bool = BW>;
     fn rotate_right(&self, amount: usize) -> Self;
     fn shift_right(&self, amount: usize) -> Self;
     fn evaluate<ZW, C>(&self, context: &dyn WitnessContext<ZW, BW, C>) -> PackedBits<N, M>;
@@ -197,8 +200,13 @@ where
         self.0[index].clone()
     }
 
-    fn xor(&self, rhs: &Self) -> Self {
-        Self(array::from_fn(|i| self.0[i].clone().xor(rhs.0[i].clone())))
+    fn xor<CS>(&self, circuit: &mut CS, rhs: &Self) -> Self
+    where
+        CS: Circuit<Bool = BW>,
+    {
+        Self(array::from_fn(|i| {
+            circuit.xor(self.0[i].clone(), rhs.0[i].clone())
+        }))
     }
 
     fn rotate_right(&self, amount: usize) -> Self {
@@ -329,7 +337,10 @@ impl<const N: usize, const M: usize> BoolRepresentation<bool, N, M> for PackedBi
         self.bit(index)
     }
 
-    fn xor(&self, rhs: &Self) -> Self {
+    fn xor<CS>(&self, _: &mut CS, rhs: &Self) -> Self
+    where
+        CS: Circuit<Bool = bool>,
+    {
         Self {
             words: array::from_fn(|index| self.words[index] ^ rhs.words[index]),
         }
@@ -375,17 +386,10 @@ pub trait BoolWitness: Clone + From<bool> + Send + Sync + Sized + 'static {
     fn zero() -> Self {
         Self::from(false)
     }
-
-    /// Addition in F2.
-    fn xor(self, rhs: Self) -> Self;
 }
 
 impl BoolWitness for bool {
     type Repr<const N: usize, const M: usize> = PackedBits<N, M>;
-
-    fn xor(self, rhs: Self) -> Self {
-        self ^ rhs
-    }
 }
 
 /// Operations needed to construct an F2Z circuit.
@@ -398,6 +402,13 @@ pub trait Circuit {
     type Bool: BoolWitness;
     type Coefficient<const LIMBS: usize>: Coefficient;
     type Z<const LIMBS: usize>: ZWitness<Self::Coefficient<LIMBS>>;
+
+    /// Adds two Boolean expressions over F2.
+    ///
+    /// Boolean operations receive the backend explicitly so recording
+    /// backends can append to an arena without shared mutability in witness
+    /// handles.
+    fn xor(&mut self, lhs: Self::Bool, rhs: Self::Bool) -> Self::Bool;
 
     /// Allocates `N` Boolean witnesses whose packed values are computed by
     /// `hint`.
@@ -659,10 +670,6 @@ mod tests {
 
     impl BoolWitness for Bit {
         type Repr<const N: usize, const M: usize> = ScalarBits<Self, N>;
-
-        fn xor(self, rhs: Self) -> Self {
-            self + rhs
-        }
     }
 
     struct Values;
@@ -686,6 +693,10 @@ mod tests {
         type Bool = Bit;
         type Coefficient<const LIMBS: usize> = Mod7;
         type Z<const LIMBS: usize> = Z;
+
+        fn xor(&mut self, lhs: Bit, rhs: Bit) -> Bit {
+            lhs + rhs
+        }
 
         fn hint<const LIMBS: usize, const N: usize, const M: usize, H>(
             &mut self,

@@ -217,6 +217,16 @@ impl BoolLinearCombination {
             witnesses: BTreeSet::from([index]),
         }
     }
+
+    fn xor(mut self, rhs: Self) -> Self {
+        self.constant ^= rhs.constant;
+        for witness in rhs.witnesses {
+            if !self.witnesses.insert(witness) {
+                self.witnesses.remove(&witness);
+            }
+        }
+        self
+    }
 }
 
 impl From<bool> for BoolLinearCombination {
@@ -230,16 +240,6 @@ impl From<bool> for BoolLinearCombination {
 
 impl BoolWitness for BoolLinearCombination {
     type Repr<const N: usize, const M: usize> = ScalarBits<Self, N>;
-
-    fn xor(mut self, rhs: Self) -> Self {
-        self.constant ^= rhs.constant;
-        for witness in rhs.witnesses {
-            if !self.witnesses.insert(witness) {
-                self.witnesses.remove(&witness);
-            }
-        }
-        self
-    }
 }
 
 /// A symbolic integer linear combination.
@@ -498,6 +498,14 @@ impl Circuit for ConstraintGenerator {
     type Coefficient<const LIMBS: usize> = BigInt;
     type Z<const LIMBS: usize> = LinearCombination;
 
+    fn xor(
+        &mut self,
+        lhs: BoolLinearCombination,
+        rhs: BoolLinearCombination,
+    ) -> BoolLinearCombination {
+        lhs.xor(rhs)
+    }
+
     fn hint<const LIMBS: usize, const N: usize, const M: usize, H>(
         &mut self,
         _: H,
@@ -557,7 +565,7 @@ mod tests {
     fn materializes_freigen_matrix_conventions_and_checks_witnesses() {
         let mut generator = ConstraintGenerator::new(2);
         let [x, y] = generator.inputs();
-        let sum = x.clone().xor(y.clone());
+        let sum = generator.xor(x.clone(), y.clone());
         let z_sum = generator.f2z::<1>(sum);
         let z_x = generator.f2z::<1>(x);
         let z_y = generator.f2z::<1>(y);

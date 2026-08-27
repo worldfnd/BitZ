@@ -29,10 +29,6 @@ impl From<u64> for Dummy {
 
 impl BoolWitness for Dummy {
     type Repr<const N: usize, const M: usize> = ScalarBits<Self, N>;
-
-    fn xor(self, _: Self) -> Self {
-        Self
-    }
 }
 
 impl Zero for Dummy {
@@ -154,6 +150,10 @@ impl Circuit for Stats {
     type Bool = Dummy;
     type Coefficient<const LIMBS: usize> = Dummy;
     type Z<const LIMBS: usize> = Dummy;
+
+    fn xor(&mut self, _: Dummy, _: Dummy) -> Dummy {
+        Dummy
+    }
 
     fn hint<const LIMBS: usize, const N: usize, const M: usize, H>(
         &mut self,

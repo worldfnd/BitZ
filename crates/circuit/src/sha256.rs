@@ -86,15 +86,21 @@ where
     }
 
     /// Bitwise XOR, represented by addition over F2.
-    pub fn xor(&self, rhs: &Self) -> Self {
+    pub fn xor<CS>(&self, circuit: &mut CS, rhs: &Self) -> Self
+    where
+        CS: Circuit<Bool = BW>,
+    {
         Self {
-            bits_le: self.bits_le.xor(&rhs.bits_le),
+            bits_le: self.bits_le.xor(circuit, &rhs.bits_le),
         }
     }
 
     /// Bitwise XOR of three words.
-    pub fn xor3(&self, second: &Self, third: &Self) -> Self {
-        self.xor(second).xor(third)
+    pub fn xor3<CS>(&self, circuit: &mut CS, second: &Self, third: &Self) -> Self
+    where
+        CS: Circuit<Bool = BW>,
+    {
+        self.xor(circuit, second).xor(circuit, third)
     }
 
     /// Rotates the word right by `amount` bits.
@@ -302,8 +308,10 @@ fn choice_twice<CS>(circuit: &mut CS, x: &UInt32<CS>, y: &UInt32<CS>, z: &UInt32
 where
     CS: Circuit,
 {
-    let xy = uint_from_word(circuit, x.word.xor(&y.word));
-    let xz = uint_from_word(circuit, x.word.xor(&z.word));
+    let xy_word = x.word.xor(circuit, &y.word);
+    let xy = uint_from_word(circuit, xy_word);
+    let xz_word = x.word.xor(circuit, &z.word);
+    let xz = uint_from_word(circuit, xz_word);
     y.int_value() + z.int_value() - xy.int_value() + xz.int_value()
 }
 
@@ -312,7 +320,8 @@ fn majority_twice<CS>(circuit: &mut CS, x: &UInt32<CS>, y: &UInt32<CS>, z: &UInt
 where
     CS: Circuit,
 {
-    let xyz = uint_from_word(circuit, x.word.xor3(&y.word, &z.word));
+    let xyz_word = x.word.xor3(circuit, &y.word, &z.word);
+    let xyz = uint_from_word(circuit, xyz_word);
     x.int_value() + y.int_value() + z.int_value() - xyz.int_value()
 }
 
@@ -338,15 +347,19 @@ where
 
     for i in 16..64 {
         let word_15 = &schedule[i - 15].word;
-        let sigma_0 = word_15
-            .rotate_right(7)
-            .xor3(&word_15.rotate_right(18), &word_15.shift_right(3));
+        let sigma_0 = word_15.rotate_right(7).xor3(
+            circuit,
+            &word_15.rotate_right(18),
+            &word_15.shift_right(3),
+        );
         let sigma_0 = uint_from_word(circuit, sigma_0);
 
         let word_2 = &schedule[i - 2].word;
-        let sigma_1 = word_2
-            .rotate_right(17)
-            .xor3(&word_2.rotate_right(19), &word_2.shift_right(10));
+        let sigma_1 = word_2.rotate_right(17).xor3(
+            circuit,
+            &word_2.rotate_right(19),
+            &word_2.shift_right(10),
+        );
         let sigma_1 = uint_from_word(circuit, sigma_1);
 
         schedule.push(sum_32::<34, 4, _>(
@@ -363,17 +376,19 @@ where
     let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut h] = state.clone();
 
     for i in 0..64 {
-        let big_sigma_1_word = e
-            .word
-            .rotate_right(6)
-            .xor3(&e.word.rotate_right(11), &e.word.rotate_right(25));
+        let big_sigma_1_word = e.word.rotate_right(6).xor3(
+            circuit,
+            &e.word.rotate_right(11),
+            &e.word.rotate_right(25),
+        );
         let big_sigma_1 = uint_from_word(circuit, big_sigma_1_word);
         let choice = choice_twice(circuit, &e, &f, &g);
 
-        let big_sigma_0_word = a
-            .word
-            .rotate_right(2)
-            .xor3(&a.word.rotate_right(13), &a.word.rotate_right(22));
+        let big_sigma_0_word = a.word.rotate_right(2).xor3(
+            circuit,
+            &a.word.rotate_right(13),
+            &a.word.rotate_right(22),
+        );
         let big_sigma_0 = uint_from_word(circuit, big_sigma_0_word);
         let majority = majority_twice(circuit, &a, &b, &c);
 
@@ -582,10 +597,6 @@ mod tests {
 
     impl BoolWitness for Bit {
         type Repr<const N: usize, const M: usize> = crate::ScalarBits<Self, N>;
-
-        fn xor(self, rhs: Self) -> Self {
-            self + rhs
-        }
     }
 
     struct Values;
@@ -609,6 +620,10 @@ mod tests {
         type Bool = Bit;
         type Coefficient<const LIMBS: usize> = i128;
         type Z<const LIMBS: usize> = i128;
+
+        fn xor(&mut self, lhs: Bit, rhs: Bit) -> Bit {
+            lhs + rhs
+        }
 
         fn hint<const LIMBS: usize, const N: usize, const M: usize, H>(
             &mut self,
