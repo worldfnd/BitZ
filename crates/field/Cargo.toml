@@ -9,10 +9,7 @@ license.workspace = true
 num-traits = { workspace = true }
 crypto-primitives = { workspace = true }
 crypto-primitives-proc-macros = { workspace = true }
-# Not inherited: `transcript` needs spongefish with its default features and
-# this crate needs it without them. Cargo refuses to override
-# `default-features` in either direction once the workspace fixes it.
-spongefish = { version = "0.7.4", default-features = false, optional = true }
+spongefish = { workspace = true, optional = true }
 
 [features]
 spongefish = ["dep:spongefish"]
