@@ -38,8 +38,8 @@ fn the_two_sides_agree_on_every_shape_the_profile_admits() {
             )
             .expect("honest proof");
 
-        assert_eq!(proved, verified, "t = {}", shape.t());
-        assert_eq!(proved.point.len(), shape.m());
+        assert_eq!(proved, verified, "t = {}", shape.log_rows());
+        assert_eq!(proved.point.len(), shape.log_bits());
         // Not an acceptance: step 5.3 is absent, so the opening the claim
         // feeds has not run and there is nothing yet to exhaust the streams.
         transcript.check_eof().expect("nothing beyond the fold yet");

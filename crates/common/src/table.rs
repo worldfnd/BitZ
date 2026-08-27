@@ -42,7 +42,7 @@ impl<'a> BitTable<'a> {
     /// table is always shaped by a checked parameter set.
     pub(crate) fn new(shape: Shape, packed: &'a [F128]) -> Result<Self, TableError> {
         // `m >= 22`, so the bit count is always a whole number of elements.
-        if packed.len() != (1 << shape.m()) / PACKED_BITS {
+        if packed.len() != (1 << shape.log_bits()) / PACKED_BITS {
             return Err(TableError::BitCountMismatch);
         }
         Ok(Self { shape, packed })
@@ -63,7 +63,7 @@ impl<'a> BitTable<'a> {
             column < self.shape.columns(),
             "column {column} is outside the table"
         );
-        let index = (column << self.shape.t()) | row;
+        let index = (column << self.shape.log_rows()) | row;
         let element = self.packed[index >> PACKED_SHIFT];
         let offset = index % PACKED_BITS;
         let half = if offset < HALF_BITS {
@@ -97,9 +97,9 @@ mod tests {
 
     /// Sets the rows named by `bits` as `(row, column)` in a zeroed witness.
     fn with_bits(shape: &Shape, bits: &[(usize, usize)]) -> Vec<F128> {
-        let mut packed = vec![F128::new(0, 0); (1 << shape.m()) / PACKED_BITS];
+        let mut packed = vec![F128::new(0, 0); (1 << shape.log_bits()) / PACKED_BITS];
         for &(row, column) in bits {
-            let index = (column << shape.t()) | row;
+            let index = (column << shape.log_rows()) | row;
             let element = &mut packed[index >> 7];
             let offset = index % PACKED_BITS;
             if offset < 64 {
@@ -139,7 +139,7 @@ mod tests {
         let packed = with_bits(&shape, &set);
         let table = BitTable::new(shape, &packed).unwrap();
 
-        assert_eq!(packed.len(), 1 << shape.packed_m());
+        assert_eq!(packed.len(), 1 << shape.log_packed_len());
 
         let groups_per_column = shape.rows() / PACKED_BITS;
         for (index, element) in packed.iter().enumerate() {

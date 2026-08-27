@@ -5,74 +5,82 @@
 pub const PACK_BITS: u32 = 7;
 
 /// The commitment size window the opening parameters are fixed for.
-pub const MIN_M: usize = 22;
+pub const MIN_LOG_BITS: usize = 22;
 /// The upper end of that window.
-pub const MAX_M: usize = 35;
+pub const MAX_LOG_BITS: usize = 35;
 
 /// A shape one of the admissibility constraints rejects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShapeError {
-    /// `t < 7`: a packed row would not fill one codeword position.
+    /// Fewer than seven row-index bits: a packed row would not fill one
+    /// codeword position. The paper writes this count `t`.
     RowIndexTooNarrow,
-    /// `m` falls outside `22..=35`.
+    /// The total bit count falls outside `2^22..=2^35`.
     CommitmentSizeOutOfRange,
 }
 
-/// The instance shape `(t, s)`.
+/// How the committed bits are laid out, as the two index widths.
 ///
-/// `t` indexes the bits of a column and `s` the columns. Geometry only: the
-/// modulus sits in [`crate::F2ZConfig`], with the one gate that couples the
-/// two.
+/// One counts the bits of a column, the other the columns; the paper writes
+/// them `t` and `s`. Geometry only: the modulus sits in [`crate::F2ZParams`],
+/// with the one gate that couples the two.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Shape {
-    t: usize,
-    s: usize,
+    log_rows: usize,
+    log_columns: usize,
 }
 
 impl Shape {
     /// Checks the geometric admissibility constraints and returns the shape.
-    pub fn new(t: usize, s: usize) -> Result<Self, ShapeError> {
-        if t < PACK_BITS as usize {
+    pub fn new(log_rows: usize, log_columns: usize) -> Result<Self, ShapeError> {
+        if log_rows < PACK_BITS as usize {
             return Err(ShapeError::RowIndexTooNarrow);
         }
-        // `t` alone is bounded first: `m >= t`, so an out-of-window `t` is
-        // already a rejection, and the later `MAX_M - t` cannot underflow.
-        if t > MAX_M || s > MAX_M - t || t + s < MIN_M {
+        // The row width alone is bounded first: the total is at least as
+        // large, so an out-of-window row width is already a rejection, and the
+        // later `MAX_LOG_BITS - log_rows` cannot underflow.
+        if log_rows > MAX_LOG_BITS
+            || log_columns > MAX_LOG_BITS - log_rows
+            || log_rows + log_columns < MIN_LOG_BITS
+        {
             return Err(ShapeError::CommitmentSizeOutOfRange);
         }
 
-        Ok(Self { t, s })
+        Ok(Self {
+            log_rows,
+            log_columns,
+        })
     }
 
-    /// The number of row-index bits, `t`.
-    pub fn t(&self) -> usize {
-        self.t
+    /// The number of row-index bits, the paper's `t`.
+    pub fn log_rows(&self) -> usize {
+        self.log_rows
     }
 
-    /// The number of column-index bits, `s`.
-    pub fn s(&self) -> usize {
-        self.s
+    /// The number of column-index bits, the paper's `s`.
+    pub fn log_columns(&self) -> usize {
+        self.log_columns
     }
 
-    /// `m = t + s`: the bits indexing the whole committed bit table.
-    pub fn m(&self) -> usize {
-        self.t + self.s
+    /// The bits indexing the whole committed bit table, the paper's `m = t + s`.
+    pub fn log_bits(&self) -> usize {
+        self.log_rows + self.log_columns
     }
 
-    /// `m_P = m - 7`: the bits indexing the packed field elements.
-    pub fn packed_m(&self) -> usize {
-        self.m() - PACK_BITS as usize
+    /// The bits indexing the packed field elements, the paper's `m_P = m - 7`.
+    pub fn log_packed_len(&self) -> usize {
+        self.log_bits() - PACK_BITS as usize
     }
 
-    /// The number of bits in one column, `2^t`, which is also the number of
+    /// The number of bits in one column, which is also the number of
     /// grand-product factors per column.
     pub fn rows(&self) -> usize {
-        1 << self.t
+        1 << self.log_rows
     }
 
-    /// The number of columns, `2^s`.
+    /// The number of columns.
     pub fn columns(&self) -> usize {
-        1 << self.s
+        1 << self.log_columns
     }
 }
 
@@ -83,7 +91,7 @@ mod tests {
     #[test]
     fn derives_dimensions_from_the_pair() {
         let shape = Shape::new(14, 21).unwrap();
-        assert_eq!(shape.m(), 35);
+        assert_eq!(shape.log_bits(), 35);
         assert_eq!(shape.rows(), 1 << 14);
         assert_eq!(shape.columns(), 1 << 21);
     }
@@ -102,13 +110,13 @@ mod tests {
             Shape::new(13, 23),
             Err(ShapeError::CommitmentSizeOutOfRange)
         );
-        // `t` alone outside the window, which would underflow `MAX_M - t`.
+        // A row width outside the window, which would underflow the subtraction.
         assert_eq!(Shape::new(36, 0), Err(ShapeError::CommitmentSizeOutOfRange));
     }
 
     #[test]
     fn accepts_the_window_boundaries() {
-        assert_eq!(Shape::new(7, 15).unwrap().m(), MIN_M);
-        assert_eq!(Shape::new(14, 21).unwrap().m(), MAX_M);
+        assert_eq!(Shape::new(7, 15).unwrap().log_bits(), MIN_LOG_BITS);
+        assert_eq!(Shape::new(14, 21).unwrap().log_bits(), MAX_LOG_BITS);
     }
 }

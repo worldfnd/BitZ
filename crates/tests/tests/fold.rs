@@ -43,9 +43,9 @@ fn the_two_sides_agree_on_every_shape_the_profile_admits() {
             .receive_fold(&instance.claim, &mut transcript)
             .expect("honest proof");
 
-        assert_eq!(sent, received, "t = {}", shape.t());
+        assert_eq!(sent, received, "t = {}", shape.log_rows());
         assert_eq!(received.row_images.len(), shape.rows());
-        assert_eq!(received.zeta.len(), shape.s());
+        assert_eq!(received.zeta.len(), shape.log_columns());
         transcript.check_eof().expect("both streams exhausted");
     }
 }
@@ -84,7 +84,7 @@ fn the_challenge_depends_on_the_folds() {
         .collect();
     assert_eq!(replayed, round.folds);
 
-    let zeta: Vec<F128> = (0..instance.params.shape().s())
+    let zeta: Vec<F128> = (0..instance.params.shape().log_columns())
         .map(|_| transcript.verifier_message())
         .collect();
     assert_eq!(zeta, round.zeta);
@@ -95,7 +95,7 @@ fn a_fold_at_the_bound_is_accepted_and_one_past_it_is_not() {
     // Every weight at `q - 1` and every bit set puts the fold exactly on
     // `k_1 (q - 1)`, the largest value the verifier may accept.
     let shape = narrow_shape();
-    let packed = vec![F128::new(u64::MAX, u64::MAX); (1 << shape.m()) / 128];
+    let packed = vec![F128::new(u64::MAX, u64::MAX); (1 << shape.log_bits()) / 128];
 
     let fold = (shape.rows() as u128) * (Q - 1);
     let params = F2ZParams::<Q>::new(shape, smallest_generator()).unwrap();
@@ -198,7 +198,7 @@ fn a_truncated_proof_is_refused_rather_than_read_past() {
 #[test]
 fn an_all_zero_witness_folds_to_zero_and_still_round_trips() {
     let shape = narrow_shape();
-    let packed = vec![F128::new(0, 0); (1 << shape.m()) / 128];
+    let packed = vec![F128::new(0, 0); (1 << shape.log_bits()) / 128];
     let params = F2ZParams::<Q>::new(shape, smallest_generator()).unwrap();
     let prover = F2ZProver::new(params, WINDOW);
     let verifier = F2ZVerifier::new(params, WINDOW);
@@ -235,7 +235,7 @@ fn a_round_is_refused_when_its_parts_do_not_match_the_shape() {
             vec![0; shape.columns()],
             vec![F128::new(1, 0); shape.columns()],
             Vec::new(),
-            vec![F128::new(1, 0); shape.s()],
+            vec![F128::new(1, 0); shape.log_columns()],
         ),
         Err(FoldError::RowCountMismatch)
     );

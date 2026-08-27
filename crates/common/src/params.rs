@@ -93,8 +93,8 @@ impl<const Q: u128> Encoding<[u8]> for F2ZParams<Q> {
             at += bytes.len();
         };
 
-        put(&(self.shape.t() as u64).to_le_bytes());
-        put(&(self.shape.s() as u64).to_le_bytes());
+        put(&(self.shape.log_rows() as u64).to_le_bytes());
+        put(&(self.shape.log_columns() as u64).to_le_bytes());
         put(&Q.to_le_bytes());
         put(&self.generator.to_bytes());
         frame

@@ -126,7 +126,7 @@ impl Fold {
         }
         // `2^s` evaluations and a point of width `s`: both counts the round
         // otherwise has to assert for itself.
-        let images = DenseMultilinearExtension::from_evaluations(shape.s(), images)
+        let images = DenseMultilinearExtension::from_evaluations(shape.log_columns(), images)
             .map_err(|_| FoldError::ColumnCountMismatch)?;
         let e0 = images
             .evaluate(&zeta)
@@ -171,9 +171,9 @@ mod tests {
     }
 
     fn witness(shape: &Shape, bits: &[(usize, usize)]) -> Vec<F128> {
-        let mut packed = vec![F128::new(0, 0); (1 << shape.m()) / PACKED_BITS];
+        let mut packed = vec![F128::new(0, 0); (1 << shape.log_bits()) / PACKED_BITS];
         for &(row, column) in bits {
-            let index = (column << shape.t()) | row;
+            let index = (column << shape.log_rows()) | row;
             let element = &mut packed[index >> 7];
             let offset = index % PACKED_BITS;
             if offset < 64 {
@@ -304,7 +304,7 @@ mod tests {
             vec![1u128; shape.columns()],
             vec![F128::new(2, 0); shape.columns()],
             vec![F128::new(3, 0); shape.rows()],
-            vec![F128::new(5, 0); shape.s()],
+            vec![F128::new(5, 0); shape.log_columns()],
         )
     }
 
@@ -379,7 +379,7 @@ mod tests {
         let images: Vec<F128> = (0..shape.columns())
             .map(|column| F128::new(column as u64 + 1, 0))
             .collect();
-        let zeta: Vec<F128> = (0..shape.s())
+        let zeta: Vec<F128> = (0..shape.log_columns())
             .map(|index| F128::new(index as u64 + 2, 0))
             .collect();
         let round = Fold::new(

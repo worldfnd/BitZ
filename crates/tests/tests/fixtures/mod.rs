@@ -40,7 +40,7 @@ impl Instance {
         let mut rng = ChaCha8Rng::seed_from_u64(seed);
         let params = F2ZParams::<Q>::new(shape, smallest_generator()).unwrap();
 
-        let packed: Vec<F128> = (0..(1 << shape.m()) / 128)
+        let packed: Vec<F128> = (0..(1 << shape.log_bits()) / 128)
             .map(|_| F128::new(rng.next_u64(), rng.next_u64()))
             .collect();
         let row_weights: Vec<Fq<Q>> = (0..shape.rows())
@@ -138,7 +138,7 @@ impl prover::Reduction<Q> for EchoReduction {
         _table: &BitTable<'_>,
         transcript: &mut ProverState,
     ) -> Result<OpeningClaim, Self::Error> {
-        let point = (0..input.params.shape().m())
+        let point = (0..input.params.shape().log_bits())
             .map(|_| transcript.verifier_message())
             .collect();
         Ok(claim(point, input.fold))
@@ -153,7 +153,7 @@ impl verifier::Reduction<Q> for EchoReduction {
         input: &ReductionInput<'_, Q>,
         transcript: &mut VerifierState<'_>,
     ) -> Result<OpeningClaim, Self::Error> {
-        let point = (0..input.params.shape().m())
+        let point = (0..input.params.shape().log_bits())
             .map(|_| transcript.verifier_message())
             .collect();
         Ok(claim(point, input.fold))
