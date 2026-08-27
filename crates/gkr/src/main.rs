@@ -1,7 +1,4 @@
-use std::cell::{Cell, UnsafeCell};
-use std::mem;
-
-use prove_playground::Mle;
+use prove_playground::*;
 
 fn main() {}
 
@@ -16,53 +13,6 @@ fn prove(input: Vec<Field>) {
     let c = Challenge::with_capacity(m * (m + 1) / 2);
 
     gpgkr_prove(&c, witnesses);
-}
-
-struct Challenge {
-    frame_pointer: Cell<usize>,
-    len: Cell<usize>,
-    all: UnsafeCell<Box<[Field]>>,
-}
-
-impl Challenge {
-    fn with_capacity(cap: usize) -> Self {
-        Challenge {
-            frame_pointer: Cell::new(0),
-            len: Cell::new(0),
-            all: UnsafeCell::new(vec![0; cap].into_boxed_slice()),
-        }
-    }
-
-    fn get_challenge(&self) -> Field {
-        let i = self.len.get();
-        let val = i as Field;
-        // SAFETY: `all` is fixed-size and never reallocated, so a raw
-        // write can't invalidate a slice returned by `new_frame` — those
-        // only ever cover `0..len` as of when they were taken, and `len`
-        // only grows, so this write (at index `i == len`) never lands
-        // inside a range any live slice covers. The pointer is derived
-        // from a shared reference to the box so this never claims
-        // exclusive access to the whole allocation, only to slot `i`.
-        unsafe {
-            let boxed: &Box<[Field]> = &*self.all.get();
-            assert!(i < boxed.len(), "exceeded preallocated challenge capacity");
-            let slot = boxed.as_ptr().add(i) as *mut Field;
-            slot.write(val);
-        }
-        self.len.set(i + 1);
-        val
-    }
-
-    fn new_frame(&self) -> &[Field] {
-        let start = self.frame_pointer.get();
-        let end = self.len.get();
-        self.frame_pointer.set(end);
-        // SAFETY: see `get_challenge` — this range is never written again.
-        unsafe {
-            let boxed: &Box<[Field]> = &*self.all.get();
-            &boxed[start..end]
-        }
-    }
 }
 
 /// Grand product GKR
@@ -187,8 +137,6 @@ impl SuffixTable {
         self.0.pop()
     }
 }
-
-type Field = i32;
 
 // A circuit is defined by it's leaf value only because it is a balanced tree
 // TODO: Optimise for circuits that are padded.
