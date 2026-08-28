@@ -1,6 +1,7 @@
 //! `VerifyF2Z`.
 
 use common::{LinearClaim, OpeningQuery, ReductionInput, Root};
+use pcs::{CommitError, CommitScheme, Pcs, StatementBinding};
 use transcript::VerifierState;
 
 use crate::{F2ZVerifier, ReceiveError};
@@ -12,6 +13,8 @@ pub enum VerifyError<E> {
     Fold(ReceiveError),
     /// The reduction failed.
     Reduction(E),
+    /// The opening did not discharge the reduction's claim.
+    Opening(CommitError),
     /// A stream held bytes the protocol never read.
     TrailingData,
 }
@@ -32,15 +35,16 @@ pub trait Reduction<const Q: u128> {
 impl<const Q: u128> F2ZVerifier<Q> {
     /// Replays the proof of the caller's linear claim about the committed bits.
     ///
-    /// The transcript arrives carrying the caller's events; this appends and
-    /// hands it back.
+    /// `pcs` must be the scheme the commitment was made under. The transcript
+    /// arrives carrying the caller's events; this appends and consumes it.
     pub fn verify<R: Reduction<Q>>(
         &self,
         claim: &LinearClaim<Q>,
+        pcs: &Pcs,
         com: Root,
         reduction: &R,
         mut transcript: VerifierState<'_>,
-    ) -> Result<OpeningQuery, VerifyError<R::Error>> {
+    ) -> Result<(), VerifyError<R::Error>> {
         // Step 1: the admissibility and precondition checks have already run --
         // the shape gates in Shape::new, the modulus in Fq's own const assertions,
         // the generator's order in F2ZConfig::new and the weight counts in
@@ -64,25 +68,24 @@ impl<const Q: u128> F2ZVerifier<Q> {
             commitment: com,
             fold: &fold,
         };
-        let claim = reduction
+        let query = reduction
             .reduce(&input, &mut transcript)
             .map_err(VerifyError::Reduction)?;
 
         // Step 5 is conditional and a merged forest does not need it.
 
+        // Step 6, replayed. This is what makes the return an acceptance rather
+        // than a claim handed back undischarged, so it belongs above the
+        // exhaustion check and not after it.
+        pcs.verify_lin(&com, &query, StatementBinding::Bind, &mut transcript)
+            .map_err(VerifyError::Opening)?;
+
         // Both streams must be spent. Taking the transcript by value is what
-        // makes that assertable here rather than by the caller, and it is why
-        // step 6 belongs above this line rather than after the return.
-        //
-        // TODO(#15): step 6 is absent, so returning Ok is not accepting a
-        // proof: this hands back the claim the opening would discharge rather
-        // than discharging it. `verify_lin_batch(commitment, &[claim],
-        // AlreadyBound, &mut transcript)` goes here, and only then is the
-        // return an acceptance.
+        // makes that assertable here rather than by the caller.
         transcript
             .check_eof()
             .map_err(|_| VerifyError::TrailingData)?;
 
-        Ok(claim)
+        Ok(())
     }
 }

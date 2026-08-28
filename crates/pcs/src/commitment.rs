@@ -140,6 +140,11 @@ impl ProverData {
         self.flock_prover_data.codeword.len()
     }
 
+    /// The commitment this data opens against.
+    pub fn root(&self) -> Root {
+        Root(self.commitment.root)
+    }
+
     pub(crate) fn flock_data(&self) -> &FlockProverData {
         &self.flock_prover_data
     }
