@@ -2,8 +2,10 @@
 
 use core::mem::{ManuallyDrop, align_of, offset_of, size_of};
 
+use common::shape::PACK_BITS;
 use field::F128 as LocalF128;
 use flock_core::field::F128 as FlockF128;
+use flock_core::pcs::LOG_PACKING;
 
 // Both types contain two `u64` words in the same C layout.
 // These checks fail during compilation if either dependency changes its layout.
@@ -53,6 +55,11 @@ pub(crate) fn into_flock_f128s(values: Vec<LocalF128>) -> Vec<FlockF128> {
     // Both types contain only `u64` fields, so every bit pattern is valid.
     unsafe { Vec::from_raw_parts(pointer, length, capacity) }
 }
+
+// The shape's pack width and Flock's are the same seven bits. This check fails
+// during compilation if either side changes it, which is the alternative to
+// reading every packed element at the wrong offset.
+const _: () = assert!(PACK_BITS as usize == LOG_PACKING);
 
 #[cfg(test)]
 mod tests {
