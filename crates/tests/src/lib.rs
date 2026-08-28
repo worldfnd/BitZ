@@ -9,7 +9,7 @@
 //! The fixtures live here rather than under `tests/` so they compile once
 //! rather than once per test binary.
 
-use common::{BitTable, F2ZParams, Fold, LinearClaim, OpeningClaim, ReductionInput, Root, Shape};
+use common::{BitTable, F2ZParams, Fold, LinearClaim, OpeningQuery, ReductionInput, Root, Shape};
 use crypto_primitives::LiftElement;
 use field::{F128, Fq, gf128::smallest_generator};
 use rand_chacha::ChaCha8Rng;
@@ -151,7 +151,7 @@ impl prover::Reduction<Q> for EchoReduction {
         input: &ReductionInput<'_, Q>,
         _table: &BitTable<'_>,
         transcript: &mut ProverState,
-    ) -> Result<OpeningClaim, Self::Error> {
+    ) -> Result<OpeningQuery, Self::Error> {
         let point = (0..input.params.shape().log_bits())
             .map(|_| transcript.verifier_message())
             .collect();
@@ -166,7 +166,7 @@ impl verifier::Reduction<Q> for EchoReduction {
         &self,
         input: &ReductionInput<'_, Q>,
         transcript: &mut VerifierState<'_>,
-    ) -> Result<OpeningClaim, Self::Error> {
+    ) -> Result<OpeningQuery, Self::Error> {
         let point = (0..input.params.shape().log_bits())
             .map(|_| transcript.verifier_message())
             .collect();
@@ -174,8 +174,8 @@ impl verifier::Reduction<Q> for EchoReduction {
     }
 }
 
-fn claim(point: Vec<F128>, fold: &Fold) -> OpeningClaim {
-    OpeningClaim {
+fn claim(point: Vec<F128>, fold: &Fold) -> OpeningQuery {
+    OpeningQuery {
         point,
         target: fold.e0,
     }

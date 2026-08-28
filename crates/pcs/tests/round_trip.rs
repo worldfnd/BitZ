@@ -3,8 +3,7 @@ use std::sync::OnceLock;
 use common::Shape;
 use field::F128;
 use pcs::{
-    CommitError, CommitScheme, Commitment, HashKind, LigeritoProfile, OpeningQuery, Pcs,
-    StatementBinding,
+    CommitError, CommitScheme, HashKind, LigeritoProfile, OpeningQuery, Pcs, Root, StatementBinding,
 };
 use transcript::{Proof, PublicTranscript, build_prover, build_verifier};
 
@@ -19,7 +18,7 @@ fn shape() -> Shape {
 
 struct RealFixture {
     pcs: Pcs,
-    commitment: Commitment,
+    commitment: Root,
     query: OpeningQuery,
     proof: Proof,
 }
@@ -89,12 +88,12 @@ fn singleton_target(point: &[F128], index: usize) -> F128 {
 fn bind_outer_statement(
     transcript: &mut impl PublicTranscript,
     pcs: &Pcs,
-    commitment: &Commitment,
+    commitment: &Root,
     query: &OpeningQuery,
 ) {
     transcript.public_message(b"outer/pcs-opening/v1" as &[u8]);
     transcript.public_message(pcs);
-    transcript.public_message(commitment.root());
+    transcript.public_message(&commitment.0);
     transcript.public_message(&(query.point.len() as u64));
     for coordinate in &query.point {
         transcript.public_message(coordinate);
@@ -344,9 +343,9 @@ fn real_pcs_rejects_statement_mutations() {
         Err(CommitError::VerificationFailed)
     );
 
-    let mut changed_root = *fixture.commitment.root();
+    let mut changed_root = fixture.commitment.0;
     changed_root[0] ^= 1;
-    let changed_commitment = Commitment::from_root(changed_root);
+    let changed_commitment = Root(changed_root);
     let mut verifier = build_verifier(SESSION, INSTANCE, &fixture.proof);
     assert_eq!(
         fixture.pcs.verify_lin(

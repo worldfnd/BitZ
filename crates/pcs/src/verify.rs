@@ -35,11 +35,11 @@ use crate::utils::{
     bind_ring_switch_message, bind_statement, observe_opening_target, read_opening_proof,
     sample_ring_switch_point,
 };
-use crate::{CommitError, Commitment, OpeningQuery, Pcs, StatementBinding};
+use crate::{CommitError, OpeningQuery, Pcs, Root, StatementBinding};
 
 pub(crate) fn verify(
     pcs: &Pcs,
-    commitment: &Commitment,
+    commitment: &Root,
     query: &OpeningQuery,
     statement_binding: StatementBinding,
     transcript: &mut VerifierState<'_>,
@@ -62,14 +62,14 @@ pub(crate) fn verify(
 
     // 2. Bind Statement
     if statement_binding == StatementBinding::Bind {
-        bind_statement(pcs, commitment.root(), query, transcript);
+        bind_statement(pcs, &commitment.0, query, transcript);
     }
 
     // 3. Read Opening Proof
     let proof = read_opening_proof(transcript)?;
 
     // 4. Validate Proof Shape
-    validate_proof_shape(&proof, &ligerito_config, final_log_n, commitment.root())?;
+    validate_proof_shape(&proof, &ligerito_config, final_log_n, &commitment.0)?;
 
     // 5. Extract Ring-Switch Claim
     let ring_switch = proof
@@ -124,7 +124,7 @@ pub(crate) fn verify(
         &proof.ligerito,
         log_n,
         beta0,
-        commitment.root(),
+        &commitment.0,
         eval_b_residual,
         &mut challenger,
     );
@@ -565,7 +565,7 @@ mod tests {
         let config = pcs.params().ligerito_verifier_config().unwrap();
         let final_log_n =
             validate_config(&config, 22 - LOG_PACKING, pcs.params().log_batch_size).unwrap();
-        let root = *commitment.root();
+        let root = commitment.0;
         assert_eq!(
             validate_proof_shape(&valid, &config, final_log_n, &root),
             Ok(())

@@ -1,6 +1,6 @@
 //! `ProveF2Z`.
 
-use common::{BitTable, LinearClaim, OpeningClaim, ReductionInput, Root};
+use common::{BitTable, LinearClaim, OpeningQuery, ReductionInput, Root};
 use transcript::ProverState;
 
 use crate::{F2ZProver, SendError};
@@ -27,7 +27,7 @@ pub trait Reduction<const Q: u128> {
         input: &ReductionInput<'_, Q>,
         table: &BitTable<'_>,
         transcript: &mut ProverState,
-    ) -> Result<OpeningClaim, Self::Error>;
+    ) -> Result<OpeningQuery, Self::Error>;
 }
 
 impl<const Q: u128> F2ZProver<Q> {
@@ -43,7 +43,7 @@ impl<const Q: u128> F2ZProver<Q> {
         table: &BitTable<'_>,
         reduction: &R,
         transcript: &mut ProverState,
-    ) -> Result<OpeningClaim, ProveError<R::Error>> {
+    ) -> Result<OpeningQuery, ProveError<R::Error>> {
         // Step 1: bind. Absorbing the root here is not redundant with the opening
         // scheme, whose batched opening binds it only in its own statement mode --
         // and that fires at step 6, long after the fold has squeezed.

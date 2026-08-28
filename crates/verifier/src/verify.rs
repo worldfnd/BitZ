@@ -1,6 +1,6 @@
 //! `VerifyF2Z`.
 
-use common::{LinearClaim, OpeningClaim, ReductionInput, Root};
+use common::{LinearClaim, OpeningQuery, ReductionInput, Root};
 use transcript::VerifierState;
 
 use crate::{F2ZVerifier, ReceiveError};
@@ -26,7 +26,7 @@ pub trait Reduction<const Q: u128> {
         &self,
         input: &ReductionInput<'_, Q>,
         transcript: &mut VerifierState<'_>,
-    ) -> Result<OpeningClaim, Self::Error>;
+    ) -> Result<OpeningQuery, Self::Error>;
 }
 
 impl<const Q: u128> F2ZVerifier<Q> {
@@ -40,7 +40,7 @@ impl<const Q: u128> F2ZVerifier<Q> {
         com: Root,
         reduction: &R,
         mut transcript: VerifierState<'_>,
-    ) -> Result<OpeningClaim, VerifyError<R::Error>> {
+    ) -> Result<OpeningQuery, VerifyError<R::Error>> {
         // Step 1: the admissibility and precondition checks have already run --
         // the shape gates in Shape::new, the modulus in Fq's own const assertions,
         // the generator's order in F2ZConfig::new and the weight counts in

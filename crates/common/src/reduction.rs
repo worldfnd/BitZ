@@ -4,22 +4,7 @@
 //! — is not implemented here. What is here is the contract: what that reduction
 //! is handed, and what it must hand back.
 
-use field::F128;
-
 use crate::{F2ZParams, Fold, LinearClaim, Root};
-
-/// A multilinear evaluation claim on the committed bits: `f~(point) = target`.
-///
-/// TODO: this is `pcs::OpeningQuery` under another name. Once #15 lands it
-/// should be that type, so the reduction's output is the opening's input with
-/// nothing to convert between them.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OpeningClaim {
-    /// The evaluation point, low-index-bit-first.
-    pub point: Vec<F128>,
-    /// The claimed evaluation at `point`.
-    pub target: F128,
-}
 
 /// Everything the reduction reads, which is the bundle Step 4 names.
 ///
