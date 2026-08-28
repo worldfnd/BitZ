@@ -11,6 +11,7 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 common = { path = "crates/common" }
 field = { path = "crates/field" }
+pcs = { path = "crates/pcs" }
 poly = { path = "crates/poly" }
 prover = { path = "crates/prover" }
 transcript = { path = "crates/transcript" }
