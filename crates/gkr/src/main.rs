@@ -1,3 +1,8 @@
+use std::{
+    fmt::Binary,
+    ops::{Deref, DerefMut},
+};
+
 use prove_playground::*;
 
 fn main() {}
@@ -10,7 +15,7 @@ fn prove(input: Vec<Field>) {
     // (0, 1, 2, ... over `m` layers), so the total is the triangular
     // number m*(m+1)/2.
     let m = circuit.leafs.len().ilog2() as usize;
-    let c = Challenge::with_capacity(m * (m + 1) / 2);
+    let c = Challenge::with_capacity(m);
 
     gpgkr_prove(&c, witnesses);
 }
@@ -24,20 +29,24 @@ fn prove(input: Vec<Field>) {
 ///   as it goes: layer `i`'s point has `i` challenges, so it contributes `i`
 ///   entries, right after layer `i - 1`'s `i - 1` entries. Total size is the
 ///   triangular number `m * (m - 1) / 2`.
-fn gpgkr_prove(c: &Challenge, mut eval: CircuitEval) -> (Vec<(Field, Field)>, Vec<(Field, Field)>) {
+fn gpgkr_prove(
+    c: &Challenge,
+    mut eval: CircuitEval,
+) -> (Vec<(Field, Field)>, TriangularArray<(Field, Field)>) {
     let _last_value = eval.pop().unwrap();
     let m = eval.len();
 
     let mut round01 = Vec::with_capacity(m);
-    let mut sumcheck = Vec::with_capacity(m.saturating_sub(1) * m / 2);
+    let mut sumcheck = TriangularArray::with_capacity(m.saturating_sub(1));
 
-    let mut point = c.new_frame();
-    for wnext in eval.into_iter() {
-        round01.push(prove_layer(&point, wnext, c, &mut sumcheck));
+    let first_point = [];
+    let mut point: &[i32] = &first_point;
+    for (i, wnext) in eval.into_iter().enumerate() {
+        round01.push(prove_layer(point, wnext, c, &mut sumcheck));
 
         // sample extra challenge for the next round
         let _ = c.get_challenge();
-        point = c.new_frame();
+        point = c.build_point(i);
     }
     (round01, sumcheck)
 }
@@ -46,7 +55,7 @@ fn prove_layer(
     point: &[Field],
     wnext: Vec<Field>,
     c: &Challenge,
-    sumcheck: &mut Vec<(Field, Field)>,
+    sumcheck: &mut TriangularArray<(Field, Field)>,
 ) -> (Field, Field) {
     let mut suffix_table = SuffixTable::new(point);
     let mut factor = 1;
@@ -63,6 +72,7 @@ fn prove_layer(
         let mut sum_inf = 0;
         let h = mle_next.len() / 2; // Same as mle.next/2?
 
+        // Fused loop of TODO find different way of writing this
         for i in 0..eq.len() {
             // Two sequential cache access lines
             let (l0, r0) = (mle_next[2 * i], mle_next[2 * i + 1]);
@@ -70,12 +80,14 @@ fn prove_layer(
             sum_0 += eq[i] * l0 * r0;
             sum_inf += eq[i] * (l1 - l0) * (r1 - r0);
 
+            // MLE folding
             mle_next[2 * i] = mle_next[2 * i] + r * (mle_next[h + 2 * i] - mle_next[2 * i]);
             mle_next[2 * i + 1] =
                 mle_next[2 * i + 1] + r * (mle_next[h + 2 * i + 1] - mle_next[2 * i + 1])
         }
-        mle_next.truncate(eq.len());
+        mle_next.truncate(h);
 
+        // should factor be included? because aren't we just reintroducing the problem?
         sumcheck.push((factor * sum_0, factor * sum_inf));
 
         factor *= r * z + (1 - z) * (1 - r);
@@ -87,27 +99,73 @@ fn prove_layer(
 fn gpgkr_verify(
     final_value: Field,
     circuit: Circuit,
-    challenges: Vec<Vec<Field>>,
+    challenges: TriangularArray<Field>,
     round01: Vec<(Field, Field)>,
-    sumcheck: Vec<(Field, Field)>,
-) {
-    let mut cursor = 0;
-    for (i, (c, (w0, w1))) in challenges.iter().zip(round01).enumerate() {
-        // Layer i's point has i challenges, so its slice of `sumcheck` is i
-        // entries wide, right after layer i - 1's slice.
-        let t = &sumcheck[cursor..cursor + i];
-        cursor += i;
+    sumcheck: TriangularArray<(Field, Field)>,
+) -> bool {
+    let mut claim = final_value;
+    // TODO: this only verifies the connections between layers 0..m-2. The
+    // deepest layer's (w0, w1) — round01[m-1] — is never read, and nothing
+    // evaluates the actual leaf MLE at the final `point` to cross-check it.
+    // As-is, a prover can claim any (w0, w1) for the leaf layer and this
+    // still returns true.
+    let rounds = circuit.leafs.len().ilog2() as usize;
 
-        // split c in init and last
-        // The init is for checking the transscript.
-        // The values in the transcript are s0 and sinf so these need to work with final value
-        //
-        // The sumcheck if for checking the sum. And the w0 and w1 are the new claims that need to be checked. Which the next step will combine into a single one.
-        //
-        // w0 and w1 are the terminal values / leaves that remain after folding the wnext mle
-        // w0 = w_next(challenges, 0) | w1 = w_next(challenges, 1)
-        // last together with these values make for the next claim.
+    let start_point = [];
+    let mut point: &[Field] = &start_point;
+    let start_sumcheck = [];
+    let mut sumcheck_round: &[(Field, Field)] = &start_sumcheck;
+
+    for i in 0..rounds {
+        let next_point = challenges.round(i);
+        let (r, sumcheck_challenge) = next_point.split_last().unwrap();
+
+        let (factor, sumcheck_final) =
+            verify_round(claim, point, sumcheck_round, sumcheck_challenge);
+
+        let claim_lr = round01[i];
+        // Check if line polynomial hits same spot as sumcheck check
+        // VERIFY that this is necessary to connect one gkr round to another
+        if (factor * claim_lr.0 * claim_lr.1) != sumcheck_final {
+            return false;
+        }
+
+        // Reduce both claims to a single claim
+        claim = claim_lr.0 + r * (claim_lr.1 - claim_lr.0);
+        point = next_point;
+        if i < rounds - 1 {
+            sumcheck_round = sumcheck.round(i);
+        }
     }
+
+    // Deal with input layer
+    let leaf_check = mle(circuit.leafs, point);
+
+    leaf_check == claim
+}
+
+fn verify_round(
+    mut claim: Field,
+    point: &[Field],
+    sumcheck: &[(Field, Field)],
+    sumcheck_challenge: &[Field],
+) -> (Field, Field) {
+    let mut prefix = 1;
+    assert_eq!(sumcheck_challenge.len(), point.len());
+
+    for ((r, z), (sum0, suminf)) in sumcheck_challenge.iter().zip(point).zip(sumcheck) {
+        let eqjsum0 = (1 - z) * sum0;
+        let eqjsum1 = claim - eqjsum0;
+        let sum1 = eqjsum1 / z;
+
+        // TODO rewrite
+        let factor = r * z + (1 - r) * (1 - z);
+        // TODO factor r
+        claim = factor * (sum0 + r * (sum1 - sum0) + r * (r - 1) * suminf);
+
+        prefix *= factor;
+    }
+    (prefix, claim)
 }
 
 struct SuffixTable(Vec<Vec<Field>>);

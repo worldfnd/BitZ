@@ -3,10 +3,8 @@ pub struct Mle {
 }
 
 impl Mle {
-    pub fn new(eval: &[i32]) -> Self {
-        Mle {
-            table: eval.to_owned(),
-        }
+    pub fn new(eval: Vec<i32>) -> Self {
+        Mle { table: eval }
     }
 
     // g(0), g(1) for the round polynomial: sum of each half.
@@ -42,7 +40,7 @@ impl std::ops::Index<usize> for Mle {
     }
 }
 
-pub fn mle(eval: &[i32], rs: &[i32]) -> i32 {
+pub fn mle(eval: Vec<Field>, rs: &[Field]) -> Field {
     assert_eq!(eval.len(), 1 << rs.len());
     let mut m = Mle::new(eval);
     for r in rs {
@@ -51,52 +49,94 @@ pub fn mle(eval: &[i32], rs: &[i32]) -> i32 {
     m.scalar()
 }
 
-use std::cell::{Cell, UnsafeCell};
+use std::cell::UnsafeCell;
 pub type Field = i32;
 
 pub struct Challenge {
-    frame_pointer: Cell<usize>,
-    len: Cell<usize>,
-    all: UnsafeCell<Box<[Field]>>,
+    data: UnsafeCell<TriangularArray<Field>>,
+}
+
+pub struct TriangularArray<T> {
+    data: Box<[T]>,
+    len: usize,
+}
+
+impl<T: Default + Copy> TriangularArray<T> {
+    pub fn with_capacity(rounds: usize) -> Self {
+        let capacity = rounds * (rounds + 1) / 2;
+        Self {
+            data: vec![T::default(); capacity].into_boxed_slice(),
+            len: 0,
+        }
+    }
+
+    pub fn push(&mut self, el: T) {
+        // Preincrement because we don't want to have 0 as a possible challenge due to division.
+        let index = self.len;
+        self.data[index] = el;
+        self.len += 1;
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn round(&self, r: usize) -> &[T] {
+        let start = r * (r + 1) / 2;
+        let end = start + r + 1;
+        &self.data[start..end]
+    }
 }
 
 impl Challenge {
-    pub fn with_capacity(cap: usize) -> Self {
-        Challenge {
-            frame_pointer: Cell::new(0),
-            len: Cell::new(0),
-            all: UnsafeCell::new(vec![0; cap].into_boxed_slice()),
+    pub fn with_capacity(rounds: usize) -> Self {
+        Self {
+            data: UnsafeCell::new(TriangularArray::with_capacity(rounds)),
         }
     }
-
     pub fn get_challenge(&self) -> Field {
-        let i = self.len.get();
-        let val = i as Field;
-        // SAFETY: `all` is fixed-size and never reallocated, so a raw
-        // write can't invalidate a slice returned by `new_frame` — those
-        // only ever cover `0..len` as of when they were taken, and `len`
-        // only grows, so this write (at index `i == len`) never lands
-        // inside a range any live slice covers. The pointer is derived
-        // from a shared reference to the box so this never claims
-        // exclusive access to the whole allocation, only to slot `i`.
         unsafe {
-            let boxed: &Box<[Field]> = &*self.all.get();
-            assert!(i < boxed.len(), "exceeded preallocated challenge capacity");
-            let slot = boxed.as_ptr().add(i) as *mut Field;
-            slot.write(val);
+            let val = (*self.data.get()).len() as Field + 1;
+            (*self.data.get()).push(val);
+            val
         }
-        self.len.set(i + 1);
-        val
     }
 
-    pub fn new_frame(&self) -> &[Field] {
-        let start = self.frame_pointer.get();
-        let end = self.len.get();
-        self.frame_pointer.set(end);
-        // SAFETY: see `get_challenge` — this range is never written again.
-        unsafe {
-            let boxed: &Box<[Field]> = &*self.all.get();
-            &boxed[start..end]
-        }
+    // new frame breaks when
+    pub fn build_point(&self, round: usize) -> &[Field] {
+        unsafe { (*self.data.get()).round(round as usize) }
+    }
+
+    pub fn into_inner(self) -> TriangularArray<Field> {
+        self.data.into_inner()
     }
 }
+
+// pub struct BTreeArray<T> {
+//     data: Box<[T]>,
+//     len: usize,
+// }
+
+// impl<T: Default + Copy> BTreeArray<T> {
+//     pub fn with_capacity(capacity: usize) -> Self {
+//         BTreeArray {
+//             data: vec![T::default(); capacity].into_boxed_slice(),
+//             len: 0,
+//         }
+//     }
+
+//     pub fn len(&self) -> usize {
+//         self.len
+//     }
+
+//     // TODO capacity check?
+//     pub fn push(&mut self, el: T) {
+//         let index = self.len;
+//         self.data[index] = el;
+//         self.len += 1;
+//     }
+
+//     pub fn layer(&self, depth: u32) -> &[T] {
+//         &self.data[2_usize.pow(depth) - 1..2_usize.pow(depth + 1) - 1]
+//     }
+// }
