@@ -25,7 +25,7 @@
 //! # Interface
 //!
 //! - [`Pcs`] stores trusted Flock parameters and the expected bit length.
-//! - [`Commitment`] contains the public Merkle root.
+//! - [`Root`] is the public Merkle root.
 //! - [`ProverData`] retains the codeword and Merkle tree after commitment.
 //! - [`OpeningQuery`] contains one evaluation point and its claimed value.
 //! - [`CommitScheme`] connects commitment, proving, and verification to project transcripts.
@@ -92,17 +92,9 @@ mod verify;
 use field::F128;
 use transcript::{ProverState, VerifierState};
 
-pub use commitment::{Commitment, HashKind, Pcs, ProverData};
+pub use commitment::{HashKind, Pcs, ProverData};
+pub use common::{OpeningQuery, Root};
 pub use flock_core::pcs::ligerito::LigeritoProfile;
-
-/// A standard multilinear evaluation claim.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct OpeningQuery {
-    /// The evaluation point, in low-index-bit-first order.
-    pub point: Vec<F128>,
-    /// The claimed multilinear evaluation at `point`.
-    pub target: F128,
-}
 
 /// Controls statement binding for one opening.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -184,7 +176,7 @@ pub trait CommitScheme {
 }
 
 impl CommitScheme for Pcs {
-    type Commitment = Commitment;
+    type Commitment = Root;
     type ProverData = ProverData;
 
     fn commit(

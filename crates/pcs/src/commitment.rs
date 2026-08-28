@@ -11,7 +11,7 @@ use core::mem::size_of;
 use crate::CommitError;
 use crate::bridge::as_flock_f128s;
 use crate::verify::validate_config;
-use common::Shape;
+use common::{Root, Shape};
 use field::F128;
 pub use flock_core::hash::HashKind;
 use flock_core::pcs::Commitment as FlockCommitment;
@@ -28,12 +28,6 @@ const LIGERITO_INITIAL_K: usize = 6;
 pub struct Pcs {
     params: PcsParams,
     final_log_n: usize,
-}
-
-/// The public commitment. Trusted parameters remain in [`Pcs`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Commitment {
-    root: [u8; 32],
 }
 
 /// Flock state retained between commitment and openings.
@@ -73,7 +67,7 @@ impl Pcs {
     }
 
     /// Commits to the exact configured number of packed field elements.
-    pub fn commit(&self, packed_witness: &[F128]) -> Result<(Commitment, ProverData), CommitError> {
+    pub fn commit(&self, packed_witness: &[F128]) -> Result<(Root, ProverData), CommitError> {
         // 1. Input Validation
         if packed_witness.len() != self.packed_len() {
             return Err(CommitError::InvalidBitLength);
@@ -84,9 +78,7 @@ impl Pcs {
             flock_core::pcs::commit(as_flock_f128s(packed_witness), &self.params);
 
         // 3. Build Public Commitment
-        let commitment = Commitment {
-            root: flock_commitment.root,
-        };
+        let commitment = Root(flock_commitment.root);
 
         // 4. Retain Opening Data
         Ok((
@@ -148,23 +140,17 @@ impl ProverData {
         self.flock_prover_data.codeword.len()
     }
 
+    /// The commitment this data opens against.
+    pub fn root(&self) -> Root {
+        Root(self.commitment.root)
+    }
+
     pub(crate) fn flock_data(&self) -> &FlockProverData {
         &self.flock_prover_data
     }
 
     pub(crate) fn commitment(&self) -> &FlockCommitment {
         &self.commitment
-    }
-}
-
-impl Commitment {
-    /// Reconstructs a public commitment from its canonical root.
-    pub const fn from_root(root: [u8; 32]) -> Self {
-        Self { root }
-    }
-
-    pub fn root(&self) -> &[u8; 32] {
-        &self.root
     }
 }
 
@@ -254,11 +240,6 @@ mod tests {
                 pcs.commit(&packed_witness),
                 Err(CommitError::InvalidBitLength)
             ));
-        }
-
-        #[test]
-        fn commitment_root_reconstruction_round_trips(root in any::<[u8; 32]>()) {
-            prop_assert_eq!(*Commitment::from_root(root).root(), root);
         }
     }
 }
