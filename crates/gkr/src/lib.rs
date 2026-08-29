@@ -56,17 +56,21 @@ pub struct Challenge {
     data: UnsafeCell<TriangularArray<Field>>,
 }
 
+/// Triangular arrays with a fixed extra data per round.
 pub struct TriangularArray<T> {
     data: Box<[T]>,
     len: usize,
+    lgroups: usize,
 }
 
 impl<T: Default + Copy> TriangularArray<T> {
-    pub fn with_capacity(rounds: usize) -> Self {
-        let capacity = rounds * (rounds + 1) / 2;
+    pub fn with_capacity(rounds: usize, groups: usize) -> Self {
+        let lg = groups.ilog2() as usize;
+        let capacity = rounds * (rounds + 1) / 2 + rounds * lg;
         Self {
             data: vec![T::default(); capacity].into_boxed_slice(),
             len: 0,
+            lgroups: lg,
         }
     }
 
@@ -82,16 +86,16 @@ impl<T: Default + Copy> TriangularArray<T> {
     }
 
     pub fn round(&self, r: usize) -> &[T] {
-        let start = r * (r + 1) / 2;
-        let end = start + r + 1;
-        &self.data[start..end]
+        let start = r * (r + 1) / 2 + r * self.lgroups;
+        let end_inclusive = start + r + self.lgroups;
+        &self.data[start..=end_inclusive]
     }
 }
 
 impl Challenge {
-    pub fn with_capacity(rounds: usize) -> Self {
+    pub fn with_capacity(rounds: usize, groups: usize) -> Self {
         Self {
-            data: UnsafeCell::new(TriangularArray::with_capacity(rounds)),
+            data: UnsafeCell::new(TriangularArray::with_capacity(rounds, groups)),
         }
     }
     pub fn get_challenge(&self) -> Field {
