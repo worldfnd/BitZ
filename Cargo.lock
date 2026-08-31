@@ -677,6 +677,7 @@ dependencies = [
  "field",
  "num-traits",
  "proptest",
+ "rayon",
 ]
 
 [[package]]

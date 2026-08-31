@@ -53,6 +53,7 @@ use std::cell::UnsafeCell;
 
 use field::{F128, Wide256};
 use num_traits::{ConstOne, ConstZero};
+use rayon::prelude::*;
 
 pub type Field = F128;
 
@@ -282,6 +283,14 @@ fn mul3_wide(a: Field, b: Field, c: Field) -> Wide256 {
     Wide256::mul(Wide256::mul(a, b).reduce(), c)
 }
 
+/// Rayon's default splitter divides work based on thread count alone, not
+/// on whether a chunk this small is worth dispatching at all -- so below
+/// this many active pairs, `with_min_len` below keeps a round's fold as one
+/// sequential chunk instead of paying `join` overhead for it. Matches
+/// `poly`'s `PARALLEL_FOLD_THRESHOLD`, chosen for the same per-round
+/// MLE-fold shape.
+const PARALLEL_MIN_LANES: usize = 1 << 12;
+
 fn prove_layer(
     point: Point<Field>,
     mut wnext: Vec<Field>,
@@ -300,35 +309,49 @@ fn prove_layer(
         // TODO: special-case eq.len() == 1 (final round) to skip the `eq[i] *`
         // multiplications below entirely.
         let eq = suffix_table.pop().unwrap();
-        let mut sum_0 = Wide256::zero();
-        let mut sum_inf = Wide256::zero();
         let h = mle_l.len() / 2; // Same as mle.next/2?
         debug_assert_eq!(eq.len(), h);
 
         let (lo_l, hi_l) = mle_l.split_at_mut(h);
         let (lo_r, hi_r) = mle_r.split_at_mut(h);
 
-        for ((((l_lo, r_lo), &l_hi), &r_hi), &e) in lo_l
-            .iter_mut()
-            .zip(lo_r.iter_mut())
-            .zip(hi_l.iter())
-            .zip(hi_r.iter())
-            .zip(eq.iter())
-        {
-            let (d_l, d_r) = (l_hi - *l_lo, r_hi - *r_lo);
+        // Each worker folds its own slice of lanes in place and accumulates
+        // `(sum_0, sum_inf)` locally; `reduce` only ever combines the
+        // handful of per-worker totals, so the wide accumulators never
+        // cross a thread boundary mid-sum. `with_min_len` keeps rounds
+        // below `PARALLEL_MIN_LANES` as a single sequential chunk.
+        let (sum_0, sum_inf) = lo_l
+            .par_iter_mut()
+            .zip(lo_r.par_iter_mut())
+            .zip(hi_l.par_iter())
+            .zip(hi_r.par_iter())
+            .zip(eq.par_iter())
+            .with_min_len(PARALLEL_MIN_LANES)
+            .fold(
+                || (Wide256::zero(), Wide256::zero()),
+                |(mut sum_0, mut sum_inf), ((((l_lo, r_lo), &l_hi), &r_hi), &e)| {
+                    let (d_l, d_r) = (l_hi - *l_lo, r_hi - *r_lo);
 
-            // `e * l0 * r0` and `e * (l_hi-l0) * (r_hi-r0)`: each is two
-            // multiplications in a row, deferred into the running wide sums
-            // by `mul3_wide` (see its doc comment).
-            sum_0 += mul3_wide(e, *l_lo, *r_lo);
-            sum_inf += mul3_wide(e, d_l, d_r);
+                    // `e * l0 * r0` and `e * (l_hi-l0) * (r_hi-r0)`: each is
+                    // two multiplications in a row, deferred into the
+                    // running wide sums by `mul3_wide` (see its doc
+                    // comment).
+                    sum_0 += mul3_wide(e, *l_lo, *r_lo);
+                    sum_inf += mul3_wide(e, d_l, d_r);
 
-            // MLE folding: a single multiply whose result is used right
-            // away and not summed with anything else, so plain field
-            // multiplication is already optimal here.
-            *l_lo = *l_lo + r * d_l;
-            *r_lo = *r_lo + r * d_r;
-        }
+                    // MLE folding: a single multiply whose result is used
+                    // right away and not summed with anything else, so
+                    // plain field multiplication is already optimal here.
+                    *l_lo = *l_lo + r * d_l;
+                    *r_lo = *r_lo + r * d_r;
+
+                    (sum_0, sum_inf)
+                },
+            )
+            .reduce(
+                || (Wide256::zero(), Wide256::zero()),
+                |(a0, ainf), (b0, binf)| (a0 + b0, ainf + binf),
+            );
         mle_l = &mut mle_l[..h];
         mle_r = &mut mle_r[..h];
 

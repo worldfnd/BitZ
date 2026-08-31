@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 field = { path = "../field" }
 num-traits = { workspace = true }
+rayon = { workspace = true }
 
 [dev-dependencies]
 proptest = "1.11.0"
