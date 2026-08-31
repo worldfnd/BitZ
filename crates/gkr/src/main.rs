@@ -68,18 +68,25 @@ fn prove_layer(
         let mut sum_0 = 0;
         let mut sum_inf = 0;
         let h = mle_l.len() / 2; // Same as mle.next/2?
+        debug_assert_eq!(eq.len(), h);
 
-        // Fused loop of TODO find different way of writing this
-        for i in 0..eq.len() {
-            // Two sequential cache access lines
-            let (l0, r0) = (mle_l[i], mle_r[i]);
-            let (l1, r1) = (mle_l[i + h], mle_r[i + h]);
-            sum_0 += eq[i] * l0 * r0;
-            sum_inf += eq[i] * (l1 - l0) * (r1 - r0);
+        let (lo_l, hi_l) = mle_l.split_at_mut(h);
+        let (lo_r, hi_r) = mle_r.split_at_mut(h);
+
+        for ((((l_lo, r_lo), &l_hi), &r_hi), &e) in lo_l
+            .iter_mut()
+            .zip(lo_r.iter_mut())
+            .zip(hi_l.iter())
+            .zip(hi_r.iter())
+            .zip(eq.iter())
+        {
+            let (l0, r0) = (*l_lo, *r_lo);
+            sum_0 += e * l0 * r0;
+            sum_inf += e * (l_hi - l0) * (r_hi - r0);
 
             // MLE folding
-            mle_l[i] = mle_l[i] + r * (mle_l[h + i] - mle_l[i]);
-            mle_r[i] = mle_r[i] + r * (mle_r[h + i] - mle_r[i])
+            *l_lo = l0 + r * (l_hi - l0);
+            *r_lo = r0 + r * (r_hi - r0);
         }
         mle_l = &mut mle_l[..h];
         mle_r = &mut mle_r[..h];
@@ -253,8 +260,13 @@ impl CircuitEval {
     fn len(&self) -> usize {
         self.0.len()
     }
+}
 
-    fn into_iter(self) -> impl Iterator<Item = Vec<Field>> {
+impl IntoIterator for CircuitEval {
+    type Item = Vec<Field>;
+    type IntoIter = std::iter::Rev<std::vec::IntoIter<Vec<Field>>>;
+
+    fn into_iter(self) -> Self::IntoIter {
         self.0.into_iter().rev()
     }
 }
