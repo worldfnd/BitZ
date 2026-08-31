@@ -674,6 +674,8 @@ dependencies = [
 name = "gkr"
 version = "0.1.0"
 dependencies = [
+ "field",
+ "num-traits",
  "proptest",
 ]
 

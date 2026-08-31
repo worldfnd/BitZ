@@ -50,7 +50,11 @@ pub fn mle(eval: Vec<Field>, rs: impl Iterator<Item = Field> + ExactSizeIterator
 }
 
 use std::cell::UnsafeCell;
-pub type Field = i128;
+
+use field::{F128, Wide256};
+use num_traits::{ConstOne, ConstZero};
+
+pub type Field = F128;
 
 pub struct Challenge {
     data: UnsafeCell<TriangularArray<Field>>,
@@ -170,7 +174,7 @@ impl Challenge {
     }
     pub fn get_challenge(&self) -> Field {
         unsafe {
-            let val = (*self.data.get()).len() as Field + 1;
+            let val = Field::from((*self.data.get()).len() as u64 + 1);
             (*self.data.get()).push(val);
             val
         }
@@ -261,6 +265,23 @@ fn gpgkr_prove(
     (round01, sumcheck)
 }
 
+/// `eq(r, z) = r*z + (1 - r)*(1 - z)`. Expanding gives
+/// `1 + r + z + 2*r*z`, and in characteristic 2 `2*r*z = r*z + r*z = 0`, so
+/// this is just `1 + r + z` -- no multiplication at all, and so nothing for
+/// widemul to help with.
+fn eq_factor(r: Field, z: Field) -> Field {
+    Field::ONE + r + z
+}
+
+/// `a * b * c`: two multiplications in a row. The first is reduced -- it has
+/// to come back down to a field element to feed the second carryless
+/// multiply -- but the second is left unreduced, so callers can batch its
+/// reduction with the rest of a running wide sum instead of paying for it on
+/// every term.
+fn mul3_wide(a: Field, b: Field, c: Field) -> Wide256 {
+    Wide256::mul(Wide256::mul(a, b).reduce(), c)
+}
+
 fn prove_layer(
     point: Point<Field>,
     mut wnext: Vec<Field>,
@@ -268,7 +289,7 @@ fn prove_layer(
     sumcheck: &mut TriangularArray<(Field, Field)>,
 ) -> (Field, Field) {
     let mut suffix_table = SuffixTable::new(&point);
-    let mut factor = 1;
+    let mut factor = Field::ONE;
 
     let mid = wnext.len() / 2;
     let (mut mle_l, mut mle_r) = wnext.split_at_mut(mid);
@@ -279,8 +300,8 @@ fn prove_layer(
         // TODO: special-case eq.len() == 1 (final round) to skip the `eq[i] *`
         // multiplications below entirely.
         let eq = suffix_table.pop().unwrap();
-        let mut sum_0 = 0;
-        let mut sum_inf = 0;
+        let mut sum_0 = Wide256::zero();
+        let mut sum_inf = Wide256::zero();
         let h = mle_l.len() / 2; // Same as mle.next/2?
         debug_assert_eq!(eq.len(), h);
 
@@ -294,21 +315,26 @@ fn prove_layer(
             .zip(hi_r.iter())
             .zip(eq.iter())
         {
-            let (l0, r0) = (*l_lo, *r_lo);
-            sum_0 += e * l0 * r0;
-            sum_inf += e * (l_hi - l0) * (r_hi - r0);
+            let (d_l, d_r) = (l_hi - *l_lo, r_hi - *r_lo);
 
-            // MLE folding
-            *l_lo = l0 + r * (l_hi - l0);
-            *r_lo = r0 + r * (r_hi - r0);
+            // `e * l0 * r0` and `e * (l_hi-l0) * (r_hi-r0)`: each is two
+            // multiplications in a row, deferred into the running wide sums
+            // by `mul3_wide` (see its doc comment).
+            sum_0 += mul3_wide(e, *l_lo, *r_lo);
+            sum_inf += mul3_wide(e, d_l, d_r);
+
+            // MLE folding: a single multiply whose result is used right
+            // away and not summed with anything else, so plain field
+            // multiplication is already optimal here.
+            *l_lo = *l_lo + r * d_l;
+            *r_lo = *r_lo + r * d_r;
         }
         mle_l = &mut mle_l[..h];
         mle_r = &mut mle_r[..h];
 
-        // should factor be included? because aren't we just reintroducing the problem?
-        sumcheck.push((factor * sum_0, factor * sum_inf));
+        sumcheck.push((factor * sum_0.reduce(), factor * sum_inf.reduce()));
 
-        factor *= r * z + (1 - z) * (1 - r);
+        factor *= eq_factor(r, z);
     }
 
     (mle_l[0], mle_r[0])
@@ -362,18 +388,24 @@ fn verify_round(
     sumcheck: &[(Field, Field)],
     sumcheck_challenge: &[Field],
 ) -> (Field, Field) {
-    let mut prefix = 1;
+    let mut prefix = Field::ONE;
     assert_eq!(sumcheck_challenge.len(), point.len());
 
-    for ((r, z), (sum0, suminf)) in sumcheck_challenge.iter().zip(point).zip(sumcheck) {
-        let eqjsum0 = (1 - z) * sum0;
+    for ((&r, z), &(sum0, suminf)) in sumcheck_challenge.iter().zip(point).zip(sumcheck) {
+        let eqjsum0 = (Field::ONE - z) * sum0;
         let eqjsum1 = claim - eqjsum0;
         let sum1 = eqjsum1 / z;
 
-        // TODO rewrite
-        let factor = r * z + (1 - r) * (1 - z);
-        // TODO factor r
-        claim = factor * (sum0 + r * (sum1 - sum0) + r * (r - 1) * suminf);
+        let factor = eq_factor(r, z);
+
+        // `claim = factor * (sum0 + r*(sum1 - sum0) + r*(r - 1)*suminf)`.
+        // The last two terms share a factor of `r`:
+        // `sum0 + r*((sum1 - sum0) + (r - 1)*suminf)`. Pulling it out drops
+        // one multiplication (3 instead of 4 per round, counting the final
+        // `factor * ...`) and leaves a single product in the sum, so there
+        // is nothing left for widemul to batch a reduction over.
+        let bracket = (sum1 - sum0) + (r - Field::ONE) * suminf;
+        claim = factor * (sum0 + r * bracket);
 
         prefix *= factor;
     }
@@ -391,19 +423,18 @@ impl SuffixTable {
     fn new<'a>(point: &Point<'a, Field>) -> SuffixTable {
         // We do not need to build the table for the first challenge.
         let mut table = Vec::with_capacity(point.len());
-        let mut prev = Vec::from([1]);
+        let mut prev = Vec::from([Field::ONE]);
 
         // The selector is the first entry of the points and we need to skip that. So this works
         let c = point.c();
 
         // for z in point.skip(1).rev() {
-        for z in c {
+        for &z in c {
             let size = prev.len() << 1;
-            let mut entry = vec![0; size];
+            let mut entry = vec![Field::ZERO; size];
             let (low, hi) = entry.split_at_mut(size >> 1);
 
-            // Does the lead to a range check?
-            for (i, e) in prev.iter().enumerate() {
+            for (i, &e) in prev.iter().enumerate() {
                 let tmp = z * e;
                 // (1-z)*e, z*e
                 (low[i], hi[i]) = (e - tmp, tmp)
@@ -429,7 +460,7 @@ struct Circuit {
 
 impl Circuit {
     fn new(mut leafs: Vec<Field>) -> Self {
-        leafs.resize(leafs.len().next_power_of_two(), 1);
+        leafs.resize(leafs.len().next_power_of_two(), Field::ONE);
 
         Circuit { leafs: leafs }
     }
@@ -445,8 +476,8 @@ impl Circuit {
             let mut eval = Vec::with_capacity(prev_eval.len() >> 1);
             let mid = prev_eval.len() / 2;
             let (l, r) = prev_eval.split_at(mid);
-            for pair in l.iter().zip(r) {
-                eval.push(pair.0 * pair.1)
+            for (&a, &b) in l.iter().zip(r) {
+                eval.push(a * b)
             }
             witnesses.push(prev_eval);
             prev_eval = eval;
@@ -490,19 +521,23 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
+    fn field() -> impl Strategy<Value = Field> {
+        any::<u128>().prop_map(Field::from)
+    }
+
     proptest! {
         // Pairwise multiplication is associative, so folding-by-multiply any
         // witness layer (including the leaves, padded with the multiplicative
         // identity 1) must equal folding the original input.
         #[test]
-        fn eval_preserves_product_across_layers(leaves in prop::collection::vec(-3i128..=3, 0..12)) {
-            let expected = leaves.iter().fold(1, |acc, &x| acc * x);
+        fn eval_preserves_product_across_layers(leaves in prop::collection::vec(field(), 0..12)) {
+            let expected = leaves.iter().fold(Field::ONE, |acc, &x| acc * x);
 
             let mut eval = Circuit::new(leaves).batched_eval(1);
 
             let mut layers_checked = 0;
             while let Some(layer) = eval.pop() {
-                let folded = layer.iter().fold(1, |acc, &x| acc * x);
+                let folded = layer.iter().fold(Field::ONE, |acc, &x| acc * x);
                 prop_assert_eq!(folded, expected);
                 layers_checked += 1;
             }
@@ -512,16 +547,9 @@ mod tests {
         // Round-trips the grand-product GKR proof: prove the circuit's
         // product, then check the verifier accepts against the true
         // product value (groups = 1, so no batching).
-        //
-        // Field = i32 has no modulus yet, so challenge/sum products
-        // compound unchecked across rounds and layers. Depth <= 3 (up to
-        // 8 leaves) is the deepest that reliably stays in i32 range with
-        // leaf values in -3..=3; depth 4+ overflows even when the
-        // sumcheck logic itself is correct, so this is a field-width
-        // limitation, not something to chase as a prove/verify bug.
         #[test]
-        fn gpgkr_round_trip(leaves in prop::collection::vec(-3i128..=3, 1..8)) {
-            let expected: Field = leaves.iter().fold(1, |acc, &x| acc * x);
+        fn gpgkr_round_trip(leaves in prop::collection::vec(field(), 1..8)) {
+            let expected: Field = leaves.iter().fold(Field::ONE, |acc, &x| acc * x);
 
             let circuit = Circuit::new(leaves);
             let m = circuit.leafs.len().ilog2() as usize;
@@ -544,7 +572,7 @@ mod tests {
         // That's what blocks `gpgkr_round_trip` above from getting past
         // round 0.
         #[test]
-        fn point_rotates_last_element_to_front(backend in prop::collection::vec(any::<Field>(), 0..16)) {
+        fn point_rotates_last_element_to_front(backend in prop::collection::vec(field(), 0..16)) {
             let collected: Vec<Field> = Point::new(&backend).collect();
 
             let mut expected = Vec::with_capacity(backend.len());
