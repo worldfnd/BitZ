@@ -1,7 +1,9 @@
 [package]
-name = "prove-playground"
-version = "0.1.0"
-edition = "2024"
+name = "gkr"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 
-[dependencies]
+[dev-dependencies]
 proptest = "1.11.0"
