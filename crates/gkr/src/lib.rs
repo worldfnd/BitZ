@@ -1,20 +1,20 @@
 pub struct Mle {
-    table: Vec<i32>,
+    table: Vec<Field>,
 }
 
 impl Mle {
-    pub fn new(eval: Vec<i32>) -> Self {
+    pub fn new(eval: Vec<Field>) -> Self {
         Mle { table: eval }
     }
 
     // g(0), g(1) for the round polynomial: sum of each half.
-    pub fn round_sums(&self) -> (i32, i32) {
+    pub fn round_sums(&self) -> (Field, Field) {
         let n = self.table.len();
         let (lower, upper) = self.table.split_at(n / 2);
         (lower.iter().sum(), upper.iter().sum())
     }
 
-    pub fn fix_variable(&mut self, r: i32) {
+    pub fn fix_variable(&mut self, r: Field) {
         let n = self.table.len();
         let (lower, upper) = self.table.split_at_mut(n / 2);
         for i in 0..lower.len() {
@@ -23,7 +23,7 @@ impl Mle {
         self.table.truncate(n / 2);
     }
 
-    pub fn scalar(&self) -> i32 {
+    pub fn scalar(&self) -> Field {
         assert_eq!(self.table.len(), 1);
         self.table[0]
     }
@@ -34,8 +34,8 @@ impl Mle {
 }
 
 impl std::ops::Index<usize> for Mle {
-    type Output = i32;
-    fn index(&self, i: usize) -> &i32 {
+    type Output = Field;
+    fn index(&self, i: usize) -> &Field {
         &self.table[i]
     }
 }
@@ -49,8 +49,8 @@ pub fn mle(eval: Vec<Field>, rs: impl Iterator<Item = Field> + ExactSizeIterator
     m.scalar()
 }
 
-use std::{cell::UnsafeCell, iter::Skip};
-pub type Field = i32;
+use std::cell::UnsafeCell;
+pub type Field = i128;
 
 pub struct Challenge {
     data: UnsafeCell<TriangularArray<Field>>,
@@ -94,20 +94,36 @@ impl<T: Default + Copy> TriangularArray<T> {
 
 pub struct Point<'a, T: Copy> {
     backend: &'a [T],
-    idx: usize,
+    state: PointState,
+}
+
+enum PointState {
+    Start,
+    Next(usize),
+    Stop,
 }
 
 impl<'a, T: Copy> Point<'a, T> {
     pub fn new(backend: &'a [T]) -> Self {
         Self {
             backend: backend,
-            idx: backend.len() - 1,
+            state: if backend.len() != 0 {
+                PointState::Start
+            } else {
+                PointState::Stop
+            },
         }
     }
 
+    // Will crash if called on empty
     pub fn sc(&self) -> (T, &[T]) {
         let selector_idx = self.backend.len() - 1;
         (self.backend[selector_idx], &self.backend[..selector_idx])
+    }
+
+    pub fn c(&self) -> &[T] {
+        let selector_idx = self.backend.len().saturating_sub(1);
+        &self.backend[..selector_idx]
     }
 }
 
@@ -115,15 +131,27 @@ impl<'a, T: Copy> Iterator for Point<'a, T> {
     type Item = T;
 
     fn next(&mut self) -> Option<T> {
-        if self.idx == self.backend.len() - 2 {
-            None
-        } else {
-            let val = self.backend[self.idx];
-            self.idx += 1;
-            if self.idx == self.backend.len() {
-                self.idx = 0;
+        match self.state {
+            PointState::Start => {
+                let idx = self.backend.len() - 1;
+                let val = self.backend[idx];
+                self.state = if idx != 0 {
+                    PointState::Next(0)
+                } else {
+                    PointState::Stop
+                };
+                Some(val)
             }
-            Some(val)
+            PointState::Next(i) => {
+                let val = self.backend[i];
+                self.state = if i < self.backend.len() - 2 {
+                    PointState::Next(i + 1)
+                } else {
+                    PointState::Stop
+                };
+                Some(val)
+            }
+            PointState::Stop => None,
         }
     }
 }

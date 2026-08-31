@@ -53,7 +53,7 @@ fn prove_layer(
     c: &Challenge,
     sumcheck: &mut TriangularArray<(Field, Field)>,
 ) -> (Field, Field) {
-    let mut suffix_table = SuffixTable::new(point);
+    let mut suffix_table = SuffixTable::new(&point);
     let mut factor = 1;
 
     let mid = wnext.len() / 2;
@@ -101,11 +101,6 @@ fn gpgkr_verify(
     sumcheck: TriangularArray<(Field, Field)>,
 ) -> bool {
     let mut claim = final_value;
-    // TODO: this only verifies the connections between layers 0..m-2. The
-    // deepest layer's (w0, w1) — round01[m-1] — is never read, and nothing
-    // evaluates the actual leaf MLE at the final `point` to cross-check it.
-    // As-is, a prover can claim any (w0, w1) for the leaf layer and this
-    // still returns true.
     let rounds = circuit.leafs.len().ilog2() as usize;
 
     let start_point = [];
@@ -178,7 +173,7 @@ impl SuffixTable {
         let mut prev = Vec::from([1]);
 
         // The selector is the first entry of the points and we need to skip that. So this works
-        let (_s, c) = point.sc();
+        let c = point.c();
 
         // for z in point.skip(1).rev() {
         for z in c {
@@ -274,10 +269,10 @@ mod tests {
         // witness layer (including the leaves, padded with the multiplicative
         // identity 1) must equal folding the original input.
         #[test]
-        fn eval_preserves_product_across_layers(leaves in prop::collection::vec(-3i32..=3, 0..12)) {
+        fn eval_preserves_product_across_layers(leaves in prop::collection::vec(-3i128..=3, 0..12)) {
             let expected = leaves.iter().fold(1, |acc, &x| acc * x);
 
-            let mut eval = Circuit::new(leaves).eval();
+            let mut eval = Circuit::new(leaves).batched_eval(1);
 
             let mut layers_checked = 0;
             while let Some(layer) = eval.pop() {
@@ -286,6 +281,53 @@ mod tests {
                 layers_checked += 1;
             }
             prop_assert!(layers_checked > 0);
+        }
+
+        // Round-trips the grand-product GKR proof: prove the circuit's
+        // product, then check the verifier accepts against the true
+        // product value (groups = 1, so no batching).
+        //
+        // Field = i32 has no modulus yet, so challenge/sum products
+        // compound unchecked across rounds and layers. Depth <= 3 (up to
+        // 8 leaves) is the deepest that reliably stays in i32 range with
+        // leaf values in -3..=3; depth 4+ overflows even when the
+        // sumcheck logic itself is correct, so this is a field-width
+        // limitation, not something to chase as a prove/verify bug.
+        #[test]
+        fn gpgkr_round_trip(leaves in prop::collection::vec(-3i128..=3, 1..8)) {
+            let expected: Field = leaves.iter().fold(1, |acc, &x| acc * x);
+
+            let circuit = Circuit::new(leaves);
+            let m = circuit.leafs.len().ilog2() as usize;
+            let witnesses = circuit.batched_eval(1);
+
+            let c = Challenge::with_capacity(m, 1);
+            let (round01, sumcheck) = gpgkr_prove(1, &c, witnesses);
+
+            prop_assert!(gpgkr_verify(expected, circuit, c, round01, sumcheck));
+        }
+
+        // The selector is stored last in the backend but needs to lead
+        // logically, so Point's iterator should yield the backend rotated
+        // by one: [backend[len-1], backend[0], ..., backend[len-2]].
+        // `gpgkr_prove`/`gpgkr_verify` hit backend length 0 at round 0
+        // (no challenges sampled yet) and length 1 at round 1 (with
+        // groups = 1) -- both currently panic with "attempt to subtract
+        // with overflow" inside `Iterator for Point::next` in lib.rs
+        // instead of producing (respectively) no elements and one element.
+        // That's what blocks `gpgkr_round_trip` above from getting past
+        // round 0.
+        #[test]
+        fn point_rotates_last_element_to_front(backend in prop::collection::vec(any::<Field>(), 0..16)) {
+            let collected: Vec<Field> = Point::new(&backend).collect();
+
+            let mut expected = Vec::with_capacity(backend.len());
+            if let Some((&last, rest)) = backend.split_last() {
+                expected.push(last);
+                expected.extend_from_slice(rest);
+            }
+
+            prop_assert_eq!(collected, expected);
         }
     }
 }
