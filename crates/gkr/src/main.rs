@@ -1,23 +1,18 @@
-use std::{
-    fmt::Binary,
-    ops::{Deref, DerefMut},
-};
-
 use prove_playground::*;
 
 fn main() {}
 
-fn prove(input: Vec<Field>) {
+fn prove(input: Vec<Field>, groups: usize) {
     let circuit = Circuit::new(input);
-    let witnesses = circuit.eval();
+    let witnesses = circuit.batched_eval(groups);
 
     // gpgkr_prove samples one more challenge per layer than the last
     // (0, 1, 2, ... over `m` layers), so the total is the triangular
     // number m*(m+1)/2.
     let m = circuit.leafs.len().ilog2() as usize;
-    let c = Challenge::with_capacity(m);
+    let c = Challenge::with_capacity(m, groups);
 
-    gpgkr_prove(&c, witnesses);
+    gpgkr_prove(groups, &c, witnesses);
 }
 
 /// Grand product GKR
@@ -30,6 +25,7 @@ fn prove(input: Vec<Field>) {
 ///   entries, right after layer `i - 1`'s `i - 1` entries. Total size is the
 ///   triangular number `m * (m - 1) / 2`.
 fn gpgkr_prove(
+    groups: usize,
     c: &Challenge,
     mut eval: CircuitEval,
 ) -> (Vec<(Field, Field)>, TriangularArray<(Field, Field)>) {
@@ -37,10 +33,10 @@ fn gpgkr_prove(
     let m = eval.len();
 
     let mut round01 = Vec::with_capacity(m);
-    let mut sumcheck = TriangularArray::with_capacity(m.saturating_sub(1));
+    let mut sumcheck = TriangularArray::with_capacity(m.saturating_sub(1), groups);
 
     let first_point = [];
-    let mut point: &[i32] = &first_point;
+    let mut point: Point<'_, Field> = Point::new(&first_point);
     for (i, wnext) in eval.into_iter().enumerate() {
         round01.push(prove_layer(point, wnext, c, &mut sumcheck));
 
@@ -52,15 +48,16 @@ fn gpgkr_prove(
 }
 
 fn prove_layer(
-    point: &[Field],
-    wnext: Vec<Field>,
+    point: Point<Field>,
+    mut wnext: Vec<Field>,
     c: &Challenge,
     sumcheck: &mut TriangularArray<(Field, Field)>,
 ) -> (Field, Field) {
     let mut suffix_table = SuffixTable::new(point);
     let mut factor = 1;
 
-    let mut mle_next = wnext;
+    let mid = wnext.len() / 2;
+    let (mut mle_l, mut mle_r) = wnext.split_at_mut(mid);
 
     for z in point {
         let r = c.get_challenge();
@@ -70,22 +67,22 @@ fn prove_layer(
         let eq = suffix_table.pop().unwrap();
         let mut sum_0 = 0;
         let mut sum_inf = 0;
-        let h = mle_next.len() / 2; // Same as mle.next/2?
+        let h = mle_l.len() / 2; // Same as mle.next/2?
 
         // Fused loop of TODO find different way of writing this
         for i in 0..eq.len() {
             // Two sequential cache access lines
-            let (l0, r0) = (mle_next[2 * i], mle_next[2 * i + 1]);
-            let (l1, r1) = (mle_next[h + 2 * i], mle_next[h + 2 * i + 1]);
+            let (l0, r0) = (mle_l[i], mle_r[i]);
+            let (l1, r1) = (mle_l[i + h], mle_r[i + h]);
             sum_0 += eq[i] * l0 * r0;
             sum_inf += eq[i] * (l1 - l0) * (r1 - r0);
 
             // MLE folding
-            mle_next[2 * i] = mle_next[2 * i] + r * (mle_next[h + 2 * i] - mle_next[2 * i]);
-            mle_next[2 * i + 1] =
-                mle_next[2 * i + 1] + r * (mle_next[h + 2 * i + 1] - mle_next[2 * i + 1])
+            mle_l[i] = mle_l[i] + r * (mle_l[h + i] - mle_l[i]);
+            mle_r[i] = mle_r[i] + r * (mle_r[h + i] - mle_r[i])
         }
-        mle_next.truncate(h);
+        mle_l = &mut mle_l[..h];
+        mle_r = &mut mle_r[..h];
 
         // should factor be included? because aren't we just reintroducing the problem?
         sumcheck.push((factor * sum_0, factor * sum_inf));
@@ -93,13 +90,13 @@ fn prove_layer(
         factor *= r * z + (1 - z) * (1 - r);
     }
 
-    (mle_next[0], mle_next[1])
+    (mle_l[0], mle_r[0])
 }
 
 fn gpgkr_verify(
     final_value: Field,
     circuit: Circuit,
-    challenges: TriangularArray<Field>,
+    challenges: Challenge,
     round01: Vec<(Field, Field)>,
     sumcheck: TriangularArray<(Field, Field)>,
 ) -> bool {
@@ -112,20 +109,19 @@ fn gpgkr_verify(
     let rounds = circuit.leafs.len().ilog2() as usize;
 
     let start_point = [];
-    let mut point: &[Field] = &start_point;
+    let mut point: Point<Field> = Point::new(&start_point);
     let start_sumcheck = [];
     let mut sumcheck_round: &[(Field, Field)] = &start_sumcheck;
 
     for i in 0..rounds {
-        let next_point = challenges.round(i);
-        let (r, sumcheck_challenge) = next_point.split_last().unwrap();
+        let next_point = challenges.build_point(i);
+        let (r, sumcheck_challenge) = next_point.sc();
 
         let (factor, sumcheck_final) =
             verify_round(claim, point, sumcheck_round, sumcheck_challenge);
 
         let claim_lr = round01[i];
         // Check if line polynomial hits same spot as sumcheck check
-        // VERIFY that this is necessary to connect one gkr round to another
         if (factor * claim_lr.0 * claim_lr.1) != sumcheck_final {
             return false;
         }
@@ -146,7 +142,7 @@ fn gpgkr_verify(
 
 fn verify_round(
     mut claim: Field,
-    point: &[Field],
+    point: Point<Field>,
     sumcheck: &[(Field, Field)],
     sumcheck_challenge: &[Field],
 ) -> (Field, Field) {
@@ -176,12 +172,16 @@ impl SuffixTable {
     // Maybe vectors can be reused? This could be reused with sumcheck layer. The evaluation layer can be reused each gkr
     // Might be better in combination with split_eq table
     // currently has to be consumed in reverse order -> pop. Which is fine
-    fn new(point: &[Field]) -> SuffixTable {
+    fn new<'a>(point: &Point<'a, Field>) -> SuffixTable {
         // We do not need to build the table for the first challenge.
         let mut table = Vec::with_capacity(point.len());
         let mut prev = Vec::from([1]);
 
-        for z in point.iter().skip(1).rev() {
+        // The selector is the first entry of the points and we need to skip that. So this works
+        let (_s, c) = point.sc();
+
+        // for z in point.skip(1).rev() {
+        for z in c {
             let size = prev.len() << 1;
             let mut entry = vec![0; size];
             let (low, hi) = entry.split_at_mut(size >> 1);
@@ -219,15 +219,18 @@ impl Circuit {
     }
 
     // Should an evaluation consume?
-    fn eval(&self) -> CircuitEval {
+    fn batched_eval(&self, groups: usize) -> CircuitEval {
         let mut witnesses = Vec::with_capacity(self.leafs.len().ilog2() as usize);
 
         let mut prev_eval = self.leafs.clone();
 
-        while prev_eval.len() > 1 {
+        // Once we hit number of groups we have one per group
+        while prev_eval.len() > groups {
             let mut eval = Vec::with_capacity(prev_eval.len() >> 1);
-            for pair in prev_eval.chunks_exact(2) {
-                eval.push(pair[0] * pair[1])
+            let mid = prev_eval.len() / 2;
+            let (l, r) = prev_eval.split_at(mid);
+            for pair in l.iter().zip(r) {
+                eval.push(pair.0 * pair.1)
             }
             witnesses.push(prev_eval);
             prev_eval = eval;

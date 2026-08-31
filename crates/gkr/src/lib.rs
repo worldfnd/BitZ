@@ -40,16 +40,16 @@ impl std::ops::Index<usize> for Mle {
     }
 }
 
-pub fn mle(eval: Vec<Field>, rs: &[Field]) -> Field {
+pub fn mle(eval: Vec<Field>, rs: impl Iterator<Item = Field> + ExactSizeIterator) -> Field {
     assert_eq!(eval.len(), 1 << rs.len());
     let mut m = Mle::new(eval);
     for r in rs {
-        m.fix_variable(*r);
+        m.fix_variable(r);
     }
     m.scalar()
 }
 
-use std::cell::UnsafeCell;
+use std::{cell::UnsafeCell, iter::Skip};
 pub type Field = i32;
 
 pub struct Challenge {
@@ -92,6 +92,48 @@ impl<T: Default + Copy> TriangularArray<T> {
     }
 }
 
+pub struct Point<'a, T: Copy> {
+    backend: &'a [T],
+    idx: usize,
+}
+
+impl<'a, T: Copy> Point<'a, T> {
+    pub fn new(backend: &'a [T]) -> Self {
+        Self {
+            backend: backend,
+            idx: backend.len() - 1,
+        }
+    }
+
+    pub fn sc(&self) -> (T, &[T]) {
+        let selector_idx = self.backend.len() - 1;
+        (self.backend[selector_idx], &self.backend[..selector_idx])
+    }
+}
+
+impl<'a, T: Copy> Iterator for Point<'a, T> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<T> {
+        if self.idx == self.backend.len() - 2 {
+            None
+        } else {
+            let val = self.backend[self.idx];
+            self.idx += 1;
+            if self.idx == self.backend.len() {
+                self.idx = 0;
+            }
+            Some(val)
+        }
+    }
+}
+
+impl<'a, T: Copy> ExactSizeIterator for Point<'a, T> {
+    fn len(&self) -> usize {
+        self.backend.len()
+    }
+}
+
 impl Challenge {
     pub fn with_capacity(rounds: usize, groups: usize) -> Self {
         Self {
@@ -107,13 +149,14 @@ impl Challenge {
     }
 
     // new frame breaks when
-    pub fn build_point(&self, round: usize) -> &[Field] {
-        unsafe { (*self.data.get()).round(round as usize) }
+    pub fn build_point<'a>(&'a self, round: usize) -> Point<'a, Field> {
+        let backend = unsafe { (*self.data.get()).round(round as usize) };
+        Point::new(backend)
     }
 
-    pub fn into_inner(self) -> TriangularArray<Field> {
-        self.data.into_inner()
-    }
+    // pub fn into_inner(self) -> TriangularArray<Field> {
+    //     self.data.into_inner()
+    // }
 }
 
 // pub struct BTreeArray<T> {
