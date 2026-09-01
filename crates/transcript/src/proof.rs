@@ -9,10 +9,6 @@
 /// check has to land before the next challenge is squeezed, or a forged
 /// hint would reach the sponge unchallenged. A value nothing absorbed pins
 /// down is a `prover_message`.
-///
-/// We keep track of record counts because records are not self-delimiting,
-/// They aren't absorbed, but verifier ensures they match the number of
-/// records consumed in replay.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Proof {
     pub narg_string: Vec<u8>,

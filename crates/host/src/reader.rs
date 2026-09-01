@@ -13,7 +13,7 @@ pub struct LeftoverInput;
 pub struct BoundedReader<'a> {
     /// How many bytes have been read.
     pub pos: usize,
-    /// Input bytes that has not been read yet.
+    /// Input bytes that have not been read yet.
     rest: &'a [u8],
 }
 

@@ -172,9 +172,9 @@ mod tests {
     use super::*;
     use std::assert_matches;
 
-    /// The canonical encoding of `Vec<K>([1])`: a 4-byte length prefix and
-    /// one 16-byte element.
-    const ONE_RECORD: [u8; 20] = [1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    /// One fold record: a `u128` exponent, little endian, as
+    /// `prover::send_fold` writes it.
+    const ONE_RECORD: [u8; 16] = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 
     /// Byte offsets of the header fields, in order.
     pub mod offset {
@@ -217,7 +217,7 @@ mod tests {
         assert_eq!(decode(&bytes), Ok(both.clone()));
         assert_eq!(WireProof::new(&both).byte_len(), bytes.len());
 
-        assert_eq!(encode(&one_record()).len(), HEADER_LEN + 20);
+        assert_eq!(encode(&one_record()).len(), HEADER_LEN + 16);
         assert_eq!(decode(&encode(&one_record())), Ok(one_record()));
 
         let empty = proof(&[], &[]);
@@ -300,8 +300,7 @@ mod tests {
                 .copy_from_slice(&header_len.to_le_bytes());
             assert_eq!(
                 decode(&bytes),
-                Err(ProofDecodingError::BadHeaderLen(header_len as usize)),
-                "40 is the spec's header length and is refused like any other"
+                Err(ProofDecodingError::BadHeaderLen(header_len as usize))
             );
         }
     }
@@ -323,10 +322,10 @@ mod tests {
     fn a_declared_length_that_does_not_match_the_input_is_refused() {
         // Each field is probed away from its one admissible value.
         for (name, offset, truth) in [
-            ("narg", offset::NARG_BYTE_LEN, 20u64),
+            ("narg", offset::NARG_BYTE_LEN, 16u64),
             ("hint", offset::HINT_BYTE_LEN, 0u64),
         ] {
-            for declared in [0u64, 19, 20, 21, u64::from(u32::MAX)] {
+            for declared in [0u64, 15, 16, 17, u64::from(u32::MAX)] {
                 if declared == truth {
                     continue;
                 }
@@ -344,7 +343,7 @@ mod tests {
     #[test]
     fn declared_lengths_that_overflow_are_refused_rather_than_wrapping() {
         // `32 + u64::MAX` wraps to 31 in unchecked arithmetic, which would
-        // then be compared against a 52-byte input.
+        // then be compared against a 48-byte input.
         let mut bytes = encode(&one_record());
         bytes[offset::NARG_BYTE_LEN..offset::NARG_BYTE_LEN + 8]
             .copy_from_slice(&u64::MAX.to_le_bytes());

@@ -31,8 +31,7 @@ impl VerifierState<'_> {
     /// Reads the next prover message from the narg string and absorbs its
     /// canonical re-encoding.
     pub fn prover_message<T: Encoding<[u8]> + NargDeserialize>(&mut self) -> VerificationResult<T> {
-        let message = self.inner.prover_message()?;
-        Ok(message)
+        self.inner.prover_message()
     }
 
     /// Reads and absorbs one bounded, length-prefixed byte string.
@@ -49,8 +48,7 @@ impl VerifierState<'_> {
 
     /// Reads the next value from the hint stream. The sponge is untouched.
     pub fn hint<T: NargDeserialize>(&mut self) -> VerificationResult<T> {
-        let hint = T::deserialize_from_narg(&mut self.hints)?;
-        Ok(hint)
+        T::deserialize_from_narg(&mut self.hints)
     }
 
     /// Reads one bounded, length-prefixed byte string from the hint stream.
