@@ -269,35 +269,52 @@ fn prove(input: Vec<Field>, groups: usize) {
 
 /// Grand product GKR
 ///
-/// Returns two preallocated buffers that are only ever appended to (no
-/// reallocation once the loop below starts):
-/// - `round01[i]` is layer `i`'s terminal `(w0, w1)` pair, one per layer.
-/// - `sumcheck` is every layer's sumcheck transcript back to back, widening
-///   as it goes: layer `i`'s point has `i` challenges, so it contributes `i`
-///   entries, right after layer `i - 1`'s `i - 1` entries. Total size is the
-///   triangular number `m * (m - 1) / 2`.
+/// Returns:
+/// - `last_value`: the `groups`-sized top layer, popped off before the
+///   per-layer loop below runs. It's public input, so the verifier needs it
+///   back directly (as the claim to seed from) rather than trusting the
+///   prover's word for the grand product.
+/// - two preallocated buffers that are only ever appended to (no
+///   reallocation once the loop below starts):
+///   - `round01[i]` is layer `i`'s terminal `(w0, w1)` pair, one per layer.
+///   - `sumcheck` is every layer's sumcheck transcript back to back,
+///     widening as it goes: layer `i`'s point has `i` challenges, so it
+///     contributes `i` entries, right after layer `i - 1`'s `i - 1` entries.
+///     Total size is the triangular number `m * (m - 1) / 2`.
 fn gpgkr_prove(
     groups: usize,
     c: &Challenge,
     mut eval: CircuitEval,
-) -> (Vec<(Field, Field)>, TriangularArray<(Field, Field)>) {
-    let _last_value = eval.pop().unwrap();
+) -> (
+    Vec<Field>,
+    Vec<(Field, Field)>,
+    TriangularArray<(Field, Field)>,
+) {
+    let last_value = eval.pop().unwrap();
     let m = eval.len();
 
     let mut round01 = Vec::with_capacity(m);
     // `m` rounds' worth of capacity is exactly tight here: `sumcheck` gets
     // one `(sum_0, sum_inf)` push per element of `point`, and summed across
     // all `m` iterations below that totals precisely `round(0) + ... +
-    // round(m - 1)`'s combined length.
-    let mut sumcheck = TriangularArray::with_capacity(m, groups);
+    // round(m - 1)`'s combined length. `m.max(1)` rather than `m` directly:
+    // when `circuit.leafs.len() <= groups`, `batched_eval` doesn't descend
+    // at all and `m == 0` (no layers left to prove once `last_value` --
+    // itself the leaf layer here -- is popped), but `gpgkr_verify` still
+    // unconditionally reads `sumcheck.round(0)` up front (see its comment)
+    // before checking whether there are any rounds to use it in, so
+    // `round(0)` needs to stay a valid (if unused and empty-of-real-pushes)
+    // slice rather than indexing into a zero-capacity buffer.
+    let mut sumcheck = TriangularArray::with_capacity(m.max(1), groups);
 
-    // The `groups`-sized top layer (`_last_value`) is public input, so
-    // reducing a claim about it needs its own `lgroups` evaluation-point
-    // coordinates. `round(0)` is exactly that: sample them fresh, then read
-    // them straight back through the same `build_point` every later round
-    // uses, rather than keeping them in a separate local point -- that's
-    // what lets the loop below use one uniform `build_point(i + 1)` instead
-    // of special-casing round 0.
+    // `last_value` is public input, so reducing a claim about it needs its
+    // own `lgroups` evaluation-point coordinates. `round(0)` is exactly
+    // that: sample them fresh, then read them straight back through the
+    // same `build_point` every later round uses, rather than keeping them
+    // in a separate local point -- that's what lets the loop below use one
+    // uniform `build_point(i + 1)` instead of special-casing round 0.
+    // `gpgkr_verify` evaluates `last_value`'s MLE at these same coordinates
+    // to seed its own starting claim.
     let lgroups = groups.ilog2();
     for _ in 0..lgroups {
         c.get_challenge();
@@ -311,7 +328,7 @@ fn gpgkr_prove(
         let _ = c.get_challenge();
         point = c.build_point(i + 1);
     }
-    (round01, sumcheck)
+    (last_value, round01, sumcheck)
 }
 
 /// `eq(r, z) = r*z + (1 - r)*(1 - z)`. Expanding gives
@@ -412,13 +429,21 @@ fn prove_layer(
 }
 
 fn gpgkr_verify(
-    final_value: Field,
+    last_value: Vec<Field>,
     circuit: Circuit,
     challenges: Challenge,
     round01: Vec<(Field, Field)>,
     sumcheck: TriangularArray<(Field, Field)>,
 ) -> bool {
-    let mut claim = final_value;
+    // `last_value` is public input: `groups` claimed partial products, one
+    // per group, i.e. an MLE over `lgroups` variables. `round(0)` supplies
+    // exactly the `lgroups` coordinates `gpgkr_prove` evaluated the same MLE
+    // at, so this reproduces the claim the round loop below reduces --
+    // mirroring how `mle(circuit.leafs, point)` checks the leaf layer at the
+    // other end. When `groups == 1` this is the `lgroups == 0` trivial case:
+    // no coordinates, so `mle` just hands back `last_value[0]` untouched,
+    // same as the old `claim = final_value` did.
+    let mut claim = mle(last_value, challenges.build_point(0));
     // `round01` has one entry per layer `gpgkr_prove` actually processed --
     // `k - lgroups` of them, not `circuit.leafs.len().ilog2() (= k)` --
     // since `batched_eval` stops descending at the `groups`-sized top layer.
@@ -427,8 +452,16 @@ fn gpgkr_verify(
     let rounds = round01.len();
 
     let mut point: Point<Field> = challenges.build_point(0);
-    let start_sumcheck = [];
-    let mut sumcheck_round: &[(Field, Field)] = &start_sumcheck;
+    // Seeded from `sumcheck.round(0)`, not an empty slice: for `groups > 1`
+    // that window already holds `lgroups` real `(sum_0, sum_inf)` pairs
+    // (`prove_layer`'s first `lgroups` pushes, from folding `point` above),
+    // and `verify_round`'s loop below `zip`s this against `point` and
+    // `sumcheck_challenge` -- if this were empty, `zip` would silently
+    // truncate to zero iterations despite both of those having `lgroups`
+    // elements, skipping the entire group-selector round's verification
+    // instead of checking it. Only looked right for `groups == 1`, where
+    // `sumcheck.round(0)` is also empty.
+    let mut sumcheck_round: &[(Field, Field)] = sumcheck.round(0);
 
     for i in 0..rounds {
         // `+ 1`: round 0's window is now the group-selector prefix
@@ -512,8 +545,19 @@ impl SuffixTable {
         // The selector is the first entry of the points and we need to skip that. So this works
         let c = point.c();
 
-        // for z in point.skip(1).rev() {
-        for &z in c {
+        // `prove_layer`'s round `k` (for `k >= 2`) folds `mle_l`/`mle_r`'s
+        // current top bit using `c[k-2]` as the challenge, so at that point
+        // the eq-weight owed to the bits *not yet folded* comes from the
+        // challenges belonging to *later* rounds: `c[k-1], ..., c[len-1]` --
+        // the suffix of `c` starting just past what's already been consumed.
+        // Folding `c` front-to-back and popping LIFO gets this backwards: it
+        // hands out tables that drop elements off the *back* of `c` as
+        // rounds proceed, instead of the front. Folding in reverse (`c`'s
+        // last element first) makes each successive, smaller table equal to
+        // the correct suffix instead. With `c.len() <= 1` there's no
+        // distinguishable front/back of a single element, which is why this
+        // stayed invisible until a point of length 3 or more was exercised.
+        for &z in c.iter().rev() {
             let size = prev.len() << 1;
             let mut entry = vec![Field::ZERO; size];
             let (low, hi) = entry.split_at_mut(size >> 1);
@@ -651,6 +695,47 @@ mod tests {
         }
     }
 
+    // Regression test for a real bug in `SuffixTable::new`: it folded
+    // `point.c()` front-to-back and handed tables out LIFO (largest/most-
+    // complete first), which drops elements off the *back* of `c` as rounds
+    // proceed. But round `k`'s eq-weight is owed to the challenges *not yet
+    // consumed*, which are `c`'s later elements (rounds consume `c[0]`,
+    // `c[1]`, ... in order) -- so tables need to drop from the *front*
+    // instead, which folding `c` in reverse produces. With `c.len() <= 1`
+    // (a point of length <= 2) there's no distinguishable front/back of a
+    // single element, so this stayed invisible: `gpgkr_round_trip`'s
+    // original leaf range never drove `prove_layer`/`verify_round` past a
+    // 2-element point. This isolates the pair from the multi-layer
+    // claim-chaining entirely -- one arbitrary layer of length `2^(l+1)`, an
+    // arbitrary `l`-length point, an honestly-seeded `claim` -- and checks
+    // `factor * mle_l[0] * mle_r[0] == verify_round`'s output across `l`
+    // from 1 up through 8, well past the 2-element point where the bug
+    // first showed up.
+    #[test]
+    fn suffix_table_handles_points_past_two_elements() {
+        for l in 1usize..=8 {
+            let n = 1usize << (l + 1);
+            let wnext: Vec<Field> = (1u128..=(n as u128)).map(Field::from).collect();
+            let z_vals: Vec<Field> = (100u128..100 + l as u128).map(Field::from).collect();
+            let half = wnext.len() / 2;
+            let (lo, hi) = wnext.split_at(half);
+            let above: Vec<Field> = lo.iter().zip(hi).map(|(&a, &b)| a * b).collect();
+            let claim = mle(above, Point::new(&z_vals));
+
+            let c = Challenge::with_capacity(l + 2, 1);
+            let mut sumcheck = TriangularArray::with_capacity(l + 2, 1);
+            let (mle_l0, mle_r0) =
+                prove_layer(Point::new(&z_vals), wnext.clone(), &c, &mut sumcheck);
+
+            let r_vals: Vec<Field> = (1u128..=l as u128).map(Field::from).collect();
+            let sumcheck_slice = &sumcheck.data[0..l];
+
+            let (factor, sumcheck_final) =
+                verify_round(claim, Point::new(&z_vals), sumcheck_slice, &r_vals);
+            assert_eq!(factor * mle_l0 * mle_r0, sumcheck_final, "l = {l}");
+        }
+    }
+
     proptest! {
         // Pairwise multiplication is associative, so folding-by-multiply any
         // witness layer (including the leaves, padded with the multiplicative
@@ -671,10 +756,17 @@ mod tests {
         }
 
         // Round-trips the grand-product GKR proof: prove the circuit's
-        // product, then check the verifier accepts against the true
-        // product value (groups = 1, so no batching).
+        // product, then check the verifier accepts against the top layer
+        // the prover actually produced (groups = 1, so no batching -- the
+        // top layer is just the scalar product, checked against `expected`
+        // independently before handing it to the verifier). Range goes up to
+        // 33 leaves (padded to 64, k = 6) rather than a narrower one so this
+        // regularly drives some layer's `prove_layer`/`verify_round` call
+        // past a 2-element point -- see
+        // `suffix_table_handles_points_past_two_elements`'s doc comment for
+        // why that boundary matters.
         #[test]
-        fn gpgkr_round_trip(leaves in prop::collection::vec(field(), 1..8)) {
+        fn gpgkr_round_trip(leaves in prop::collection::vec(field(), 1..33)) {
             let expected: Field = leaves.iter().fold(Field::ONE, |acc, &x| acc * x);
 
             let circuit = Circuit::new(leaves);
@@ -682,9 +774,10 @@ mod tests {
             let witnesses = circuit.batched_eval(1);
 
             let c = Challenge::with_capacity(m, 1);
-            let (round01, sumcheck) = gpgkr_prove(1, &c, witnesses);
+            let (last_value, round01, sumcheck) = gpgkr_prove(1, &c, witnesses);
+            prop_assert_eq!(last_value.clone(), vec![expected]);
 
-            prop_assert!(gpgkr_verify(expected, circuit, c, round01, sumcheck));
+            prop_assert!(gpgkr_verify(last_value, circuit, c, round01, sumcheck));
         }
 
         // `batched_eval` stops descending the tree once a layer has `groups`
@@ -727,39 +820,19 @@ mod tests {
             }
         }
 
-        // Batching (`groups > 1`) is not fully wired up yet, and this
-        // currently fails rather than passing -- that's the point: it pins
-        // the concrete target the next implementation pass needs to hit.
-        //
-        // The bookkeeping gaps that used to make this *panic*, or silently
-        // compute wrong values without panicking, are already fixed:
-        // `gpgkr_prove` seeds `lgroups` fresh group-selector challenges into
-        // `round(0)` instead of starting from an empty point, `gpgkr_verify`
-        // reads that same `round(0)` back as its own starting point instead
-        // of an empty one, its round-loop bound is `round01.len()` (`k -
-        // lgroups`, not `circuit.leafs.len().ilog2() (= k)`, which used to
-        // risk indexing `round01` out of bounds), and `round(0)`/`round(r)`
-        // for `r >= 1` are laid out back-to-back with no overlap (see
-        // `rounds_do_not_overlap` and `TriangularArray::round`'s doc
-        // comment -- an earlier version of this fix left `round(0)` and the
-        // prefix sharing positions, which silently forced every one of
-        // round 0's `r`/`z` pairs to be equal instead of independent).
-        //
-        // What's left is purely a missing feature, not a bug: `_last_value`
-        // -- the `groups`-sized top layer `gpgkr_prove` still discards --
-        // is public input, so `gpgkr_verify` needs to take it (or the
-        // `groups` claimed products it represents) directly and seed
-        // `claim` as `mle(_last_value, group_selector_challenges)` at the
-        // same `lgroups` challenges `round(0)` supplies, mirroring exactly
+        // Round-trips batched (`groups > 1`) grand-product GKR: `gpgkr_prove`
+        // hands back the `groups`-sized top layer alongside the proof, and
+        // `gpgkr_verify` takes it directly as public input, seeding its
+        // starting claim as that layer's own MLE evaluated at the same
+        // `lgroups` group-selector challenges `gpgkr_prove` used -- mirroring
         // how `mle(circuit.leafs, point)` already checks the leaf layer at
-        // the other end. Until that's wired up, `final_value` below is a
-        // placeholder and this fails cleanly via `gpgkr_verify` returning
-        // `false` -- no panic, which is itself the signal the bookkeeping
-        // fixes above landed correctly.
+        // the other end. Leaves go up to 33 (padded to 64) and groups up to
+        // 8 so `m = k - lgroups` regularly exceeds 2, same reasoning as
+        // `gpgkr_round_trip`'s range.
         #[test]
         fn gpgkr_round_trip_batched(
-            leaves in prop::collection::vec(field(), 4..16),
-            groups_log2 in 1usize..3,
+            leaves in prop::collection::vec(field(), 4..33),
+            groups_log2 in 1usize..4,
         ) {
             let padded_len = leaves.len().next_power_of_two();
             let groups_log2 = groups_log2.min(padded_len.ilog2() as usize).max(1);
@@ -770,12 +843,9 @@ mod tests {
             let witnesses = circuit.batched_eval(groups);
 
             let c = Challenge::with_capacity(m, groups);
-            let (round01, sumcheck) = gpgkr_prove(groups, &c, witnesses);
+            let (last_value, round01, sumcheck) = gpgkr_prove(groups, &c, witnesses);
 
-            // Placeholder: `gpgkr_verify` doesn't yet take `_last_value` (or
-            // its MLE evaluation) to seed `claim` from, so this is expected
-            // to return `false`, not panic.
-            prop_assert!(gpgkr_verify(Field::ONE, circuit, c, round01, sumcheck));
+            prop_assert!(gpgkr_verify(last_value, circuit, c, round01, sumcheck));
         }
 
         // The selector is stored last in the backend but needs to lead
