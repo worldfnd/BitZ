@@ -69,9 +69,15 @@ pub struct TriangularArray<T> {
 }
 
 impl<T: Default + Copy> TriangularArray<T> {
+    /// Reserves room for `rounds` windows: `round(0)` through
+    /// `round(rounds - 1)`. `(rounds*rounds - rounds) / 2` is
+    /// `rounds*(rounds-1)/2` written to avoid an intermediate underflow in
+    /// unsigned arithmetic at `rounds == 0` (multiplying first keeps the
+    /// subtraction non-negative; subtracting first would underflow before
+    /// the multiply ever ran).
     pub fn with_capacity(rounds: usize, groups: usize) -> Self {
         let lg = groups.ilog2() as usize;
-        let capacity = rounds * (rounds + 1) / 2 + rounds * lg;
+        let capacity = (rounds * rounds - rounds) / 2 + rounds * lg;
         Self {
             data: vec![T::default(); capacity].into_boxed_slice(),
             len: 0,
@@ -90,10 +96,29 @@ impl<T: Default + Copy> TriangularArray<T> {
         self.len
     }
 
+    /// Round `r`'s window: `r + lgroups` values, laid out back-to-back with
+    /// no gaps (`round(r)` starts exactly where `round(r - 1)` ends), so one
+    /// formula covers every round including `round(0)`.
+    ///
+    /// `round(0)` is the group-selector prefix that used to be a separate
+    /// `group_prefix` method -- `lgroups` wide, and *empty* when
+    /// `lgroups == 0` (the non-batched case), which is exactly why this
+    /// needs a half-open range rather than the inclusive one a single round
+    /// alone would suggest: an inclusive range can't express a zero-length
+    /// window. `round(1)`, `round(2)`, ... are what used to be `round(0)`,
+    /// `round(1)`, ... before this prefix existed as a round of its own --
+    /// callers that used to index from 0 now index from 1.
+    ///
+    /// Getting this wrong is not cosmetic: if `round(0)` and the prefix ever
+    /// shared positions again, `round(0).c()` (read as `sumcheck_challenge`
+    /// for round 0) and the prefix (read as the starting `point`) would be
+    /// the same slice, making every one of round 0's `r`/`z` pairs
+    /// identical and collapsing `eq_factor(r, z)` to `1` regardless of what
+    /// the prover actually sampled.
     pub fn round(&self, r: usize) -> &[T] {
-        let start = r * (r + 1) / 2 + r * self.lgroups;
-        let end_inclusive = start + r + self.lgroups;
-        &self.data[start..=end_inclusive]
+        let start = (r * r - r) / 2 + r * self.lgroups;
+        let end = start + r + self.lgroups;
+        &self.data[start..end]
     }
 }
 
@@ -168,9 +193,17 @@ impl<'a, T: Copy> ExactSizeIterator for Point<'a, T> {
 }
 
 impl Challenge {
+    /// `rounds` is the same "how many layers" count callers already have on
+    /// hand (`circuit.leafs.len().ilog2()`); the `+ 1` reserves the extra
+    /// window `round(0)` (the group-selector prefix, see `round`'s doc
+    /// comment) now occupies that a caller's own round count doesn't
+    /// otherwise account for. `rounds + 1` windows is always enough
+    /// regardless of `lgroups`: batching only ever needs `rounds - lgroups
+    /// + 1` (`lgroups` fewer *layers*, one more *window* than before), and
+    /// `rounds - lgroups + 1 <= rounds + 1` for every `lgroups >= 0`.
     pub fn with_capacity(rounds: usize, groups: usize) -> Self {
         Self {
-            data: UnsafeCell::new(TriangularArray::with_capacity(rounds, groups)),
+            data: UnsafeCell::new(TriangularArray::with_capacity(rounds + 1, groups)),
         }
     }
     pub fn get_challenge(&self) -> Field {
@@ -252,16 +285,31 @@ fn gpgkr_prove(
     let m = eval.len();
 
     let mut round01 = Vec::with_capacity(m);
-    let mut sumcheck = TriangularArray::with_capacity(m.saturating_sub(1), groups);
+    // `m` rounds' worth of capacity is exactly tight here: `sumcheck` gets
+    // one `(sum_0, sum_inf)` push per element of `point`, and summed across
+    // all `m` iterations below that totals precisely `round(0) + ... +
+    // round(m - 1)`'s combined length.
+    let mut sumcheck = TriangularArray::with_capacity(m, groups);
 
-    let first_point = [];
-    let mut point: Point<'_, Field> = Point::new(&first_point);
+    // The `groups`-sized top layer (`_last_value`) is public input, so
+    // reducing a claim about it needs its own `lgroups` evaluation-point
+    // coordinates. `round(0)` is exactly that: sample them fresh, then read
+    // them straight back through the same `build_point` every later round
+    // uses, rather than keeping them in a separate local point -- that's
+    // what lets the loop below use one uniform `build_point(i + 1)` instead
+    // of special-casing round 0.
+    let lgroups = groups.ilog2();
+    for _ in 0..lgroups {
+        c.get_challenge();
+    }
+    let mut point: Point<'_, Field> = c.build_point(0);
+
     for (i, wnext) in eval.into_iter().enumerate() {
         round01.push(prove_layer(point, wnext, c, &mut sumcheck));
 
         // sample extra challenge for the next round
         let _ = c.get_challenge();
-        point = c.build_point(i);
+        point = c.build_point(i + 1);
     }
     (round01, sumcheck)
 }
@@ -371,15 +419,23 @@ fn gpgkr_verify(
     sumcheck: TriangularArray<(Field, Field)>,
 ) -> bool {
     let mut claim = final_value;
-    let rounds = circuit.leafs.len().ilog2() as usize;
+    // `round01` has one entry per layer `gpgkr_prove` actually processed --
+    // `k - lgroups` of them, not `circuit.leafs.len().ilog2() (= k)` --
+    // since `batched_eval` stops descending at the `groups`-sized top layer.
+    // Indexing `round01[i]` past `round01.len()` would panic once
+    // `lgroups > 0`.
+    let rounds = round01.len();
 
-    let start_point = [];
-    let mut point: Point<Field> = Point::new(&start_point);
+    let mut point: Point<Field> = challenges.build_point(0);
     let start_sumcheck = [];
     let mut sumcheck_round: &[(Field, Field)] = &start_sumcheck;
 
     for i in 0..rounds {
-        let next_point = challenges.build_point(i);
+        // `+ 1`: round 0's window is now the group-selector prefix
+        // (`challenges.build_point(0)` above), so what round `i`'s
+        // reduction actually needs -- `gpgkr_prove`'s iteration `i`'s own
+        // pushed values -- lives one window later than it used to.
+        let next_point = challenges.build_point(i + 1);
         let (r, sumcheck_challenge) = next_point.sc();
 
         let (factor, sumcheck_final) =
@@ -395,7 +451,12 @@ fn gpgkr_verify(
         claim = claim_lr.0 + r * (claim_lr.1 - claim_lr.0);
         point = next_point;
         if i < rounds - 1 {
-            sumcheck_round = sumcheck.round(i);
+            // `+ 1`, same reason as `next_point` above: `sumcheck` has no
+            // group-selector prefix of its own (nothing is pushed into it
+            // outside `prove_layer`'s loop), but it's read through the same
+            // `round` formula as `c`, so round `i + 1`'s window is what
+            // holds iteration `i + 1`'s own pushes.
+            sumcheck_round = sumcheck.round(i + 1);
         }
     }
 
@@ -548,6 +609,48 @@ mod tests {
         any::<u128>().prop_map(Field::from)
     }
 
+    // Regression test for a real bug: before `round(0)` became the
+    // group-selector prefix itself, the separate `group_prefix` method and
+    // `round(0)` started at the same absolute position, so `round(0).c()`
+    // (read as `sumcheck_challenge` in `gpgkr_verify`) and `group_prefix()`
+    // (read as `point`) were literally the same slice for round 0's check.
+    // That forces `eq_factor(r, z)` to `eq_factor(r, r) = 1` at every one of
+    // round 0's group-selector coordinates in characteristic 2 -- silently
+    // wrong regardless of what the prover actually sampled, and undetectable
+    // from `gpgkr_verify`'s boolean result alone since it doesn't panic.
+    // Folding the prefix into `round(0)` removes the two-method mismatch
+    // that caused it; this pins the fix by checking every round's window
+    // occupies disjoint absolute positions (each pushed value here is set
+    // to its own push index, so a window's contents double as the absolute
+    // positions it covers).
+    #[test]
+    fn rounds_do_not_overlap() {
+        for groups in [1usize, 2, 4, 8] {
+            let rounds = 5;
+            let lgroups = groups.ilog2() as usize;
+            let total = (rounds * rounds - rounds) / 2 + rounds * lgroups;
+
+            let mut arr: TriangularArray<usize> = TriangularArray::with_capacity(rounds, groups);
+            for i in 0..total {
+                arr.push(i);
+            }
+
+            // round(0) is the group-selector prefix: `lgroups` wide, empty
+            // (no-op) for the non-batched groups = 1 case.
+            assert_eq!(arr.round(0).len(), lgroups, "groups = {groups}");
+
+            let mut seen = std::collections::HashSet::new();
+            for r in 0..rounds {
+                for &pos in arr.round(r) {
+                    assert!(
+                        seen.insert(pos),
+                        "round({r}) overlaps an earlier window at position {pos} for groups = {groups}"
+                    );
+                }
+            }
+        }
+    }
+
     proptest! {
         // Pairwise multiplication is associative, so folding-by-multiply any
         // witness layer (including the leaves, padded with the multiplicative
@@ -582,6 +685,97 @@ mod tests {
             let (round01, sumcheck) = gpgkr_prove(1, &c, witnesses);
 
             prop_assert!(gpgkr_verify(expected, circuit, c, round01, sumcheck));
+        }
+
+        // `batched_eval` stops descending the tree once a layer has `groups`
+        // entries left, so the surviving top layer should hold one partial
+        // product per group rather than the full product. Each step
+        // multiplies the *low* half of the current layer by the *high*
+        // half (`split_at` at the midpoint, same MSB-first split
+        // `Mle::fix_variable`/`round_sums` use), so the bits that survive
+        // uncollapsed are the low `log2(groups)` bits of the original leaf
+        // index: group `j`'s surviving entry is the product of every
+        // (power-of-two-padded) leaf whose index is congruent to `j` modulo
+        // `groups`. This is the one part of batching that's already fully
+        // implemented -- `Circuit::batched_eval` on its own, with nothing
+        // downstream of it yet -- so this pins it as a correctness
+        // invariant to build the rest of batching on top of.
+        #[test]
+        fn batched_eval_top_layer_is_interleaved_group_products(
+            leaves in prop::collection::vec(field(), 1..32),
+            groups_log2 in 0usize..4,
+        ) {
+            let padded_len = leaves.len().next_power_of_two();
+            let groups_log2 = groups_log2.min(padded_len.ilog2() as usize);
+            let groups = 1usize << groups_log2;
+
+            let mut padded = leaves.clone();
+            padded.resize(padded_len, Field::ONE);
+
+            let circuit = Circuit::new(leaves);
+            let mut eval = circuit.batched_eval(groups);
+            let top = eval.pop().unwrap();
+            prop_assert_eq!(top.len(), groups);
+
+            for (j, &value) in top.iter().enumerate() {
+                let expected = padded
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| i % groups == j)
+                    .fold(Field::ONE, |acc, (_, &x)| acc * x);
+                prop_assert_eq!(value, expected);
+            }
+        }
+
+        // Batching (`groups > 1`) is not fully wired up yet, and this
+        // currently fails rather than passing -- that's the point: it pins
+        // the concrete target the next implementation pass needs to hit.
+        //
+        // The bookkeeping gaps that used to make this *panic*, or silently
+        // compute wrong values without panicking, are already fixed:
+        // `gpgkr_prove` seeds `lgroups` fresh group-selector challenges into
+        // `round(0)` instead of starting from an empty point, `gpgkr_verify`
+        // reads that same `round(0)` back as its own starting point instead
+        // of an empty one, its round-loop bound is `round01.len()` (`k -
+        // lgroups`, not `circuit.leafs.len().ilog2() (= k)`, which used to
+        // risk indexing `round01` out of bounds), and `round(0)`/`round(r)`
+        // for `r >= 1` are laid out back-to-back with no overlap (see
+        // `rounds_do_not_overlap` and `TriangularArray::round`'s doc
+        // comment -- an earlier version of this fix left `round(0)` and the
+        // prefix sharing positions, which silently forced every one of
+        // round 0's `r`/`z` pairs to be equal instead of independent).
+        //
+        // What's left is purely a missing feature, not a bug: `_last_value`
+        // -- the `groups`-sized top layer `gpgkr_prove` still discards --
+        // is public input, so `gpgkr_verify` needs to take it (or the
+        // `groups` claimed products it represents) directly and seed
+        // `claim` as `mle(_last_value, group_selector_challenges)` at the
+        // same `lgroups` challenges `round(0)` supplies, mirroring exactly
+        // how `mle(circuit.leafs, point)` already checks the leaf layer at
+        // the other end. Until that's wired up, `final_value` below is a
+        // placeholder and this fails cleanly via `gpgkr_verify` returning
+        // `false` -- no panic, which is itself the signal the bookkeeping
+        // fixes above landed correctly.
+        #[test]
+        fn gpgkr_round_trip_batched(
+            leaves in prop::collection::vec(field(), 4..16),
+            groups_log2 in 1usize..3,
+        ) {
+            let padded_len = leaves.len().next_power_of_two();
+            let groups_log2 = groups_log2.min(padded_len.ilog2() as usize).max(1);
+            let groups = 1usize << groups_log2;
+
+            let circuit = Circuit::new(leaves);
+            let m = circuit.leafs.len().ilog2() as usize;
+            let witnesses = circuit.batched_eval(groups);
+
+            let c = Challenge::with_capacity(m, groups);
+            let (round01, sumcheck) = gpgkr_prove(groups, &c, witnesses);
+
+            // Placeholder: `gpgkr_verify` doesn't yet take `_last_value` (or
+            // its MLE evaluation) to seed `claim` from, so this is expected
+            // to return `false`, not panic.
+            prop_assert!(gpgkr_verify(Field::ONE, circuit, c, round01, sumcheck));
         }
 
         // The selector is stored last in the backend but needs to lead
