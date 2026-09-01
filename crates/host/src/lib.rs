@@ -23,14 +23,12 @@ mod tests {
     use transcript::Proof;
 
     /// Make a well-structured header with the given fields.
-    fn header_with(records: (u32, u32), lengths: (u64, u64)) -> Vec<u8> {
+    fn header_with(lengths: (u64, u64)) -> Vec<u8> {
         let mut header = Vec::new();
         header.extend_from_slice(&wire_proof::MAGIC);
         header.extend_from_slice(&wire_proof::WIRE_VERSION.to_le_bytes());
         header.extend_from_slice(&(wire_proof::HEADER_LEN as u16).to_le_bytes());
         header.extend_from_slice(&wire_proof::FLAGS.to_le_bytes());
-        header.extend_from_slice(&records.0.to_le_bytes());
-        header.extend_from_slice(&records.1.to_le_bytes());
         header.extend_from_slice(&lengths.0.to_le_bytes());
         header.extend_from_slice(&lengths.1.to_le_bytes());
         header
@@ -62,10 +60,9 @@ mod tests {
         #[test]
         fn a_header_with_adversarial_lengths_never_panics(
             lengths in any::<(u64, u64)>(),
-            records in any::<(u32, u32)>(),
             body in prop::collection::vec(any::<u8>(), 0..256),
         ) {
-            let mut bytes = header_with(records, lengths);
+            let mut bytes = header_with(lengths);
             bytes.extend_from_slice(&body);
             is_well_behaved(&bytes)?;
         }
@@ -75,17 +72,14 @@ mod tests {
         fn a_well_formed_container_round_trips(
             narg in prop::collection::vec(any::<u8>(), 0..64),
             hints in prop::collection::vec(any::<u8>(), 0..64),
-            records in any::<(u32, u32)>(),
         ) {
-            let mut bytes = header_with(records, (narg.len() as u64, hints.len() as u64));
+            let mut bytes = header_with((narg.len() as u64, hints.len() as u64));
             bytes.extend_from_slice(&narg);
             bytes.extend_from_slice(&hints);
 
             let wire = WireProof::from_bytes(&bytes).expect("a well-formed container");
             prop_assert_eq!(wire.narg_string, &narg[..]);
             prop_assert_eq!(wire.hints, &hints[..]);
-            prop_assert_eq!(wire.narg_records, records.0);
-            prop_assert_eq!(wire.hint_records, records.1);
             prop_assert_eq!(wire.to_bytes(), bytes.clone());
             prop_assert_eq!(wire_proof::encode(&wire.unwrap()), bytes);
         }
@@ -105,8 +99,6 @@ mod tests {
             let proof = Proof {
                 narg_string: vec![7; 96],
                 hints: vec![9; 32],
-                narg_records: 4,
-                hint_records: 2,
             };
             let mut bytes = wire_proof::encode(&proof);
             for (at, value) in edits {

@@ -9,8 +9,6 @@ use crate::Proof;
 pub struct ProverState {
     pub(crate) inner: spongefish::ProverState,
     pub(crate) hints: Vec<u8>,
-    pub(crate) narg_records: u32,
-    pub(crate) hint_records: u32,
 }
 
 impl ProverState {
@@ -22,10 +20,6 @@ impl ProverState {
     /// Absorbs a message and writes it to the narg string.
     pub fn prover_message<T: Encoding<[u8]> + NargSerialize + ?Sized>(&mut self, message: &T) {
         self.inner.prover_message(message);
-        self.narg_records = self
-            .narg_records
-            .checked_add(1)
-            .expect("reaching `u32::MAX` records should not be physically possible");
     }
 
     /// Squeezes a challenge.
@@ -37,23 +31,12 @@ impl ProverState {
     /// cannot influence any challenge.
     pub fn hint<T: NargSerialize + ?Sized>(&mut self, hint: &T) {
         hint.serialize_into_narg(&mut self.hints);
-        self.hint_records = self
-            .hint_records
-            .checked_add(1)
-            .expect("reaching `u32::MAX` records should not be physically possible");
-    }
-
-    /// How many records went to the narg string and to the hint stream.
-    pub fn records(&self) -> (u32, u32) {
-        (self.narg_records, self.hint_records)
     }
 
     pub fn finish(self) -> Proof {
         Proof {
             narg_string: self.inner.narg_string().to_vec(),
             hints: self.hints,
-            narg_records: self.narg_records,
-            hint_records: self.hint_records,
         }
     }
 }

@@ -17,8 +17,4 @@
 pub struct Proof {
     pub narg_string: Vec<u8>,
     pub hints: Vec<u8>,
-    /// How many records the prover wrote to the narg string.
-    pub narg_records: u32,
-    /// How many records the prover wrote to the hint stream.
-    pub hint_records: u32,
 }

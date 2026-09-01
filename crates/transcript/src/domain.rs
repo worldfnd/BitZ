@@ -22,8 +22,6 @@ where
     ProverState {
         inner,
         hints: Vec::new(),
-        narg_records: 0,
-        hint_records: 0,
     }
 }
 
@@ -44,7 +42,5 @@ where
     VerifierState {
         inner,
         hints: &proof.hints,
-        narg_records: 0,
-        hint_records: 0,
     }
 }

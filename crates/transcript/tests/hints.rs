@@ -28,8 +28,6 @@ fn prove() -> (Proof, F128, F128) {
 fn mixed_messages_and_hints_round_trip() {
     let (proof, c1, c2) = prove();
 
-    assert_eq!((proof.narg_records, proof.hint_records), (2, 3));
-
     let mut verifier = build_verifier(SESSION, INSTANCE, &proof);
     assert_eq!(verifier.prover_message::<F128>().unwrap(), MSG_1);
     assert_eq!(verifier.verifier_message::<F128>(), c1);
@@ -41,12 +39,6 @@ fn mixed_messages_and_hints_round_trip() {
     assert_eq!(verifier.hint::<F128>().unwrap(), HINT_F128);
     assert_eq!(verifier.verifier_message::<F128>(), c2);
     assert_eq!(verifier.hint::<u32>().unwrap(), HINT_U32);
-
-    assert_eq!(
-        verifier.records(),
-        (proof.narg_records, proof.hint_records),
-        "the replay must consume exactly what the prover wrote"
-    );
     verifier.check_eof().unwrap();
 }
 
@@ -79,11 +71,6 @@ fn truncated_hints_fail_the_read() {
     verifier.hint::<F128>().unwrap();
     verifier.verifier_message::<F128>();
     assert!(verifier.hint::<u32>().is_err());
-    assert_eq!(
-        verifier.records(),
-        (2, 2),
-        "a read that failed is not a record"
-    );
 }
 
 #[test]

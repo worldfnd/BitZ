@@ -35,14 +35,12 @@ fn a_proof_survives_the_round_trip_through_bytes() {
 
         let proof = wire_proof::decode(&proof_bytes).expect("its own encoding");
 
-        // The fold round sends one record per column and no hints, so the
-        // container's lengths are the reported metrics for it.
-        assert_eq!(proof.narg_records as usize, shape.columns());
-        assert_eq!(proof.hint_records, 0);
-
+        // The fold round sends one 16-byte fold per column and no hints, so
+        // this is the whole proof size for it.
         let wire_proof = wire_proof::WireProof::new(&proof);
-        assert_eq!(wire_proof.byte_len(), 40 + 16 * shape.columns());
+        assert_eq!(wire_proof.byte_len(), 32 + 16 * shape.columns());
         assert_eq!(wire_proof.byte_len(), proof_bytes.len());
+        assert!(wire_proof.hints.is_empty());
 
         // Verification against the decoded proof, with the claim supplied
         // the way a caller supplies it on both sides.
