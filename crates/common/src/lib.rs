@@ -18,7 +18,7 @@ pub use fold::{
     Fold, FoldError, column_images, fold_column, fold_columns, reconstruct, row_images,
 };
 pub use opening::OpeningQuery;
-pub use params::{F2ZParams, ParamsError};
+pub use params::{F2ZParams, ParamsError, VirtualParams, VirtualParamsError};
 pub use reduction::ReductionInput;
 pub use shape::{Shape, ShapeError};
 pub use table::{BitTable, TableError};
