@@ -27,8 +27,8 @@ pub(super) struct RingSwitch<'a> {
     point: &'a [FlockF128],
 }
 
-/// Prover state that retains the materialized suffix equality tensor.
-pub(super) struct PreparedProver {
+/// Ring-switch claims with the prover data needed for challenge reduction.
+pub(super) struct PreparedClaims {
     claims: Claims,
     suffix_tensor: Vec<FlockF128>,
 }
@@ -61,12 +61,12 @@ impl<'a> RingSwitch<'a> {
         self.point.len() - LOG_PACKING
     }
 
-    /// Computes and checks the prover's 128 partial evaluations.
-    pub(super) fn prepare_prover(
+    /// Derives 128 ring-switch claims, checks their target, and retains reduction data.
+    pub(super) fn prepare_claims(
         &self,
         packed_witness: &[FlockF128],
         claimed_target: F128,
-    ) -> Result<PreparedProver, CommitError> {
+    ) -> Result<PreparedClaims, CommitError> {
         let (prefix_tensor, suffix_tensor) = build_eq_split(self.point, LOG_PACKING);
         if suffix_tensor.len() != packed_witness.len() {
             return Err(CommitError::InvalidBitLength);
@@ -77,7 +77,7 @@ impl<'a> RingSwitch<'a> {
             return Err(CommitError::InvalidClaim);
         }
 
-        Ok(PreparedProver {
+        Ok(PreparedClaims {
             claims,
             suffix_tensor,
         })
@@ -105,7 +105,7 @@ impl<'a> RingSwitch<'a> {
     }
 }
 
-impl PreparedProver {
+impl PreparedClaims {
     pub(super) fn claims(&self) -> &Claims {
         &self.claims
     }
@@ -175,13 +175,13 @@ mod tests {
         let point = vec![F128::from(2u64); LOG_PACKING + 2];
         let packed_witness = vec![FlockF128::ZERO; 4];
         let ring_switch = RingSwitch::new(&point, point.len()).unwrap();
-        let prepared = ring_switch
-            .prepare_prover(&packed_witness, F128::default())
+        let prepared_claims = ring_switch
+            .prepare_claims(&packed_witness, F128::default())
             .unwrap();
-        let claims = prepared.claims().clone();
+        let claims = prepared_claims.claims().clone();
         let challenge = core::array::from_fn(|index| FlockF128::new(index as u64 + 3, 0));
 
-        let dense = prepared.reduce(&challenge);
+        let dense = prepared_claims.reduce(&challenge);
         let succinct = ring_switch.reduce_verifier(&claims, &challenge);
 
         assert_eq!(dense.packed_target, succinct.packed_target);

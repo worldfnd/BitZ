@@ -30,8 +30,8 @@ pub(super) struct RingSwitch<'a> {
     packed_len: usize,
 }
 
-/// Prover state that retains the public weights until challenge batching.
-pub(super) struct PreparedProver<'a> {
+/// Ring-switch claims with the prover data needed for challenge reduction.
+pub(super) struct PreparedClaims<'a> {
     weights: &'a [F128],
     packed_len: usize,
     claims: Claims,
@@ -55,12 +55,12 @@ impl<'a> RingSwitch<'a> {
         })
     }
 
-    /// Computes and checks the prover claims before transcript challenge sampling.
-    pub(super) fn prepare_prover(
+    /// Derives 128 ring-switch claims, checks their target, and retains reduction data.
+    pub(super) fn prepare_claims(
         &self,
         packed_witness: &[FlockF128],
         claimed_target: F128,
-    ) -> Result<PreparedProver<'a>, CommitError> {
+    ) -> Result<PreparedClaims<'a>, CommitError> {
         if packed_witness.len() != self.packed_len {
             return Err(CommitError::InvalidBitLength);
         }
@@ -68,7 +68,7 @@ impl<'a> RingSwitch<'a> {
         if !self.target_matches(&claims, claimed_target) {
             return Err(CommitError::InvalidClaim);
         }
-        Ok(PreparedProver {
+        Ok(PreparedClaims {
             weights: self.weights,
             packed_len: self.packed_len,
             claims,
@@ -90,7 +90,7 @@ impl<'a> RingSwitch<'a> {
     }
 }
 
-impl PreparedProver<'_> {
+impl PreparedClaims<'_> {
     pub(super) fn claims(&self) -> &Claims {
         &self.claims
     }
@@ -260,11 +260,11 @@ mod tests {
                 })
                 .collect::<Vec<_>>();
             let ring_switch = RingSwitch::new(&weights, 1).unwrap();
-            let prepared = ring_switch
-                .prepare_prover(&packed_witness, weights[bit_index])
+            let prepared_claims = ring_switch
+                .prepare_claims(&packed_witness, weights[bit_index])
                 .unwrap();
 
-            assert!(ring_switch.target_matches(prepared.claims(), weights[bit_index]));
+            assert!(ring_switch.target_matches(prepared_claims.claims(), weights[bit_index]));
         }
     }
 
@@ -292,9 +292,9 @@ mod tests {
             }
         }
         let ring_switch = RingSwitch::new(&weights, packed_witness.len()).unwrap();
-        let prepared = ring_switch.prepare_prover(&packed_witness, direct).unwrap();
+        let prepared_claims = ring_switch.prepare_claims(&packed_witness, direct).unwrap();
 
-        assert!(ring_switch.target_matches(prepared.claims(), direct));
+        assert!(ring_switch.target_matches(prepared_claims.claims(), direct));
     }
 
     #[test]
@@ -352,10 +352,10 @@ mod tests {
         });
         let ring_switch = RingSwitch::new(&weights, packed_witness.len()).unwrap();
         let claims = Claims::from_array(compute_claims(&packed_witness, &weights));
-        let prepared = ring_switch
-            .prepare_prover(&packed_witness, reconstructed_target(&claims))
+        let prepared_claims = ring_switch
+            .prepare_claims(&packed_witness, reconstructed_target(&claims))
             .unwrap();
-        let reduced = prepared.reduce(&challenges);
+        let reduced = prepared_claims.reduce(&challenges);
         let verifier_reduction = ring_switch.reduce_verifier(&claims, &challenges);
 
         assert_eq!(

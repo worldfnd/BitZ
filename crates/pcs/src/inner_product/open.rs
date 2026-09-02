@@ -29,9 +29,9 @@ pub(crate) fn open(
         bind_inner_product_statement(pcs, &data.commitment().root, weights, target, transcript);
     }
 
-    let prepared = ring_switch.prepare_prover(prover.witness(), target)?;
-    write_inner_product_claims(transcript, prepared.claims().as_array());
+    let prepared_claims = ring_switch.prepare_claims(prover.witness(), target)?;
+    write_inner_product_claims(transcript, prepared_claims.claims().as_array());
     let challenge = sample_inner_product_batching_challenges(transcript);
-    let reduced_claim = prepared.reduce(&challenge);
+    let reduced_claim = prepared_claims.reduce(&challenge);
     prover.prove(reduced_claim, Vec::new(), transcript)
 }

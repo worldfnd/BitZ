@@ -25,12 +25,12 @@ pub(crate) fn open(
         bind_statement(pcs, &data.commitment().root, point, target, transcript);
     }
 
-    let prepared = ring_switch.prepare_prover(prover.witness(), target)?;
-    bind_ring_switch_message(transcript, prepared.claims().as_array())?;
-    let proof_claims = prepared.claims().as_array().to_vec();
+    let prepared_claims = ring_switch.prepare_claims(prover.witness(), target)?;
+    bind_ring_switch_message(transcript, prepared_claims.claims().as_array())?;
+    let proof_claims = prepared_claims.claims().as_array().to_vec();
 
     let challenge = sample_ring_switch_point(transcript);
-    let reduced_claim = prepared.reduce(&challenge);
+    let reduced_claim = prepared_claims.reduce(&challenge);
     prover.prove(
         reduced_claim,
         vec![RingSwitchProof {
