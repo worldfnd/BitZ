@@ -271,6 +271,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "circuit"
+version = "0.1.0"
+dependencies = [
+ "crypto-bigint",
+ "divan",
+ "field",
+ "num-bigint 0.4.8",
+ "num-traits",
+ "rayon",
+]
+
+[[package]]
 name = "clap"
 version = "4.6.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"

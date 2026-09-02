@@ -1,0 +1,28 @@
+[package]
+name = "circuit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+field = { path = "../field" }
+num-bigint.workspace = true
+num-traits.workspace = true
+crypto-bigint.workspace = true
+rayon.workspace = true
+
+[dev-dependencies]
+divan = "0.1.21"
+
+[[bench]]
+name = "sha256_matrix_products"
+harness = false
+
+[[bench]]
+name = "p256_matrix_products"
+harness = false
+
+[[bench]]
+name = "ecdsa_sha256_matrix_products"
+harness = false
