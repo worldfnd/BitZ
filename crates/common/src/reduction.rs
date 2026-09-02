@@ -10,9 +10,8 @@ use crate::{F2ZParams, Fold, LinearClaim, Root};
 
 /// A multilinear evaluation claim on the committed bits: `f~(point) = target`.
 ///
-/// TODO: this is `pcs::OpeningQuery` under another name. Once #15 lands it
-/// should be that type, so the reduction's output is the opening's input with
-/// nothing to convert between them.
+/// TODO: convert this claim into `pcs::OpeningQuery::Mle` at the PCS boundary
+/// when #15 lands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpeningClaim {
     /// The evaluation point, low-index-bit-first.

@@ -20,7 +20,9 @@
 //! Ligerito then verifies `Σ_y B(y) · q_pkd(y) = beta0` against the root.
 
 use flock_core::field::F128 as FlockF128;
-use flock_core::pcs::ligerito::{VerifierConfig, recursive_verifier_with_basis_succinct};
+use flock_core::pcs::ligerito::{
+    LigeritoProof, VerifierConfig, recursive_verifier_with_basis_succinct,
+};
 use flock_core::pcs::ring_switch::{
     claim_check, eval_rs_eq_finish_from_prefix_binary_q, eval_rs_eq_prefix, inner_product,
     tensor_algebra_transpose,
@@ -35,18 +37,19 @@ use crate::utils::{
     bind_ring_switch_message, bind_statement, observe_opening_target, read_opening_proof,
     sample_ring_switch_point,
 };
-use crate::{CommitError, Commitment, OpeningQuery, Pcs, StatementBinding};
+use crate::{CommitError, Commitment, Pcs, StatementBinding};
 
 pub(crate) fn verify(
     pcs: &Pcs,
     commitment: &Commitment,
-    query: &OpeningQuery,
+    point: &[field::F128],
+    target: field::F128,
     statement_binding: StatementBinding,
     transcript: &mut VerifierState<'_>,
 ) -> Result<(), CommitError> {
     // 1. Input Validation
     let m = pcs.params().m;
-    if query.point.len() != m {
+    if point.len() != m {
         return Err(CommitError::PointLengthMismatch);
     }
     let log_n = m.checked_sub(LOG_PACKING).ok_or_else(|| {
@@ -62,7 +65,7 @@ pub(crate) fn verify(
 
     // 2. Bind Statement
     if statement_binding == StatementBinding::Bind {
-        bind_statement(pcs, commitment.root(), query, transcript);
+        bind_statement(pcs, commitment.root(), point, target, transcript);
     }
 
     // 3. Read Opening Proof
@@ -76,16 +79,16 @@ pub(crate) fn verify(
         .ring_switches
         .first()
         .ok_or(CommitError::MalformedProof)?;
-    let (r_lo, r_hi) = query.point.split_at(LOG_PACKING);
+    let (r_lo, r_hi) = point.split_at(LOG_PACKING);
     let r_hi = as_flock_f128s(r_hi);
 
     // 6. Replay Ring-Switch Message
     bind_ring_switch_message(transcript, &ring_switch.s_hat_v)?;
 
     // 7. Check Target
-    // query.target = Σ_v eq(r_lo, v) · s_hat_v[v].
+    // target = Σ_v eq(r_lo, v) · s_hat_v[v].
     let eq_lo = build_eq(as_flock_f128s(r_lo));
-    let target = as_flock_f128s(core::slice::from_ref(&query.target))[0];
+    let target = as_flock_f128s(core::slice::from_ref(&target))[0];
     if claim_check(&eq_lo, &ring_switch.s_hat_v) != target {
         return Err(CommitError::VerificationFailed);
     }
@@ -337,12 +340,23 @@ fn validate_proof_shape(
 ) -> Result<(), CommitError> {
     if proof.ring_switches.len() != 1
         || proof.ring_switches[0].s_hat_v.len() != 1usize << LOG_PACKING
-        || &proof.ligerito.initial_root != expected_root
     {
         return Err(CommitError::VerificationFailed);
     }
 
-    let lig = &proof.ligerito;
+    validate_ligerito_proof_shape(&proof.ligerito, config, final_log_n, expected_root)
+}
+
+pub(crate) fn validate_ligerito_proof_shape(
+    lig: &LigeritoProof,
+    config: &VerifierConfig,
+    final_log_n: usize,
+    expected_root: &[u8; 32],
+) -> Result<(), CommitError> {
+    if &lig.initial_root != expected_root {
+        return Err(CommitError::VerificationFailed);
+    }
+
     let r = config.recursive_steps;
     if lig.recursive_roots.len() != r
         || lig.recursive_proofs.len() != r - 1
@@ -447,7 +461,7 @@ fn rows_match(rows: &[Vec<FlockF128>], expected_rows: usize, expected_width: usi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CommitScheme, HashKind, LigeritoProfile};
+    use crate::{CommitScheme, HashKind, LigeritoProfile, OpeningQuery};
     use common::Shape;
     use field::F128 as LocalF128;
     use transcript::{build_prover, build_verifier};
@@ -546,7 +560,7 @@ mod tests {
         let pcs = Pcs::new(&shape, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
         let packed_witness = vec![LocalF128::default(); pcs.packed_len()];
         let (commitment, data) = pcs.commit(&packed_witness).unwrap();
-        let query = OpeningQuery {
+        let query = OpeningQuery::Mle {
             point: vec![LocalF128::from(2u64); 22],
             target: LocalF128::default(),
         };

@@ -983,6 +983,7 @@ dependencies = [
  "common",
  "field",
  "flock-core",
+ "poly",
  "proptest",
  "transcript",
 ]

@@ -26,7 +26,7 @@ use crate::utils::{
     bind_ring_switch_message, bind_statement, observe_opening_target, sample_ring_switch_point,
     write_opening_proof,
 };
-use crate::{CommitError, OpeningQuery, Pcs, ProverData, StatementBinding};
+use crate::{CommitError, Pcs, ProverData, StatementBinding};
 use field::F128;
 use flock_core::pcs::ligerito::recursive_prover_with_basis;
 use flock_core::pcs::ring_switch::{
@@ -41,13 +41,14 @@ pub(crate) fn open(
     pcs: &Pcs,
     data: &ProverData,
     packed_witness: Vec<F128>,
-    query: &OpeningQuery,
+    point: &[F128],
+    target: F128,
     statement_binding: StatementBinding,
     transcript: &mut ProverState,
 ) -> Result<(), CommitError> {
     // 1. Input Validation
     let expected_m = pcs.params().m;
-    if query.point.len() != expected_m {
+    if point.len() != expected_m {
         return Err(CommitError::PointLengthMismatch);
     }
     if packed_witness.len() != pcs.packed_len() {
@@ -67,16 +68,16 @@ pub(crate) fn open(
 
     // 2. Bind Statement
     if statement_binding == StatementBinding::Bind {
-        bind_statement(pcs, &data.commitment().root, query, transcript);
+        bind_statement(pcs, &data.commitment().root, point, target, transcript);
     }
     let packed_witness = into_flock_f128s(packed_witness);
     let flock_data = data.flock_data();
 
     // 3. Split Point
-    let (r_lo, r_hi) = query.point.split_at(LOG_PACKING);
+    let (r_lo, r_hi) = point.split_at(LOG_PACKING);
 
     // 4. Build eq Tables
-    let (eq_lo, eq_hi) = build_eq_split(as_flock_f128s(&query.point), r_lo.len());
+    let (eq_lo, eq_hi) = build_eq_split(as_flock_f128s(point), r_lo.len());
     debug_assert_eq!(eq_lo.len(), 1 << r_lo.len());
     debug_assert_eq!(eq_hi.len(), 1 << r_hi.len());
     debug_assert_eq!(eq_hi.len(), packed_witness.len());
@@ -87,9 +88,9 @@ pub(crate) fn open(
     debug_assert_eq!(s_hat_v.len(), 1 << LOG_PACKING);
 
     // 6. Check Target
-    // query.target = Σ_v eq(r_lo, v) · s_hat_v[v].
+    // target = Σ_v eq(r_lo, v) · s_hat_v[v].
     let evaluation = claim_check(&eq_lo, &s_hat_v);
-    let target = as_flock_f128s(core::slice::from_ref(&query.target))[0];
+    let target = as_flock_f128s(core::slice::from_ref(&target))[0];
     if evaluation != target {
         return Err(CommitError::InvalidClaim);
     }
