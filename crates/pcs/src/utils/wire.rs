@@ -107,18 +107,18 @@ pub(crate) fn read_inner_product_coordinates(
 }
 
 /// Samples the seven tag-4101 coordinates of the shared ring-switch point.
-pub(crate) fn sample_ring_switch_point(transcript: &mut impl PublicTranscript) -> Vec<FlockF128> {
-    (0..LOG_PACKING)
-        .map(|index| {
-            sample_f128_event(
-                transcript,
-                RING_SWITCH_CHALLENGE_TAG,
-                NO_SCOPE,
-                NO_SCOPE,
-                index as u32,
-            )
-        })
-        .collect()
+pub(crate) fn sample_ring_switch_point(
+    transcript: &mut impl PublicTranscript,
+) -> [FlockF128; LOG_PACKING] {
+    core::array::from_fn(|index| {
+        sample_f128_event(
+            transcript,
+            RING_SWITCH_CHALLENGE_TAG,
+            NO_SCOPE,
+            NO_SCOPE,
+            index as u32,
+        )
+    })
 }
 
 /// Samples one independent batching challenge for each coordinate claim.
@@ -139,11 +139,9 @@ pub(crate) fn sample_inner_product_batching_challenges(
 /// Absorbs the derived tag-5001 opening target before recursive Ligerito.
 pub(crate) fn observe_opening_target(
     transcript: &mut impl PublicTranscript,
-    m_p: usize,
+    m_p: u32,
     beta: FlockF128,
-) -> Result<(), CommitError> {
-    let m_p =
-        u32::try_from(m_p).map_err(|_| CommitError::invalid_configuration("m_p exceeds u32"))?;
+) {
     transcript.public_message(&event_header(
         OPENING_TARGET_TAG,
         NO_SCOPE,
@@ -153,7 +151,6 @@ pub(crate) fn observe_opening_target(
     ));
     transcript.public_message(&m_p);
     transcript.public_message(&from_flock_f128(beta));
-    Ok(())
 }
 
 fn sample_f128_event(
@@ -346,7 +343,7 @@ mod tests {
         };
 
         let r_dprime = sample_ring_switch_point(&mut transcript);
-        observe_opening_target(&mut transcript, 15, FlockF128::new(10, 11)).unwrap();
+        observe_opening_target(&mut transcript, 15, FlockF128::new(10, 11));
         let frames = parse_recorded_frames(&transcript.absorbed);
 
         assert_eq!(r_dprime.len(), LOG_PACKING);

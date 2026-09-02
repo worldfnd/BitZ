@@ -1,143 +1,115 @@
-//! Standard multilinear verification over the Flock commitment.
-//!
-//! Verifier steps:
-//! 1. Validate the evaluation point and derive the Ligerito verifier configuration.
-//! 2. Bind the commitment root, trusted parameters, point, and target to the transcript.
-//! 3. Read and deserialize the bounded opening proof.
-//! 4. Validate the proof shape and require its initial root to match the commitment.
-//! 5. Extract one ring-switch proof and split the point into low and high coordinates.
-//! 6. Replay the tag-4001 ring-switch message.
-//! 7. Check the target against the low-coordinate equality table.
-//! 8. Sample seven tag-4101 challenges and compute the packed target `beta0`.
-//! 9. Build the succinct Ligerito basis evaluator from the high coordinates.
-//! 10. Bind tag 5001 and call `recursive_verifier_with_basis_succinct`.
-//! 11. Reject Flock failures and transcript mismatches.
-//!
-//! The verifier checks `target = Σ_v eq(r_lo, v) · s_v`.
-//! It samples `r_dprime` and computes `beta0 = Σ_u eq(r_dprime, u) · s_u`.
-//! The succinct basis evaluates `B_hat`, where
-//! `B(y) = Σ_u eq(r_dprime, u) · A(y, u)`.
-//! Ligerito then verifies `Σ_y B(y) · q_pkd(y) = beta0` against the root.
+//! Validation for trusted Ligerito configurations and untrusted proof shapes.
 
 use flock_core::field::F128 as FlockF128;
-use flock_core::pcs::ligerito::{
-    LigeritoProof, VerifierConfig, recursive_verifier_with_basis_succinct,
-};
-use flock_core::pcs::ring_switch::{
-    claim_check, eval_rs_eq_finish_from_prefix_binary_q, eval_rs_eq_prefix, inner_product,
-    tensor_algebra_transpose,
-};
-use flock_core::pcs::{BatchOpeningProofLigerito, LOG_PACKING};
-use flock_core::zerocheck::univariate_skip::build_eq;
-use transcript::VerifierState;
+use flock_core::pcs::ligerito::{LigeritoProof, ProverConfig, VerifierConfig};
+use flock_core::pcs::{LOG_PACKING, PcsParams};
 
-use crate::bridge::as_flock_f128s;
-use crate::challenger::VerifierChallenger;
-use crate::utils::{
-    bind_ring_switch_message, bind_statement, observe_opening_target, read_opening_proof,
-    sample_ring_switch_point,
-};
-use crate::{CommitError, Commitment, Pcs, StatementBinding};
+use crate::{CommitError, Pcs, ProverData};
 
-pub(crate) fn verify(
-    pcs: &Pcs,
-    commitment: &Commitment,
-    point: &[field::F128],
-    target: field::F128,
-    statement_binding: StatementBinding,
-    transcript: &mut VerifierState<'_>,
+/// Immutable Ligerito state checked once during [`Pcs`] construction.
+#[derive(Clone, Debug)]
+pub(crate) struct CheckedLigerito {
+    prover_config: ProverConfig,
+    verifier_config: VerifierConfig,
+    log_n_u32: u32,
+    final_log_n: usize,
+}
+
+impl CheckedLigerito {
+    pub(crate) fn new(params: &PcsParams) -> Result<Self, CommitError> {
+        let log_n = params.m.checked_sub(LOG_PACKING).ok_or_else(|| {
+            CommitError::invalid_configuration(format!(
+                "PCS variable count {} is smaller than the packing width {LOG_PACKING}",
+                params.m,
+            ))
+        })?;
+        let log_n_u32 = u32::try_from(log_n).map_err(|_| {
+            CommitError::invalid_configuration("packed witness variable count exceeds u32")
+        })?;
+        let prover_config = params
+            .ligerito_prover_config()
+            .map_err(CommitError::InvalidConfiguration)?;
+        let verifier_config = params
+            .ligerito_verifier_config()
+            .map_err(CommitError::InvalidConfiguration)?;
+        validate_config_pair(params, &prover_config, &verifier_config)?;
+        let final_log_n = validate_config(&verifier_config, log_n, params.log_batch_size)?;
+
+        Ok(Self {
+            prover_config,
+            verifier_config,
+            log_n_u32,
+            final_log_n,
+        })
+    }
+
+    pub(crate) fn prover_config(&self) -> &ProverConfig {
+        &self.prover_config
+    }
+
+    pub(crate) fn verifier_config(&self) -> &VerifierConfig {
+        &self.verifier_config
+    }
+
+    pub(crate) fn log_n_u32(&self) -> u32 {
+        self.log_n_u32
+    }
+
+    pub(crate) fn final_log_n(&self) -> usize {
+        self.final_log_n
+    }
+}
+
+fn validate_config_pair(
+    params: &PcsParams,
+    prover: &ProverConfig,
+    verifier: &VerifierConfig,
 ) -> Result<(), CommitError> {
-    // 1. Input Validation
-    let m = pcs.params().m;
-    if point.len() != m {
-        return Err(CommitError::PointLengthMismatch);
+    let shared_fields_match = prover.log_inv_rates == verifier.log_inv_rates
+        && prover.recursive_steps == verifier.recursive_steps
+        && prover.initial_log_msg_cols == verifier.initial_log_msg_cols
+        && prover.initial_log_num_interleaved == verifier.initial_log_num_interleaved
+        && prover.initial_k == verifier.initial_k
+        && prover.recursive_log_msg_cols == verifier.recursive_log_msg_cols
+        && prover.recursive_ks == verifier.recursive_ks
+        && prover.queries == verifier.queries
+        && prover.grinding_bits == verifier.grinding_bits
+        && prover.fold_grinding_bits == verifier.fold_grinding_bits
+        && prover.ood_samples == verifier.ood_samples
+        && prover.merkle_hash == verifier.merkle_hash;
+    if !shared_fields_match {
+        return Err(CommitError::invalid_configuration(
+            "Ligerito prover and verifier configurations do not match",
+        ));
     }
-    let log_n = m.checked_sub(LOG_PACKING).ok_or_else(|| {
-        CommitError::invalid_configuration(format!(
-            "PCS variable count {m} is smaller than the packing width {LOG_PACKING}"
-        ))
-    })?;
-    let ligerito_config = pcs
-        .params()
-        .ligerito_verifier_config()
-        .map_err(CommitError::InvalidConfiguration)?;
-    let final_log_n = pcs.final_log_n();
-
-    // 2. Bind Statement
-    if statement_binding == StatementBinding::Bind {
-        bind_statement(pcs, commitment.root(), point, target, transcript);
+    if verifier.log_inv_rates.first().copied() != Some(params.log_inv_rate) {
+        return Err(CommitError::invalid_configuration(format!(
+            "initial Ligerito rate does not match PCS rate {}",
+            params.log_inv_rate,
+        )));
     }
-
-    // 3. Read Opening Proof
-    let proof = read_opening_proof(transcript)?;
-
-    // 4. Validate Proof Shape
-    validate_proof_shape(&proof, &ligerito_config, final_log_n, commitment.root())?;
-
-    // 5. Extract Ring-Switch Claim
-    let ring_switch = proof
-        .ring_switches
-        .first()
-        .ok_or(CommitError::MalformedProof)?;
-    let (r_lo, r_hi) = point.split_at(LOG_PACKING);
-    let r_hi = as_flock_f128s(r_hi);
-
-    // 6. Replay Ring-Switch Message
-    bind_ring_switch_message(transcript, &ring_switch.s_hat_v)?;
-
-    // 7. Check Target
-    // target = Σ_v eq(r_lo, v) · s_hat_v[v].
-    let eq_lo = build_eq(as_flock_f128s(r_lo));
-    let target = as_flock_f128s(core::slice::from_ref(&target))[0];
-    if claim_check(&eq_lo, &ring_switch.s_hat_v) != target {
-        return Err(CommitError::VerificationFailed);
+    if verifier.merkle_hash != params.merkle_hash {
+        return Err(CommitError::invalid_configuration(
+            "Ligerito Merkle hash does not match the PCS Merkle hash",
+        ));
     }
+    Ok(())
+}
 
-    // 8. Compute the Ligerito Target
-    // beta0 = Σ_u eq(r_dprime, u) · s_hat_u[u].
-    let r_dprime = sample_ring_switch_point(transcript);
-    let eq_r_dprime = build_eq(&r_dprime);
-    let s_hat_u = tensor_algebra_transpose(&ring_switch.s_hat_v);
-    let beta0 = inner_product(&s_hat_u, &eq_r_dprime);
-
-    // 9. Build the Succinct Basis Evaluator
-    // result[y] = B_hat(ris || bits(y)).
-    let eval_b_residual = |ris: &[FlockF128], yr_log_n: usize| {
-        if yr_log_n > 32 || ris.len().checked_add(yr_log_n) != Some(r_hi.len()) {
-            return Vec::new();
-        }
-        let Some(yr_len) = 1usize.checked_shl(yr_log_n as u32) else {
-            return Vec::new();
-        };
-        let prefix = eval_rs_eq_prefix(r_hi, ris);
-        let suffix = &r_hi[ris.len()..];
-        (0..yr_len)
-            .map(|y| {
-                eval_rs_eq_finish_from_prefix_binary_q(&prefix, suffix, y as u32, &eq_r_dprime)
-            })
-            .collect()
-    };
-
-    // 10. Verify the Ligerito Claim
-    // Verify Σ_y B(y) · q_pkd(y) = beta0 without materializing B.
-    observe_opening_target(transcript, log_n, beta0)?;
-    let mut challenger = VerifierChallenger::new_ligerito(transcript, beta0);
-    let valid = recursive_verifier_with_basis_succinct(
-        &ligerito_config,
-        &proof.ligerito,
-        log_n,
-        beta0,
-        commitment.root(),
-        eval_b_residual,
-        &mut challenger,
-    );
-
-    // 11. Check Verification Results
-    if challenger.failed() {
-        return Err(CommitError::MalformedProof);
-    }
-    if !valid {
-        return Err(CommitError::VerificationFailed);
+/// Checks that retained prover data uses the active PCS parameters.
+pub(crate) fn validate_prover_data(pcs: &Pcs, data: &ProverData) -> Result<(), CommitError> {
+    let expected = pcs.params();
+    let actual = &data.commitment().params;
+    if expected.m != actual.m
+        || expected.log_inv_rate != actual.log_inv_rate
+        || expected.log_batch_size != actual.log_batch_size
+        || expected.profile != actual.profile
+        || expected.merkle_hash != actual.merkle_hash
+    {
+        return Err(CommitError::invalid_configuration(format!(
+            "prover data parameters do not match the active PCS: expected {:?}, got {:?}",
+            expected, actual,
+        )));
     }
     Ok(())
 }
@@ -332,21 +304,6 @@ fn checked_pow2(log: usize) -> Option<usize> {
         .and_then(|shift| 1usize.checked_shl(shift))
 }
 
-fn validate_proof_shape(
-    proof: &BatchOpeningProofLigerito,
-    config: &VerifierConfig,
-    final_log_n: usize,
-    expected_root: &[u8; 32],
-) -> Result<(), CommitError> {
-    if proof.ring_switches.len() != 1
-        || proof.ring_switches[0].s_hat_v.len() != 1usize << LOG_PACKING
-    {
-        return Err(CommitError::VerificationFailed);
-    }
-
-    validate_ligerito_proof_shape(&proof.ligerito, config, final_log_n, expected_root)
-}
-
 pub(crate) fn validate_ligerito_proof_shape(
     lig: &LigeritoProof,
     config: &VerifierConfig,
@@ -461,10 +418,9 @@ fn rows_match(rows: &[Vec<FlockF128>], expected_rows: usize, expected_width: usi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CommitScheme, HashKind, LigeritoProfile, OpeningQuery};
+    use crate::{HashKind, LigeritoProfile};
     use common::Shape;
-    use field::F128 as LocalF128;
-    use transcript::{build_prover, build_verifier};
+    use flock_core::pcs::LOG_PACKING;
 
     fn registered_config() -> (VerifierConfig, usize, usize) {
         let shape = Shape::new(7, 15).unwrap();
@@ -550,60 +506,5 @@ mod tests {
         assert!(rows_match(&[vec![zero; 4], vec![zero; 4]], 2, 4));
         assert!(!rows_match(&[vec![zero; 4]], 2, 4));
         assert!(!rows_match(&[vec![zero; 3], vec![zero; 4]], 2, 4));
-    }
-
-    #[test]
-    fn proof_shape_validation_rejects_prover_supplied_dimension_mismatches() {
-        const SESSION: &[u8] = b"pcs-proof-shape-test";
-        const INSTANCE: &[u8] = b"zero-polynomial";
-        let shape = Shape::new(7, 15).unwrap();
-        let pcs = Pcs::new(&shape, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
-        let packed_witness = vec![LocalF128::default(); pcs.packed_len()];
-        let (commitment, data) = pcs.commit(&packed_witness).unwrap();
-        let query = OpeningQuery::Mle {
-            point: vec![LocalF128::from(2u64); 22],
-            target: LocalF128::default(),
-        };
-        let mut prover = build_prover(SESSION, INSTANCE);
-        pcs.prove_lin(
-            &data,
-            packed_witness,
-            &query,
-            StatementBinding::Bind,
-            &mut prover,
-        )
-        .unwrap();
-        let transcript_proof = prover.finish();
-        let mut verifier = build_verifier(SESSION, INSTANCE, &transcript_proof);
-        let valid = read_opening_proof(&mut verifier).unwrap();
-        let config = pcs.params().ligerito_verifier_config().unwrap();
-        let final_log_n =
-            validate_config(&config, 22 - LOG_PACKING, pcs.params().log_batch_size).unwrap();
-        let root = *commitment.root();
-        assert_eq!(
-            validate_proof_shape(&valid, &config, final_log_n, &root),
-            Ok(())
-        );
-
-        type ProofMutation = fn(&mut BatchOpeningProofLigerito);
-        let mutations: [(&str, ProofMutation); 3] = [
-            ("ring-switch count", |proof| proof.ring_switches.clear()),
-            ("recursive-root count", |proof| {
-                proof.ligerito.recursive_roots.pop();
-            }),
-            ("opened-row width", |proof| {
-                proof.ligerito.initial_proof.opened_rows[0].pop();
-            }),
-        ];
-
-        for (case, mutate) in mutations {
-            let mut proof = valid.clone();
-            mutate(&mut proof);
-            assert_eq!(
-                validate_proof_shape(&proof, &config, final_log_n, &root),
-                Err(CommitError::VerificationFailed),
-                "{case}",
-            );
-        }
     }
 }

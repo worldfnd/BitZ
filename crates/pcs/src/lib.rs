@@ -90,9 +90,9 @@ mod bridge;
 mod challenger;
 mod commitment;
 mod inner_product;
-mod open;
+mod mle;
 mod utils;
-mod verify;
+mod validation;
 
 use field::F128;
 use transcript::{ProverState, VerifierState};
@@ -229,7 +229,7 @@ impl CommitScheme for Pcs {
         transcript: &mut ProverState,
     ) -> Result<(), CommitError> {
         match query {
-            OpeningQuery::Mle { point, target } => open::open(
+            OpeningQuery::Mle { point, target } => mle::open(
                 self,
                 data,
                 packed_witness,
@@ -258,7 +258,7 @@ impl CommitScheme for Pcs {
         transcript: &mut VerifierState<'_>,
     ) -> Result<(), CommitError> {
         match query {
-            OpeningQuery::Mle { point, target } => verify::verify(
+            OpeningQuery::Mle { point, target } => mle::verify(
                 self,
                 commitment,
                 point,
