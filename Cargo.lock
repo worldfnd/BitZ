@@ -616,7 +616,7 @@ checksum = "26b73573e6edcd2af0cdf47bd6cb58f0b3839491263c314eaad1ccf24430e1de"
 [[package]]
 name = "flock-core"
 version = "0.1.0"
-source = "git+https://github.com/succinctlabs/flock.git?rev=85fc0e7cc002e7ca4dffdff805ba89976e9a5293#85fc0e7cc002e7ca4dffdff805ba89976e9a5293"
+source = "git+https://github.com/succinctlabs/flock.git?rev=879072249e52b8b9054bf0c6a034cec20f8f6fc7#879072249e52b8b9054bf0c6a034cec20f8f6fc7"
 dependencies = [
  "bincode",
  "blake3",
@@ -987,6 +987,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2ee67f1008b1ba2321834326597b8e186293b049a023cdef258527550b9935b4"
 
 [[package]]
+name = "pcs"
+version = "0.1.0"
+dependencies = [
+ "bincode",
+ "blake3",
+ "common",
+ "field",
+ "flock-core",
+ "proptest",
+ "transcript",
+]
+
+[[package]]
 name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1047,6 +1060,7 @@ version = "0.1.0"
 dependencies = [
  "common",
  "field",
+ "pcs",
  "transcript",
 ]
 
@@ -1439,6 +1453,8 @@ dependencies = [
  "crypto-primitives",
  "field",
  "num-traits",
+ "pcs",
+ "poly",
  "prover",
  "rand_chacha 0.9.0",
  "rand_core 0.9.5",
@@ -1578,6 +1594,7 @@ version = "0.1.0"
 dependencies = [
  "common",
  "field",
+ "pcs",
  "transcript",
 ]
 

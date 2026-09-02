@@ -1,6 +1,8 @@
 //! `ProveF2Z`.
 
-use common::{BitTable, LinearClaim, OpeningClaim, ReductionInput, Root};
+use common::{BitTable, LinearClaim, OpeningQuery, ReductionInput, TableError};
+use field::F128;
+use pcs::{CommitError, CommitScheme, Pcs, ProverData, StatementBinding};
 use transcript::ProverState;
 
 use crate::{F2ZProver, SendError};
@@ -8,10 +10,14 @@ use crate::{F2ZProver, SendError};
 /// A proof the prover cannot produce.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProveError<E> {
+    /// The witness is not the length the shape calls for.
+    Witness(TableError),
     /// The fold round failed.
     Fold(SendError),
     /// The reduction failed.
     Reduction(E),
+    /// The opening failed, so the reduction's claim was never discharged.
+    Opening(CommitError),
 }
 
 /// Step 4: the grand product, and the sumcheck that turns its affine leaf
@@ -27,23 +33,31 @@ pub trait Reduction<const Q: u128> {
         input: &ReductionInput<'_, Q>,
         table: &BitTable<'_>,
         transcript: &mut ProverState,
-    ) -> Result<OpeningClaim, Self::Error>;
+    ) -> Result<OpeningQuery, Self::Error>;
 }
 
 impl<const Q: u128> F2ZProver<Q> {
     /// Proves the caller's linear claim about the committed bits.
     ///
-    /// The caller commits first, and passes the root in as `com`. The
-    /// transcript arrives carrying the caller's events; this appends and hands
-    /// it back.
+    /// The caller commits first and passes what that produced: the `data` the
+    /// opening reads and the packed witness itself. The root is read back off
+    /// `data` rather than passed alongside it, so the two cannot disagree.
+    /// `pcs` must be the scheme that committed, or the opening will not verify.
+    ///
+    /// The witness arrives owned because the opening consumes it. The transcript
+    /// arrives carrying the caller's events; this appends and hands it back.
     pub fn prove<R: Reduction<Q>>(
         &self,
         claim: &LinearClaim<Q>,
-        com: Root,
-        table: &BitTable<'_>,
+        pcs: &Pcs,
+        data: &ProverData,
+        packed: Vec<F128>,
         reduction: &R,
         transcript: &mut ProverState,
-    ) -> Result<OpeningClaim, ProveError<R::Error>> {
+    ) -> Result<(), ProveError<R::Error>> {
+        let com = data.root();
+        let table = self.params().table(&packed).map_err(ProveError::Witness)?;
+
         // Step 1: bind. Absorbing the root here is not redundant with the opening
         // scheme, whose batched opening binds it only in its own statement mode --
         // and that fires at step 6, long after the fold has squeezed.
@@ -61,7 +75,7 @@ impl<const Q: u128> F2ZProver<Q> {
 
         // Step 3: fold each column into an integer exponent.
         let fold = self
-            .send_fold(claim, table, transcript)
+            .send_fold(claim, &table, transcript)
             .map_err(ProveError::Fold)?;
 
         // Step 4: the grand product over the folds, then the sumcheck that
@@ -74,18 +88,20 @@ impl<const Q: u128> F2ZProver<Q> {
             commitment: com,
             fold: &fold,
         };
-        let claim = reduction
-            .reduce(&input, table, transcript)
+        let query = reduction
+            .reduce(&input, &table, transcript)
             .map_err(ProveError::Reduction)?;
 
         // Step 5, batching the per-column claims, is conditional and a
         // merged-forest grand product does not need it: it draws its challenge
         // once across all columns, so the claims never separate.
 
-        // TODO(#15): step 6, the ring switch and the opening, is absent, so this
-        // hands back the claim the opening would consume instead of consuming it
-        // -- a caller that stops here has proved nothing. The tail becomes
-        // `prove_lin_batch(data, packed, &[claim], AlreadyBound, transcript)`.
-        Ok(claim)
+        // Step 6: the ring switch and the opening, which discharge the claim
+        // step 4 handed over. `Bind` rather than `AlreadyBound`: the opening's
+        // own parameters are not in the frame step 1 absorbed, and binding them
+        // here is what puts them in the sponge before the opener's first
+        // squeeze.
+        pcs.prove_lin(data, packed, &query, StatementBinding::Bind, transcript)
+            .map_err(ProveError::Opening)
     }
 }

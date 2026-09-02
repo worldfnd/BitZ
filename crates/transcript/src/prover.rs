@@ -1,6 +1,7 @@
+use field::F128;
 use spongefish::{Decoding, Encoding, NargSerialize};
 
-use crate::Proof;
+use crate::{Proof, PublicTranscript, bytes::ProverMessageBytes};
 
 /// The prover half of the transcript.
 ///
@@ -9,6 +10,16 @@ use crate::Proof;
 pub struct ProverState {
     pub(crate) inner: spongefish::ProverState,
     pub(crate) hints: Vec<u8>,
+}
+
+impl PublicTranscript for ProverState {
+    fn public_message<T: Encoding<[u8]> + ?Sized>(&mut self, message: &T) {
+        self.inner.public_message(message);
+    }
+
+    fn verifier_message_f128(&mut self) -> F128 {
+        self.inner.verifier_message()
+    }
 }
 
 impl ProverState {
@@ -22,6 +33,12 @@ impl ProverState {
         self.inner.prover_message(message);
     }
 
+    /// Absorbs and writes one length-prefixed byte string.
+    pub fn prover_message_bytes(&mut self, bytes: &[u8]) {
+        self.inner
+            .prover_message(&ProverMessageBytes::<{ u32::MAX as usize }>::new(bytes));
+    }
+
     /// Squeezes a challenge.
     pub fn verifier_message<T: Decoding<[u8]>>(&mut self) -> T {
         self.inner.verifier_message()
@@ -31,6 +48,14 @@ impl ProverState {
     /// cannot influence any challenge.
     pub fn hint<T: NargSerialize + ?Sized>(&mut self, hint: &T) {
         hint.serialize_into_narg(&mut self.hints);
+    }
+
+    /// Writes one length-prefixed byte string to the hint stream.
+    pub fn hint_bytes(&mut self, bytes: &[u8]) {
+        u32::try_from(bytes.len())
+            .expect("hint byte string exceeds u32")
+            .serialize_into_narg(&mut self.hints);
+        self.hints.extend_from_slice(bytes);
     }
 
     pub fn finish(self) -> Proof {

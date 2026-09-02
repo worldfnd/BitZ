@@ -23,6 +23,7 @@
 //! - **F5** Field wire formats are fixed in `field::codec`, one canonical
 //!   form per element.
 
+mod bytes;
 mod domain;
 mod proof;
 mod prover;
@@ -35,3 +36,12 @@ pub use spongefish::{
     Decoding, Encoding, NargDeserialize, NargSerialize, VerificationError, VerificationResult,
 };
 pub use verifier::VerifierState;
+
+/// Operations shared by prover and verifier transcripts for public messages.
+pub trait PublicTranscript {
+    /// Absorbs a message both parties already know.
+    fn public_message<T: Encoding<[u8]> + ?Sized>(&mut self, message: &T);
+
+    /// Squeezes an `F128` challenge.
+    fn verifier_message_f128(&mut self) -> field::F128;
+}
