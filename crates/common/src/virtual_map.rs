@@ -50,27 +50,32 @@ pub trait VirtualMap {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransposedWeights {
     weights: Vec<F128>,
-    constant: F128,
+    constant_weight: F128,
 }
 
 impl TransposedWeights {
     /// Callers check the lengths against the shape.
-    pub fn new(weights: Vec<F128>, constant: F128) -> Self {
-        Self { weights, constant }
+    pub fn new(weights: Vec<F128>, constant_weight: F128) -> Self {
+        Self {
+            weights,
+            constant_weight,
+        }
     }
 
     pub fn weights(&self) -> &[F128] {
         &self.weights
     }
 
-    pub fn constant(&self) -> F128 {
-        self.constant
+    /// The weight on the constant-one coordinate. A field element, not the
+    /// one it multiplies.
+    pub fn constant_weight(&self) -> F128 {
+        self.constant_weight
     }
 
-    /// `<M^T v, (1 || f)> = constant + <weights, f>`, so the claim on the
-    /// committed bits carries `target - constant`.
+    /// `<M^T v, (1 || f)> = constant_weight + <weights, f>`, so the claim on
+    /// the committed bits carries `target - constant_weight`.
     pub fn adjusted_target(&self, target: F128) -> F128 {
-        target - self.constant
+        target - self.constant_weight
     }
 
     pub fn into_weights(self) -> Vec<F128> {
@@ -105,8 +110,11 @@ mod tests {
                     }
                 }
             }
-            let constant = transposed[0];
-            Ok(TransposedWeights::new(transposed[1..].to_vec(), constant))
+            let constant_weight = transposed[0];
+            Ok(TransposedWeights::new(
+                transposed[1..].to_vec(),
+                constant_weight,
+            ))
         }
 
         fn digest(&self) -> [u8; 32] {
@@ -157,15 +165,17 @@ mod tests {
                 .iter()
                 .zip(transposed.weights())
                 .filter(|(bit, _)| **bit)
-                .fold(transposed.constant(), |sum, (_, weight)| sum + *weight);
+                .fold(transposed.constant_weight(), |sum, (_, weight)| {
+                    sum + *weight
+                });
 
             assert_eq!(direct, through_f, "bits {bits:02b}");
         }
     }
 
-    /// The constant term is folded into the target.
+    /// The constant weight is folded into the target.
     #[test]
-    fn the_adjusted_target_removes_the_constant() {
+    fn the_adjusted_target_removes_the_constant_weight() {
         let transposed = TransposedWeights::new(vec![F128::ONE], F128::new(9, 0));
         let target = F128::new(13, 2);
 

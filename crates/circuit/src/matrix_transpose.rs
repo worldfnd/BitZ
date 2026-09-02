@@ -590,6 +590,7 @@ mod tests {
 
         assert_eq!(map.h_len(), h.bit_len(), "one M row per integer witness");
         assert_eq!(map.f_len(), f.bit_len() + 1, "M's columns are 1 || f");
+        assert!(h.bit(0), "M's first row is the constant one");
 
         let point = point(map.h_len());
         let weights = eq_table(&point);
@@ -600,7 +601,7 @@ mod tests {
         let transposed = map.transpose_eq(&point).unwrap();
         let through_f = (0..f.bit_len())
             .filter(|index| f.bit(*index))
-            .fold(transposed.constant(), |sum, index| {
+            .fold(transposed.constant_weight(), |sum, index| {
                 sum + transposed.weights()[index]
             });
 
