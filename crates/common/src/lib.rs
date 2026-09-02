@@ -11,6 +11,7 @@ pub mod params;
 pub mod reduction;
 pub mod shape;
 pub mod table;
+pub mod virtual_map;
 
 pub use claim::{ClaimError, LinearClaim, Root};
 pub use fold::{
@@ -21,3 +22,4 @@ pub use params::{F2ZParams, ParamsError};
 pub use reduction::ReductionInput;
 pub use shape::{Shape, ShapeError};
 pub use table::{BitTable, TableError};
+pub use virtual_map::{TransposedWeights, VirtualMap, VirtualMapError};
