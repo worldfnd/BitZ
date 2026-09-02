@@ -13,5 +13,8 @@ target
 # Contains mutation testing data
 **/mutants.out*/
 
+# macOS Finder metadata
+.DS_Store
+
 # RustRover
 .idea/

@@ -1,16 +1,17 @@
 [package]
-name = "verifier"
+name = "pcs"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
-[features]
-default = ["parallel"]
-parallel = ["common/parallel"]
-
 [dependencies]
+bincode = { workspace = true }
+blake3 = { workspace = true }
 common = { workspace = true }
 field = { workspace = true, features = ["spongefish"] }
-pcs = { workspace = true }
+flock-core = { workspace = true }
 transcript = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

@@ -1,4 +1,7 @@
+use field::F128;
 use spongefish::{Decoding, Encoding, NargDeserialize, VerificationError, VerificationResult};
+
+use crate::{PublicTranscript, bytes::ProverMessageBytes};
 
 /// The verifier half of the transcript.
 ///
@@ -7,6 +10,16 @@ use spongefish::{Decoding, Encoding, NargDeserialize, VerificationError, Verific
 pub struct VerifierState<'a> {
     pub(crate) inner: spongefish::VerifierState<'a>,
     pub(crate) hints: &'a [u8],
+}
+
+impl PublicTranscript for VerifierState<'_> {
+    fn public_message<T: Encoding<[u8]> + ?Sized>(&mut self, message: &T) {
+        self.inner.public_message(message);
+    }
+
+    fn verifier_message_f128(&mut self) -> F128 {
+        self.inner.verifier_message()
+    }
 }
 
 impl VerifierState<'_> {
@@ -22,6 +35,13 @@ impl VerifierState<'_> {
         Ok(message)
     }
 
+    /// Reads and absorbs one bounded, length-prefixed byte string.
+    pub fn prover_message_bytes<const MAX_LEN: usize>(&mut self) -> VerificationResult<Vec<u8>> {
+        self.inner
+            .prover_message::<ProverMessageBytes<MAX_LEN>>()
+            .map(ProverMessageBytes::into_bytes)
+    }
+
     /// Squeezes a challenge.
     pub fn verifier_message<T: Decoding<[u8]>>(&mut self) -> T {
         self.inner.verifier_message()
@@ -31,6 +51,18 @@ impl VerifierState<'_> {
     pub fn hint<T: NargDeserialize>(&mut self) -> VerificationResult<T> {
         let hint = T::deserialize_from_narg(&mut self.hints)?;
         Ok(hint)
+    }
+
+    /// Reads one bounded, length-prefixed byte string from the hint stream.
+    pub fn hint_bytes(&mut self, max_len: usize) -> VerificationResult<Vec<u8>> {
+        let mut rest = self.hints;
+        let len = u32::deserialize_from_narg(&mut rest)? as usize;
+        if len > max_len || rest.len() < len {
+            return Err(VerificationError);
+        }
+        let bytes = rest[..len].to_vec();
+        self.hints = &rest[len..];
+        Ok(bytes)
     }
 
     /// Fails unless both the narg string and the hint stream were consumed
