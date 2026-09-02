@@ -1,5 +1,5 @@
 [package]
-name = "poly"
+name = "common"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,14 +11,10 @@ parallel = ["dep:rayon"]
 
 [dependencies]
 crypto-primitives = { workspace = true }
-field = { workspace = true }
-num-traits = { workspace = true }
+field = { workspace = true, features = ["spongefish"] }
+spongefish = { workspace = true }
+poly = { workspace = true }
 rayon = { workspace = true, optional = true }
 
 [dev-dependencies]
-divan = { workspace = true }
-proptest = { workspace = true }
-
-[[bench]]
-name = "poly"
-harness = false
+num-traits = { workspace = true }

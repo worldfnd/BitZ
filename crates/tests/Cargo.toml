@@ -1,0 +1,23 @@
+[package]
+name = "tests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+doctest = false
+
+[dependencies]
+common = { workspace = true }
+crypto-primitives = { workspace = true }
+field = { workspace = true, features = ["spongefish"] }
+prover = { workspace = true }
+rand_chacha = { workspace = true }
+rand_core = { workspace = true }
+transcript = { workspace = true }
+verifier = { workspace = true }
+
+[dev-dependencies]
+num-traits = { workspace = true }

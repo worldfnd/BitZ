@@ -315,6 +315,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
 
 [[package]]
+name = "common"
+version = "0.1.0"
+dependencies = [
+ "crypto-primitives",
+ "field",
+ "num-traits",
+ "poly",
+ "rayon",
+ "spongefish",
+]
+
+[[package]]
 name = "condtype"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1032,6 +1044,11 @@ dependencies = [
 [[package]]
 name = "prover"
 version = "0.1.0"
+dependencies = [
+ "common",
+ "field",
+ "transcript",
+]
 
 [[package]]
 name = "quick-error"
@@ -1415,6 +1432,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tests"
+version = "0.1.0"
+dependencies = [
+ "common",
+ "crypto-primitives",
+ "field",
+ "num-traits",
+ "prover",
+ "rand_chacha 0.9.0",
+ "rand_core 0.9.5",
+ "transcript",
+ "verifier",
+]
+
+[[package]]
 name = "thiserror"
 version = "2.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1543,6 +1575,11 @@ checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
 [[package]]
 name = "verifier"
 version = "0.1.0"
+dependencies = [
+ "common",
+ "field",
+ "transcript",
+]
 
 [[package]]
 name = "version_check"

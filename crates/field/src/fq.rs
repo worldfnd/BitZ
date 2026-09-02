@@ -74,6 +74,105 @@ const fn barrett_mu(q: u128, k: u32) -> u128 {
     }
 }
 
+/// The first thirteen primes: the standard deterministic Miller-Rabin base set
+/// below `2^81.4`.
+const PRIMALITY_BASES: [u128; 13] = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41];
+
+/// `(a + b) mod q`, for `a, b < q < 2^126`. The sum stays below `2^127`.
+const fn add_mod(a: u128, b: u128, q: u128) -> u128 {
+    let sum = a + b;
+    if sum >= q { sum - q } else { sum }
+}
+
+/// `(a * b) mod q` by doubling, avoiding the 256-bit product a u128 cannot
+/// hold. Barrett is not an option here: `MU` depends on `BITS`, which is the
+/// constant this feeds.
+const fn mul_mod(a: u128, b: u128, q: u128) -> u128 {
+    let mut result = 0u128;
+    let mut addend = a % q;
+    let mut remaining = b;
+    while remaining != 0 {
+        if remaining & 1 == 1 {
+            result = add_mod(result, addend, q);
+        }
+        addend = add_mod(addend, addend, q);
+        remaining >>= 1;
+    }
+    result
+}
+
+/// `(base ^ exponent) mod q`, by square-and-multiply.
+const fn pow_mod(base: u128, exponent: u128, q: u128) -> u128 {
+    let mut result = 1u128 % q;
+    let mut square = base % q;
+    let mut remaining = exponent;
+    while remaining != 0 {
+        if remaining & 1 == 1 {
+            result = mul_mod(result, square, q);
+        }
+        square = mul_mod(square, square, q);
+        remaining >>= 1;
+    }
+    result
+}
+
+/// Whether `candidate` is prime.
+///
+/// `const` because [`Fq`] asserts it on its own modulus, which makes a
+/// composite `Q` a build failure rather than a type that quietly is not a
+/// field. The loops are written out for the same reason: iterator combinators
+/// are not available in a const context.
+///
+/// # What this does not decide
+///
+/// Miller-Rabin against a fixed base set is **proven** only for
+/// `n < 3_317_044_064_679_887_385_961_981`, about `2^81.4`. Moduli above that
+/// are not decided by any theorem here, and because the bases are public,
+/// someone choosing `Q` could in principle construct a composite that passes
+/// all of them. Since `Q` is a compile-time constant, doing so means editing
+/// the source rather than forging a proof.
+const fn is_prime(candidate: u128) -> bool {
+    if candidate < 2 {
+        return false;
+    }
+
+    let mut index = 0;
+    while index < PRIMALITY_BASES.len() {
+        let base = PRIMALITY_BASES[index];
+        if candidate == base {
+            return true;
+        }
+        if candidate.is_multiple_of(base) {
+            return false;
+        }
+        index += 1;
+    }
+
+    // `candidate - 1 = odd * 2^shift`.
+    let shift = (candidate - 1).trailing_zeros();
+    let odd = (candidate - 1) >> shift;
+
+    let mut index = 0;
+    while index < PRIMALITY_BASES.len() {
+        let mut witness = pow_mod(PRIMALITY_BASES[index], odd, candidate);
+        if witness != 1 && witness != candidate - 1 {
+            let mut round = 1;
+            loop {
+                if round >= shift {
+                    return false;
+                }
+                witness = mul_mod(witness, witness, candidate);
+                if witness == candidate - 1 {
+                    break;
+                }
+                round += 1;
+            }
+        }
+        index += 1;
+    }
+    true
+}
+
 impl<const Q: u128> Fq<Q> {
     /// Bit length of the modulus, derived so it cannot disagree with `Q`.
     ///
@@ -84,6 +183,9 @@ impl<const Q: u128> Fq<Q> {
         assert!(Q >= 3, "modulus must be at least 3");
         assert!(Q % 2 == 1, "modulus must be odd");
         assert!(Q < 1u128 << 126, "modulus must be below 2^126");
+        // `Fq` claims to be a prime field, so it enforces that itself rather
+        // than trusting whoever names the constant.
+        assert!(is_prime(Q), "modulus must be prime");
         128 - Q.leading_zeros()
     };
 
@@ -393,6 +495,38 @@ mod tests {
 
     /// A prime small enough to check every pair of operands.
     const SMALL: u128 = 251;
+
+    #[test]
+    fn primality_agrees_with_trial_division() {
+        for candidate in 0u128..2_000 {
+            let expected = candidate >= 2
+                && (2..candidate)
+                    .take_while(|d| d * d <= candidate)
+                    .all(|d| !candidate.is_multiple_of(d));
+            assert_eq!(is_prime(candidate), expected, "{candidate}");
+        }
+    }
+
+    #[test]
+    fn primality_rejects_what_a_fermat_test_would_admit() {
+        // Carmichael numbers pass every Fermat test; Miller-Rabin does not.
+        for carmichael in [561u128, 41_041, 825_265] {
+            assert!(!is_prime(carmichael), "{carmichael}");
+        }
+    }
+
+    #[test]
+    fn primality_holds_at_the_widths_the_moduli_use() {
+        assert!(is_prime((1 << 100) - 15));
+        assert!(is_prime((1 << 108) - 59));
+        assert!(is_prime((1 << 114) - 11));
+        // A semiprime with no factor small enough for the trial-division pass.
+        assert!(!is_prime(((1u128 << 54) - 33) * ((1u128 << 53) - 111)));
+        // Every odd value between the largest prime below 2^114 and 2^114.
+        for offset in (1..11).step_by(2) {
+            assert!(!is_prime((1 << 114) - offset), "2^114 - {offset}");
+        }
+    }
 
     #[test]
     fn ensure_traits() {

@@ -5,4 +5,11 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+default = ["parallel"]
+parallel = ["common/parallel"]
+
 [dependencies]
+common = { workspace = true }
+field = { workspace = true, features = ["spongefish"] }
+transcript = { workspace = true }
