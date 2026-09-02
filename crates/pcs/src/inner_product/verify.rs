@@ -10,11 +10,11 @@ use crate::utils::{
     bind_inner_product_statement, read_inner_product_claims,
     sample_inner_product_batching_challenges,
 };
-use crate::{CommitError, Commitment, Pcs, StatementBinding};
+use crate::{CommitError, Pcs, Root, StatementBinding};
 
 pub(crate) fn verify(
     pcs: &Pcs,
-    commitment: &Commitment,
+    commitment: &Root,
     weights: &[F128],
     target: F128,
     statement_binding: StatementBinding,
@@ -24,7 +24,7 @@ pub(crate) fn verify(
     let ring_switch = RingSwitch::new(weights, pcs.packed_len())?;
 
     if statement_binding == StatementBinding::Bind {
-        bind_inner_product_statement(pcs, commitment.root(), weights, target, transcript);
+        bind_inner_product_statement(pcs, &commitment.0, weights, target, transcript);
     }
 
     let proof = ligerito::read_proof(pcs, commitment, RingSwitchPayloadShape::None, transcript)?;

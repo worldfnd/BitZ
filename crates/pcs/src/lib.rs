@@ -28,7 +28,7 @@
 //! # Interface
 //!
 //! - [`Pcs`] stores trusted Flock parameters and the expected bit length.
-//! - [`Commitment`] contains the public Merkle root.
+//! - [`Root`] is the public Merkle root.
 //! - [`ProverData`] retains the codeword and Merkle tree after commitment.
 //! - [`OpeningQuery`] contains an MLE point or explicit inner-product weights.
 //! - [`CommitScheme`] connects commitment, proving, and verification to project transcripts.
@@ -99,29 +99,9 @@ mod validation;
 use field::F128;
 use transcript::{ProverState, VerifierState};
 
-pub use commitment::{Commitment, HashKind, Pcs, ProverData};
+pub use commitment::{HashKind, Pcs, ProverData};
+pub use common::{OpeningQuery, Root};
 pub use flock_core::pcs::ligerito::LigeritoProfile;
-
-/// A linear opening claim over the original committed bits.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum OpeningQuery {
-    /// A multilinear evaluation claim.
-    Mle {
-        /// The evaluation point, in low-index-bit-first order.
-        point: Vec<F128>,
-        /// The claimed multilinear evaluation at `point`.
-        target: F128,
-    },
-    /// An arbitrary `F128` inner-product claim.
-    ///
-    /// This opening requires [`LigeritoProfile::Secure`].
-    InnerProduct {
-        /// One weight for each original bit, in commitment index order.
-        weights: Vec<F128>,
-        /// The claimed inner product.
-        target: F128,
-    },
-}
 
 /// Controls statement binding for one opening.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -212,7 +192,7 @@ pub trait CommitScheme {
 }
 
 impl CommitScheme for Pcs {
-    type Commitment = Commitment;
+    type Commitment = Root;
     type ProverData = ProverData;
 
     fn commit(

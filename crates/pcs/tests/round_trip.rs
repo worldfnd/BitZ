@@ -3,8 +3,7 @@ use std::sync::OnceLock;
 use common::Shape;
 use field::F128;
 use pcs::{
-    CommitError, CommitScheme, Commitment, HashKind, LigeritoProfile, OpeningQuery, Pcs,
-    StatementBinding,
+    CommitError, CommitScheme, HashKind, LigeritoProfile, OpeningQuery, Pcs, Root, StatementBinding,
 };
 use poly::eq_table;
 use transcript::{Proof, PublicTranscript, build_prover, build_verifier};
@@ -22,7 +21,7 @@ fn shape() -> Shape {
 
 struct RealFixture {
     pcs: Pcs,
-    commitment: Commitment,
+    commitment: Root,
     query: OpeningQuery,
     proof: Proof,
 }
@@ -91,7 +90,7 @@ fn singleton_target(point: &[F128], index: usize) -> F128 {
 
 struct InnerProductFixture {
     pcs: Pcs,
-    commitment: Commitment,
+    commitment: Root,
     query: OpeningQuery,
     proof: Proof,
 }
@@ -155,7 +154,7 @@ fn set_packed_bit(packed_witness: &mut [F128], index: usize) {
 fn bind_outer_statement(
     transcript: &mut impl PublicTranscript,
     pcs: &Pcs,
-    commitment: &Commitment,
+    commitment: &Root,
     query: &OpeningQuery,
 ) {
     let OpeningQuery::Mle { point, target } = query else {
@@ -163,7 +162,7 @@ fn bind_outer_statement(
     };
     transcript.public_message(b"outer/pcs-opening/v1" as &[u8]);
     transcript.public_message(pcs);
-    transcript.public_message(commitment.root());
+    transcript.public_message(&commitment.0);
     transcript.public_message(&(point.len() as u64));
     for coordinate in point {
         transcript.public_message(coordinate);
@@ -174,7 +173,7 @@ fn bind_outer_statement(
 fn bind_outer_inner_product_statement(
     transcript: &mut impl PublicTranscript,
     pcs: &Pcs,
-    commitment: &Commitment,
+    commitment: &Root,
     query: &OpeningQuery,
 ) {
     let OpeningQuery::InnerProduct { weights, target } = query else {
@@ -189,7 +188,7 @@ fn bind_outer_inner_product_statement(
 
     transcript.public_message(b"outer/pcs-inner-product/v1" as &[u8]);
     transcript.public_message(pcs);
-    transcript.public_message(commitment.root());
+    transcript.public_message(&commitment.0);
     transcript.public_message(&(weights.len() as u64));
     transcript.public_message(hasher.finalize().as_bytes());
     transcript.public_message(target);
@@ -363,7 +362,7 @@ fn arbitrary_inner_product_rejects_non_secure_profiles() {
         target: F128::default(),
     };
     let proof = Proof::default();
-    let commitment = Commitment::from_root([0; 32]);
+    let commitment = Root([0; 32]);
 
     for profile in [LigeritoProfile::Fast, LigeritoProfile::Slim] {
         let pcs = Pcs::new(&shape(), profile, HashKind::Blake3).unwrap();
@@ -495,9 +494,9 @@ fn arbitrary_inner_product_rejects_statement_and_coordinate_mutations() {
         Err(CommitError::VerificationFailed),
     );
 
-    let mut changed_root = *fixture.commitment.root();
+    let mut changed_root = fixture.commitment.0;
     changed_root[0] ^= 1;
-    let changed_commitment = Commitment::from_root(changed_root);
+    let changed_commitment = Root(changed_root);
     let mut verifier = build_verifier(SESSION, INNER_PRODUCT_INSTANCE, &fixture.proof);
     assert_eq!(
         fixture.pcs.verify_lin(
@@ -751,9 +750,9 @@ fn real_pcs_rejects_statement_mutations() {
         Err(CommitError::VerificationFailed)
     );
 
-    let mut changed_root = *fixture.commitment.root();
+    let mut changed_root = fixture.commitment.0;
     changed_root[0] ^= 1;
-    let changed_commitment = Commitment::from_root(changed_root);
+    let changed_commitment = Root(changed_root);
     let mut verifier = build_verifier(SESSION, INSTANCE, &fixture.proof);
     assert_eq!(
         fixture.pcs.verify_lin(

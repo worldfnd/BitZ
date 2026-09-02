@@ -6,11 +6,11 @@ use transcript::VerifierState;
 use super::ring_switch::{Claims, RingSwitch};
 use crate::ligerito::{self, RingSwitchPayloadShape};
 use crate::utils::{bind_ring_switch_message, bind_statement, sample_ring_switch_point};
-use crate::{CommitError, Commitment, Pcs, StatementBinding};
+use crate::{CommitError, Pcs, Root, StatementBinding};
 
 pub(crate) fn verify(
     pcs: &Pcs,
-    commitment: &Commitment,
+    commitment: &Root,
     point: &[F128],
     target: F128,
     statement_binding: StatementBinding,
@@ -20,7 +20,7 @@ pub(crate) fn verify(
     let log_n = ring_switch.suffix_dimension();
 
     if statement_binding == StatementBinding::Bind {
-        bind_statement(pcs, commitment.root(), point, target, transcript);
+        bind_statement(pcs, &commitment.0, point, target, transcript);
     }
 
     let proof = ligerito::read_proof(pcs, commitment, RingSwitchPayloadShape::Single, transcript)?;

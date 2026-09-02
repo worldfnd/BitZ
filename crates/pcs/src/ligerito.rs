@@ -17,7 +17,7 @@ use crate::challenger::{ProverChallenger, VerifierChallenger};
 use crate::ring_switch::CLAIM_COUNT;
 use crate::utils::{observe_opening_target, read_opening_proof, write_opening_proof};
 use crate::validation::{validate_ligerito_proof_shape, validate_prover_data};
-use crate::{CommitError, Commitment, Pcs, ProverData};
+use crate::{CommitError, Pcs, ProverData, Root};
 
 /// One packed-field claim produced by a query-specific ring switch.
 pub(crate) struct ReducedClaim {
@@ -106,7 +106,7 @@ impl<'a> ReducedProver<'a> {
 /// Reads one proof and validates its query-specific and Ligerito shapes.
 pub(crate) fn read_proof(
     pcs: &Pcs,
-    commitment: &Commitment,
+    commitment: &Root,
     ring_switch_shape: RingSwitchPayloadShape,
     transcript: &mut VerifierState<'_>,
 ) -> Result<BatchOpeningProofLigerito, CommitError> {
@@ -117,7 +117,7 @@ pub(crate) fn read_proof(
 
 pub(crate) fn validate_proof_shape(
     pcs: &Pcs,
-    commitment: &Commitment,
+    commitment: &Root,
     proof: &BatchOpeningProofLigerito,
     ring_switch_shape: RingSwitchPayloadShape,
 ) -> Result<(), CommitError> {
@@ -135,14 +135,14 @@ pub(crate) fn validate_proof_shape(
         &proof.ligerito,
         pcs.verifier_config(),
         pcs.final_log_n(),
-        commitment.root(),
+        &commitment.0,
     )
 }
 
 /// Verifies a reduced claim with a materialized packed basis.
 pub(crate) fn verify_dense(
     pcs: &Pcs,
-    commitment: &Commitment,
+    commitment: &Root,
     proof: &LigeritoProof,
     claim: ReducedClaim,
     transcript: &mut VerifierState<'_>,
@@ -161,7 +161,7 @@ pub(crate) fn verify_dense(
                 proof,
                 &packed_basis,
                 packed_target,
-                commitment.root(),
+                &commitment.0,
                 challenger,
             )
         },
@@ -171,7 +171,7 @@ pub(crate) fn verify_dense(
 /// Verifies a reduced claim with a succinct packed-basis evaluator.
 pub(crate) fn verify_succinct<F>(
     pcs: &Pcs,
-    commitment: &Commitment,
+    commitment: &Root,
     proof: &LigeritoProof,
     log_n: usize,
     packed_target: FlockF128,
@@ -191,7 +191,7 @@ where
                 proof,
                 log_n,
                 packed_target,
-                commitment.root(),
+                &commitment.0,
                 evaluate_basis,
                 challenger,
             )
