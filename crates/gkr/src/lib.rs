@@ -254,9 +254,10 @@ impl Challenge {
 //     }
 // }
 
-fn prove(input: Vec<Field>, groups: usize) {
+fn prove(input: Vec<Field>, groups: usize) -> Vec<Field> {
     let circuit = Circuit::new(input);
-    let witnesses = circuit.batched_eval(groups);
+    let mut witnesses = circuit.batched_eval(groups);
+    let last_value = witnesses.pop().unwrap();
 
     // gpgkr_prove samples one more challenge per layer than the last
     // (0, 1, 2, ... over `m` layers), so the total is the triangular
@@ -265,6 +266,7 @@ fn prove(input: Vec<Field>, groups: usize) {
     let c = Challenge::with_capacity(m, groups);
 
     gpgkr_prove(groups, &c, witnesses);
+    last_value
 }
 
 /// Grand product GKR
@@ -276,7 +278,7 @@ fn prove(input: Vec<Field>, groups: usize) {
 ///   prover's word for the grand product.
 /// - two preallocated buffers that are only ever appended to (no
 ///   reallocation once the loop below starts):
-///   - `round01[i]` is layer `i`'s terminal `(w0, w1)` pair, one per layer.
+///   - `claims_lr[i]` is layer `i`'s terminal `(w0, w1)` pair, one per layer.
 ///   - `sumcheck` is every layer's sumcheck transcript back to back,
 ///     widening as it goes: layer `i`'s point has `i` challenges, so it
 ///     contributes `i` entries, right after layer `i - 1`'s `i - 1` entries.
@@ -284,16 +286,12 @@ fn prove(input: Vec<Field>, groups: usize) {
 fn gpgkr_prove(
     groups: usize,
     c: &Challenge,
-    mut eval: CircuitEval,
-) -> (
-    Vec<Field>,
-    Vec<(Field, Field)>,
-    TriangularArray<(Field, Field)>,
-) {
-    let last_value = eval.pop().unwrap();
+    // circuit evaluation that doesn't have the last layer
+    eval: CircuitEval,
+) -> (Vec<(Field, Field)>, TriangularArray<(Field, Field)>) {
     let m = eval.len();
 
-    let mut round01 = Vec::with_capacity(m);
+    let mut claims_lr = Vec::with_capacity(m);
     // `m` rounds' worth of capacity is exactly tight here: `sumcheck` gets
     // one `(sum_0, sum_inf)` push per element of `point`, and summed across
     // all `m` iterations below that totals precisely `round(0) + ... +
@@ -322,13 +320,13 @@ fn gpgkr_prove(
     let mut point: Point<'_, Field> = c.build_point(0);
 
     for (i, wnext) in eval.into_iter().enumerate() {
-        round01.push(prove_layer(point, wnext, c, &mut sumcheck));
+        claims_lr.push(prove_layer(point, wnext, c, &mut sumcheck));
 
         // sample extra challenge for the next round
         let _ = c.get_challenge();
         point = c.build_point(i + 1);
     }
-    (last_value, round01, sumcheck)
+    (claims_lr, sumcheck)
 }
 
 /// `eq(r, z) = r*z + (1 - r)*(1 - z)`. Expanding gives
@@ -432,7 +430,7 @@ fn gpgkr_verify(
     last_value: Vec<Field>,
     circuit: Circuit,
     challenges: Challenge,
-    round01: Vec<(Field, Field)>,
+    claims_lr: Vec<(Field, Field)>,
     sumcheck: TriangularArray<(Field, Field)>,
 ) -> bool {
     // `last_value` is public input: `groups` claimed partial products, one
@@ -444,12 +442,12 @@ fn gpgkr_verify(
     // no coordinates, so `mle` just hands back `last_value[0]` untouched,
     // same as the old `claim = final_value` did.
     let mut claim = mle(last_value, challenges.build_point(0));
-    // `round01` has one entry per layer `gpgkr_prove` actually processed --
+    // `claims_lr` has one entry per layer `gpgkr_prove` actually processed --
     // `k - lgroups` of them, not `circuit.leafs.len().ilog2() (= k)` --
     // since `batched_eval` stops descending at the `groups`-sized top layer.
-    // Indexing `round01[i]` past `round01.len()` would panic once
+    // Indexing `claims_lr[i]` past `claims_lr.len()` would panic once
     // `lgroups > 0`.
-    let rounds = round01.len();
+    let rounds = claims_lr.len();
 
     let mut point: Point<Field> = challenges.build_point(0);
     // Seeded from `sumcheck.round(0)`, not an empty slice: for `groups > 1`
@@ -474,14 +472,14 @@ fn gpgkr_verify(
         let (factor, sumcheck_final) =
             verify_round(claim, point, sumcheck_round, sumcheck_challenge);
 
-        let claim_lr = round01[i];
+        let elem_lr = claims_lr[i];
         // Check if line polynomial hits same spot as sumcheck check
-        if (factor * claim_lr.0 * claim_lr.1) != sumcheck_final {
+        if (factor * elem_lr.0 * elem_lr.1) != sumcheck_final {
             return false;
         }
 
         // Reduce both claims to a single claim
-        claim = claim_lr.0 + r * (claim_lr.1 - claim_lr.0);
+        claim = elem_lr.0 + r * (elem_lr.1 - elem_lr.0);
         point = next_point;
         if i < rounds - 1 {
             // `+ 1`, same reason as `next_point` above: `sumcheck` has no
@@ -771,13 +769,14 @@ mod tests {
 
             let circuit = Circuit::new(leaves);
             let m = circuit.leafs.len().ilog2() as usize;
-            let witnesses = circuit.batched_eval(1);
+            let mut witnesses = circuit.batched_eval(1);
+            let last_value = witnesses.pop().unwrap();
 
             let c = Challenge::with_capacity(m, 1);
-            let (last_value, round01, sumcheck) = gpgkr_prove(1, &c, witnesses);
+            let (claims_lr, sumcheck) = gpgkr_prove(1, &c, witnesses);
             prop_assert_eq!(last_value.clone(), vec![expected]);
 
-            prop_assert!(gpgkr_verify(last_value, circuit, c, round01, sumcheck));
+            prop_assert!(gpgkr_verify(last_value, circuit, c, claims_lr, sumcheck));
         }
 
         // `batched_eval` stops descending the tree once a layer has `groups`
@@ -840,12 +839,13 @@ mod tests {
 
             let circuit = Circuit::new(leaves);
             let m = circuit.leafs.len().ilog2() as usize;
-            let witnesses = circuit.batched_eval(groups);
+            let mut witnesses = circuit.batched_eval(groups);
+            let last_value = witnesses.pop().unwrap();
 
             let c = Challenge::with_capacity(m, groups);
-            let (last_value, round01, sumcheck) = gpgkr_prove(groups, &c, witnesses);
+            let (claims_lr, sumcheck) = gpgkr_prove(groups, &c, witnesses);
 
-            prop_assert!(gpgkr_verify(last_value, circuit, c, round01, sumcheck));
+            prop_assert!(gpgkr_verify(last_value, circuit, c, claims_lr, sumcheck));
         }
 
         // The selector is stored last in the backend but needs to lead
