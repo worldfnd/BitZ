@@ -57,13 +57,8 @@ pub(crate) fn bind_ring_switch_message(
 /// Writes the 128 packed coordinate claims for an arbitrary bit inner product.
 pub(crate) fn write_inner_product_coordinates(
     transcript: &mut ProverState,
-    values: &[FlockF128],
-) -> Result<(), CommitError> {
-    if values.len() != INNER_PRODUCT_COORDINATE_COUNT {
-        return Err(CommitError::invalid_configuration(
-            "inner-product coordinate vector length mismatch",
-        ));
-    }
+    values: &[FlockF128; INNER_PRODUCT_COORDINATE_COUNT],
+) {
     transcript.prover_message(&event_header(
         INNER_PRODUCT_COORDINATES_TAG,
         SINGLE_OPENING_SCOPE,
@@ -75,13 +70,12 @@ pub(crate) fn write_inner_product_coordinates(
     for &value in values {
         transcript.prover_message(&from_flock_f128(value));
     }
-    Ok(())
 }
 
 /// Reads the 128 packed coordinate claims for an arbitrary bit inner product.
 pub(crate) fn read_inner_product_coordinates(
     transcript: &mut VerifierState<'_>,
-) -> Result<Vec<FlockF128>, CommitError> {
+) -> Result<[FlockF128; INNER_PRODUCT_COORDINATE_COUNT], CommitError> {
     let expected_header = event_header(
         INNER_PRODUCT_COORDINATES_TAG,
         SINGLE_OPENING_SCOPE,
@@ -102,14 +96,14 @@ pub(crate) fn read_inner_product_coordinates(
         return Err(CommitError::MalformedProof);
     }
 
-    (0..INNER_PRODUCT_COORDINATE_COUNT)
-        .map(|_| {
-            transcript
-                .prover_message::<field::F128>()
-                .map(as_flock_f128)
-                .map_err(|_| CommitError::MalformedProof)
-        })
-        .collect()
+    let mut values = [FlockF128::ZERO; INNER_PRODUCT_COORDINATE_COUNT];
+    for value in &mut values {
+        *value = transcript
+            .prover_message::<field::F128>()
+            .map(as_flock_f128)
+            .map_err(|_| CommitError::MalformedProof)?;
+    }
+    Ok(values)
 }
 
 /// Samples the seven tag-4101 coordinates of the shared ring-switch point.
@@ -127,21 +121,19 @@ pub(crate) fn sample_ring_switch_point(transcript: &mut impl PublicTranscript) -
         .collect()
 }
 
-/// Samples one independent batching weight for each coordinate claim.
-pub(crate) fn sample_inner_product_batching_weights(
+/// Samples one independent batching challenge for each coordinate claim.
+pub(crate) fn sample_inner_product_batching_challenges(
     transcript: &mut impl PublicTranscript,
-) -> Vec<FlockF128> {
-    (0..INNER_PRODUCT_COORDINATE_COUNT)
-        .map(|index| {
-            sample_f128_event(
-                transcript,
-                INNER_PRODUCT_BATCHING_CHALLENGE_TAG,
-                NO_SCOPE,
-                NO_SCOPE,
-                index as u32,
-            )
-        })
-        .collect()
+) -> [FlockF128; INNER_PRODUCT_COORDINATE_COUNT] {
+    core::array::from_fn(|index| {
+        sample_f128_event(
+            transcript,
+            INNER_PRODUCT_BATCHING_CHALLENGE_TAG,
+            NO_SCOPE,
+            NO_SCOPE,
+            index as u32,
+        )
+    })
 }
 
 /// Absorbs the derived tag-5001 opening target before recursive Ligerito.
@@ -253,7 +245,7 @@ mod tests {
         values[INNER_PRODUCT_COORDINATE_COUNT - 1] = FlockF128::new(3, 4);
         let mut prover = build_prover(b"pcs-protocol-test", b"inner-product-frame");
 
-        write_inner_product_coordinates(&mut prover, &values).unwrap();
+        write_inner_product_coordinates(&mut prover, &values);
         let proof = prover.finish();
 
         assert_eq!(
@@ -398,7 +390,7 @@ mod tests {
             squeeze_offsets: Vec::new(),
         };
 
-        let sampled = sample_inner_product_batching_weights(&mut transcript);
+        let sampled = sample_inner_product_batching_challenges(&mut transcript);
         let frames = parse_recorded_frames(&transcript.absorbed);
 
         assert_eq!(sampled.len(), INNER_PRODUCT_COORDINATE_COUNT);
