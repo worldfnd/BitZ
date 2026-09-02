@@ -1,4 +1,4 @@
-/// A finished transcript. Host serialization of the pair lives elsewhere.
+/// A finished transcript. Host serialization of the pair lives in `host`.
 ///
 /// A hint is prover data that an already-absorbed message pins down. The
 /// verifier usually cannot derive it — a Merkle sibling, an inverse `b` of

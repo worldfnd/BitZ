@@ -13,6 +13,7 @@ doctest = false
 common = { workspace = true }
 crypto-primitives = { workspace = true }
 field = { workspace = true, features = ["spongefish"] }
+host = { workspace = true }
 pcs = { workspace = true }
 poly = { workspace = true }
 prover = { workspace = true }

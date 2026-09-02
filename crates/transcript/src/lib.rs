@@ -22,6 +22,8 @@
 //!   [`VerifierState::check_eof`] fails on leftover narg or hint bytes.
 //! - **F5** Field wire formats are fixed in `field::codec`, one canonical
 //!   form per element.
+//! - **F6** Records are not self-delimiting. The protocol's fixed order gives
+//!   the next record's type, and the type gives how to read it.
 
 mod bytes;
 mod domain;
