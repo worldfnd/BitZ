@@ -15,35 +15,35 @@
 
 use field::F128;
 use flock_core::field::F128 as FlockF128;
-use flock_core::pcs::LOG_PACKING;
 use flock_core::pcs::ring_switch::{inner_product, tensor_algebra_transpose};
 
 use crate::CommitError;
 use crate::bridge::as_flock_f128s;
+use crate::ligerito::ReducedClaim;
+pub(super) use crate::ring_switch::{CLAIM_COUNT, Claims};
 
-pub(super) const COORDINATE_COUNT: usize = 1 << LOG_PACKING;
-const _: () = assert!(COORDINATE_COUNT == 128);
+pub(super) type Challenge = [FlockF128; CLAIM_COUNT];
 
 /// A validated reduction from explicit bit weights to one packed-field claim.
-pub(super) struct InnerProductRingSwitch<'a> {
+pub(super) struct RingSwitch<'a> {
     weights: &'a [F128],
     packed_len: usize,
 }
 
-/// The 128 prover claims produced by the binary coordinates of each weight.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct CoordinateClaims([FlockF128; COORDINATE_COUNT]);
-
-/// One packed-field linear claim for the generic Ligerito opening.
-pub(super) struct ReducedClaim {
-    pub(super) packed_basis: Vec<FlockF128>,
-    pub(super) packed_target: FlockF128,
+/// Prover state that retains the public weights until challenge batching.
+pub(super) struct PreparedProver<'a> {
+    weights: &'a [F128],
+    packed_len: usize,
+    claims: Claims,
 }
 
-impl<'a> InnerProductRingSwitch<'a> {
+/// One dense packed-field claim for verifier-side Ligerito.
+pub(super) type VerifierReduction = ReducedClaim;
+
+impl<'a> RingSwitch<'a> {
     /// Validates one weight for every bit in the packed witness.
     pub(super) fn new(weights: &'a [F128], packed_len: usize) -> Result<Self, CommitError> {
-        let expected_len = packed_len.checked_mul(COORDINATE_COUNT).ok_or_else(|| {
+        let expected_len = packed_len.checked_mul(CLAIM_COUNT).ok_or_else(|| {
             CommitError::invalid_configuration("packed witness bit length exceeds usize")
         })?;
         if weights.len() != expected_len {
@@ -55,67 +55,80 @@ impl<'a> InnerProductRingSwitch<'a> {
         })
     }
 
-    /// Computes the prover coordinate claims from the packed witness.
-    pub(super) fn coordinate_claims(
+    /// Computes and checks the prover claims before transcript challenge sampling.
+    pub(super) fn prepare_prover(
         &self,
         packed_witness: &[FlockF128],
-    ) -> Result<CoordinateClaims, CommitError> {
+        claimed_target: F128,
+    ) -> Result<PreparedProver<'a>, CommitError> {
         if packed_witness.len() != self.packed_len {
             return Err(CommitError::InvalidBitLength);
         }
-        Ok(CoordinateClaims(compute_coordinate_claims(
-            packed_witness,
-            self.weights,
-        )))
+        let claims = Claims::from_array(compute_claims(packed_witness, self.weights));
+        if !self.target_matches(&claims, claimed_target) {
+            return Err(CommitError::InvalidClaim);
+        }
+        Ok(PreparedProver {
+            weights: self.weights,
+            packed_len: self.packed_len,
+            claims,
+        })
     }
 
-    /// Batches all coordinate claims with the same transcript challenges.
-    pub(super) fn reduce(
+    /// Checks the original target against proof-provided ring-switch claims.
+    pub(super) fn target_matches(&self, claims: &Claims, claimed_target: F128) -> bool {
+        reconstructed_target(claims) == claimed_target
+    }
+
+    /// Reduces proof-provided claims to one dense Ligerito claim.
+    pub(super) fn reduce_verifier(
         &self,
-        claims: &CoordinateClaims,
-        challenges: &[FlockF128; COORDINATE_COUNT],
-    ) -> ReducedClaim {
-        let packed_target = inner_product(claims.as_array(), challenges);
-        let packed_basis = build_batched_basis(self.weights, challenges);
-        debug_assert_eq!(packed_basis.len(), self.packed_len);
-        ReducedClaim {
-            packed_basis,
-            packed_target,
-        }
+        claims: &Claims,
+        challenge: &Challenge,
+    ) -> VerifierReduction {
+        reduce_claims(self.weights, self.packed_len, claims, challenge)
     }
 }
 
-impl CoordinateClaims {
-    /// Wraps the fixed-size coordinate array read from the proof.
-    pub(super) fn from_array(values: [FlockF128; COORDINATE_COUNT]) -> Self {
-        Self(values)
+impl PreparedProver<'_> {
+    pub(super) fn claims(&self) -> &Claims {
+        &self.claims
     }
 
-    /// Returns the fixed-size coordinate array for transcript encoding.
-    pub(super) fn as_array(&self) -> &[FlockF128; COORDINATE_COUNT] {
-        &self.0
-    }
-
-    /// Reconstructs the claimed inner product from constant coefficients.
-    pub(super) fn reconstructed_target(&self) -> F128 {
-        let mut words = [0u64; 2];
-        for (index, value) in self.0.iter().enumerate() {
-            words[index >> 6] |= (value.lo & 1) << (index & 63);
-        }
-        F128::new(words[0], words[1])
+    /// Batches all prover claims with the transcript challenge.
+    pub(super) fn reduce(self, challenge: &Challenge) -> ReducedClaim {
+        reduce_claims(self.weights, self.packed_len, &self.claims, challenge)
     }
 }
 
-fn compute_coordinate_claims(
-    packed_witness: &[FlockF128],
+fn reduce_claims(
     weights: &[F128],
-) -> [FlockF128; COORDINATE_COUNT] {
-    debug_assert_eq!(weights.len(), packed_witness.len() * COORDINATE_COUNT);
-    let mut claims = [FlockF128::ZERO; COORDINATE_COUNT];
-    for (&packed, weight_block) in packed_witness
-        .iter()
-        .zip(weights.chunks_exact(COORDINATE_COUNT))
-    {
+    packed_len: usize,
+    claims: &Claims,
+    challenge: &Challenge,
+) -> ReducedClaim {
+    let packed_target = inner_product(claims.as_array(), challenge);
+    let packed_basis = build_batched_basis(weights, challenge);
+    debug_assert_eq!(packed_basis.len(), packed_len);
+    ReducedClaim {
+        packed_basis,
+        packed_target,
+    }
+}
+
+/// Reconstructs the claimed inner product from constant coefficients.
+fn reconstructed_target(claims: &Claims) -> F128 {
+    let mut words = [0u64; 2];
+    for (index, value) in claims.as_array().iter().enumerate() {
+        words[index >> 6] |= (value.lo & 1) << (index & 63);
+    }
+    F128::new(words[0], words[1])
+}
+
+fn compute_claims(packed_witness: &[FlockF128], weights: &[F128]) -> [FlockF128; CLAIM_COUNT] {
+    debug_assert_eq!(weights.len(), packed_witness.len() * CLAIM_COUNT);
+    let mut claims = [FlockF128::ZERO; CLAIM_COUNT];
+    for (&packed, weight_block) in packed_witness.iter().zip(weights.chunks_exact(CLAIM_COUNT)) {
         if packed == FlockF128::ZERO {
             continue;
         }
@@ -127,17 +140,14 @@ fn compute_coordinate_claims(
     claims
 }
 
-fn build_batched_basis(
-    weights: &[F128],
-    challenges: &[FlockF128; COORDINATE_COUNT],
-) -> Vec<FlockF128> {
-    debug_assert_eq!(weights.len() % COORDINATE_COUNT, 0);
+fn build_batched_basis(weights: &[F128], challenges: &Challenge) -> Vec<FlockF128> {
+    debug_assert_eq!(weights.len() % CLAIM_COUNT, 0);
     let challenge_table = ChallengeByteTable::new(challenges);
-    let dual_monomials: [FlockF128; COORDINATE_COUNT] =
+    let dual_monomials: [FlockF128; CLAIM_COUNT] =
         core::array::from_fn(|index| constant_coefficient_dual(monomial(index)));
 
     weights
-        .chunks_exact(COORDINATE_COUNT)
+        .chunks_exact(CLAIM_COUNT)
         .map(|weight_block| {
             weight_block.iter().zip(&dual_monomials).fold(
                 FlockF128::ZERO,
@@ -163,7 +173,7 @@ impl ChallengeByteTable {
     const BYTE_COUNT: usize = 16;
     const BYTE_VALUES: usize = 256;
 
-    fn new(challenges: &[FlockF128; COORDINATE_COUNT]) -> Self {
+    fn new(challenges: &Challenge) -> Self {
         let mut sums = vec![FlockF128::ZERO; Self::BYTE_COUNT * Self::BYTE_VALUES];
         for byte_index in 0..Self::BYTE_COUNT {
             let bit_base = 8 * byte_index;
@@ -191,7 +201,7 @@ impl ChallengeByteTable {
 }
 
 fn monomial(index: usize) -> FlockF128 {
-    debug_assert!(index < COORDINATE_COUNT);
+    debug_assert!(index < CLAIM_COUNT);
     if index < 64 {
         FlockF128::new(1 << index, 0)
     } else {
@@ -225,9 +235,9 @@ mod tests {
 
     #[test]
     fn constant_coefficient_dual_is_dual_to_natural_packing() {
-        for left_index in 0..COORDINATE_COUNT {
+        for left_index in 0..CLAIM_COUNT {
             let left = monomial(left_index);
-            for right_index in 0..COORDINATE_COUNT {
+            for right_index in 0..CLAIM_COUNT {
                 assert_eq!(
                     (left * constant_coefficient_dual(monomial(right_index))).lo & 1,
                     u64::from(left_index == right_index),
@@ -241,7 +251,7 @@ mod tests {
     fn boundary_bits_reconstruct_their_weights() {
         for bit_index in [0, 63, 64, 127] {
             let packed_witness = [monomial(bit_index)];
-            let weights = (0..COORDINATE_COUNT)
+            let weights = (0..CLAIM_COUNT)
                 .map(|index| {
                     F128::new(
                         (index as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15),
@@ -249,10 +259,12 @@ mod tests {
                     )
                 })
                 .collect::<Vec<_>>();
-            let ring_switch = InnerProductRingSwitch::new(&weights, 1).unwrap();
-            let claims = ring_switch.coordinate_claims(&packed_witness).unwrap();
+            let ring_switch = RingSwitch::new(&weights, 1).unwrap();
+            let prepared = ring_switch
+                .prepare_prover(&packed_witness, weights[bit_index])
+                .unwrap();
 
-            assert_eq!(claims.reconstructed_target(), weights[bit_index]);
+            assert!(ring_switch.target_matches(prepared.claims(), weights[bit_index]));
         }
     }
 
@@ -273,24 +285,23 @@ mod tests {
         let mut direct = F128::default();
         for (block_index, block) in packed_witness.iter().enumerate() {
             let words = [block.lo, block.hi];
-            for bit in 0..COORDINATE_COUNT {
+            for bit in 0..CLAIM_COUNT {
                 if (words[bit >> 6] >> (bit & 63)) & 1 == 1 {
-                    direct += weights[COORDINATE_COUNT * block_index + bit];
+                    direct += weights[CLAIM_COUNT * block_index + bit];
                 }
             }
         }
-        let ring_switch = InnerProductRingSwitch::new(&weights, packed_witness.len()).unwrap();
-        let claims = ring_switch.coordinate_claims(&packed_witness).unwrap();
+        let ring_switch = RingSwitch::new(&weights, packed_witness.len()).unwrap();
+        let prepared = ring_switch.prepare_prover(&packed_witness, direct).unwrap();
 
-        assert_eq!(claims.reconstructed_target(), direct);
+        assert!(ring_switch.target_matches(prepared.claims(), direct));
     }
 
     #[test]
     fn optimized_batched_basis_matches_the_reference() {
-        let weights = (0..COORDINATE_COUNT * COORDINATE_COUNT)
+        let weights = (0..CLAIM_COUNT * CLAIM_COUNT)
             .map(|index| {
-                let coordinate =
-                    (index / COORDINATE_COUNT + index % COORDINATE_COUNT) % COORDINATE_COUNT;
+                let coordinate = (index / CLAIM_COUNT + index % CLAIM_COUNT) % CLAIM_COUNT;
                 if coordinate < 64 {
                     F128::new(1 << coordinate, 0)
                 } else {
@@ -327,7 +338,7 @@ mod tests {
     }
 
     #[test]
-    fn reduced_claim_matches_batched_coordinate_claims() {
+    fn reduced_claim_matches_batched_claims() {
         let packed_witness = [
             FlockF128::new(0x0123_4567_89ab_cdef, 0xfedc_ba98_7654_3210),
             FlockF128::new(0x1357_9bdf_2468_ace0, 0x0f0f_f0f0_aaaa_5555),
@@ -339,22 +350,25 @@ mod tests {
             let index = index as u64;
             FlockF128::new(index.wrapping_mul(31), index.rotate_left(7))
         });
-        let ring_switch = InnerProductRingSwitch::new(&weights, packed_witness.len()).unwrap();
-        let claims = ring_switch.coordinate_claims(&packed_witness).unwrap();
-        let reduced = ring_switch.reduce(&claims, &challenges);
+        let ring_switch = RingSwitch::new(&weights, packed_witness.len()).unwrap();
+        let claims = Claims::from_array(compute_claims(&packed_witness, &weights));
+        let prepared = ring_switch
+            .prepare_prover(&packed_witness, reconstructed_target(&claims))
+            .unwrap();
+        let reduced = prepared.reduce(&challenges);
+        let verifier_reduction = ring_switch.reduce_verifier(&claims, &challenges);
 
         assert_eq!(
             inner_product(&packed_witness, &reduced.packed_basis),
             reduced.packed_target,
         );
+        assert_eq!(reduced.packed_basis, verifier_reduction.packed_basis);
+        assert_eq!(reduced.packed_target, verifier_reduction.packed_target);
     }
 
-    fn reference_batched_basis(
-        weights: &[F128],
-        challenges: &[FlockF128; COORDINATE_COUNT],
-    ) -> Vec<FlockF128> {
+    fn reference_batched_basis(weights: &[F128], challenges: &Challenge) -> Vec<FlockF128> {
         weights
-            .chunks_exact(COORDINATE_COUNT)
+            .chunks_exact(CLAIM_COUNT)
             .map(|weight_block| {
                 tensor_algebra_transpose(as_flock_f128s(weight_block))
                     .into_iter()

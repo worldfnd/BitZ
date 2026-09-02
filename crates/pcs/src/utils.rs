@@ -7,9 +7,8 @@ mod wire;
 pub(crate) use proof::{read_opening_proof, write_opening_proof};
 pub(crate) use transcript::PublicTranscript;
 pub(crate) use wire::{
-    bind_ring_switch_message, observe_opening_target, read_inner_product_coordinates,
-    sample_inner_product_batching_challenges, sample_ring_switch_point,
-    write_inner_product_coordinates,
+    bind_ring_switch_message, observe_opening_target, read_inner_product_claims,
+    sample_inner_product_batching_challenges, sample_ring_switch_point, write_inner_product_claims,
 };
 
 use crate::Pcs;

@@ -8,6 +8,7 @@ use transcript::{ProverState, VerifierState};
 
 use crate::CommitError;
 use crate::bridge::{as_flock_f128, from_flock_f128};
+use crate::ring_switch::CLAIM_COUNT;
 
 use super::PublicTranscript;
 use super::transcript::PcsTranscript;
@@ -22,20 +23,17 @@ const SQUEEZE_RESULT_BIT: u16 = 0x8000;
 const FIELD_ENCODING_LEN: u32 = 16;
 const NO_SCOPE: u32 = u32::MAX;
 const SINGLE_OPENING_SCOPE: u32 = 0;
-const RING_SWITCH_VALUE_COUNT: usize = 1 << LOG_PACKING;
 const RING_SWITCH_PAYLOAD_LEN: u64 =
-    size_of::<u32>() as u64 + (RING_SWITCH_VALUE_COUNT * FIELD_ENCODING_LEN as usize) as u64;
-const INNER_PRODUCT_COORDINATE_COUNT: usize = 1 << LOG_PACKING;
-const _: () = assert!(INNER_PRODUCT_COORDINATE_COUNT == 128);
+    size_of::<u32>() as u64 + (CLAIM_COUNT * FIELD_ENCODING_LEN as usize) as u64;
 const INNER_PRODUCT_COORDINATES_PAYLOAD_LEN: u64 =
-    size_of::<u32>() as u64 + (INNER_PRODUCT_COORDINATE_COUNT * FIELD_ENCODING_LEN as usize) as u64;
+    size_of::<u32>() as u64 + (CLAIM_COUNT * FIELD_ENCODING_LEN as usize) as u64;
 
 /// Binds the single opening's tag-4001 ring-switch vector through NARG.
 pub(crate) fn bind_ring_switch_message(
     transcript: &mut impl PcsTranscript,
     values: &[FlockF128],
 ) -> Result<(), CommitError> {
-    if values.len() != RING_SWITCH_VALUE_COUNT {
+    if values.len() != CLAIM_COUNT {
         return Err(CommitError::invalid_configuration(
             "ring-switch vector length mismatch",
         ));
@@ -47,7 +45,7 @@ pub(crate) fn bind_ring_switch_message(
         NO_SCOPE,
         RING_SWITCH_PAYLOAD_LEN,
     ))?;
-    transcript.bind_prover_message(&(RING_SWITCH_VALUE_COUNT as u32))?;
+    transcript.bind_prover_message(&(CLAIM_COUNT as u32))?;
     for &value in values {
         transcript.bind_prover_message(&from_flock_f128(value))?;
     }
@@ -55,9 +53,9 @@ pub(crate) fn bind_ring_switch_message(
 }
 
 /// Writes the 128 packed coordinate claims for an arbitrary bit inner product.
-pub(crate) fn write_inner_product_coordinates(
+pub(crate) fn write_inner_product_claims(
     transcript: &mut ProverState,
-    values: &[FlockF128; INNER_PRODUCT_COORDINATE_COUNT],
+    values: &[FlockF128; CLAIM_COUNT],
 ) {
     transcript.prover_message(&event_header(
         INNER_PRODUCT_COORDINATES_TAG,
@@ -66,16 +64,16 @@ pub(crate) fn write_inner_product_coordinates(
         NO_SCOPE,
         INNER_PRODUCT_COORDINATES_PAYLOAD_LEN,
     ));
-    transcript.prover_message(&(INNER_PRODUCT_COORDINATE_COUNT as u32));
+    transcript.prover_message(&(CLAIM_COUNT as u32));
     for &value in values {
         transcript.prover_message(&from_flock_f128(value));
     }
 }
 
 /// Reads the 128 packed coordinate claims for an arbitrary bit inner product.
-pub(crate) fn read_inner_product_coordinates(
+pub(crate) fn read_inner_product_claims(
     transcript: &mut VerifierState<'_>,
-) -> Result<[FlockF128; INNER_PRODUCT_COORDINATE_COUNT], CommitError> {
+) -> Result<[FlockF128; CLAIM_COUNT], CommitError> {
     let expected_header = event_header(
         INNER_PRODUCT_COORDINATES_TAG,
         SINGLE_OPENING_SCOPE,
@@ -92,11 +90,11 @@ pub(crate) fn read_inner_product_coordinates(
     let count = transcript
         .prover_message::<u32>()
         .map_err(|_| CommitError::MalformedProof)?;
-    if count as usize != INNER_PRODUCT_COORDINATE_COUNT {
+    if count as usize != CLAIM_COUNT {
         return Err(CommitError::MalformedProof);
     }
 
-    let mut values = [FlockF128::ZERO; INNER_PRODUCT_COORDINATE_COUNT];
+    let mut values = [FlockF128::ZERO; CLAIM_COUNT];
     for value in &mut values {
         *value = transcript
             .prover_message::<field::F128>()
@@ -124,7 +122,7 @@ pub(crate) fn sample_ring_switch_point(
 /// Samples one independent batching challenge for each coordinate claim.
 pub(crate) fn sample_inner_product_batching_challenges(
     transcript: &mut impl PublicTranscript,
-) -> [FlockF128; INNER_PRODUCT_COORDINATE_COUNT] {
+) -> [FlockF128; CLAIM_COUNT] {
     core::array::from_fn(|index| {
         sample_f128_event(
             transcript,
@@ -207,9 +205,9 @@ mod tests {
 
     #[test]
     fn ring_switch_message_matches_wire_v1() {
-        let mut values = [FlockF128::ZERO; RING_SWITCH_VALUE_COUNT];
+        let mut values = [FlockF128::ZERO; CLAIM_COUNT];
         values[0] = FlockF128::new(1, 2);
-        values[RING_SWITCH_VALUE_COUNT - 1] = FlockF128::new(3, 4);
+        values[CLAIM_COUNT - 1] = FlockF128::new(3, 4);
         let mut prover = build_prover(b"pcs-protocol-test", b"ring-frame");
 
         bind_ring_switch_message(&mut prover, &values).unwrap();
@@ -237,17 +235,17 @@ mod tests {
 
     #[test]
     fn inner_product_coordinate_message_uses_its_own_frame() {
-        let mut values = [FlockF128::ZERO; INNER_PRODUCT_COORDINATE_COUNT];
+        let mut values = [FlockF128::ZERO; CLAIM_COUNT];
         values[0] = FlockF128::new(1, 2);
-        values[INNER_PRODUCT_COORDINATE_COUNT - 1] = FlockF128::new(3, 4);
+        values[CLAIM_COUNT - 1] = FlockF128::new(3, 4);
         let mut prover = build_prover(b"pcs-protocol-test", b"inner-product-frame");
 
-        write_inner_product_coordinates(&mut prover, &values);
+        write_inner_product_claims(&mut prover, &values);
         let proof = prover.finish();
 
         assert_eq!(
             proof.narg_string.len(),
-            EVENT_HEADER_LEN + 4 + INNER_PRODUCT_COORDINATE_COUNT * 16,
+            EVENT_HEADER_LEN + 4 + CLAIM_COUNT * 16,
         );
         assert_eq!(
             &proof.narg_string[..2],
@@ -255,14 +253,11 @@ mod tests {
         );
         assert_eq!(
             &proof.narg_string[EVENT_HEADER_LEN..EVENT_HEADER_LEN + 4],
-            &(INNER_PRODUCT_COORDINATE_COUNT as u32).to_le_bytes(),
+            &(CLAIM_COUNT as u32).to_le_bytes(),
         );
 
         let mut verifier = build_verifier(b"pcs-protocol-test", b"inner-product-frame", &proof);
-        assert_eq!(
-            read_inner_product_coordinates(&mut verifier).unwrap(),
-            values,
-        );
+        assert_eq!(read_inner_product_claims(&mut verifier).unwrap(), values,);
         verifier.check_eof().unwrap();
     }
 
@@ -277,12 +272,12 @@ mod tests {
         );
         let mut prover = build_prover(b"pcs-protocol-test", b"wrong-coordinate-count");
         prover.prover_message(&expected_header);
-        prover.prover_message(&((INNER_PRODUCT_COORDINATE_COUNT - 1) as u32));
+        prover.prover_message(&((CLAIM_COUNT - 1) as u32));
         let proof = prover.finish();
         let mut verifier = build_verifier(b"pcs-protocol-test", b"wrong-coordinate-count", &proof);
 
         assert_eq!(
-            read_inner_product_coordinates(&mut verifier),
+            read_inner_product_claims(&mut verifier),
             Err(CommitError::MalformedProof),
         );
     }
@@ -378,7 +373,7 @@ mod tests {
 
     #[test]
     fn inner_product_batching_uses_128_dedicated_challenge_frames() {
-        let challenges = (1u64..=INNER_PRODUCT_COORDINATE_COUNT as u64)
+        let challenges = (1u64..=CLAIM_COUNT as u64)
             .map(F128::from)
             .collect::<VecDeque<_>>();
         let mut transcript = RecordingTranscript {
@@ -390,9 +385,9 @@ mod tests {
         let sampled = sample_inner_product_batching_challenges(&mut transcript);
         let frames = parse_recorded_frames(&transcript.absorbed);
 
-        assert_eq!(sampled.len(), INNER_PRODUCT_COORDINATE_COUNT);
-        assert_eq!(frames.len(), 2 * INNER_PRODUCT_COORDINATE_COUNT);
-        for index in 0..INNER_PRODUCT_COORDINATE_COUNT {
+        assert_eq!(sampled.len(), CLAIM_COUNT);
+        assert_eq!(frames.len(), 2 * CLAIM_COUNT);
+        for index in 0..CLAIM_COUNT {
             let request = &frames[2 * index];
             let response = &frames[2 * index + 1];
             assert_eq!(request.tag, INNER_PRODUCT_BATCHING_CHALLENGE_TAG);
