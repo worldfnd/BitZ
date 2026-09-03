@@ -107,20 +107,14 @@ fn verify(input: Vec<Field>, output: Vec<Field>, proof: transcript::Proof) -> bo
     ok && verifier.check_eof().is_ok()
 }
 
-/// Grand product GKR
-///
-/// Returns:
-/// - `last_value`: the `groups`-sized top layer, popped off before the
-///   per-layer loop below runs. It's public input, so the verifier needs it
-///   back directly (as the claim to seed from) rather than trusting the
-///   prover's word for the grand product.
-/// - two preallocated buffers that are only ever appended to (no
-///   reallocation once the loop below starts):
-///   - `claims_lr[i]` is layer `i`'s terminal `(w0, w1)` pair, one per layer.
-///   - `sumcheck` is every layer's sumcheck transcript back to back,
-///     widening as it goes: layer `i`'s point has `i` challenges, so it
-///     contributes `i` entries, right after layer `i - 1`'s `i - 1` entries.
-///     Total size is the triangular number `m * (m - 1) / 2`.
+/// Grand product GKR: proves the reduction of `eval`'s layers down to the
+/// `groups`-sized top layer that `prove` already popped off and fed into
+/// the transcript as public input. Samples `lgroups` group-selector
+/// challenges up front, then runs `prove_layer` once per remaining layer
+/// (from just below the top layer down to the leaves), threading each
+/// layer's folded challenge point into the next via `point_storage`. Every
+/// sumcheck message is written straight to `ps`, so there is nothing to
+/// return.
 fn gpgkr_prove(
     groups: usize,
     ps: &mut ProverState,
@@ -256,13 +250,13 @@ fn prove_layer(ps: &mut ProverState, point: Point<Field>, mut wnext: Vec<Field>)
 
 fn gpgkr_verify(vs: &mut VerifierState, last_value: Vec<Field>, circuit: Circuit) -> bool {
     // `last_value` is public input: `groups` claimed partial products, one
-    // per group, i.e. an MLE over `lgroups` variables. `round(0)` supplies
-    // exactly the `lgroups` coordinates `gpgkr_prove` evaluated the same MLE
-    // at, so this reproduces the claim the round loop below reduces --
-    // mirroring how `mle(circuit.leafs, point)` checks the leaf layer at the
-    // other end. When `groups == 1` this is the `lgroups == 0` trivial case:
-    // no coordinates, so `mle` just hands back `last_value[0]` untouched,
-    // same as the old `claim = final_value` did.
+    // per group, i.e. an MLE over `lgroups` variables. The `point_storage`
+    // sampled just below supplies exactly the `lgroups` coordinates
+    // `gpgkr_prove` evaluated the same MLE at, so this reproduces the claim
+    // the round loop below reduces -- mirroring how `mle(circuit.leafs,
+    // point)` checks the leaf layer at the other end. When `groups == 1`
+    // this is the `lgroups == 0` trivial case: no coordinates, so `mle` just
+    // hands back `last_value[0]` untouched.
 
     let mut point_storage = vec![];
     for _i in 0..last_value.len().ilog2() {
@@ -273,18 +267,8 @@ fn gpgkr_verify(vs: &mut VerifierState, last_value: Vec<Field>, circuit: Circuit
     let rounds = circuit.leafs.len().ilog2() - last_value.len().ilog2();
 
     let mut claim = mle(last_value, point.clone());
-    // `claims_lr` has one entry per layer `gpgkr_prove` actually processed --
-    // `k - lgroups` of them, not `circuit.leafs.len().ilog2() (= k)` --
-    // since `batched_eval` stops descending at the `groups`-sized top layer.
-    // Indexing `claims_lr[i]` past `claims_lr.len()` would panic once
-    // `lgroups > 0`.
 
     for _i in 0..rounds {
-        // `+ 1`: round 0's window is now the group-selector prefix
-        // (`challenges.build_point(0)` above), so what round `i`'s
-        // reduction actually needs -- `gpgkr_prove`'s iteration `i`'s own
-        // pushed values -- lives one window later than it used to.
-
         let (factor, sumcheck_final, next_point_storage) = verify_round(vs, claim, point);
         point_storage = next_point_storage;
 
@@ -561,7 +545,7 @@ mod tests {
         // product per group rather than the full product. Each step
         // multiplies the *low* half of the current layer by the *high*
         // half (`split_at` at the midpoint, same MSB-first split
-        // `Mle::fix_variable`/`round_sums` use), so the bits that survive
+        // `prove_layer`'s sumcheck fold uses), so the bits that survive
         // uncollapsed are the low `log2(groups)` bits of the original leaf
         // index: group `j`'s surviving entry is the product of every
         // (power-of-two-padded) leaf whose index is congruent to `j` modulo
@@ -637,16 +621,16 @@ mod tests {
             prop_assert!(!verify(leaves, tampered, proof));
         }
 
+        // Regression test for a real bug: `Point`'s iterator used to compute
+        // `self.backend.len() - 1` unconditionally, so an empty backend
+        // (round 0, before any challenges are sampled) or a length-1 backend
+        // (round 1 with groups = 1) panicked with "attempt to subtract with
+        // overflow" instead of producing (respectively) no elements and one
+        // element -- which is what blocked `gpgkr_round_trip` from getting
+        // past round 0. The `PointState` state machine fixes this.
         // The selector is stored last in the backend but needs to lead
         // logically, so Point's iterator should yield the backend rotated
         // by one: [backend[len-1], backend[0], ..., backend[len-2]].
-        // `gpgkr_prove`/`gpgkr_verify` hit backend length 0 at round 0
-        // (no challenges sampled yet) and length 1 at round 1 (with
-        // groups = 1) -- both currently panic with "attempt to subtract
-        // with overflow" inside `Iterator for Point::next` in lib.rs
-        // instead of producing (respectively) no elements and one element.
-        // That's what blocks `gpgkr_round_trip` above from getting past
-        // round 0.
         #[test]
         fn point_rotates_last_element_to_front(backend in prop::collection::vec(field(), 0..16)) {
             let collected: Vec<Field> = Point::new(&backend).collect();
