@@ -676,6 +676,7 @@ version = "0.1.0"
 dependencies = [
  "field",
  "num-traits",
+ "poly",
  "proptest",
  "rayon",
  "transcript",

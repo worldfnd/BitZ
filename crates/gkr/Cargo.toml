@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 field = { path = "../field", features = ["spongefish"] }
 transcript = {path ="../transcript"}
+poly = { path = "../poly" }
 num-traits = { workspace = true }
 rayon = { workspace = true }
 

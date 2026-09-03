@@ -1,126 +1,21 @@
-pub struct Mle {
-    table: Vec<Field>,
-}
-
-impl Mle {
-    pub fn new(eval: Vec<Field>) -> Self {
-        Mle { table: eval }
-    }
-
-    // g(0), g(1) for the round polynomial: sum of each half.
-    pub fn round_sums(&self) -> (Field, Field) {
-        let n = self.table.len();
-        let (lower, upper) = self.table.split_at(n / 2);
-        (lower.iter().sum(), upper.iter().sum())
-    }
-
-    pub fn fix_variable(&mut self, r: Field) {
-        let n = self.table.len();
-        let (lower, upper) = self.table.split_at_mut(n / 2);
-        for i in 0..lower.len() {
-            lower[i] = lower[i] + r * (upper[i] - lower[i]);
-        }
-        self.table.truncate(n / 2);
-    }
-
-    pub fn scalar(&self) -> Field {
-        assert_eq!(self.table.len(), 1);
-        self.table[0]
-    }
-
-    pub fn len(&self) -> usize {
-        self.table.len()
-    }
-}
-
-impl std::ops::Index<usize> for Mle {
-    type Output = Field;
-    fn index(&self, i: usize) -> &Field {
-        &self.table[i]
-    }
-}
-
-pub fn mle(eval: Vec<Field>, rs: impl Iterator<Item = Field> + ExactSizeIterator) -> Field {
-    assert_eq!(eval.len(), 1 << rs.len());
-    let mut m = Mle::new(eval);
-    for r in rs {
-        m.fix_variable(r);
-    }
-    m.scalar()
-}
-
-use std::cell::UnsafeCell;
-
 use field::{F128, Wide256};
 use num_traits::{ConstOne, ConstZero};
+use poly::DenseMultilinearExtension;
 use rayon::prelude::*;
 use transcript::{ProverState, VerifierState};
 
 pub type Field = F128;
 
-pub struct Challenge {
-    data: UnsafeCell<TriangularArray<Field>>,
-}
+// TODO modify densemultilinearextension such that no point reversal is necessary
+fn mle(eval: Vec<Field>, rs: impl Iterator<Item = Field> + ExactSizeIterator) -> Field {
+    let num_vars = rs.len();
+    let mut point: Vec<Field> = rs.collect();
+    point.reverse();
 
-/// Triangular arrays with a fixed extra data per round.
-pub struct TriangularArray<T> {
-    data: Box<[T]>,
-    len: usize,
-    lgroups: usize,
-}
-
-impl<T: Default + Copy> TriangularArray<T> {
-    /// Reserves room for `rounds` windows: `round(0)` through
-    /// `round(rounds - 1)`. `(rounds*rounds - rounds) / 2` is
-    /// `rounds*(rounds-1)/2` written to avoid an intermediate underflow in
-    /// unsigned arithmetic at `rounds == 0` (multiplying first keeps the
-    /// subtraction non-negative; subtracting first would underflow before
-    /// the multiply ever ran).
-    pub fn with_capacity(rounds: usize, groups: usize) -> Self {
-        let lg = groups.ilog2() as usize;
-        let capacity = (rounds * rounds - rounds) / 2 + rounds * lg;
-        Self {
-            data: vec![T::default(); capacity].into_boxed_slice(),
-            len: 0,
-            lgroups: lg,
-        }
-    }
-
-    pub fn push(&mut self, el: T) {
-        // Preincrement because we don't want to have 0 as a possible challenge due to division.
-        let index = self.len;
-        self.data[index] = el;
-        self.len += 1;
-    }
-
-    pub fn len(&self) -> usize {
-        self.len
-    }
-
-    /// Round `r`'s window: `r + lgroups` values, laid out back-to-back with
-    /// no gaps (`round(r)` starts exactly where `round(r - 1)` ends), so one
-    /// formula covers every round including `round(0)`.
-    ///
-    /// `round(0)` is the group-selector prefix that used to be a separate
-    /// `group_prefix` method -- `lgroups` wide, and *empty* when
-    /// `lgroups == 0` (the non-batched case), which is exactly why this
-    /// needs a half-open range rather than the inclusive one a single round
-    /// alone would suggest: an inclusive range can't express a zero-length
-    /// window. `round(1)`, `round(2)`, ... are what used to be `round(0)`,
-    /// `round(1)`, ... before this prefix existed as a round of its own --
-    /// callers that used to index from 0 now index from 1.
-    ///
-    /// Getting this wrong is not cosmetic: if `round(0)` and the prefix ever
-    /// shared positions again, `round(0).c()` (read as `sumcheck_challenge`
-    /// for round 0) and the prefix (read as the starting `point`) would be
-    /// the same slice, making every one of round 0's `r`/`z` pairs
-    /// identical and collapsing `eq_factor(r, z)` to `1` regardless of what
-    /// the prover actually sampled.
-    pub fn round(&self, r: usize) -> &[T] {
-        let start = (r * r - r) / 2 + r * self.lgroups;
-        let end = start + r + self.lgroups;
-        &self.data[start..end]
-    }
+    DenseMultilinearExtension::from_evaluations(num_vars, eval)
+        .unwrap()
+        .evaluate(&point)
+        .unwrap()
 }
 
 #[derive(Clone)]
@@ -146,12 +41,6 @@ impl<'a, T: Copy> Point<'a, T> {
                 PointState::Stop
             },
         }
-    }
-
-    // Will crash if called on empty
-    pub fn sc(&self) -> (T, &[T]) {
-        let selector_idx = self.backend.len() - 1;
-        (self.backend[selector_idx], &self.backend[..selector_idx])
     }
 
     pub fn c(&self) -> &[T] {
@@ -194,69 +83,6 @@ impl<'a, T: Copy> ExactSizeIterator for Point<'a, T> {
         self.backend.len()
     }
 }
-
-impl Challenge {
-    /// `rounds` is the same "how many layers" count callers already have on
-    /// hand (`circuit.leafs.len().ilog2()`); the `+ 1` reserves the extra
-    /// window `round(0)` (the group-selector prefix, see `round`'s doc
-    /// comment) now occupies that a caller's own round count doesn't
-    /// otherwise account for. `rounds + 1` windows is always enough
-    /// regardless of `lgroups`: batching only ever needs `rounds - lgroups
-    /// + 1` (`lgroups` fewer *layers*, one more *window* than before), and
-    /// `rounds - lgroups + 1 <= rounds + 1` for every `lgroups >= 0`.
-    pub fn with_capacity(rounds: usize, groups: usize) -> Self {
-        Self {
-            data: UnsafeCell::new(TriangularArray::with_capacity(rounds + 1, groups)),
-        }
-    }
-    pub fn get_challenge(&self) -> Field {
-        unsafe {
-            let val = Field::from((*self.data.get()).len() as u64 + 1);
-            (*self.data.get()).push(val);
-            val
-        }
-    }
-
-    // new frame breaks when
-    pub fn build_point<'a>(&'a self, round: usize) -> Point<'a, Field> {
-        let backend = unsafe { (*self.data.get()).round(round as usize) };
-        Point::new(backend)
-    }
-
-    // pub fn into_inner(self) -> TriangularArray<Field> {
-    //     self.data.into_inner()
-    // }
-}
-
-// pub struct BTreeArray<T> {
-//     data: Box<[T]>,
-//     len: usize,
-// }
-
-// impl<T: Default + Copy> BTreeArray<T> {
-//     pub fn with_capacity(capacity: usize) -> Self {
-//         BTreeArray {
-//             data: vec![T::default(); capacity].into_boxed_slice(),
-//             len: 0,
-//         }
-//     }
-
-//     pub fn len(&self) -> usize {
-//         self.len
-//     }
-
-//     // TODO capacity check?
-//     pub fn push(&mut self, el: T) {
-//         let index = self.len;
-//         self.data[index] = el;
-//         self.len += 1;
-//     }
-
-//     pub fn layer(&self, depth: u32) -> &[T] {
-//         &self.data[2_usize.pow(depth) - 1..2_usize.pow(depth + 1) - 1]
-//     }
-// }
-//
 
 fn prove(input: Vec<Field>, groups: usize) -> (Vec<Field>, transcript::Proof) {
     let circuit = Circuit::new(input);
@@ -644,48 +470,6 @@ mod tests {
 
     fn field() -> impl Strategy<Value = Field> {
         any::<u128>().prop_map(Field::from)
-    }
-
-    // Regression test for a real bug: before `round(0)` became the
-    // group-selector prefix itself, the separate `group_prefix` method and
-    // `round(0)` started at the same absolute position, so `round(0).c()`
-    // (read as `sumcheck_challenge` in `gpgkr_verify`) and `group_prefix()`
-    // (read as `point`) were literally the same slice for round 0's check.
-    // That forces `eq_factor(r, z)` to `eq_factor(r, r) = 1` at every one of
-    // round 0's group-selector coordinates in characteristic 2 -- silently
-    // wrong regardless of what the prover actually sampled, and undetectable
-    // from `gpgkr_verify`'s boolean result alone since it doesn't panic.
-    // Folding the prefix into `round(0)` removes the two-method mismatch
-    // that caused it; this pins the fix by checking every round's window
-    // occupies disjoint absolute positions (each pushed value here is set
-    // to its own push index, so a window's contents double as the absolute
-    // positions it covers).
-    #[test]
-    fn rounds_do_not_overlap() {
-        for groups in [1usize, 2, 4, 8] {
-            let rounds = 5;
-            let lgroups = groups.ilog2() as usize;
-            let total = (rounds * rounds - rounds) / 2 + rounds * lgroups;
-
-            let mut arr: TriangularArray<usize> = TriangularArray::with_capacity(rounds, groups);
-            for i in 0..total {
-                arr.push(i);
-            }
-
-            // round(0) is the group-selector prefix: `lgroups` wide, empty
-            // (no-op) for the non-batched groups = 1 case.
-            assert_eq!(arr.round(0).len(), lgroups, "groups = {groups}");
-
-            let mut seen = std::collections::HashSet::new();
-            for r in 0..rounds {
-                for &pos in arr.round(r) {
-                    assert!(
-                        seen.insert(pos),
-                        "round({r}) overlaps an earlier window at position {pos} for groups = {groups}"
-                    );
-                }
-            }
-        }
     }
 
     // Regression test for a real bug in `SuffixTable::new`: it folded
