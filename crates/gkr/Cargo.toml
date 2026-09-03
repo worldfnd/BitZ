@@ -6,7 +6,8 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-field = { path = "../field" }
+field = { path = "../field", features = ["spongefish"] }
+transcript = {path ="../transcript"}
 num-traits = { workspace = true }
 rayon = { workspace = true }
 

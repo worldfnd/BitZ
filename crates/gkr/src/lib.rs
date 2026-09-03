@@ -54,6 +54,7 @@ use std::cell::UnsafeCell;
 use field::{F128, Wide256};
 use num_traits::{ConstOne, ConstZero};
 use rayon::prelude::*;
+use transcript::ProverState;
 
 pub type Field = F128;
 
@@ -253,19 +254,20 @@ impl Challenge {
 //         &self.data[2_usize.pow(depth) - 1..2_usize.pow(depth + 1) - 1]
 //     }
 // }
+//
+
+type Instance = (Vec<Field>, Circuit);
 
 fn prove(input: Vec<Field>, groups: usize) -> Vec<Field> {
     let circuit = Circuit::new(input);
     let mut witnesses = circuit.batched_eval(groups);
     let last_value = witnesses.pop().unwrap();
 
-    // gpgkr_prove samples one more challenge per layer than the last
-    // (0, 1, 2, ... over `m` layers), so the total is the triangular
-    // number m*(m+1)/2.
-    let m = circuit.leafs.len().ilog2() as usize;
-    let c = Challenge::with_capacity(m, groups);
+    let instance = (last_value.clone(), circuit.leafs);
 
-    gpgkr_prove(groups, &c, witnesses);
+    let mut prover = transcript::build_prover("gkr", &instance);
+
+    gpgkr_prove(groups, &mut prover, witnesses);
     last_value
 }
 
@@ -285,48 +287,21 @@ fn prove(input: Vec<Field>, groups: usize) -> Vec<Field> {
 ///     Total size is the triangular number `m * (m - 1) / 2`.
 fn gpgkr_prove(
     groups: usize,
-    c: &Challenge,
+    ps: &mut ProverState,
     // circuit evaluation that doesn't have the last layer
     eval: CircuitEval,
-) -> (Vec<(Field, Field)>, TriangularArray<(Field, Field)>) {
-    let m = eval.len();
-
-    let mut claims_lr = Vec::with_capacity(m);
-    // `m` rounds' worth of capacity is exactly tight here: `sumcheck` gets
-    // one `(sum_0, sum_inf)` push per element of `point`, and summed across
-    // all `m` iterations below that totals precisely `round(0) + ... +
-    // round(m - 1)`'s combined length. `m.max(1)` rather than `m` directly:
-    // when `circuit.leafs.len() <= groups`, `batched_eval` doesn't descend
-    // at all and `m == 0` (no layers left to prove once `last_value` --
-    // itself the leaf layer here -- is popped), but `gpgkr_verify` still
-    // unconditionally reads `sumcheck.round(0)` up front (see its comment)
-    // before checking whether there are any rounds to use it in, so
-    // `round(0)` needs to stay a valid (if unused and empty-of-real-pushes)
-    // slice rather than indexing into a zero-capacity buffer.
-    let mut sumcheck = TriangularArray::with_capacity(m.max(1), groups);
-
-    // `last_value` is public input, so reducing a claim about it needs its
-    // own `lgroups` evaluation-point coordinates. `round(0)` is exactly
-    // that: sample them fresh, then read them straight back through the
-    // same `build_point` every later round uses, rather than keeping them
-    // in a separate local point -- that's what lets the loop below use one
-    // uniform `build_point(i + 1)` instead of special-casing round 0.
-    // `gpgkr_verify` evaluates `last_value`'s MLE at these same coordinates
-    // to seed its own starting claim.
+) {
     let lgroups = groups.ilog2();
+    let mut point_storage = vec![];
+    // There needs to be a preallocated points vector
     for _ in 0..lgroups {
-        c.get_challenge();
+        point_storage.push(ps.verifier_message());
     }
-    let mut point: Point<'_, Field> = c.build_point(0);
 
-    for (i, wnext) in eval.into_iter().enumerate() {
-        claims_lr.push(prove_layer(point, wnext, c, &mut sumcheck));
-
-        // sample extra challenge for the next round
-        let _ = c.get_challenge();
-        point = c.build_point(i + 1);
+    for wnext in eval.into_iter() {
+        let point = Point::new(&point_storage);
+        point_storage = prove_layer(ps, point, wnext);
     }
-    (claims_lr, sumcheck)
 }
 
 /// `eq(r, z) = r*z + (1 - r)*(1 - z)`. Expanding gives
@@ -354,20 +329,21 @@ fn mul3_wide(a: Field, b: Field, c: Field) -> Wide256 {
 /// MLE-fold shape.
 const PARALLEL_MIN_LANES: usize = 1 << 12;
 
-fn prove_layer(
-    point: Point<Field>,
-    mut wnext: Vec<Field>,
-    c: &Challenge,
-    sumcheck: &mut TriangularArray<(Field, Field)>,
-) -> (Field, Field) {
+fn prove_layer(ps: &mut ProverState, point: Point<Field>, mut wnext: Vec<Field>) -> Vec<F128> {
     let mut suffix_table = SuffixTable::new(&point);
     let mut factor = Field::ONE;
 
     let mid = wnext.len() / 2;
     let (mut mle_l, mut mle_r) = wnext.split_at_mut(mid);
 
+    // try and prevent this allocation
+    // could overwrite the point you just read
+    // nicer option might be a double buffer that switches
+    let mut next_point = vec![];
+
     for z in point {
-        let r = c.get_challenge();
+        let r = ps.verifier_message();
+        next_point.push(r);
         // Last table to be popped is just 1. Feels like that can be optimised. Would save two multiplications.
         // TODO: special-case eq.len() == 1 (final round) to skip the `eq[i] *`
         // multiplications below entirely.
@@ -418,12 +394,14 @@ fn prove_layer(
         mle_l = &mut mle_l[..h];
         mle_r = &mut mle_r[..h];
 
-        sumcheck.push((factor * sum_0.reduce(), factor * sum_inf.reduce()));
+        ps.prover_message(&(factor * sum_0.reduce(), factor * sum_inf.reduce()));
 
         factor *= eq_factor(r, z);
     }
 
-    (mle_l[0], mle_r[0])
+    ps.prover_message(&(mle_l[0], mle_r[0]));
+    next_point.push(ps.verifier_message());
+    next_point
 }
 
 fn gpgkr_verify(
@@ -612,6 +590,12 @@ impl Circuit {
         witnesses.push(prev_eval);
 
         CircuitEval(witnesses)
+    }
+}
+
+impl AsRef<Vec<Field>> for Circuit {
+    fn as_ref(&self) -> &Vec<Field> {
+        &self.leafs
     }
 }
 
