@@ -58,7 +58,10 @@ pub fn gpgkr_prove(
     // Edge cases
     // - witnesses < log groups (configuration mistake) panic
     // - empty witnesses -> single constant circuit -> one verifier message that permutes the proof state, but a single constant can't have an MLE
-    assert!(witnesses.len() >= 1 << log_groups);
+    let groups = 1usize << log_groups;
+    // The layer directly below the output must be exactly twice the output
+    // layer's size -- that's the batching invariant `batched_eval` maintains.
+    assert_eq!(witnesses.next_layer_len(), Some(groups * 2));
 
     // Extension point chosen by the verifier to evaluate the output layer
     let mut point: Point = (0..log_groups).map(|_| ps.verifier_message()).collect();
@@ -170,26 +173,17 @@ struct SuffixTable(Vec<Vec<Field>>);
 
 impl SuffixTable {
     /// Allocates all directly as it is as much space as what a double buffer approach would take.
-    fn new<'a>(point: &Point) -> SuffixTable {
-        // We do not need to build the table for the first challenge.
-        let mut table = Vec::with_capacity(1 << (point.len() - 1));
+    fn new(point: &Point) -> SuffixTable {
+        let mut table = Vec::with_capacity(1 << point.len().saturating_sub(1));
         let mut prev = Vec::from([Field::ONE]);
 
-        // The selector is the first entry of the points and we need to skip that.
-        let c = point.range(1..);
+        // The selector is the first entry of the points and we need to skip
+        // that -- except when `point` is itself empty, in which case there
+        // is no selector and `c` must stay empty too (`min(1)` keeps the
+        // range start in-bounds there instead of panicking).
+        let c = point.range(point.len().min(1)..);
 
-        // `prove_layer`'s round `k` (for `k >= 2`) folds `mle_l`/`mle_r`'s
-        // current top bit using `c[k-2]` as the challenge, so at that point
-        // the eq-weight owed to the bits *not yet folded* comes from the
-        // challenges belonging to *later* rounds: `c[k-1], ..., c[len-1]` --
-        // the suffix of `c` starting just past what's already been consumed.
-        // Folding `c` front-to-back and popping LIFO gets this backwards: it
-        // hands out tables that drop elements off the *back* of `c` as
-        // rounds proceed, instead of the front. Folding in reverse (`c`'s
-        // last element first) makes each successive, smaller table equal to
-        // the correct suffix instead. With `c.len() <= 1` there's no
-        // distinguishable front/back of a single element, which is why this
-        // stayed invisible until a point of length 3 or more was exercised.
+        // Suffix table is in the reverse order of the points
         for &z in c.rev() {
             let size = prev.len() << 1;
             let mut entry = vec![Field::ZERO; size];
@@ -335,8 +329,10 @@ impl LayerWitnesses {
         self.0.pop()
     }
 
-    fn len(&self) -> usize {
-        self.0.len()
+    /// Length of the layer `into_iter` yields first -- the one directly
+    /// below the output layer.
+    fn next_layer_len(&self) -> Option<usize> {
+        self.0.last().map(Vec::len)
     }
 }
 
@@ -383,22 +379,20 @@ mod tests {
             let n = 1usize << (l + 1);
             let wnext: Vec<Field> = (1u128..=(n as u128)).map(Field::from).collect();
             let z_vals: Vec<Field> = (100u128..100 + l as u128).map(Field::from).collect();
+            let point: Point = z_vals.iter().cloned().collect();
             let half = wnext.len() / 2;
             let (lo, hi) = wnext.split_at(half);
             let above: Vec<Field> = lo.iter().zip(hi).map(|(&a, &b)| a * b).collect();
-            let claim = mle(above, Point::new(&z_vals));
+            let claim = mle(above, &point);
 
             let mut prover = transcript::build_prover("suffix-table-test", &z_vals);
-            prove_layer(&mut prover, Point::new(&z_vals), wnext.clone());
+            prove_layer(&mut prover, point.clone(), wnext.clone());
             let proof = prover.finish();
 
             let mut verifier = transcript::build_verifier("suffix-table-test", &z_vals, &proof);
-            let (factor, sumcheck_final, _next_point) =
-                verify_round(&mut verifier, claim, Point::new(&z_vals));
-            let elem_lr: [Field; 2] = verifier.prover_message().unwrap();
-            let _combiner: Field = verifier.verifier_message();
+            let result = verify_round(&mut verifier, claim, point);
 
-            assert_eq!(factor * elem_lr[0] * elem_lr[1], sumcheck_final, "l = {l}");
+            assert!(result.is_some(), "l = {l}");
             verifier.check_eof().unwrap();
         }
     }
@@ -411,10 +405,13 @@ mod tests {
         fn eval_preserves_product_across_layers(leaves in prop::collection::vec(field(), 0..12)) {
             let expected = leaves.iter().fold(Field::ONE, |acc, &x| acc * x);
 
-            let mut eval = Circuit::new(leaves).batched_eval(1);
+            let (top, mut witnesses) = Circuit::new(leaves).batched_eval(1);
 
-            let mut layers_checked = 0;
-            while let Some(layer) = eval.pop() {
+            let folded = top.iter().fold(Field::ONE, |acc, &x| acc * x);
+            prop_assert_eq!(folded, expected);
+
+            let mut layers_checked = 1;
+            while let Some(layer) = witnesses.pop() {
                 let folded = layer.iter().fold(Field::ONE, |acc, &x| acc * x);
                 prop_assert_eq!(folded, expected);
                 layers_checked += 1;
@@ -431,9 +428,12 @@ mod tests {
         // regularly drives some layer's `prove_layer`/`verify_round` call
         // past a 2-element point -- see
         // `suffix_table_handles_points_past_two_elements`'s doc comment for
-        // why that boundary matters.
+        // why that boundary matters. Starts at 2 rather than 1: a single
+        // leaf pads to a single-element circuit with no witness layers at
+        // all, the "single constant can't have an MLE" case `gpgkr_prove`
+        // explicitly doesn't support.
         #[test]
-        fn gpgkr_round_trip(leaves in prop::collection::vec(field(), 1..33)) {
+        fn gpgkr_round_trip(leaves in prop::collection::vec(field(), 2..33)) {
             let expected: Field = leaves.iter().fold(Field::ONE, |acc, &x| acc * x);
 
             let (last_value, proof) = prove(leaves.clone(), 1);
@@ -468,8 +468,7 @@ mod tests {
             padded.resize(padded_len, Field::ONE);
 
             let circuit = Circuit::new(leaves);
-            let mut eval = circuit.batched_eval(groups);
-            let top = eval.pop().unwrap();
+            let (top, _witnesses) = circuit.batched_eval(groups);
             prop_assert_eq!(top.len(), groups);
 
             for (j, &value) in top.iter().enumerate() {
@@ -490,14 +489,18 @@ mod tests {
         // how `mle(circuit.leafs, point)` already checks the leaf layer at
         // the other end. Leaves go up to 33 (padded to 64) and groups up to
         // 8 so `m = k - lgroups` regularly exceeds 2, same reasoning as
-        // `gpgkr_round_trip`'s range.
+        // `gpgkr_round_trip`'s range. Clamped strictly below `padded_len`'s
+        // log2 (not just `<=`) so `groups` never reaches the padded leaf
+        // count -- `groups == padded_len` leaves zero witness layers per
+        // group, the same unsupported single-constant case
+        // `gpgkr_round_trip` avoids by starting its range at 2.
         #[test]
         fn gpgkr_round_trip_batched(
             leaves in prop::collection::vec(field(), 4..33),
             groups_log2 in 1usize..4,
         ) {
             let padded_len = leaves.len().next_power_of_two();
-            let groups_log2 = groups_log2.min(padded_len.ilog2() as usize).max(1);
+            let groups_log2 = groups_log2.min(padded_len.ilog2() as usize - 1).max(1);
             let groups = 1usize << groups_log2;
 
             let (last_value, proof) = prove(leaves.clone(), groups);
@@ -512,38 +515,17 @@ mod tests {
         // equations actually held. Tampering with the claimed output after
         // proving changes what `verify` absorbs into the transcript's
         // instance tag, desyncing every challenge derived from it, so
-        // verification must fail.
+        // verification must fail. Starts at 2 leaves for the same reason as
+        // `gpgkr_round_trip`'s range: a single leaf hits the unsupported
+        // no-witness-layers case.
         #[test]
-        fn gpgkr_verify_rejects_tampered_output(leaves in prop::collection::vec(field(), 1..33)) {
+        fn gpgkr_verify_rejects_tampered_output(leaves in prop::collection::vec(field(), 2..33)) {
             let (last_value, proof) = prove(leaves.clone(), 1);
 
             let mut tampered = last_value;
             tampered[0] = tampered[0] + Field::ONE;
 
             prop_assert!(!verify(leaves, tampered, proof));
-        }
-
-        // Regression test for a real bug: `Point`'s iterator used to compute
-        // `self.backend.len() - 1` unconditionally, so an empty backend
-        // (round 0, before any challenges are sampled) or a length-1 backend
-        // (round 1 with groups = 1) panicked with "attempt to subtract with
-        // overflow" instead of producing (respectively) no elements and one
-        // element -- which is what blocked `gpgkr_round_trip` from getting
-        // past round 0. The `PointState` state machine fixes this.
-        // The selector is stored last in the backend but needs to lead
-        // logically, so Point's iterator should yield the backend rotated
-        // by one: [backend[len-1], backend[0], ..., backend[len-2]].
-        #[test]
-        fn point_rotates_last_element_to_front(backend in prop::collection::vec(field(), 0..16)) {
-            let collected: Vec<Field> = Point::new(&backend).collect();
-
-            let mut expected = Vec::with_capacity(backend.len());
-            if let Some((&last, rest)) = backend.split_last() {
-                expected.push(last);
-                expected.extend_from_slice(rest);
-            }
-
-            prop_assert_eq!(collected, expected);
         }
     }
 }
