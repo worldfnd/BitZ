@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 482322138558b616eee7c0abed9db9bd1b1cb3672f2e9e6e29655b8c6741b64e # shrinks to leaves = [F128 { lo: 0, hi: 0 }, F128 { lo: 0, hi: 0 }, F128 { lo: 0, hi: 0 }, F128 { lo: 0, hi: 0 }], groups_log2 = 1
+cc 2b86d247d9c3c79cc0d5aaa9d1d398bd0d3cd873e2b80fe9d88e99f1dffc2f1e # shrinks to leaves = [F128 { lo: 0, hi: 0 }, F128 { lo: 0, hi: 0 }, F128 { lo: 0, hi: 0 }, F128 { lo: 0, hi: 0 }], groups_log2 = 2
+cc bffd01820dbc672edc2e26e07f05e0ebb73e136c8ee1323ea7e6d9a803c6005a # shrinks to leaves = [F128 { lo: 0, hi: 0 }]
+cc d40ec72e7524d80655dafc26402c8553ba9a742b1a374290f707c4cc724a1ffb # shrinks to leaves = [F128 { lo: 0, hi: 0 }]

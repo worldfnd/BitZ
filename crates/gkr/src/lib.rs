@@ -138,8 +138,8 @@ fn prove_layer(ps: &mut ProverState, point: Point, mut wnext: Vec<Field>) -> Poi
                 let (d_l, d_r) = (l_hi - *l_lo, r_hi - *r_lo);
 
                 // narrow multiply as the next round will multiply with this result
-                *l_lo = *l_lo + r * d_l;
-                *r_lo = *r_lo + r * d_r;
+                *l_lo += r * d_l;
+                *r_lo += r * d_r;
             });
         mle_l = &mut mle_l[..h];
         mle_r = &mut mle_r[..h];
@@ -242,7 +242,7 @@ pub fn gpgkr_verify(vs: &mut VerifierState, last_value: Vec<Field>, circuit: Cir
     }
 
     // TODO replace by PCS
-    let leaf_check = mle(circuit.leafs, &mut point);
+    let leaf_check = mle(circuit.leafs, &point);
 
     leaf_check == claim
 }
@@ -294,10 +294,10 @@ pub struct Circuit {
 impl Circuit {
     // Fails if the leafs are 0.
     fn new(mut leafs: Vec<Field>) -> Self {
-        if leafs.len() > 0 {
+        if !leafs.is_empty() {
             leafs.resize(leafs.len().next_power_of_two(), Field::ONE);
         }
-        Circuit { leafs: leafs }
+        Circuit { leafs }
     }
 
     // Returns the final evaluation and the witnesses of the intermediate layers
