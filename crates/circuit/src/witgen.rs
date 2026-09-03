@@ -233,6 +233,13 @@ pub struct PackedWitness {
 }
 
 impl PackedWitness {
+    /// Packs Boolean values least-significant-bit first into witness storage.
+    pub fn from_bits(bits: &[bool]) -> Self {
+        let mut witness = Self::with_capacity(bits.len());
+        witness.extend(bits);
+        witness
+    }
+
     fn with_capacity(bit_capacity: usize) -> Self {
         Self {
             words: Vec::with_capacity(bit_capacity.div_ceil(64)),

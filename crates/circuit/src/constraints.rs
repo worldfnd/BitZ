@@ -40,6 +40,46 @@ pub struct SparseMatrix<C> {
 }
 
 impl<C> SparseMatrix<C> {
+    /// Constructs a sparse matrix from row-local `(column, coefficient)`
+    /// entries.
+    ///
+    /// Every row must use strictly increasing in-bounds column indices.
+    pub fn try_from_rows(
+        columns: usize,
+        rows: Vec<Vec<(usize, C)>>,
+    ) -> Result<Self, SparseMatrixError> {
+        for (row, entries) in rows.iter().enumerate() {
+            let mut previous = None;
+            for (column, _) in entries {
+                if *column >= columns {
+                    return Err(SparseMatrixError::ColumnOutOfBounds {
+                        row,
+                        column: *column,
+                        columns,
+                    });
+                }
+                if let Some(previous) = previous
+                    && previous >= *column
+                {
+                    return Err(SparseMatrixError::ColumnsNotStrictlyIncreasing {
+                        row,
+                        previous,
+                        column: *column,
+                    });
+                }
+                previous = Some(*column);
+            }
+        }
+
+        Ok(Self {
+            rows: rows
+                .into_iter()
+                .map(|entries| SparseRow { entries })
+                .collect(),
+            columns,
+        })
+    }
+
     /// Matrix rows.
     pub fn rows(&self) -> &[SparseRow<C>] {
         &self.rows
@@ -54,7 +94,64 @@ impl<C> SparseMatrix<C> {
     pub const fn column_count(&self) -> usize {
         self.columns
     }
+
+    fn map_values_with<D>(self, map: &mut impl FnMut(C) -> D) -> SparseMatrix<D> {
+        SparseMatrix {
+            rows: self
+                .rows
+                .into_iter()
+                .map(|row| SparseRow {
+                    entries: row
+                        .entries
+                        .into_iter()
+                        .map(|(column, coefficient)| (column, map(coefficient)))
+                        .collect(),
+                })
+                .collect(),
+            columns: self.columns,
+        }
+    }
 }
+
+/// Why a sparse row representation is malformed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SparseMatrixError {
+    ColumnOutOfBounds {
+        row: usize,
+        column: usize,
+        columns: usize,
+    },
+    ColumnsNotStrictlyIncreasing {
+        row: usize,
+        previous: usize,
+        column: usize,
+    },
+}
+
+impl Display for SparseMatrixError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ColumnOutOfBounds {
+                row,
+                column,
+                columns,
+            } => write!(
+                formatter,
+                "column {column} in row {row} is outside a {columns}-column matrix"
+            ),
+            Self::ColumnsNotStrictlyIncreasing {
+                row,
+                previous,
+                column,
+            } => write!(
+                formatter,
+                "columns in row {row} are not strictly increasing: {previous}, {column}"
+            ),
+        }
+    }
+}
+
+impl Error for SparseMatrixError {}
 
 /// One sparse F2 row, represented solely by its nonzero column positions.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -77,6 +174,42 @@ pub struct SparseBoolMatrix {
 }
 
 impl SparseBoolMatrix {
+    /// Constructs an F2 sparse matrix from row-local nonzero positions.
+    ///
+    /// Every row must use strictly increasing in-bounds column indices.
+    pub fn try_from_rows(columns: usize, rows: Vec<Vec<usize>>) -> Result<Self, SparseMatrixError> {
+        for (row, positions) in rows.iter().enumerate() {
+            let mut previous = None;
+            for column in positions {
+                if *column >= columns {
+                    return Err(SparseMatrixError::ColumnOutOfBounds {
+                        row,
+                        column: *column,
+                        columns,
+                    });
+                }
+                if let Some(previous) = previous
+                    && previous >= *column
+                {
+                    return Err(SparseMatrixError::ColumnsNotStrictlyIncreasing {
+                        row,
+                        previous,
+                        column: *column,
+                    });
+                }
+                previous = Some(*column);
+            }
+        }
+
+        Ok(Self {
+            rows: rows
+                .into_iter()
+                .map(|positions| SparseBoolRow { positions })
+                .collect(),
+            columns,
+        })
+    }
+
     /// Matrix rows.
     pub fn rows(&self) -> &[SparseBoolRow] {
         &self.rows
@@ -95,20 +228,106 @@ impl SparseBoolMatrix {
 
 /// The four sparse matrices generated for an F2Z circuit.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ConstraintMatrices {
+pub struct ConstraintMatrices<C = BigInt> {
     /// Boolean-to-integer witness matrix.
     pub m: SparseBoolMatrix,
     /// Left R1CS matrix.
-    pub a: SparseMatrix<BigInt>,
+    pub a: SparseMatrix<C>,
     /// Right R1CS matrix.
-    pub b: SparseMatrix<BigInt>,
+    pub b: SparseMatrix<C>,
     /// Output R1CS matrix.
-    pub c: SparseMatrix<BigInt>,
+    pub c: SparseMatrix<C>,
+}
+
+/// Why the four constraint matrices cannot describe one R1CS relation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConstraintMatrixShapeError {
+    R1csRowCountMismatch { a: usize, b: usize, c: usize },
+    R1csColumnCountMismatch { a: usize, b: usize, c: usize },
+    AssignmentLengthMismatch { m_rows: usize, r1cs_columns: usize },
+}
+
+impl Display for ConstraintMatrixShapeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::R1csRowCountMismatch { a, b, c } => {
+                write!(
+                    formatter,
+                    "A, B, and C have different row counts: {a}, {b}, {c}"
+                )
+            }
+            Self::R1csColumnCountMismatch { a, b, c } => write!(
+                formatter,
+                "A, B, and C have different column counts: {a}, {b}, {c}"
+            ),
+            Self::AssignmentLengthMismatch {
+                m_rows,
+                r1cs_columns,
+            } => write!(
+                formatter,
+                "M produces {m_rows} assignment entries but A, B, and C expect {r1cs_columns}"
+            ),
+        }
+    }
+}
+
+impl Error for ConstraintMatrixShapeError {}
+
+impl<C> ConstraintMatrices<C> {
+    /// Checks that A, B, and C share a shape and consume the assignment
+    /// produced by M.
+    pub fn validate_shape(&self) -> Result<(), ConstraintMatrixShapeError> {
+        let a_rows = self.a.row_count();
+        let b_rows = self.b.row_count();
+        let c_rows = self.c.row_count();
+        if a_rows != b_rows || a_rows != c_rows {
+            return Err(ConstraintMatrixShapeError::R1csRowCountMismatch {
+                a: a_rows,
+                b: b_rows,
+                c: c_rows,
+            });
+        }
+
+        let a_columns = self.a.column_count();
+        let b_columns = self.b.column_count();
+        let c_columns = self.c.column_count();
+        if a_columns != b_columns || a_columns != c_columns {
+            return Err(ConstraintMatrixShapeError::R1csColumnCountMismatch {
+                a: a_columns,
+                b: b_columns,
+                c: c_columns,
+            });
+        }
+
+        let m_rows = self.m.row_count();
+        if m_rows != a_columns {
+            return Err(ConstraintMatrixShapeError::AssignmentLengthMismatch {
+                m_rows,
+                r1cs_columns: a_columns,
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Consumes the matrices and maps every A/B/C coefficient.
+    ///
+    /// The Boolean `M` matrix and sparse topology are moved unchanged.
+    pub fn map_coefficients<D>(self, mut map: impl FnMut(C) -> D) -> ConstraintMatrices<D> {
+        ConstraintMatrices {
+            m: self.m,
+            a: self.a.map_values_with(&mut map),
+            b: self.b.map_values_with(&mut map),
+            c: self.c.map_values_with(&mut map),
+        }
+    }
 }
 
 /// Why a Boolean witness does not satisfy a generated constraint system.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SatisfactionError {
+    /// The four matrices do not share a compatible R1CS shape.
+    InvalidShape(ConstraintMatrixShapeError),
     /// The packed Boolean witness has the wrong number of entries.
     WitnessLength { expected: usize, actual: usize },
     /// The indicated R1CS row does not satisfy `a * b = c`.
@@ -118,6 +337,7 @@ pub enum SatisfactionError {
 impl Display for SatisfactionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidShape(error) => Display::fmt(error, formatter),
             Self::WitnessLength { expected, actual } => write!(
                 formatter,
                 "Boolean witness has length {actual}, expected {expected}"
@@ -129,7 +349,13 @@ impl Display for SatisfactionError {
 
 impl Error for SatisfactionError {}
 
-impl ConstraintMatrices {
+impl From<ConstraintMatrixShapeError> for SatisfactionError {
+    fn from(error: ConstraintMatrixShapeError) -> Self {
+        Self::InvalidShape(error)
+    }
+}
+
+impl ConstraintMatrices<BigInt> {
     /// Applies `M` to a packed Boolean witness.
     ///
     /// The returned vector starts with the implicit constant one and is the
@@ -166,6 +392,7 @@ impl ConstraintMatrices {
 
     /// Checks every materialized R1CS row against a packed Boolean witness.
     pub fn check_witness(&self, witness: &PackedWitness) -> Result<(), SatisfactionError> {
+        self.validate_shape()?;
         let integer_witness = self.integer_witness(witness)?;
 
         for row in 0..self.a.row_count() {
@@ -441,7 +668,7 @@ impl ConstraintGenerator {
     }
 
     /// Finishes generation and materializes the four sparse matrices.
-    pub fn into_matrices(self) -> ConstraintMatrices {
+    pub fn into_matrices(self) -> ConstraintMatrices<BigInt> {
         let Self {
             input_witnesses: _,
             next_boolean_witness,
@@ -618,5 +845,45 @@ mod tests {
         assert_eq!(matrices.b.rows()[0].entries(), &[(0, huge.clone())]);
         assert_eq!(matrices.c.rows()[0].entries(), &[(0, huge)]);
         assert!(matrices.is_satisfied(Witgen::with_inputs(&[]).witness()));
+    }
+
+    #[test]
+    fn sparse_constructors_reject_unsorted_and_out_of_bounds_columns() {
+        assert_eq!(
+            SparseMatrix::<BigInt>::try_from_rows(
+                3,
+                vec![vec![(1, BigInt::one()), (1, BigInt::one())]],
+            ),
+            Err(SparseMatrixError::ColumnsNotStrictlyIncreasing {
+                row: 0,
+                previous: 1,
+                column: 1,
+            })
+        );
+        assert_eq!(
+            SparseBoolMatrix::try_from_rows(2, vec![vec![2]]),
+            Err(SparseMatrixError::ColumnOutOfBounds {
+                row: 0,
+                column: 2,
+                columns: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn malformed_constraint_shape_returns_an_error_instead_of_panicking() {
+        let matrices = ConstraintMatrices {
+            m: SparseBoolMatrix::try_from_rows(1, vec![vec![0]]).unwrap(),
+            a: SparseMatrix::try_from_rows(1, vec![vec![(0, BigInt::one())]]).unwrap(),
+            b: SparseMatrix::try_from_rows(1, Vec::new()).unwrap(),
+            c: SparseMatrix::try_from_rows(1, vec![vec![(0, BigInt::one())]]).unwrap(),
+        };
+
+        assert_eq!(
+            matrices.check_witness(&PackedWitness::from_bits(&[])),
+            Err(SatisfactionError::InvalidShape(
+                ConstraintMatrixShapeError::R1csRowCountMismatch { a: 1, b: 0, c: 1 }
+            ))
+        );
     }
 }

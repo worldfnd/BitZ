@@ -25,6 +25,16 @@ pub const INITIAL_STATE: [u32; 8] = [
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
 ];
 
+/// Single padded SHA-256 block for the FIPS 180-4 `"abc"` test vector.
+pub const ABC_BLOCK: [u32; 16] = [
+    0x61626380, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x00000018,
+];
+
+/// SHA-256 digest of the FIPS 180-4 `"abc"` test vector.
+pub const ABC_DIGEST: [u32; 8] = [
+    0xba7816bf, 0x8f01cfea, 0x414140de, 0x5dae2223, 0xb00361a3, 0x96177a9c, 0xb410ff61, 0xf20015ad,
+];
+
 /// Number of bytes accepted by [`sha256_2kb_circuit`].
 pub const SHA256_2KB_MESSAGE_BYTES: usize = 2048;
 
@@ -694,22 +704,13 @@ mod tests {
 
     #[test]
     fn compression_matches_the_fips_abc_vector() {
-        let block_values: [u32; 16] = [
-            0x61626380, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x00000018,
-        ];
-        let block = block_values.map(|word| Word::constant(u64::from(word)));
+        let block = ABC_BLOCK.map(|word| Word::constant(u64::from(word)));
         let mut circuit = EvaluatingCircuit::default();
 
         let output = compress(&mut circuit, block, initial_state());
         let output = output.map(|word| value(&word.word));
 
-        assert_eq!(
-            output,
-            [
-                0xba7816bf, 0x8f01cfea, 0x414140de, 0x5dae2223, 0xb00361a3, 0x96177a9c, 0xb410ff61,
-                0xf20015ad,
-            ]
-        );
+        assert_eq!(output, ABC_DIGEST);
         assert_eq!(circuit.assertions, 184);
     }
 

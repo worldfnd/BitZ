@@ -1,28 +1,43 @@
 use crypto_primitives::ConstField;
-use field::F128;
-use num_traits::ConstOne;
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
+use crate::mle::{DenseMleError, DenseMultilinearExtension};
 #[cfg(feature = "parallel")]
 use crate::parallel::workload_size;
 
-/// Evaluates the multilinear equality polynomial over F128
+/// Evaluates the multilinear equality polynomial.
 ///
 /// eq(x, y) = ∏_{i=0}^{n-1} [x_i y_i + (1 - x_i)(1 - y_i)].
 ///
 /// On Boolean vectors, eq(x, y) = 1 exactly when x = y, and 0 otherwise.
 ///
-/// Over GF(2^128), characteristic two gives
+/// The implementation uses `O(n)` field operations and constant space. Each
+/// coordinate factor is evaluated as
 ///
-/// eq(x, y) = ∏_{i=0}^{n-1} (1 + x_i + y_i).
-pub fn eq_eval(x: &[F128], y: &[F128]) -> F128 {
-    assert_eq!(x.len(), y.len());
-    let mut result = F128::ONE;
-    for (&a, &b) in x.iter().zip(y.iter()) {
-        result *= F128::ONE + a + b;
-    }
-    result
+/// `(1 - x_i) + y_i (2 x_i - 1)`,
+///
+/// saving one multiplication per coordinate compared with the defining
+/// expression. Seeding the accumulator with the first coordinate factor gives
+/// `2n - 1` multiplications for nonempty points.
+pub fn eq_eval<F: ConstField + Copy>(left: &[F], right: &[F]) -> F {
+    assert_eq!(
+        left.len(),
+        right.len(),
+        "equality points must have the same length"
+    );
+
+    let one = F::ONE;
+    let mut coordinates = left.iter().copied().zip(right.iter().copied());
+    let Some((first_left, first_right)) = coordinates.next() else {
+        return one;
+    };
+
+    let coordinate = |left_i: F, right_i: F| (one - left_i) + right_i * (left_i + left_i - one);
+    coordinates.fold(
+        coordinate(first_left, first_right),
+        |value, (left_i, right_i)| value * coordinate(left_i, right_i),
+    )
 }
 
 /// Builds the evaluation table of `eq(b, r)` over all Boolean vectors
@@ -44,7 +59,7 @@ pub fn eq_eval(x: &[F128], y: &[F128]) -> F128 {
 /// `b_i = (j >> i) & 1`, so variable `i` corresponds to bit `i` of
 /// the index (little-endian order).
 ///
-/// For `n = 0`, the table is `[F128::ONE]`, corresponding to the
+/// For `n = 0`, the table is `[F::ONE]`, corresponding to the
 /// empty product.
 pub fn eq_table<F: ConstField + Copy>(r: &[F]) -> Vec<F> {
     let n = 1 << r.len();
@@ -84,9 +99,25 @@ pub fn eq_table<F: ConstField + Copy>(r: &[F]) -> Vec<F> {
     table
 }
 
+/// Splits a point and materializes the two equality-polynomial factors used by
+/// the factored Spartan outer sumcheck.
+///
+/// The first MLE covers the low, earlier coordinates and the second covers the
+/// remaining high coordinates. Their tensor product is `eq(·, point)` under
+/// this crate's little-endian variable order.
+pub fn make_equality_factors<F: ConstField + Copy>(
+    point: &[F],
+) -> Result<(DenseMultilinearExtension<F>, DenseMultilinearExtension<F>), DenseMleError> {
+    let split = point.len() / 2;
+    let (low, high) = point.split_at(split);
+    let low = DenseMultilinearExtension::from_evaluations(low.len(), eq_table(low))?;
+    let high = DenseMultilinearExtension::from_evaluations(high.len(), eq_table(high))?;
+    Ok((low, high))
+}
+
 #[cfg(test)]
 pub mod tests {
-    use super::{eq_eval, eq_table};
+    use super::{eq_eval, eq_table, make_equality_factors};
     use crypto_primitives::ConstField;
     use field::{F128, FqDefault};
     use num_traits::{ConstOne, ConstZero};
@@ -107,6 +138,37 @@ pub mod tests {
     fn empty_eq_tables_contain_one() {
         assert_eq!(eq_table::<F128>(&[]), vec![F128::ONE]);
         assert_eq!(eq_table::<FqDefault>(&[]), vec![FqDefault::ONE]);
+    }
+
+    #[test]
+    fn equality_factors_split_low_coordinates_first() {
+        let point = [
+            FqDefault::from(2u128),
+            FqDefault::from(3u128),
+            FqDefault::from(5u128),
+        ];
+        let (low, high) = make_equality_factors(&point).unwrap();
+
+        assert_eq!(low.num_vars(), 1);
+        assert_eq!(
+            low.iter().copied().collect::<Vec<_>>(),
+            eq_table(&point[..1])
+        );
+        assert_eq!(high.num_vars(), 2);
+        assert_eq!(
+            high.iter().copied().collect::<Vec<_>>(),
+            eq_table(&point[1..])
+        );
+    }
+
+    #[test]
+    fn empty_point_has_two_constant_equality_factors() {
+        let (low, high) = make_equality_factors::<F128>(&[]).unwrap();
+
+        assert_eq!(low.num_vars(), 0);
+        assert_eq!(low.iter().copied().collect::<Vec<_>>(), vec![F128::ONE]);
+        assert_eq!(high.num_vars(), 0);
+        assert_eq!(high.iter().copied().collect::<Vec<_>>(), vec![F128::ONE]);
     }
 
     #[test]
@@ -170,7 +232,8 @@ pub mod tests {
 
     #[test]
     fn empty_vectors_give_one() {
-        assert_eq!(eq_eval(&[], &[]), F128::ONE);
+        assert_eq!(eq_eval::<F128>(&[], &[]), F128::ONE);
+        assert_eq!(eq_eval::<FqDefault>(&[], &[]), FqDefault::ONE);
     }
 
     #[test]
@@ -206,8 +269,8 @@ pub mod tests {
     }
 
     #[test]
-    #[should_panic]
-    fn rejects_different_widths() {
+    #[should_panic(expected = "equality points must have the same length")]
+    fn different_widths_panic() {
         eq_eval(&[F128::ZERO], &[F128::ZERO, F128::ONE]);
     }
 
