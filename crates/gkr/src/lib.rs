@@ -1,4 +1,4 @@
-use std::ptr::with_exposed_provenance;
+use std::collections::VecDeque;
 
 use field::{F128, Wide256};
 use num_traits::{ConstOne, ConstZero};
@@ -9,9 +9,9 @@ use transcript::{ProverState, VerifierState};
 pub type Field = F128;
 
 // TODO modify densemultilinearextension such that no point reversal is necessary
-fn mle(eval: Vec<Field>, rs: impl Iterator<Item = Field> + ExactSizeIterator) -> Field {
+fn mle(eval: Vec<Field>, rs: &Point) -> Field {
     let num_vars = rs.len();
-    let mut point: Vec<Field> = rs.collect();
+    let mut point: Vec<Field> = rs.iter().cloned().collect();
     point.reverse();
 
     // TODO DenseMultilinearExtension::from_evaluations doesn't need a num_vars it already checks based on evaluation size.
@@ -23,73 +23,7 @@ fn mle(eval: Vec<Field>, rs: impl Iterator<Item = Field> + ExactSizeIterator) ->
         .unwrap()
 }
 
-// Point is an interator to deal with the line challenge to be the first point for the next round even though it is the last challenge.
-// TODO Mixes up Point with an iterator as can be seen by the function tail
-#[derive(Clone)]
-pub struct Point<'a, T: Copy> {
-    backend: &'a [T],
-    state: PointState,
-}
-
-#[derive(Clone)]
-enum PointState {
-    Start,
-    Next(usize),
-    Stop,
-}
-
-impl<'a, T: Copy> Point<'a, T> {
-    pub fn new(backend: &'a [T]) -> Self {
-        Self {
-            backend: backend,
-            state: if backend.len() != 0 {
-                PointState::Start
-            } else {
-                PointState::Stop
-            },
-        }
-    }
-
-    pub fn tail(&self) -> &[T] {
-        let selector_idx = self.backend.len().saturating_sub(1);
-        &self.backend[..selector_idx]
-    }
-}
-
-impl<'a, T: Copy> Iterator for Point<'a, T> {
-    type Item = T;
-
-    fn next(&mut self) -> Option<T> {
-        match self.state {
-            PointState::Start => {
-                let idx = self.backend.len() - 1;
-                let val = self.backend[idx];
-                self.state = if idx != 0 {
-                    PointState::Next(0)
-                } else {
-                    PointState::Stop
-                };
-                Some(val)
-            }
-            PointState::Next(i) => {
-                let val = self.backend[i];
-                self.state = if i < self.backend.len() - 2 {
-                    PointState::Next(i + 1)
-                } else {
-                    PointState::Stop
-                };
-                Some(val)
-            }
-            PointState::Stop => None,
-        }
-    }
-}
-
-impl<'a, T: Copy> ExactSizeIterator for Point<'a, T> {
-    fn len(&self) -> usize {
-        self.backend.len()
-    }
-}
+type Point = VecDeque<Field>;
 
 // Functions for stand alone use
 fn prove(input: Vec<Field>, groups: usize) -> (Vec<Field>, transcript::Proof) {
@@ -127,15 +61,14 @@ pub fn gpgkr_prove(
     assert!(witnesses.len() >= 1 << log_groups);
 
     // Extension point chosen by the verifier to evaluate the output layer
-    let mut point_storage: Vec<_> = (0..log_groups).map(|_| ps.verifier_message()).collect();
+    let mut point: Point = (0..log_groups).map(|_| ps.verifier_message()).collect();
 
     for wnext in witnesses.into_iter() {
-        let point = Point::new(&point_storage);
-        point_storage = prove_layer(ps, point, wnext);
+        point = prove_layer(ps, point, wnext);
     }
 }
 
-fn prove_layer(ps: &mut ProverState, point: Point<Field>, mut wnext: Vec<Field>) -> Vec<F128> {
+fn prove_layer(ps: &mut ProverState, point: Point, mut wnext: Vec<Field>) -> Point {
     let mut suffix_table = SuffixTable::new(&point);
     let mut factor = Field::ONE;
 
@@ -145,7 +78,7 @@ fn prove_layer(ps: &mut ProverState, point: Point<Field>, mut wnext: Vec<Field>)
 
     // TODO: use a double buffer or override approach? Now there is a point allocation each layer
     // Can go up to ~21 allocations assuming input of 2^35 and 6:4 split
-    let mut next_point = Vec::with_capacity(point.len() + 1);
+    let mut next_point = VecDeque::with_capacity(point.len() + 1);
 
     for z in point {
         // TODO: special-case eq.len() == 1 (final round) to skip the `eq[i] *`
@@ -187,7 +120,7 @@ fn prove_layer(ps: &mut ProverState, point: Point<Field>, mut wnext: Vec<Field>)
         ps.prover_message(&[factor * sum_0.reduce(), factor * sum_inf.reduce()]);
 
         let r = ps.verifier_message();
-        next_point.push(r);
+        next_point.push_back(r);
 
         lo_l.par_iter_mut()
             .zip(lo_r.par_iter_mut())
@@ -210,7 +143,7 @@ fn prove_layer(ps: &mut ProverState, point: Point<Field>, mut wnext: Vec<Field>)
     }
 
     ps.prover_message(&[mle_l[0], mle_r[0]]);
-    next_point.push(ps.verifier_message());
+    next_point.push_front(ps.verifier_message());
     next_point
 }
 
@@ -237,13 +170,13 @@ struct SuffixTable(Vec<Vec<Field>>);
 
 impl SuffixTable {
     /// Allocates all directly as it is as much space as what a double buffer approach would take.
-    fn new<'a>(point: &Point<'a, Field>) -> SuffixTable {
+    fn new<'a>(point: &Point) -> SuffixTable {
         // We do not need to build the table for the first challenge.
         let mut table = Vec::with_capacity(1 << (point.len() - 1));
         let mut prev = Vec::from([Field::ONE]);
 
         // The selector is the first entry of the points and we need to skip that.
-        let c = point.tail();
+        let c = point.range(1..);
 
         // `prove_layer`'s round `k` (for `k >= 2`) folds `mle_l`/`mle_r`'s
         // current top bit using `c[k-2]` as the challenge, so at that point
@@ -257,7 +190,7 @@ impl SuffixTable {
         // the correct suffix instead. With `c.len() <= 1` there's no
         // distinguishable front/back of a single element, which is why this
         // stayed invisible until a point of length 3 or more was exercised.
-        for &z in c.iter().rev() {
+        for &z in c.rev() {
             let size = prev.len() << 1;
             let mut entry = vec![Field::ZERO; size];
             let (low, hi) = entry.split_at_mut(size >> 1);
@@ -295,18 +228,16 @@ fn gpgkr_verify(vs: &mut VerifierState, last_value: Vec<Field>, circuit: Circuit
     //    circuit but no output or is it just a short circuit?
 
     let log_groups = last_value.len().ilog2();
-    let mut point_storage: Vec<_> = (0..log_groups).map(|_| vs.verifier_message()).collect();
-    let mut point: Point<Field> = Point::new(&point_storage);
+    let mut point: Point = (0..log_groups).map(|_| vs.verifier_message()).collect();
 
     let rounds = circuit.leafs.len().ilog2() - last_value.len().ilog2();
 
-    let mut claim = mle(last_value, point.clone());
+    let mut claim = mle(last_value, &point);
 
     for _i in 0..rounds {
         match verify_round(vs, claim, point) {
-            Some(next_point_storage) => {
-                (point_storage, claim) = next_point_storage;
-                point = Point::new(&point_storage);
+            Some(ret) => {
+                (point, claim) = ret;
             }
             None => return false,
         }
@@ -318,15 +249,10 @@ fn gpgkr_verify(vs: &mut VerifierState, last_value: Vec<Field>, circuit: Circuit
     leaf_check == claim
 }
 
-fn verify_round(
-    vs: &mut VerifierState,
-    mut claim: Field,
-    point: Point<Field>,
-) -> Option<(Vec<Field>, Field)> {
+fn verify_round(vs: &mut VerifierState, mut claim: Field, point: Point) -> Option<(Point, Field)> {
     let mut prefix = Field::ONE;
 
-    // but misses the linear combination challenge
-    let mut next_point = vec![];
+    let mut next_point: Point = VecDeque::new();
 
     for z in point {
         let [sum0, suminf]: [Field; 2] = vs.prover_message().unwrap();
@@ -335,7 +261,7 @@ fn verify_round(
         let sum1 = eqjsum1 / z;
 
         let r = vs.verifier_message();
-        next_point.push(r);
+        next_point.push_back(r);
         let factor = eq_factor(r, z);
 
         // `claim = factor * (sum0 + r*(sum1 - sum0) + r*(r - 1)*suminf)`.
@@ -351,7 +277,7 @@ fn verify_round(
         None
     } else {
         let r = vs.verifier_message();
-        next_point.push(r);
+        next_point.push_front(r);
 
         // Reduce both claims to a single claim
         claim = elem_lr[0] + r * (elem_lr[1] - elem_lr[0]);
