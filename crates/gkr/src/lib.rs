@@ -54,7 +54,7 @@ use std::cell::UnsafeCell;
 use field::{F128, Wide256};
 use num_traits::{ConstOne, ConstZero};
 use rayon::prelude::*;
-use transcript::ProverState;
+use transcript::{ProverState, VerifierState};
 
 pub type Field = F128;
 
@@ -123,11 +123,13 @@ impl<T: Default + Copy> TriangularArray<T> {
     }
 }
 
+#[derive(Clone)]
 pub struct Point<'a, T: Copy> {
     backend: &'a [T],
     state: PointState,
 }
 
+#[derive(Clone)]
 enum PointState {
     Start,
     Next(usize),
@@ -256,9 +258,7 @@ impl Challenge {
 // }
 //
 
-type Instance = (Vec<Field>, Circuit);
-
-fn prove(input: Vec<Field>, groups: usize) -> Vec<Field> {
+fn prove(input: Vec<Field>, groups: usize) -> (Vec<Field>, transcript::Proof) {
     let circuit = Circuit::new(input);
     let mut witnesses = circuit.batched_eval(groups);
     let last_value = witnesses.pop().unwrap();
@@ -268,7 +268,17 @@ fn prove(input: Vec<Field>, groups: usize) -> Vec<Field> {
     let mut prover = transcript::build_prover("gkr", &instance);
 
     gpgkr_prove(groups, &mut prover, witnesses);
-    last_value
+    (last_value, prover.finish())
+}
+
+fn verify(input: Vec<Field>, output: Vec<Field>, proof: transcript::Proof) -> bool {
+    let circuit = Circuit::new(input);
+    let instance = (&output, &circuit.leafs);
+    let mut verifier = transcript::build_verifier("gkr", &instance, &proof);
+
+    let ok = gpgkr_verify(&mut verifier, output, circuit);
+
+    ok && verifier.check_eof().is_ok()
 }
 
 /// Grand product GKR
@@ -353,6 +363,7 @@ fn prove_layer(ps: &mut ProverState, point: Point<Field>, mut wnext: Vec<Field>)
         let (lo_r, hi_r) = mle_r.split_at_mut(h);
 
         // Split sum calculation from
+        // suminf because sum1 can be derived and suminf is cheaper than sum2
 
         // Each worker folds its own slice of lanes in place and accumulates
         // `(sum_0, sum_inf)` locally; `reduce` only ever combines the
@@ -386,7 +397,7 @@ fn prove_layer(ps: &mut ProverState, point: Point<Field>, mut wnext: Vec<Field>)
                 |(a0, ainf), (b0, binf)| (a0 + b0, ainf + binf),
             );
 
-        ps.prover_message(&(factor * sum_0.reduce(), factor * sum_inf.reduce()));
+        ps.prover_message(&[factor * sum_0.reduce(), factor * sum_inf.reduce()]);
 
         let r = ps.verifier_message();
         next_point.push(r);
@@ -412,18 +423,12 @@ fn prove_layer(ps: &mut ProverState, point: Point<Field>, mut wnext: Vec<Field>)
         factor *= eq_factor(r, z);
     }
 
-    ps.prover_message(&(mle_l[0], mle_r[0]));
+    ps.prover_message(&[mle_l[0], mle_r[0]]);
     next_point.push(ps.verifier_message());
     next_point
 }
 
-fn gpgkr_verify(
-    last_value: Vec<Field>,
-    circuit: Circuit,
-    challenges: Challenge,
-    claims_lr: Vec<(Field, Field)>,
-    sumcheck: TriangularArray<(Field, Field)>,
-) -> bool {
+fn gpgkr_verify(vs: &mut VerifierState, last_value: Vec<Field>, circuit: Circuit) -> bool {
     // `last_value` is public input: `groups` claimed partial products, one
     // per group, i.e. an MLE over `lgroups` variables. `round(0)` supplies
     // exactly the `lgroups` coordinates `gpgkr_prove` evaluated the same MLE
@@ -432,76 +437,69 @@ fn gpgkr_verify(
     // other end. When `groups == 1` this is the `lgroups == 0` trivial case:
     // no coordinates, so `mle` just hands back `last_value[0]` untouched,
     // same as the old `claim = final_value` did.
-    let mut claim = mle(last_value, challenges.build_point(0));
+
+    let mut point_storage = vec![];
+    for _i in 0..last_value.len().ilog2() {
+        point_storage.push(vs.verifier_message())
+    }
+    let mut point: Point<Field> = Point::new(&point_storage);
+
+    let rounds = circuit.leafs.len().ilog2() - last_value.len().ilog2();
+
+    let mut claim = mle(last_value, point.clone());
     // `claims_lr` has one entry per layer `gpgkr_prove` actually processed --
     // `k - lgroups` of them, not `circuit.leafs.len().ilog2() (= k)` --
     // since `batched_eval` stops descending at the `groups`-sized top layer.
     // Indexing `claims_lr[i]` past `claims_lr.len()` would panic once
     // `lgroups > 0`.
-    let rounds = claims_lr.len();
 
-    let mut point: Point<Field> = challenges.build_point(0);
-    // Seeded from `sumcheck.round(0)`, not an empty slice: for `groups > 1`
-    // that window already holds `lgroups` real `(sum_0, sum_inf)` pairs
-    // (`prove_layer`'s first `lgroups` pushes, from folding `point` above),
-    // and `verify_round`'s loop below `zip`s this against `point` and
-    // `sumcheck_challenge` -- if this were empty, `zip` would silently
-    // truncate to zero iterations despite both of those having `lgroups`
-    // elements, skipping the entire group-selector round's verification
-    // instead of checking it. Only looked right for `groups == 1`, where
-    // `sumcheck.round(0)` is also empty.
-    let mut sumcheck_round: &[(Field, Field)] = sumcheck.round(0);
-
-    for i in 0..rounds {
+    for _i in 0..rounds {
         // `+ 1`: round 0's window is now the group-selector prefix
         // (`challenges.build_point(0)` above), so what round `i`'s
         // reduction actually needs -- `gpgkr_prove`'s iteration `i`'s own
         // pushed values -- lives one window later than it used to.
-        let next_point = challenges.build_point(i + 1);
-        let (r, sumcheck_challenge) = next_point.sc();
 
-        let (factor, sumcheck_final) =
-            verify_round(claim, point, sumcheck_round, sumcheck_challenge);
+        let (factor, sumcheck_final, next_point_storage) = verify_round(vs, claim, point);
+        point_storage = next_point_storage;
 
-        let elem_lr = claims_lr[i];
+        let elem_lr: [Field; 2] = vs.prover_message().unwrap();
         // Check if line polynomial hits same spot as sumcheck check
-        if (factor * elem_lr.0 * elem_lr.1) != sumcheck_final {
+        if (factor * elem_lr[0] * elem_lr[1]) != sumcheck_final {
             return false;
         }
 
+        let r = vs.verifier_message();
+        point_storage.push(r);
+
         // Reduce both claims to a single claim
-        claim = elem_lr.0 + r * (elem_lr.1 - elem_lr.0);
-        point = next_point;
-        if i < rounds - 1 {
-            // `+ 1`, same reason as `next_point` above: `sumcheck` has no
-            // group-selector prefix of its own (nothing is pushed into it
-            // outside `prove_layer`'s loop), but it's read through the same
-            // `round` formula as `c`, so round `i + 1`'s window is what
-            // holds iteration `i + 1`'s own pushes.
-            sumcheck_round = sumcheck.round(i + 1);
-        }
+        claim = elem_lr[0] + r * (elem_lr[1] - elem_lr[0]);
+        point = Point::new(&point_storage);
     }
 
     // Deal with input layer
-    let leaf_check = mle(circuit.leafs, point);
+    let leaf_check = mle(circuit.leafs, &mut point);
 
     leaf_check == claim
 }
 
 fn verify_round(
+    vs: &mut VerifierState,
     mut claim: Field,
     point: Point<Field>,
-    sumcheck: &[(Field, Field)],
-    sumcheck_challenge: &[Field],
-) -> (Field, Field) {
+) -> (Field, Field, Vec<Field>) {
     let mut prefix = Field::ONE;
-    assert_eq!(sumcheck_challenge.len(), point.len());
 
-    for ((&r, z), &(sum0, suminf)) in sumcheck_challenge.iter().zip(point).zip(sumcheck) {
+    // but misses the linear combination challenge
+    let mut next_point = vec![];
+
+    for z in point {
+        let [sum0, suminf]: [Field; 2] = vs.prover_message().unwrap();
         let eqjsum0 = (Field::ONE - z) * sum0;
         let eqjsum1 = claim - eqjsum0;
         let sum1 = eqjsum1 / z;
 
+        let r = vs.verifier_message();
+        next_point.push(r);
         let factor = eq_factor(r, z);
 
         // `claim = factor * (sum0 + r*(sum1 - sum0) + r*(r - 1)*suminf)`.
@@ -515,7 +513,7 @@ fn verify_round(
 
         prefix *= factor;
     }
-    (prefix, claim)
+    (prefix, claim, next_point)
 }
 
 struct SuffixTable(Vec<Vec<Field>>);
@@ -703,9 +701,12 @@ mod tests {
     // 2-element point. This isolates the pair from the multi-layer
     // claim-chaining entirely -- one arbitrary layer of length `2^(l+1)`, an
     // arbitrary `l`-length point, an honestly-seeded `claim` -- and checks
-    // `factor * mle_l[0] * mle_r[0] == verify_round`'s output across `l`
+    // `factor * elem_lr[0] * elem_lr[1] == verify_round`'s output across `l`
     // from 1 up through 8, well past the 2-element point where the bug
-    // first showed up.
+    // first showed up. `elem_lr` is read back off the transcript rather than
+    // taken as `prove_layer`'s return value, the same way a real verifier
+    // would, since `prove_layer` now writes it to `ps` instead of returning
+    // it directly.
     #[test]
     fn suffix_table_handles_points_past_two_elements() {
         for l in 1usize..=8 {
@@ -717,17 +718,18 @@ mod tests {
             let above: Vec<Field> = lo.iter().zip(hi).map(|(&a, &b)| a * b).collect();
             let claim = mle(above, Point::new(&z_vals));
 
-            let c = Challenge::with_capacity(l + 2, 1);
-            let mut sumcheck = TriangularArray::with_capacity(l + 2, 1);
-            let (mle_l0, mle_r0) =
-                prove_layer(Point::new(&z_vals), wnext.clone(), &c, &mut sumcheck);
+            let mut prover = transcript::build_prover("suffix-table-test", &z_vals);
+            prove_layer(&mut prover, Point::new(&z_vals), wnext.clone());
+            let proof = prover.finish();
 
-            let r_vals: Vec<Field> = (1u128..=l as u128).map(Field::from).collect();
-            let sumcheck_slice = &sumcheck.data[0..l];
+            let mut verifier = transcript::build_verifier("suffix-table-test", &z_vals, &proof);
+            let (factor, sumcheck_final, _next_point) =
+                verify_round(&mut verifier, claim, Point::new(&z_vals));
+            let elem_lr: [Field; 2] = verifier.prover_message().unwrap();
+            let _combiner: Field = verifier.verifier_message();
 
-            let (factor, sumcheck_final) =
-                verify_round(claim, Point::new(&z_vals), sumcheck_slice, &r_vals);
-            assert_eq!(factor * mle_l0 * mle_r0, sumcheck_final, "l = {l}");
+            assert_eq!(factor * elem_lr[0] * elem_lr[1], sumcheck_final, "l = {l}");
+            verifier.check_eof().unwrap();
         }
     }
 
@@ -764,16 +766,10 @@ mod tests {
         fn gpgkr_round_trip(leaves in prop::collection::vec(field(), 1..33)) {
             let expected: Field = leaves.iter().fold(Field::ONE, |acc, &x| acc * x);
 
-            let circuit = Circuit::new(leaves);
-            let m = circuit.leafs.len().ilog2() as usize;
-            let mut witnesses = circuit.batched_eval(1);
-            let last_value = witnesses.pop().unwrap();
-
-            let c = Challenge::with_capacity(m, 1);
-            let (claims_lr, sumcheck) = gpgkr_prove(1, &c, witnesses);
+            let (last_value, proof) = prove(leaves.clone(), 1);
             prop_assert_eq!(last_value.clone(), vec![expected]);
 
-            prop_assert!(gpgkr_verify(last_value, circuit, c, claims_lr, sumcheck));
+            prop_assert!(verify(leaves, last_value, proof));
         }
 
         // `batched_eval` stops descending the tree once a layer has `groups`
@@ -834,15 +830,27 @@ mod tests {
             let groups_log2 = groups_log2.min(padded_len.ilog2() as usize).max(1);
             let groups = 1usize << groups_log2;
 
-            let circuit = Circuit::new(leaves);
-            let m = circuit.leafs.len().ilog2() as usize;
-            let mut witnesses = circuit.batched_eval(groups);
-            let last_value = witnesses.pop().unwrap();
+            let (last_value, proof) = prove(leaves.clone(), groups);
 
-            let c = Challenge::with_capacity(m, groups);
-            let (claims_lr, sumcheck) = gpgkr_prove(groups, &c, witnesses);
+            prop_assert!(verify(leaves, last_value, proof));
+        }
 
-            prop_assert!(gpgkr_verify(last_value, circuit, c, claims_lr, sumcheck));
+        // Regression guard for a real bug: `verify` used to discard
+        // `gpgkr_verify`'s boolean result entirely and only checked that the
+        // proof's byte-lengths lined up (`check_eof`), so it accepted any
+        // proof shaped correctly regardless of whether the sumcheck
+        // equations actually held. Tampering with the claimed output after
+        // proving changes what `verify` absorbs into the transcript's
+        // instance tag, desyncing every challenge derived from it, so
+        // verification must fail.
+        #[test]
+        fn gpgkr_verify_rejects_tampered_output(leaves in prop::collection::vec(field(), 1..33)) {
+            let (last_value, proof) = prove(leaves.clone(), 1);
+
+            let mut tampered = last_value;
+            tampered[0] = tampered[0] + Field::ONE;
+
+            prop_assert!(!verify(leaves, tampered, proof));
         }
 
         // The selector is stored last in the backend but needs to lead
