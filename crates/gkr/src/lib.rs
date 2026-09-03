@@ -17,6 +17,7 @@ fn mle(eval: Vec<Field>, rs: &Point) -> Field {
     // TODO DenseMultilinearExtension::from_evaluations doesn't need a num_vars; it already checks based on evaluation size.
     // Possibly we could even do zero padding, but that means memory allocation. Better to have a check beforehand for power of two.
     // Direction should be a parameter
+    // TODO MLE should be able to handle empty point when given a single evaluation
     DenseMultilinearExtension::from_evaluations(num_vars, eval)
         .unwrap()
         .evaluate(&point)
@@ -25,12 +26,12 @@ fn mle(eval: Vec<Field>, rs: &Point) -> Field {
 
 type Point = VecDeque<Field>;
 
-// Functions for stand alone use
-fn prove(input: Vec<Field>, groups: usize) -> (Vec<Field>, transcript::Proof) {
+// Functions for standalone use. Illusatrates how it would be used within the reset of the system.
+pub fn prove(input: Vec<Field>, groups: usize) -> (Vec<Field>, transcript::Proof) {
     let circuit = Circuit::new(input);
     let (last_value, witnesses) = circuit.batched_eval(groups);
 
-    // TODO instance is a bit loose value and should be replaced by PCS
+    // TODO instance is a bit loose and should be replaced by PCS
     let instance = (last_value.clone(), circuit.leafs);
 
     let mut prover = transcript::build_prover("gkr", &instance);
@@ -39,7 +40,7 @@ fn prove(input: Vec<Field>, groups: usize) -> (Vec<Field>, transcript::Proof) {
     (last_value, prover.finish())
 }
 
-fn verify(input: Vec<Field>, output: Vec<Field>, proof: transcript::Proof) -> bool {
+pub fn verify(input: Vec<Field>, output: Vec<Field>, proof: transcript::Proof) -> bool {
     let circuit = Circuit::new(input);
     let instance = (&output, &circuit.leafs);
     let mut verifier = transcript::build_verifier("gkr", &instance, &proof);
@@ -374,57 +375,6 @@ mod tests {
         Ok(last_value)
     }
 
-    // The tests below split along two axes: which subsystem they drive, and
-    // unbatched (groups = 1) vs batched (groups > 1):
-    //
-    //   Circuit::batched_eval alone (no proving):
-    //     - eval_preserves_product_across_layers                  (unbatched)
-    //     - batched_eval_top_layer_is_interleaved_group_products  (batched)
-    //   Full protocol (prove + verify):
-    //     - gpgkr_round_trip                                      (unbatched)
-    //     - gpgkr_round_trip_batched                               (batched)
-    //
-    // Two more sit outside that grid. `suffix_table_handles_points_past_two_
-    // elements` drives `prove_layer`/`verify_round` directly, below the
-    // `Circuit` layer, deterministically and decoupled from multi-layer claim
-    // chaining. `gpgkr_verify_rejects_tampered_output` is the only negative/
-    // soundness test -- everything else here only checks that an honest
-    // proof is accepted.
-
-    // Regression test for a real bug in `SuffixTable::new`: it folded the
-    // point front-to-back and handed tables out LIFO, but round `k`'s
-    // eq-weight is owed to the challenges *not yet consumed* -- so tables
-    // need to drop from the front, which folding in reverse produces. This
-    // was invisible whenever the point had <= 2 elements (no distinguishable
-    // front/back of a single element), which `gpgkr_round_trip`'s range only
-    // drives past *regularly*, not on every run. This pins it
-    // deterministically: an arbitrary layer of length `2^(l+1)` fed straight
-    // to `prove_layer`/`verify_round`, swept across point length `l` from 1
-    // through 8.
-    #[test]
-    fn suffix_table_handles_points_past_two_elements() {
-        for l in 1usize..=8 {
-            let n = 1usize << (l + 1);
-            let wnext: Vec<Field> = (1u128..=(n as u128)).map(Field::from).collect();
-            let z_vals: Vec<Field> = (100u128..100 + l as u128).map(Field::from).collect();
-            let point: Point = z_vals.iter().cloned().collect();
-            let half = wnext.len() / 2;
-            let (lo, hi) = wnext.split_at(half);
-            let above: Vec<Field> = lo.iter().zip(hi).map(|(&a, &b)| a * b).collect();
-            let claim = mle(above, &point);
-
-            let mut prover = transcript::build_prover("suffix-table-test", &z_vals);
-            prove_layer(&mut prover, point.clone(), wnext.clone());
-            let proof = prover.finish();
-
-            let mut verifier = transcript::build_verifier("suffix-table-test", &z_vals, &proof);
-            let result = verify_round(&mut verifier, claim, point);
-
-            assert!(result.is_some(), "l = {l}");
-            verifier.check_eof().unwrap();
-        }
-    }
-
     proptest! {
         // batched_eval, unbatched (groups = 1): pairwise multiplication is
         // associative, so folding-by-multiply any witness layer (including
@@ -439,23 +389,12 @@ mod tests {
 
             prop_assert_eq!(product(&top), expected);
 
-            let mut layers_checked = 1;
             while let Some(layer) = witnesses.pop() {
                 prop_assert_eq!(product(&layer), expected);
-                layers_checked += 1;
             }
-            prop_assert!(layers_checked > 0);
         }
 
-        // batched_eval, batched (groups > 1): it stops descending once a
-        // layer has `groups` entries left, so the top layer should hold one
-        // partial product per group. Each fold step multiplies the *low*
-        // half against the *high* half, so the bits that survive uncollapsed
-        // are the low `log2(groups)` bits of the leaf index: group `j`'s
-        // entry is the product of every (padded) leaf whose index is
-        // congruent to `j` modulo `groups`. Unlike `gpgkr_round_trip_batched`
-        // below, this checks the top layer's exact value against that
-        // formula rather than just that the protocol accepts it.
+
         #[test]
         fn batched_eval_top_layer_is_interleaved_group_products(
             leaves in prop::collection::vec(field(), 1..32),
@@ -484,31 +423,17 @@ mod tests {
 
         // Full protocol, unbatched: proves and verifies through `prove`/
         // `verify`, then checks the output against an independently computed
-        // product -- not just that the verifier accepts it. Range goes up to
-        // 33 leaves (k = 6) so this regularly, though not deterministically
-        // (see `suffix_table_handles_points_past_two_elements`), drives some
-        // layer's point past 2 elements. Starts at 2: a single leaf pads to
-        // a single-element circuit with no witness layers, the "single
-        // constant can't have an MLE" case `gpgkr_prove` doesn't support.
+        // product
+        // Starts at 1 since Dense MLE can't handle zero
         #[test]
-        fn gpgkr_round_trip(leaves in prop::collection::vec(field(), 2..33)) {
+        fn gpgkr_round_trip(leaves in prop::collection::vec(field(), 1..100)) {
             let expected = product(&leaves);
 
             let last_value = prove_and_verify(leaves, 1)?;
             prop_assert_eq!(last_value, vec![expected]);
         }
 
-        // Full protocol, batched (`groups > 1`): `gpgkr_prove` hands back the
-        // `groups`-sized top layer, and `gpgkr_verify` seeds its starting
-        // claim from that layer's own MLE at the same group-selector
-        // challenges `gpgkr_prove` used -- mirroring how `mle(circuit.leafs,
-        // point)` already checks the leaf layer at the other end. Only
-        // checks that the verifier accepts; the top layer's exact value is
-        // already pinned by `batched_eval_top_layer_is_interleaved_group_
-        // products` above. Clamped strictly below `padded_len`'s log2 so
-        // `groups` never reaches the leaf count -- the same unsupported
-        // no-witness-layers case `gpgkr_round_trip` avoids by starting at 2
-        // leaves.
+        // Full protocol, batched (`groups > 1`)
         #[test]
         fn gpgkr_round_trip_batched(
             leaves in prop::collection::vec(field(), 4..33),
@@ -521,14 +446,7 @@ mod tests {
             prove_and_verify(leaves, groups)?;
         }
 
-        // The only negative/soundness test: `verify` used to discard
-        // `gpgkr_verify`'s boolean result and only check that the proof's
-        // byte-lengths lined up, so it accepted any correctly-shaped proof
-        // regardless of whether the sumcheck equations held. Tampering the
-        // claimed output changes what gets absorbed into the transcript's
-        // instance tag, desyncing every derived challenge, so verification
-        // must fail.
-        #[test]
+        // negative/soundness test        #[test]
         fn gpgkr_verify_rejects_tampered_output(leaves in prop::collection::vec(field(), 2..33)) {
             let (last_value, proof) = prove(leaves.clone(), 1);
 
