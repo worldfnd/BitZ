@@ -342,8 +342,6 @@ fn prove_layer(ps: &mut ProverState, point: Point<Field>, mut wnext: Vec<Field>)
     let mut next_point = vec![];
 
     for z in point {
-        let r = ps.verifier_message();
-        next_point.push(r);
         // Last table to be popped is just 1. Feels like that can be optimised. Would save two multiplications.
         // TODO: special-case eq.len() == 1 (final round) to skip the `eq[i] *`
         // multiplications below entirely.
@@ -353,6 +351,8 @@ fn prove_layer(ps: &mut ProverState, point: Point<Field>, mut wnext: Vec<Field>)
 
         let (lo_l, hi_l) = mle_l.split_at_mut(h);
         let (lo_r, hi_r) = mle_r.split_at_mut(h);
+
+        // Split sum calculation from
 
         // Each worker folds its own slice of lanes in place and accumulates
         // `(sum_0, sum_inf)` locally; `reduce` only ever combines the
@@ -378,12 +378,6 @@ fn prove_layer(ps: &mut ProverState, point: Point<Field>, mut wnext: Vec<Field>)
                     sum_0 += mul3_wide(e, *l_lo, *r_lo);
                     sum_inf += mul3_wide(e, d_l, d_r);
 
-                    // MLE folding: a single multiply whose result is used
-                    // right away and not summed with anything else, so
-                    // plain field multiplication is already optimal here.
-                    *l_lo = *l_lo + r * d_l;
-                    *r_lo = *r_lo + r * d_r;
-
                     (sum_0, sum_inf)
                 },
             )
@@ -391,10 +385,29 @@ fn prove_layer(ps: &mut ProverState, point: Point<Field>, mut wnext: Vec<Field>)
                 || (Wide256::zero(), Wide256::zero()),
                 |(a0, ainf), (b0, binf)| (a0 + b0, ainf + binf),
             );
-        mle_l = &mut mle_l[..h];
-        mle_r = &mut mle_r[..h];
 
         ps.prover_message(&(factor * sum_0.reduce(), factor * sum_inf.reduce()));
+
+        let r = ps.verifier_message();
+        next_point.push(r);
+
+        lo_l.par_iter_mut()
+            .zip(lo_r.par_iter_mut())
+            .zip(hi_l.par_iter())
+            .zip(hi_r.par_iter())
+            .with_min_len(PARALLEL_MIN_LANES)
+            .for_each(|(((l_lo, r_lo), &l_hi), &r_hi)| {
+                // Alternative would be to store the delta's back in the high part but that would still require an extra write which is likely more expensive than redoing the work.
+                // Unverified
+                let (d_l, d_r) = (l_hi - *l_lo, r_hi - *r_lo);
+                // MLE folding: a single multiply whose result is used
+                // right away and not summed with anything else, so
+                // plain field multiplication is already optimal here.
+                *l_lo = *l_lo + r * d_l;
+                *r_lo = *r_lo + r * d_r;
+            });
+        mle_l = &mut mle_l[..h];
+        mle_r = &mut mle_r[..h];
 
         factor *= eq_factor(r, z);
     }
