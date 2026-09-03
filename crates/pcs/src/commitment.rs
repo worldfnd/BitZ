@@ -10,7 +10,7 @@ use core::mem::size_of;
 
 use crate::CommitError;
 use crate::bridge::as_flock_f128s;
-use crate::verify::validate_config;
+use crate::validation::CheckedLigerito;
 use common::{Root, Shape};
 use field::F128;
 pub use flock_core::hash::HashKind;
@@ -27,7 +27,9 @@ const LIGERITO_INITIAL_K: usize = 6;
 #[derive(Clone, Debug)]
 pub struct Pcs {
     params: PcsParams,
-    final_log_n: usize,
+    checked_ligerito: CheckedLigerito,
+    bit_len: usize,
+    packed_len: usize,
 }
 
 /// Flock state retained between commitment and openings.
@@ -43,11 +45,9 @@ impl Pcs {
         merkle_hash: HashKind,
     ) -> Result<Self, CommitError> {
         let m = shape.log_bits();
-        if 1usize.checked_shl(m as u32).is_none() {
-            return Err(CommitError::invalid_configuration(format!(
-                "bit length 2^{m} does not fit usize"
-            )));
-        }
+        let bit_len = 1usize.checked_shl(m as u32).ok_or_else(|| {
+            CommitError::invalid_configuration(format!("bit length 2^{m} does not fit usize"))
+        })?;
         let params = PcsParams {
             m,
             log_inv_rate: security_profile.log_inv_rate(),
@@ -55,14 +55,18 @@ impl Pcs {
             profile: security_profile,
             merkle_hash,
         };
-        let config = params
-            .ligerito_verifier_config()
-            .map_err(CommitError::InvalidConfiguration)?;
-        let final_log_n = validate_config(&config, params.log_msg_len(), params.log_batch_size)?;
+        let checked_ligerito = CheckedLigerito::new(&params)?;
+        let packed_len = 1usize
+            .checked_shl(checked_ligerito.log_n_u32())
+            .ok_or_else(|| {
+                CommitError::invalid_configuration("packed witness length does not fit usize")
+            })?;
 
         Ok(Self {
             params,
-            final_log_n,
+            checked_ligerito,
+            bit_len,
+            packed_len,
         })
     }
 
@@ -91,20 +95,32 @@ impl Pcs {
     }
 
     pub fn bit_len(&self) -> usize {
-        1usize << self.params.m
+        self.bit_len
     }
 
     /// Returns the required number of packed `F128` elements.
     pub fn packed_len(&self) -> usize {
-        1usize << self.params.log_msg_len()
+        self.packed_len
     }
 
     pub(crate) fn params(&self) -> &PcsParams {
         &self.params
     }
 
+    pub(crate) fn opening_log_n(&self) -> u32 {
+        self.checked_ligerito.log_n_u32()
+    }
+
+    pub(crate) fn prover_config(&self) -> &flock_core::pcs::ligerito::ProverConfig {
+        self.checked_ligerito.prover_config()
+    }
+
+    pub(crate) fn verifier_config(&self) -> &flock_core::pcs::ligerito::VerifierConfig {
+        self.checked_ligerito.verifier_config()
+    }
+
     pub(crate) fn final_log_n(&self) -> usize {
-        self.final_log_n
+        self.checked_ligerito.final_log_n()
     }
 }
 

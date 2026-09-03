@@ -177,7 +177,7 @@ impl prover::Reduction<Q> for HonestStub {
         let target = evaluate(table, &point);
         transcript.prover_message(&target);
 
-        Ok(OpeningQuery { point, target })
+        Ok(OpeningQuery::Mle { point, target })
     }
 }
 
@@ -194,7 +194,7 @@ impl verifier::Reduction<Q> for HonestStub {
             .collect();
         let target = transcript.prover_message::<F128>().map_err(|_| ())?;
 
-        Ok(OpeningQuery { point, target })
+        Ok(OpeningQuery::Mle { point, target })
     }
 }
 

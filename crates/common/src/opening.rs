@@ -5,11 +5,21 @@
 
 use field::F128;
 
-/// A multilinear evaluation claim on the committed bits: `f~(point) = target`.
+/// A linear opening claim over the original committed bits.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OpeningQuery {
-    /// The evaluation point, low-index-bit-first.
-    pub point: Vec<F128>,
-    /// The claimed evaluation at `point`.
-    pub target: F128,
+pub enum OpeningQuery {
+    /// A multilinear evaluation claim.
+    Mle {
+        /// The evaluation point, in low-index-bit-first order.
+        point: Vec<F128>,
+        /// The claimed multilinear evaluation at `point`.
+        target: F128,
+    },
+    /// An arbitrary `F128` inner-product claim.
+    InnerProduct {
+        /// One weight for each original bit, in commitment index order.
+        weights: Vec<F128>,
+        /// The claimed inner product.
+        target: F128,
+    },
 }

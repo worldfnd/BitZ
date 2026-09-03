@@ -1,12 +1,14 @@
-//! Wire-v1 frames for single multilinear openings.
+//! Wire-v1 frames for single PCS openings.
 
 use core::mem::size_of;
 
 use flock_core::field::F128 as FlockF128;
 use flock_core::pcs::LOG_PACKING;
+use transcript::{ProverState, VerifierState};
 
 use crate::CommitError;
 use crate::bridge::{as_flock_f128, from_flock_f128};
+use crate::ring_switch::CLAIM_COUNT;
 
 use super::PublicTranscript;
 use super::transcript::PcsTranscript;
@@ -14,21 +16,24 @@ use super::transcript::PcsTranscript;
 const EVENT_HEADER_LEN: usize = 24;
 const RING_SWITCH_MESSAGE_TAG: u16 = 0x4001;
 const RING_SWITCH_CHALLENGE_TAG: u16 = 0x4101;
+const INNER_PRODUCT_COORDINATES_TAG: u16 = 0x4201;
+const INNER_PRODUCT_BATCHING_CHALLENGE_TAG: u16 = 0x4301;
 const OPENING_TARGET_TAG: u16 = 0x5001;
 const SQUEEZE_RESULT_BIT: u16 = 0x8000;
 const FIELD_ENCODING_LEN: u32 = 16;
 const NO_SCOPE: u32 = u32::MAX;
 const SINGLE_OPENING_SCOPE: u32 = 0;
-const RING_SWITCH_VALUE_COUNT: usize = 1 << LOG_PACKING;
 const RING_SWITCH_PAYLOAD_LEN: u64 =
-    size_of::<u32>() as u64 + (RING_SWITCH_VALUE_COUNT * FIELD_ENCODING_LEN as usize) as u64;
+    size_of::<u32>() as u64 + (CLAIM_COUNT * FIELD_ENCODING_LEN as usize) as u64;
+const INNER_PRODUCT_COORDINATES_PAYLOAD_LEN: u64 =
+    size_of::<u32>() as u64 + (CLAIM_COUNT * FIELD_ENCODING_LEN as usize) as u64;
 
 /// Binds the single opening's tag-4001 ring-switch vector through NARG.
 pub(crate) fn bind_ring_switch_message(
     transcript: &mut impl PcsTranscript,
     values: &[FlockF128],
 ) -> Result<(), CommitError> {
-    if values.len() != RING_SWITCH_VALUE_COUNT {
+    if values.len() != CLAIM_COUNT {
         return Err(CommitError::invalid_configuration(
             "ring-switch vector length mismatch",
         ));
@@ -40,36 +45,101 @@ pub(crate) fn bind_ring_switch_message(
         NO_SCOPE,
         RING_SWITCH_PAYLOAD_LEN,
     ))?;
-    transcript.bind_prover_message(&(RING_SWITCH_VALUE_COUNT as u32))?;
+    transcript.bind_prover_message(&(CLAIM_COUNT as u32))?;
     for &value in values {
         transcript.bind_prover_message(&from_flock_f128(value))?;
     }
     Ok(())
 }
 
+/// Writes the 128 packed coordinate claims for an arbitrary bit inner product.
+pub(crate) fn write_inner_product_claims(
+    transcript: &mut ProverState,
+    values: &[FlockF128; CLAIM_COUNT],
+) {
+    transcript.prover_message(&event_header(
+        INNER_PRODUCT_COORDINATES_TAG,
+        SINGLE_OPENING_SCOPE,
+        NO_SCOPE,
+        NO_SCOPE,
+        INNER_PRODUCT_COORDINATES_PAYLOAD_LEN,
+    ));
+    transcript.prover_message(&(CLAIM_COUNT as u32));
+    for &value in values {
+        transcript.prover_message(&from_flock_f128(value));
+    }
+}
+
+/// Reads the 128 packed coordinate claims for an arbitrary bit inner product.
+pub(crate) fn read_inner_product_claims(
+    transcript: &mut VerifierState<'_>,
+) -> Result<[FlockF128; CLAIM_COUNT], CommitError> {
+    let expected_header = event_header(
+        INNER_PRODUCT_COORDINATES_TAG,
+        SINGLE_OPENING_SCOPE,
+        NO_SCOPE,
+        NO_SCOPE,
+        INNER_PRODUCT_COORDINATES_PAYLOAD_LEN,
+    );
+    let header = transcript
+        .prover_message::<[u8; EVENT_HEADER_LEN]>()
+        .map_err(|_| CommitError::MalformedProof)?;
+    if header != expected_header {
+        return Err(CommitError::MalformedProof);
+    }
+    let count = transcript
+        .prover_message::<u32>()
+        .map_err(|_| CommitError::MalformedProof)?;
+    if count as usize != CLAIM_COUNT {
+        return Err(CommitError::MalformedProof);
+    }
+
+    let mut values = [FlockF128::ZERO; CLAIM_COUNT];
+    for value in &mut values {
+        *value = transcript
+            .prover_message::<field::F128>()
+            .map(as_flock_f128)
+            .map_err(|_| CommitError::MalformedProof)?;
+    }
+    Ok(values)
+}
+
 /// Samples the seven tag-4101 coordinates of the shared ring-switch point.
-pub(crate) fn sample_ring_switch_point(transcript: &mut impl PublicTranscript) -> Vec<FlockF128> {
-    (0..LOG_PACKING)
-        .map(|index| {
-            sample_f128_event(
-                transcript,
-                RING_SWITCH_CHALLENGE_TAG,
-                NO_SCOPE,
-                NO_SCOPE,
-                index as u32,
-            )
-        })
-        .collect()
+pub(crate) fn sample_ring_switch_point(
+    transcript: &mut impl PublicTranscript,
+) -> [FlockF128; LOG_PACKING] {
+    core::array::from_fn(|index| {
+        sample_f128_event(
+            transcript,
+            RING_SWITCH_CHALLENGE_TAG,
+            NO_SCOPE,
+            NO_SCOPE,
+            index as u32,
+        )
+    })
+}
+
+/// Samples one independent batching challenge for each coordinate claim.
+pub(crate) fn sample_inner_product_batching_challenges(
+    transcript: &mut impl PublicTranscript,
+) -> [FlockF128; CLAIM_COUNT] {
+    core::array::from_fn(|index| {
+        sample_f128_event(
+            transcript,
+            INNER_PRODUCT_BATCHING_CHALLENGE_TAG,
+            NO_SCOPE,
+            NO_SCOPE,
+            index as u32,
+        )
+    })
 }
 
 /// Absorbs the derived tag-5001 opening target before recursive Ligerito.
 pub(crate) fn observe_opening_target(
     transcript: &mut impl PublicTranscript,
-    m_p: usize,
+    m_p: u32,
     beta: FlockF128,
-) -> Result<(), CommitError> {
-    let m_p =
-        u32::try_from(m_p).map_err(|_| CommitError::invalid_configuration("m_p exceeds u32"))?;
+) {
     transcript.public_message(&event_header(
         OPENING_TARGET_TAG,
         NO_SCOPE,
@@ -79,7 +149,6 @@ pub(crate) fn observe_opening_target(
     ));
     transcript.public_message(&m_p);
     transcript.public_message(&from_flock_f128(beta));
-    Ok(())
 }
 
 fn sample_f128_event(
@@ -136,9 +205,9 @@ mod tests {
 
     #[test]
     fn ring_switch_message_matches_wire_v1() {
-        let mut values = [FlockF128::ZERO; RING_SWITCH_VALUE_COUNT];
+        let mut values = [FlockF128::ZERO; CLAIM_COUNT];
         values[0] = FlockF128::new(1, 2);
-        values[RING_SWITCH_VALUE_COUNT - 1] = FlockF128::new(3, 4);
+        values[CLAIM_COUNT - 1] = FlockF128::new(3, 4);
         let mut prover = build_prover(b"pcs-protocol-test", b"ring-frame");
 
         bind_ring_switch_message(&mut prover, &values).unwrap();
@@ -162,6 +231,55 @@ mod tests {
         let mut verifier = build_verifier(b"pcs-protocol-test", b"ring-frame", &proof);
         bind_ring_switch_message(&mut verifier, &values).unwrap();
         verifier.check_eof().unwrap();
+    }
+
+    #[test]
+    fn inner_product_coordinate_message_uses_its_own_frame() {
+        let mut values = [FlockF128::ZERO; CLAIM_COUNT];
+        values[0] = FlockF128::new(1, 2);
+        values[CLAIM_COUNT - 1] = FlockF128::new(3, 4);
+        let mut prover = build_prover(b"pcs-protocol-test", b"inner-product-frame");
+
+        write_inner_product_claims(&mut prover, &values);
+        let proof = prover.finish();
+
+        assert_eq!(
+            proof.narg_string.len(),
+            EVENT_HEADER_LEN + 4 + CLAIM_COUNT * 16,
+        );
+        assert_eq!(
+            &proof.narg_string[..2],
+            &INNER_PRODUCT_COORDINATES_TAG.to_le_bytes(),
+        );
+        assert_eq!(
+            &proof.narg_string[EVENT_HEADER_LEN..EVENT_HEADER_LEN + 4],
+            &(CLAIM_COUNT as u32).to_le_bytes(),
+        );
+
+        let mut verifier = build_verifier(b"pcs-protocol-test", b"inner-product-frame", &proof);
+        assert_eq!(read_inner_product_claims(&mut verifier).unwrap(), values,);
+        verifier.check_eof().unwrap();
+    }
+
+    #[test]
+    fn inner_product_coordinate_reader_rejects_the_wrong_count() {
+        let expected_header = event_header(
+            INNER_PRODUCT_COORDINATES_TAG,
+            SINGLE_OPENING_SCOPE,
+            NO_SCOPE,
+            NO_SCOPE,
+            INNER_PRODUCT_COORDINATES_PAYLOAD_LEN,
+        );
+        let mut prover = build_prover(b"pcs-protocol-test", b"wrong-coordinate-count");
+        prover.prover_message(&expected_header);
+        prover.prover_message(&((CLAIM_COUNT - 1) as u32));
+        let proof = prover.finish();
+        let mut verifier = build_verifier(b"pcs-protocol-test", b"wrong-coordinate-count", &proof);
+
+        assert_eq!(
+            read_inner_product_claims(&mut verifier),
+            Err(CommitError::MalformedProof),
+        );
     }
 
     struct RecordingTranscript {
@@ -220,7 +338,7 @@ mod tests {
         };
 
         let r_dprime = sample_ring_switch_point(&mut transcript);
-        observe_opening_target(&mut transcript, 15, FlockF128::new(10, 11)).unwrap();
+        observe_opening_target(&mut transcript, 15, FlockF128::new(10, 11));
         let frames = parse_recorded_frames(&transcript.absorbed);
 
         assert_eq!(r_dprime.len(), LOG_PACKING);
@@ -251,5 +369,36 @@ mod tests {
                 .concat(),
             }
         );
+    }
+
+    #[test]
+    fn inner_product_batching_uses_128_dedicated_challenge_frames() {
+        let challenges = (1u64..=CLAIM_COUNT as u64)
+            .map(F128::from)
+            .collect::<VecDeque<_>>();
+        let mut transcript = RecordingTranscript {
+            absorbed: Vec::new(),
+            challenges,
+            squeeze_offsets: Vec::new(),
+        };
+
+        let sampled = sample_inner_product_batching_challenges(&mut transcript);
+        let frames = parse_recorded_frames(&transcript.absorbed);
+
+        assert_eq!(sampled.len(), CLAIM_COUNT);
+        assert_eq!(frames.len(), 2 * CLAIM_COUNT);
+        for index in 0..CLAIM_COUNT {
+            let request = &frames[2 * index];
+            let response = &frames[2 * index + 1];
+            assert_eq!(request.tag, INNER_PRODUCT_BATCHING_CHALLENGE_TAG);
+            assert_eq!(request.scope, (NO_SCOPE, NO_SCOPE, index as u32));
+            assert_eq!(request.payload, FIELD_ENCODING_LEN.to_le_bytes());
+            assert_eq!(
+                response.tag,
+                INNER_PRODUCT_BATCHING_CHALLENGE_TAG | SQUEEZE_RESULT_BIT,
+            );
+            assert_eq!(response.scope, request.scope);
+            assert_eq!(response.payload, F128::from(index as u64 + 1).to_bytes(),);
+        }
     }
 }
