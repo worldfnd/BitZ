@@ -267,11 +267,14 @@ dependencies = [
 name = "circuit"
 version = "0.1.0"
 dependencies = [
+ "blake3",
+ "common",
  "crypto-bigint",
  "divan",
  "field",
  "num-bigint 0.4.8",
  "num-traits",
+ "poly",
  "rayon",
 ]
 

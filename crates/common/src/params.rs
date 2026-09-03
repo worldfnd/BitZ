@@ -3,7 +3,7 @@
 use field::{F128, gf128::is_generator};
 use spongefish::Encoding;
 
-use crate::{BitTable, Shape, TableError};
+use crate::{BitTable, Shape, TableError, VirtualMap};
 
 /// A parameter set one of the pre-claim gates rejects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,7 +105,7 @@ impl<const Q: u128> Encoding<[u8]> for F2ZParams<Q> {
 mod tests {
     use super::*;
     use field::gf128::smallest_generator;
-    use num_traits::ConstOne;
+    use num_traits::{ConstOne, ConstZero};
 
     /// The largest prime below `2^114`, the top of the sampling range.
     const Q114: u128 = (1 << 114) - 11;
@@ -117,6 +117,94 @@ mod tests {
     /// `m = 22`: 128 rows per column, 32768 columns.
     fn shape() -> Shape {
         Shape::new(7, 15).unwrap()
+    }
+
+    /// A map of stated dimensions and nothing else, which is all the gates read.
+    struct Dimensions {
+        h_len: usize,
+        f_len: usize,
+    }
+
+    impl VirtualMap for Dimensions {
+        fn transpose_eq(
+            &self,
+            _: &[F128],
+        ) -> Result<crate::TransposedWeights, crate::VirtualMapError> {
+            unreachable!("the parameter gates never apply the map")
+        }
+
+        fn digest(&self) -> [u8; 32] {
+            [0; 32]
+        }
+
+        fn h_len(&self) -> usize {
+            self.h_len
+        }
+
+        fn f_len(&self) -> usize {
+            self.f_len
+        }
+    }
+
+    fn virtual_params_for(
+        h_len: usize,
+        f_len: usize,
+    ) -> Result<VirtualParams<Q114>, VirtualParamsError> {
+        VirtualParams::new(
+            params_at(shape()).unwrap(),
+            shape(),
+            &Dimensions { h_len, f_len },
+        )
+    }
+
+    #[test]
+    fn accepts_vectors_the_shapes_have_room_for() {
+        // Both shapes index `2^22` coordinates; anything shorter is padded.
+        assert!(virtual_params_for(1 << 22, (1 << 22) + 1).is_ok());
+        assert!(virtual_params_for(3, 4).is_ok());
+    }
+
+    #[test]
+    fn rejects_a_claim_vector_wider_than_its_shape() {
+        assert_eq!(
+            virtual_params_for((1 << 22) + 1, 4).err(),
+            Some(VirtualParamsError::ClaimShapeTooSmall)
+        );
+    }
+
+    #[test]
+    fn rejects_committed_bits_wider_than_their_shape() {
+        assert_eq!(
+            virtual_params_for(4, (1 << 22) + 2).err(),
+            Some(VirtualParamsError::CommittedShapeTooSmall)
+        );
+    }
+
+    /// A shared frame would let a proof of one claim replay as a proof of the
+    /// other.
+    #[test]
+    fn the_two_parameter_frames_cannot_collide() {
+        let plain = params_at(shape()).unwrap();
+        let virtualised = virtual_params_for(4, 4).unwrap();
+
+        assert_ne!(
+            plain.encode().as_ref().len(),
+            virtualised.encode().as_ref().len()
+        );
+    }
+
+    /// The committed shape, not the claim's, is what the witness is read
+    /// through.
+    #[test]
+    fn the_table_is_shaped_by_the_committed_bits() {
+        let claim =
+            F2ZParams::<Q114>::new(Shape::new(8, 15).unwrap(), smallest_generator()).unwrap();
+        let committed = shape();
+        let params =
+            VirtualParams::new(claim, committed, &Dimensions { h_len: 4, f_len: 4 }).unwrap();
+        let packed = vec![F128::ZERO; (1 << committed.log_bits()) / 128];
+
+        assert_eq!(params.table(&packed).unwrap().shape(), &committed);
     }
 
     #[test]
@@ -167,5 +255,78 @@ mod tests {
             narrow.encode().as_ref().to_vec(),
             wide.encode().as_ref().to_vec()
         );
+    }
+}
+
+/// A parameter set one of the pre-claim gates rejects when the claim is about
+/// a vector the oracle does not commit to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VirtualParamsError {
+    /// `h` has more coordinates than the claim shape indexes.
+    ClaimShapeTooSmall,
+    /// `1 ‖ f` has more coordinates than the committed shape indexes, so some
+    /// bit the map reads was never committed.
+    CommittedShapeTooSmall,
+}
+
+/// Parameters for a claim about `h` opened against a commitment to `f`.
+///
+/// Two shapes, because the two vectors have different lengths. The inherited
+/// [`F2ZParams`] shapes `h`: it is what the fold walks, what bounds the
+/// exponent, and what the claim's weights are counted against. The committed
+/// shape belongs to `f` alone and reaches only the table and the opening.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VirtualParams<const Q: u128> {
+    claim: F2ZParams<Q>,
+    committed: Shape,
+}
+
+impl<const Q: u128> VirtualParams<Q> {
+    /// Checks both shapes against the map before either is used.
+    ///
+    /// Zero padding is what makes the inequalities rather than equalities: both
+    /// vectors are padded up to their shape so that they have multilinear
+    /// extensions, and padding contributes nothing.
+    pub fn new(
+        claim: F2ZParams<Q>,
+        committed: Shape,
+        map: &impl VirtualMap,
+    ) -> Result<Self, VirtualParamsError> {
+        if map.h_len() > 1 << claim.shape().log_bits() {
+            return Err(VirtualParamsError::ClaimShapeTooSmall);
+        }
+        if map.f_len() - 1 > 1 << committed.log_bits() {
+            return Err(VirtualParamsError::CommittedShapeTooSmall);
+        }
+
+        Ok(Self { claim, committed })
+    }
+
+    /// The parameters the fold and the reduction read, shaped to `h`.
+    pub fn claim(&self) -> &F2ZParams<Q> {
+        &self.claim
+    }
+
+    /// The shape of the committed bits.
+    pub fn committed_shape(&self) -> &Shape {
+        &self.committed
+    }
+
+    /// Views the committed witness, which is `f` and not the vector the claim
+    /// is about.
+    pub fn table<'a>(&self, packed: &'a [F128]) -> Result<BitTable<'a>, TableError> {
+        BitTable::new(self.committed, packed)
+    }
+}
+
+/// Distinct from a plain [`F2ZParams`] frame by length, so a proof of one
+/// cannot replay as a proof of the other.
+impl<const Q: u128> Encoding<[u8]> for VirtualParams<Q> {
+    fn encode(&self) -> impl AsRef<[u8]> {
+        let mut frame = [0u8; 64];
+        frame[..48].copy_from_slice(self.claim.encode().as_ref());
+        frame[48..56].copy_from_slice(&(self.committed.log_rows() as u64).to_le_bytes());
+        frame[56..].copy_from_slice(&(self.committed.log_columns() as u64).to_le_bytes());
+        frame
     }
 }

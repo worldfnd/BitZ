@@ -11,7 +11,7 @@ use circuit::matrix_products::RuntimeModulus;
 use circuit::matrix_transpose::{MTransposeGenerator, MaterializedMTranspose};
 use circuit::matrix_wengert::{WengertGenerator, WengertTape};
 use circuit::p256::prepare;
-use circuit::witgen::ProductWitgen;
+use circuit::witgen::{ProductWitgen, Witgen, WitnessOnly};
 use divan::{Bencher, black_box};
 use field::F128;
 use num_bigint::BigUint;
@@ -90,6 +90,33 @@ fn ecdsa_sha256_2kb_witgen(bencher: Bencher) {
         let mut witgen = ProductWitgen::with_inputs_and_capacity(inputs, VERIFY_2KB_WITNESS_BITS);
         verify_2kb_message_circuit(&mut witgen, inputs);
         black_box(witgen.into_parts())
+    });
+}
+
+/// Generate `f` alone, without the integer witness.
+#[divan::bench]
+fn ecdsa_sha256_2kb_witgen_bits(bencher: Bencher) {
+    prepare();
+    let inputs = support::ecdsa_sha256::valid_input();
+    bencher.bench_local(|| {
+        let inputs = black_box(inputs.as_ref());
+        let mut witgen = WitnessOnly::with_inputs_and_capacity(inputs, VERIFY_2KB_WITNESS_BITS);
+        verify_2kb_message_circuit(&mut witgen, inputs);
+        black_box(witgen.into_witness())
+    });
+}
+
+/// Generate `f` and `h` together. The gap against `ecdsa_sha256_2kb_witgen_bits`
+/// is what the integer witness costs when both come from one pass.
+#[divan::bench]
+fn ecdsa_sha256_2kb_witgen_bits_and_integers(bencher: Bencher) {
+    prepare();
+    let inputs = support::ecdsa_sha256::valid_input();
+    bencher.bench_local(|| {
+        let inputs = black_box(inputs.as_ref());
+        let mut witgen = Witgen::with_inputs_and_capacity(inputs, VERIFY_2KB_WITNESS_BITS);
+        verify_2kb_message_circuit(&mut witgen, inputs);
+        black_box(witgen.into_witnesses())
     });
 }
 

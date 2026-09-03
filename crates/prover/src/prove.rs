@@ -1,6 +1,6 @@
 //! `ProveF2Z`.
 
-use common::{BitTable, LinearClaim, OpeningQuery, ReductionInput, TableError};
+use common::{BitTable, LinearClaim, OpeningQuery, ReductionInput, Root, TableError};
 use field::F128;
 use pcs::{CommitError, CommitScheme, Pcs, ProverData, StatementBinding};
 use transcript::ProverState;
@@ -68,6 +68,32 @@ impl<const Q: u128> F2ZProver<Q> {
         transcript.public_message(&com.0);
         transcript.public_message(self.params());
 
+        // Steps 2 to 5: the modulus reduction, the column fold, the grand
+        // product, and the batching a merged forest does not need.
+        let query = self.fold_and_reduce(claim, com, &table, reduction, transcript)?;
+
+        // Step 6: the ring switch and the opening, which discharge the claim
+        // step 4 handed over. `Bind` rather than `AlreadyBound`: the opening's
+        // own parameters are not in the frame step 1 absorbed, and binding them
+        // here is what puts them in the sponge before the opener's first
+        // squeeze.
+        pcs.prove_lin(data, packed, &query, StatementBinding::Bind, transcript)
+            .map_err(ProveError::Opening)
+    }
+
+    /// Steps 2 to 5, which every entry point runs identically.
+    ///
+    /// Step 1 and step 6 stay with the caller: it absorbs its own statement
+    /// frame, shapes its own table, and decides what to do with the query,
+    /// which is a claim about whatever `table` holds.
+    pub(crate) fn fold_and_reduce<R: Reduction<Q>>(
+        &self,
+        claim: &LinearClaim<Q>,
+        com: Root,
+        table: &BitTable<'_>,
+        reduction: &R,
+        transcript: &mut ProverState,
+    ) -> Result<OpeningQuery, ProveError<R::Error>> {
         // TODO: step 2, reducing the modulus, is absent. It runs when q is too
         // large for the shape, and a const modulus parameter cannot express its
         // `q <- q'`. Callers must supply an admissible q; LinearClaim::new
@@ -75,7 +101,7 @@ impl<const Q: u128> F2ZProver<Q> {
 
         // Step 3: fold each column into an integer exponent.
         let fold = self
-            .send_fold(claim, &table, transcript)
+            .send_fold(claim, table, transcript)
             .map_err(ProveError::Fold)?;
 
         // Step 4: the grand product over the folds, then the sumcheck that
@@ -88,20 +114,12 @@ impl<const Q: u128> F2ZProver<Q> {
             commitment: com,
             fold: &fold,
         };
-        let query = reduction
-            .reduce(&input, &table, transcript)
-            .map_err(ProveError::Reduction)?;
 
         // Step 5, batching the per-column claims, is conditional and a
         // merged-forest grand product does not need it: it draws its challenge
         // once across all columns, so the claims never separate.
-
-        // Step 6: the ring switch and the opening, which discharge the claim
-        // step 4 handed over. `Bind` rather than `AlreadyBound`: the opening's
-        // own parameters are not in the frame step 1 absorbed, and binding them
-        // here is what puts them in the sponge before the opener's first
-        // squeeze.
-        pcs.prove_lin(data, packed, &query, StatementBinding::Bind, transcript)
-            .map_err(ProveError::Opening)
+        reduction
+            .reduce(&input, table, transcript)
+            .map_err(ProveError::Reduction)
     }
 }
