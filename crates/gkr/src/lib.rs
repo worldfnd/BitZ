@@ -330,7 +330,7 @@ impl Circuit {
 pub struct LayerWitnesses(Vec<Vec<Field>>);
 
 impl LayerWitnesses {
-    fn pop(&mut self) -> Option<Vec<Field>> {
+    pub fn pop(&mut self) -> Option<Vec<Field>> {
         self.0.pop()
     }
 
