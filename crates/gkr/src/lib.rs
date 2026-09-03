@@ -150,6 +150,7 @@ fn prove_layer(ps: &mut ProverState, point: Point<Field>, mut wnext: Vec<Field>)
     for z in point {
         // TODO: special-case eq.len() == 1 (final round) to skip the `eq[i] *`
         // multiplications below entirely.
+        // TODO: unwrap will be dealt with in upcoming approach to SuffixTable
         let eq = suffix_table.pop().unwrap();
         let h = mle_l.len() / 2;
         debug_assert_eq!(eq.len(), h);
@@ -171,8 +172,7 @@ fn prove_layer(ps: &mut ProverState, point: Point<Field>, mut wnext: Vec<Field>)
 
                     // `e * l0 * r0` and `e * (l_hi-l0) * (r_hi-r0)`: each is
                     // two multiplications in a row, deferred into the
-                    // running wide sums by `mul3_wide` (see its doc
-                    // comment).
+                    // running wide sums by `mul3_wide`
                     sum_0 += mul3_wide(e, *l_lo, *r_lo);
                     sum_inf += mul3_wide(e, d_l, d_r);
 
@@ -286,8 +286,13 @@ impl SuffixTable {
 const PARALLEL_MIN_LANES: usize = 1 << 12;
 
 fn gpgkr_verify(vs: &mut VerifierState, last_value: Vec<Field>, circuit: Circuit) -> bool {
-    // Rejection of bad inputs
-    // Think what happens on empty inputs
+    // Edge cases
+    // | circuit | last value |
+    //    0 0 -> valid no circuit has no output
+    //    0 1 -> false
+    //    1 0 -> false
+    //    1 1 -> check if last value is smaller but might not even be necessary -> does it lead to an invalid proof already
+    //    circuit but no output or is it just a short circuit?
 
     let log_groups = last_value.len().ilog2();
     let mut point_storage: Vec<_> = (0..log_groups).map(|_| vs.verifier_message()).collect();
@@ -298,24 +303,16 @@ fn gpgkr_verify(vs: &mut VerifierState, last_value: Vec<Field>, circuit: Circuit
     let mut claim = mle(last_value, point.clone());
 
     for _i in 0..rounds {
-        let (factor, sumcheck_final, next_point_storage) = verify_round(vs, claim, point);
-        point_storage = next_point_storage;
-
-        let elem_lr: [Field; 2] = vs.prover_message().unwrap();
-        // Check if line polynomial hits same spot as sumcheck check
-        if (factor * elem_lr[0] * elem_lr[1]) != sumcheck_final {
-            return false;
+        match verify_round(vs, claim, point) {
+            Some(next_point_storage) => {
+                (point_storage, claim) = next_point_storage;
+                point = Point::new(&point_storage);
+            }
+            None => return false,
         }
-
-        let r = vs.verifier_message();
-        point_storage.push(r);
-
-        // Reduce both claims to a single claim
-        claim = elem_lr[0] + r * (elem_lr[1] - elem_lr[0]);
-        point = Point::new(&point_storage);
     }
 
-    // Deal with input layer
+    // TODO replace by PCS
     let leaf_check = mle(circuit.leafs, &mut point);
 
     leaf_check == claim
@@ -325,7 +322,7 @@ fn verify_round(
     vs: &mut VerifierState,
     mut claim: Field,
     point: Point<Field>,
-) -> (Field, Field, Vec<Field>) {
+) -> Option<(Vec<Field>, Field)> {
     let mut prefix = Field::ONE;
 
     // but misses the linear combination challenge
@@ -347,7 +344,20 @@ fn verify_round(
 
         prefix *= factor;
     }
-    (prefix, claim, next_point)
+
+    let elem_lr: [Field; 2] = vs.prover_message().unwrap();
+    // Check if line polynomial hits same spot as sumcheck check
+    if (prefix * elem_lr[0] * elem_lr[1]) != claim {
+        None
+    } else {
+        let r = vs.verifier_message();
+        next_point.push(r);
+
+        // Reduce both claims to a single claim
+        claim = elem_lr[0] + r * (elem_lr[1] - elem_lr[0]);
+
+        Some((next_point, claim))
+    }
 }
 
 //TODO circuit and circuit eval can't have there innards directly available as that would break power of 2 requirements for the rest.
