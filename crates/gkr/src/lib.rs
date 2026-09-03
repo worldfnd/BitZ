@@ -8,14 +8,14 @@ use transcript::{ProverState, VerifierState};
 
 pub type Field = F128;
 
-// TODO modify densemultilinearextension such that no point reversal is necessary
+// TODO modify densemultilinearextension such that no point reversal nor collection is necessary
 fn mle(eval: Vec<Field>, rs: &Point) -> Field {
     let num_vars = rs.len();
     let mut point: Vec<Field> = rs.iter().cloned().collect();
     point.reverse();
 
-    // TODO DenseMultilinearExtension::from_evaluations doesn't need a num_vars it already checks based on evaluation size.
-    // Possibly we could even do zerro padding, but that means memory allocation. Better to have a check beforehand of power of two.
+    // TODO DenseMultilinearExtension::from_evaluations doesn't need a num_vars; it already checks based on evaluation size.
+    // Possibly we could even do zero padding, but that means memory allocation. Better to have a check beforehand for power of two.
     // Direction should be a parameter
     DenseMultilinearExtension::from_evaluations(num_vars, eval)
         .unwrap()
@@ -168,23 +168,23 @@ fn mul3_wide(a: Field, b: Field, c: Field) -> Wide256 {
     Wide256::mul(Wide256::mul(a, b).reduce(), c)
 }
 
-// TODO SuffixTable becomes a wrapper around a preallocated vector that is large enough for all rounds.
-// SuffixTable can be 'created' each round / destroyed to ensure proper truncation
+// TODO:  SuffixTable becomes a wrapper around a preallocated vector that is large enough for all rounds.
+//          SuffixTable can be 'created' each round / destroyed to ensure proper truncation of the underlying vector
 struct SuffixTable(Vec<Vec<Field>>);
 
 impl SuffixTable {
-    /// Allocates all directly as it is as much space as what a double buffer approach would take.
+    /// Allocates all directly as it is as much space as a double buffer approach would take.
     fn new(point: &Point) -> SuffixTable {
         let mut table = Vec::with_capacity(1 << point.len().saturating_sub(1));
         let mut prev = Vec::from([Field::ONE]);
 
-        // The selector is the first entry of the points and we need to skip
+        // The selector is the first entry of the point and we need to skip
         // that -- except when `point` is itself empty, in which case there
         // is no selector and `c` must stay empty too (`min(1)` keeps the
         // range start in-bounds there instead of panicking).
         let c = point.range(point.len().min(1)..);
 
-        // Suffix table is in the reverse order of the points
+        // Suffix table is in the reverse order of the point
         for &z in c.rev() {
             let size = prev.len() << 1;
             let mut entry = vec![Field::ZERO; size];
@@ -214,15 +214,15 @@ impl SuffixTable {
 const PARALLEL_MIN_LANES: usize = 1 << 12;
 
 fn gpgkr_verify(vs: &mut VerifierState, last_value: Vec<Field>, circuit: Circuit) -> bool {
-    // Edge cases around empty values, 0 meaning empty
+    // Edge cases around input lenghts, 0 meaning empty
     // | circuit | last value |
-    //    0 0 -> valid no circuit has no output
+    //    0 0 -> valid, no circuit has no output
     //    0 1 -> false
     //    1 0 -> false
     // last value equal to circuit
     //    direct comparison of the two
     // last value being larger than circuit
-    //    1 1 -> false
+    //    -> false
     let log_groups = last_value.len().max(1).ilog2();
     let log_leafs = circuit.leafs.len().max(1).ilog2();
     let rounds = log_leafs.saturating_sub(log_groups);
@@ -282,8 +282,8 @@ fn verify_round(vs: &mut VerifierState, mut claim: Field, point: Point) -> Optio
     }
 }
 
-//TODO circuit and circuit eval can't have there innards directly available as that would break power of 2 requirements for the rest.
-// A circuit is defined by it's leaf value only because it is a balanced tree
+//TODO circuit and circuit eval can't have their innards directly available as that would break power of 2 requirements for the rest.
+// A circuit is defined by its leaf value only because it is a balanced tree
 // TODO: Optimise for circuits that are padded.
 struct Circuit {
     leafs: Vec<Field>,
@@ -302,7 +302,7 @@ impl Circuit {
     // Can't consume the input as the circuit is necessary for the initialisation of fiat shamir
     // TODO: replace with leaf lookups and add multithreading
     fn batched_eval(&self, groups: usize) -> (Vec<Field>, LayerWitnesses) {
-        // +1 to deal with the possible case that the leafs are empty. Given that otherwise the constructor padded it to a power of two and ilog rounds it down it becomes a noop
+        // +1 to deal with the possible case that the leafs are empty. Given that otherwise the constructor padded it to a power of two, and ilog rounds it down, it becomes a noop
         let mut witnesses = Vec::with_capacity((self.leafs.len() + 1).ilog2() as usize);
 
         // TODO expensive clone going to get replaced by leaf lookups
