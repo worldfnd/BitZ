@@ -35,7 +35,7 @@ fn prove(input: Vec<Field>, groups: usize) -> (Vec<Field>, transcript::Proof) {
 
     let mut prover = transcript::build_prover("gkr", &instance);
 
-    gpgkr_prove(&mut prover, groups.ilog2() as u8, witnesses);
+    gpgkr_prove(&mut prover, witnesses);
     (last_value, prover.finish())
 }
 
@@ -51,17 +51,18 @@ fn verify(input: Vec<Field>, output: Vec<Field>, proof: transcript::Proof) -> bo
 
 pub fn gpgkr_prove(
     ps: &mut ProverState,
-    log_groups: u8,
     // All the intermediate witnesses + the input layer. Doesn't contain the output layer
     witnesses: LayerWitnesses,
 ) {
     // Edge cases
-    // - witnesses < log groups (configuration mistake) panic
     // - empty witnesses -> single constant circuit -> one verifier message that permutes the proof state, but a single constant can't have an MLE
-    let groups = 1usize << log_groups;
-    // The layer directly below the output must be exactly twice the output
-    // layer's size -- that's the batching invariant `batched_eval` maintains.
-    assert_eq!(witnesses.next_layer_len(), Some(groups * 2));
+
+    let log_groups = match witnesses.next_layer_len() {
+        // `next_layer_groups` is twice the output layer's length (`groups`); `.max(1)` avoids
+        // an `ilog2(0)` panic when `groups == 0`, mirroring `gpgkr_verify`'s `last_value.len().max(1).ilog2()`.
+        Some(next_layer_groups) => (next_layer_groups / 2).max(1).ilog2(),
+        None => 0,
+    };
 
     // Extension point chosen by the verifier to evaluate the output layer
     let mut point: Point = (0..log_groups).map(|_| ps.verifier_message()).collect();
@@ -213,19 +214,20 @@ impl SuffixTable {
 const PARALLEL_MIN_LANES: usize = 1 << 12;
 
 fn gpgkr_verify(vs: &mut VerifierState, last_value: Vec<Field>, circuit: Circuit) -> bool {
-    // Edge cases
+    // Edge cases around empty values, 0 meaning empty
     // | circuit | last value |
     //    0 0 -> valid no circuit has no output
     //    0 1 -> false
     //    1 0 -> false
-    //    1 1 -> check if last value is smaller but might not even be necessary -> does it lead to an invalid proof already
-    //    circuit but no output or is it just a short circuit?
+    // last value equal to circuit
+    //    direct comparison of the two
+    // last value being larger than circuit
+    //    1 1 -> false
+    let log_groups = last_value.len().max(1).ilog2();
+    let log_leafs = circuit.leafs.len().max(1).ilog2();
+    let rounds = log_leafs.saturating_sub(log_groups);
 
-    let log_groups = last_value.len().ilog2();
     let mut point: Point = (0..log_groups).map(|_| vs.verifier_message()).collect();
-
-    let rounds = circuit.leafs.len().ilog2() - last_value.len().ilog2();
-
     let mut claim = mle(last_value, &point);
 
     for _i in 0..rounds {
@@ -298,6 +300,7 @@ impl Circuit {
 
     // Returns the final evaluation and the witnesses of the intermediate layers
     // Can't consume the input as the circuit is necessary for the initialisation of fiat shamir
+    // TODO: replace with leaf lookups and add multithreading
     fn batched_eval(&self, groups: usize) -> (Vec<Field>, LayerWitnesses) {
         // +1 to deal with the possible case that the leafs are empty. Given that otherwise the constructor padded it to a power of two and ilog rounds it down it becomes a noop
         let mut witnesses = Vec::with_capacity((self.leafs.len() + 1).ilog2() as usize);
