@@ -1,3 +1,5 @@
+use std::ptr::with_exposed_provenance;
+
 use field::{F128, Wide256};
 use num_traits::{ConstOne, ConstZero};
 use poly::DenseMultilinearExtension;
@@ -12,12 +14,17 @@ fn mle(eval: Vec<Field>, rs: impl Iterator<Item = Field> + ExactSizeIterator) ->
     let mut point: Vec<Field> = rs.collect();
     point.reverse();
 
+    // TODO DenseMultilinearExtension::from_evaluations doesn't need a num_vars it already checks based on evaluation size.
+    // Possibly we could even do zerro padding, but that means memory allocation. Better to have a check beforehand of power of two.
+    // Direction should be a parameter
     DenseMultilinearExtension::from_evaluations(num_vars, eval)
         .unwrap()
         .evaluate(&point)
         .unwrap()
 }
 
+// Point is an interator to deal with the line challenge to be the first point for the next round even though it is the last challenge.
+// TODO Mixes up Point with an iterator as can be seen by the function tail
 #[derive(Clone)]
 pub struct Point<'a, T: Copy> {
     backend: &'a [T],
@@ -43,7 +50,7 @@ impl<'a, T: Copy> Point<'a, T> {
         }
     }
 
-    pub fn c(&self) -> &[T] {
+    pub fn tail(&self) -> &[T] {
         let selector_idx = self.backend.len().saturating_sub(1);
         &self.backend[..selector_idx]
     }
@@ -84,16 +91,17 @@ impl<'a, T: Copy> ExactSizeIterator for Point<'a, T> {
     }
 }
 
+// Functions for stand alone use
 fn prove(input: Vec<Field>, groups: usize) -> (Vec<Field>, transcript::Proof) {
     let circuit = Circuit::new(input);
-    let mut witnesses = circuit.batched_eval(groups);
-    let last_value = witnesses.pop().unwrap();
+    let (last_value, witnesses) = circuit.batched_eval(groups);
 
+    // TODO instance is a bit loose value and should be replaced by PCS
     let instance = (last_value.clone(), circuit.leafs);
 
     let mut prover = transcript::build_prover("gkr", &instance);
 
-    gpgkr_prove(groups, &mut prover, witnesses);
+    gpgkr_prove(&mut prover, groups.ilog2() as u8, witnesses);
     (last_value, prover.finish())
 }
 
@@ -107,89 +115,48 @@ fn verify(input: Vec<Field>, output: Vec<Field>, proof: transcript::Proof) -> bo
     ok && verifier.check_eof().is_ok()
 }
 
-/// Grand product GKR: proves the reduction of `eval`'s layers down to the
-/// `groups`-sized top layer that `prove` already popped off and fed into
-/// the transcript as public input. Samples `lgroups` group-selector
-/// challenges up front, then runs `prove_layer` once per remaining layer
-/// (from just below the top layer down to the leaves), threading each
-/// layer's folded challenge point into the next via `point_storage`. Every
-/// sumcheck message is written straight to `ps`, so there is nothing to
-/// return.
-fn gpgkr_prove(
-    groups: usize,
+pub fn gpgkr_prove(
     ps: &mut ProverState,
-    // circuit evaluation that doesn't have the last layer
-    eval: CircuitEval,
+    log_groups: u8,
+    // All the intermediate witnesses + the input layer. Doesn't contain the output layer
+    witnesses: LayerWitnesses,
 ) {
-    let lgroups = groups.ilog2();
-    let mut point_storage = vec![];
-    // There needs to be a preallocated points vector
-    for _ in 0..lgroups {
-        point_storage.push(ps.verifier_message());
-    }
+    // Edge cases
+    // - witnesses < log groups (configuration mistake) panic
+    // - empty witnesses -> single constant circuit -> one verifier message that permutes the proof state, but a single constant can't have an MLE
+    assert!(witnesses.len() >= 1 << log_groups);
 
-    for wnext in eval.into_iter() {
+    // Extension point chosen by the verifier to evaluate the output layer
+    let mut point_storage: Vec<_> = (0..log_groups).map(|_| ps.verifier_message()).collect();
+
+    for wnext in witnesses.into_iter() {
         let point = Point::new(&point_storage);
         point_storage = prove_layer(ps, point, wnext);
     }
 }
-
-/// `eq(r, z) = r*z + (1 - r)*(1 - z)`. Expanding gives
-/// `1 + r + z + 2*r*z`, and in characteristic 2 `2*r*z = r*z + r*z = 0`, so
-/// this is just `1 + r + z` -- no multiplication at all, and so nothing for
-/// widemul to help with.
-fn eq_factor(r: Field, z: Field) -> Field {
-    Field::ONE + r + z
-}
-
-/// `a * b * c`: two multiplications in a row. The first is reduced -- it has
-/// to come back down to a field element to feed the second carryless
-/// multiply -- but the second is left unreduced, so callers can batch its
-/// reduction with the rest of a running wide sum instead of paying for it on
-/// every term.
-fn mul3_wide(a: Field, b: Field, c: Field) -> Wide256 {
-    Wide256::mul(Wide256::mul(a, b).reduce(), c)
-}
-
-/// Rayon's default splitter divides work based on thread count alone, not
-/// on whether a chunk this small is worth dispatching at all -- so below
-/// this many active pairs, `with_min_len` below keeps a round's fold as one
-/// sequential chunk instead of paying `join` overhead for it. Matches
-/// `poly`'s `PARALLEL_FOLD_THRESHOLD`, chosen for the same per-round
-/// MLE-fold shape.
-const PARALLEL_MIN_LANES: usize = 1 << 12;
 
 fn prove_layer(ps: &mut ProverState, point: Point<Field>, mut wnext: Vec<Field>) -> Vec<F128> {
     let mut suffix_table = SuffixTable::new(&point);
     let mut factor = Field::ONE;
 
     let mid = wnext.len() / 2;
+    // Tree is encoded in LSB order
     let (mut mle_l, mut mle_r) = wnext.split_at_mut(mid);
 
-    // try and prevent this allocation
-    // could overwrite the point you just read
-    // nicer option might be a double buffer that switches
-    let mut next_point = vec![];
+    // TODO: use a double buffer or override approach? Now there is a point allocation each layer
+    // Can go up to ~21 allocations assuming input of 2^35 and 6:4 split
+    let mut next_point = Vec::with_capacity(point.len() + 1);
 
     for z in point {
-        // Last table to be popped is just 1. Feels like that can be optimised. Would save two multiplications.
         // TODO: special-case eq.len() == 1 (final round) to skip the `eq[i] *`
         // multiplications below entirely.
         let eq = suffix_table.pop().unwrap();
-        let h = mle_l.len() / 2; // Same as mle.next/2?
+        let h = mle_l.len() / 2;
         debug_assert_eq!(eq.len(), h);
 
         let (lo_l, hi_l) = mle_l.split_at_mut(h);
         let (lo_r, hi_r) = mle_r.split_at_mut(h);
 
-        // Split sum calculation from
-        // suminf because sum1 can be derived and suminf is cheaper than sum2
-
-        // Each worker folds its own slice of lanes in place and accumulates
-        // `(sum_0, sum_inf)` locally; `reduce` only ever combines the
-        // handful of per-worker totals, so the wide accumulators never
-        // cross a thread boundary mid-sum. `with_min_len` keeps rounds
-        // below `PARALLEL_MIN_LANES` as a single sequential chunk.
         let (sum_0, sum_inf) = lo_l
             .par_iter_mut()
             .zip(lo_r.par_iter_mut())
@@ -228,12 +195,11 @@ fn prove_layer(ps: &mut ProverState, point: Point<Field>, mut wnext: Vec<Field>)
             .zip(hi_r.par_iter())
             .with_min_len(PARALLEL_MIN_LANES)
             .for_each(|(((l_lo, r_lo), &l_hi), &r_hi)| {
-                // Alternative would be to store the delta's back in the high part but that would still require an extra write which is likely more expensive than redoing the work.
-                // Unverified
+                // Recalculating delta rather than writing it in the top half of the array in the previous loop to save on writes.
+                // No benchmarking has been done to check the difference.
                 let (d_l, d_r) = (l_hi - *l_lo, r_hi - *r_lo);
-                // MLE folding: a single multiply whose result is used
-                // right away and not summed with anything else, so
-                // plain field multiplication is already optimal here.
+
+                // narrow multiply as the next round will multiply with this result
                 *l_lo = *l_lo + r * d_l;
                 *r_lo = *r_lo + r * d_r;
             });
@@ -248,20 +214,83 @@ fn prove_layer(ps: &mut ProverState, point: Point<Field>, mut wnext: Vec<Field>)
     next_point
 }
 
-fn gpgkr_verify(vs: &mut VerifierState, last_value: Vec<Field>, circuit: Circuit) -> bool {
-    // `last_value` is public input: `groups` claimed partial products, one
-    // per group, i.e. an MLE over `lgroups` variables. The `point_storage`
-    // sampled just below supplies exactly the `lgroups` coordinates
-    // `gpgkr_prove` evaluated the same MLE at, so this reproduces the claim
-    // the round loop below reduces -- mirroring how `mle(circuit.leafs,
-    // point)` checks the leaf layer at the other end. When `groups == 1`
-    // this is the `lgroups == 0` trivial case: no coordinates, so `mle` just
-    // hands back `last_value[0]` untouched.
+/// `eq(r, z) = r*z + (1 - r)*(1 - z)`. Expanding gives
+/// `1 + r + z + 2*r*z`, and in characteristic 2 `2*r*z = r*z + r*z = 0`, so
+/// this is just `1 + r + z` -- no multiplication at all, and so nothing for
+/// widemul to help with.
+fn eq_factor(r: Field, z: Field) -> Field {
+    poly::eq::eq_eval(&[r], &[z])
+}
 
-    let mut point_storage = vec![];
-    for _i in 0..last_value.len().ilog2() {
-        point_storage.push(vs.verifier_message())
+/// `a * b * c`: two multiplications in a row. The first is reduced -- it has
+/// to come back down to a field element to feed the second carryless
+/// multiply -- but the second is left unreduced, so callers can batch its
+/// reduction with the rest of a running wide sum instead of paying for it on
+/// every term.
+fn mul3_wide(a: Field, b: Field, c: Field) -> Wide256 {
+    Wide256::mul(Wide256::mul(a, b).reduce(), c)
+}
+
+// TODO SuffixTable becomes a wrapper around a preallocated vector that is large enough for all rounds.
+// SuffixTable can be 'created' each round / destroyed to ensure proper truncation
+struct SuffixTable(Vec<Vec<Field>>);
+
+impl SuffixTable {
+    /// Allocates all directly as it is as much space as what a double buffer approach would take.
+    fn new<'a>(point: &Point<'a, Field>) -> SuffixTable {
+        // We do not need to build the table for the first challenge.
+        let mut table = Vec::with_capacity(1 << (point.len() - 1));
+        let mut prev = Vec::from([Field::ONE]);
+
+        // The selector is the first entry of the points and we need to skip that.
+        let c = point.tail();
+
+        // `prove_layer`'s round `k` (for `k >= 2`) folds `mle_l`/`mle_r`'s
+        // current top bit using `c[k-2]` as the challenge, so at that point
+        // the eq-weight owed to the bits *not yet folded* comes from the
+        // challenges belonging to *later* rounds: `c[k-1], ..., c[len-1]` --
+        // the suffix of `c` starting just past what's already been consumed.
+        // Folding `c` front-to-back and popping LIFO gets this backwards: it
+        // hands out tables that drop elements off the *back* of `c` as
+        // rounds proceed, instead of the front. Folding in reverse (`c`'s
+        // last element first) makes each successive, smaller table equal to
+        // the correct suffix instead. With `c.len() <= 1` there's no
+        // distinguishable front/back of a single element, which is why this
+        // stayed invisible until a point of length 3 or more was exercised.
+        for &z in c.iter().rev() {
+            let size = prev.len() << 1;
+            let mut entry = vec![Field::ZERO; size];
+            let (low, hi) = entry.split_at_mut(size >> 1);
+
+            for (i, &e) in prev.iter().enumerate() {
+                let tmp = z * e;
+                // (1-z)*e, z*e
+                (low[i], hi[i]) = (e - tmp, tmp)
+            }
+
+            table.push(prev);
+            prev = entry;
+        }
+        table.push(prev);
+        SuffixTable(table)
     }
+
+    fn pop(&mut self) -> Option<Vec<Field>> {
+        self.0.pop()
+    }
+}
+
+/// TODO replace this with a proper approach
+///  Matches `poly`'s `PARALLEL_FOLD_THRESHOLD`, chosen for the same per-round
+/// MLE-fold shape.
+const PARALLEL_MIN_LANES: usize = 1 << 12;
+
+fn gpgkr_verify(vs: &mut VerifierState, last_value: Vec<Field>, circuit: Circuit) -> bool {
+    // Rejection of bad inputs
+    // Think what happens on empty inputs
+
+    let log_groups = last_value.len().ilog2();
+    let mut point_storage: Vec<_> = (0..log_groups).map(|_| vs.verifier_message()).collect();
     let mut point: Point<Field> = Point::new(&point_storage);
 
     let rounds = circuit.leafs.len().ilog2() - last_value.len().ilog2();
@@ -313,11 +342,6 @@ fn verify_round(
         let factor = eq_factor(r, z);
 
         // `claim = factor * (sum0 + r*(sum1 - sum0) + r*(r - 1)*suminf)`.
-        // The last two terms share a factor of `r`:
-        // `sum0 + r*((sum1 - sum0) + (r - 1)*suminf)`. Pulling it out drops
-        // one multiplication (3 instead of 4 per round, counting the final
-        // `factor * ...`) and leaves a single product in the sum, so there
-        // is nothing left for widemul to batch a reduction over.
         let bracket = (sum1 - sum0) + (r - Field::ONE) * suminf;
         claim = factor * (sum0 + r * bracket);
 
@@ -326,57 +350,7 @@ fn verify_round(
     (prefix, claim, next_point)
 }
 
-struct SuffixTable(Vec<Vec<Field>>);
-
-impl SuffixTable {
-    // This option might get annoying
-    // Can be allocated as a single table directly.
-    // Maybe vectors can be reused? This could be reused with sumcheck layer. The evaluation layer can be reused each gkr
-    // Might be better in combination with split_eq table
-    // currently has to be consumed in reverse order -> pop. Which is fine
-    fn new<'a>(point: &Point<'a, Field>) -> SuffixTable {
-        // We do not need to build the table for the first challenge.
-        let mut table = Vec::with_capacity(point.len());
-        let mut prev = Vec::from([Field::ONE]);
-
-        // The selector is the first entry of the points and we need to skip that. So this works
-        let c = point.c();
-
-        // `prove_layer`'s round `k` (for `k >= 2`) folds `mle_l`/`mle_r`'s
-        // current top bit using `c[k-2]` as the challenge, so at that point
-        // the eq-weight owed to the bits *not yet folded* comes from the
-        // challenges belonging to *later* rounds: `c[k-1], ..., c[len-1]` --
-        // the suffix of `c` starting just past what's already been consumed.
-        // Folding `c` front-to-back and popping LIFO gets this backwards: it
-        // hands out tables that drop elements off the *back* of `c` as
-        // rounds proceed, instead of the front. Folding in reverse (`c`'s
-        // last element first) makes each successive, smaller table equal to
-        // the correct suffix instead. With `c.len() <= 1` there's no
-        // distinguishable front/back of a single element, which is why this
-        // stayed invisible until a point of length 3 or more was exercised.
-        for &z in c.iter().rev() {
-            let size = prev.len() << 1;
-            let mut entry = vec![Field::ZERO; size];
-            let (low, hi) = entry.split_at_mut(size >> 1);
-
-            for (i, &e) in prev.iter().enumerate() {
-                let tmp = z * e;
-                // (1-z)*e, z*e
-                (low[i], hi[i]) = (e - tmp, tmp)
-            }
-
-            table.push(prev);
-            prev = entry;
-        }
-        table.push(prev);
-        SuffixTable(table)
-    }
-
-    fn pop(&mut self) -> Option<Vec<Field>> {
-        self.0.pop()
-    }
-}
-
+//TODO circuit and circuit eval can't have there innards directly available as that would break power of 2 requirements for the rest.
 // A circuit is defined by it's leaf value only because it is a balanced tree
 // TODO: Optimise for circuits that are padded.
 struct Circuit {
@@ -384,19 +358,24 @@ struct Circuit {
 }
 
 impl Circuit {
+    // Fails if the leafs are 0.
     fn new(mut leafs: Vec<Field>) -> Self {
-        leafs.resize(leafs.len().next_power_of_two(), Field::ONE);
-
+        if leafs.len() > 0 {
+            leafs.resize(leafs.len().next_power_of_two(), Field::ONE);
+        }
         Circuit { leafs: leafs }
     }
 
-    // Should an evaluation consume?
-    fn batched_eval(&self, groups: usize) -> CircuitEval {
-        let mut witnesses = Vec::with_capacity(self.leafs.len().ilog2() as usize);
+    // Returns the final evaluation and the witnesses of the intermediate layers
+    // Can't consume the input as the circuit is necessary for the initialisation of fiat shamir
+    fn batched_eval(&self, groups: usize) -> (Vec<Field>, LayerWitnesses) {
+        // +1 to deal with the possible case that the leafs are empty. Given that otherwise the constructor padded it to a power of two and ilog rounds it down it becomes a noop
+        let mut witnesses = Vec::with_capacity((self.leafs.len() + 1).ilog2() as usize);
 
+        // TODO expensive clone going to get replaced by leaf lookups
         let mut prev_eval = self.leafs.clone();
 
-        // Once we hit number of groups we have one per group
+        // Stop when there is one output per group
         while prev_eval.len() > groups {
             let mut eval = Vec::with_capacity(prev_eval.len() >> 1);
             let mid = prev_eval.len() / 2;
@@ -408,27 +387,14 @@ impl Circuit {
             prev_eval = eval;
         }
 
-        witnesses.push(prev_eval);
-
-        CircuitEval(witnesses)
+        (prev_eval, LayerWitnesses(witnesses))
     }
 }
 
-impl AsRef<Vec<Field>> for Circuit {
-    fn as_ref(&self) -> &Vec<Field> {
-        &self.leafs
-    }
-}
-
-// Main purpose of the wrapper is to have the order denoted
 // TODO: This can be a single vec that is allocated at the start.
-// The vec vec structure only has to come back for a padded implementation.
-// There can be a traded off between space usage and computation reuse. This one choses speed for memory.
-struct CircuitEval(Vec<Vec<Field>>);
+pub struct LayerWitnesses(Vec<Vec<Field>>);
 
-impl CircuitEval {
-    // Return from the final layer back to the front
-    // If circuit evaluation needs to stay an alternative is to wrap it in an iterator to keep track of the location
+impl LayerWitnesses {
     fn pop(&mut self) -> Option<Vec<Field>> {
         self.0.pop()
     }
@@ -438,7 +404,7 @@ impl CircuitEval {
     }
 }
 
-impl IntoIterator for CircuitEval {
+impl IntoIterator for LayerWitnesses {
     type Item = Vec<Field>;
     type IntoIter = std::iter::Rev<std::vec::IntoIter<Vec<Field>>>;
 
