@@ -1,0 +1,24 @@
+[package]
+name = "e2e"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dev-dependencies]
+field = { workspace = true }
+
+[dependencies]
+circuit = { workspace = true }
+common = { workspace = true }
+field = { workspace = true, features = ["spongefish"] }
+num-bigint = { workspace = true }
+pcs = { workspace = true }
+poly = { workspace = true }
+prof = { workspace = true }
+prover = { workspace = true }
+reduction = { workspace = true }
+spartan = { workspace = true }
+transcript = { workspace = true }
+verifier = { workspace = true }
