@@ -12,14 +12,20 @@
 //! `M` stays with the caller. This crate needs only `M^T v` and a digest.
 
 use field::F128;
+use num_traits::ConstZero;
+
+use crate::OpeningQuery;
 
 /// A map that does not describe the protocol it belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VirtualMapError {
     /// The point does not carry one coordinate per variable of `h`.
     PointLengthMismatch,
-    /// The transposed weights are not one per coordinate of `1 ‖ f`.
+    /// There are more transposed weights than the committed shape has bits.
     WeightCountMismatch,
+    /// The claim to rewrite is not an evaluation claim, which is the only
+    /// shape the transposition knows how to take a point out of.
+    NotAnEvaluationClaim,
 }
 
 /// What the protocol asks of `M`.
@@ -28,6 +34,13 @@ pub trait VirtualMap {
     ///
     /// Takes a point rather than a weight vector because the reduction
     /// normalises its claim to a point before handing it over.
+    ///
+    /// `point` is as wide as the claim was made over, which is at least wide
+    /// enough to index `h` but can be wider: `h` is zero-padded up to the
+    /// shape the fold ran over, and the admissibility floor alone can make
+    /// that shape larger than `h` needs. Implementations index `h` with the
+    /// low coordinates and ignore the weights above `h_len`, which multiply
+    /// only padding.
     fn transpose_eq(&self, point: &[F128]) -> Result<TransposedWeights, VirtualMapError>;
 
     /// Binds the map into the statement frame.
@@ -83,6 +96,37 @@ impl TransposedWeights {
     }
 }
 
+/// Rewrites a claim about `h` as the inner-product claim about `1 ‖ f` that
+/// the opening takes.
+///
+/// `M^T v` is an arbitrary weight vector, not an equality weight for any
+/// point, so this is where the evaluation claim the reduction produced turns
+/// into an inner-product one.
+///
+/// `committed_bits` is the committed shape's full width. `f` is zero-padded up
+/// to it, so the weights are too: the padding multiplies nothing, and the
+/// opening still sees one weight per committed bit.
+pub fn transpose_query(
+    map: &impl VirtualMap,
+    committed_bits: usize,
+    query: OpeningQuery,
+) -> Result<OpeningQuery, VirtualMapError> {
+    let OpeningQuery::Mle { point, target } = query else {
+        return Err(VirtualMapError::NotAnEvaluationClaim);
+    };
+
+    let transposed = map.transpose_eq(&point)?;
+    let target = transposed.adjusted_target(target);
+
+    let mut weights = transposed.into_weights();
+    if weights.len() > committed_bits {
+        return Err(VirtualMapError::WeightCountMismatch);
+    }
+    weights.resize(committed_bits, F128::ZERO);
+
+    Ok(OpeningQuery::InnerProduct { weights, target })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -98,7 +142,7 @@ mod tests {
 
     impl VirtualMap for DenseMap {
         fn transpose_eq(&self, point: &[F128]) -> Result<TransposedWeights, VirtualMapError> {
-            if point.len() != self.h_len().trailing_zeros() as usize {
+            if 1usize << point.len() < self.h_len() {
                 return Err(VirtualMapError::PointLengthMismatch);
             }
             let weights = eq_table(point);
@@ -187,10 +231,26 @@ mod tests {
     }
 
     #[test]
-    fn a_point_of_the_wrong_width_is_rejected() {
+    fn a_point_too_narrow_to_index_h_is_rejected() {
         assert_eq!(
             map().transpose_eq(&[F128::ONE]),
             Err(VirtualMapError::PointLengthMismatch)
+        );
+    }
+
+    /// The claim's shape can be wider than `h`. The extra coordinates weight
+    /// padding, so the transposed claim must not move.
+    #[test]
+    fn a_point_wider_than_h_weights_only_padding() {
+        let map = map();
+        let point = [F128::new(7, 11), F128::new(3, 5)];
+        let mut padded = point.to_vec();
+        padded.push(F128::ZERO);
+
+        assert_eq!(
+            map.transpose_eq(&padded).unwrap(),
+            map.transpose_eq(&point).unwrap(),
+            "eq(0) selects the low half, which is all of h"
         );
     }
 }

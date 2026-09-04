@@ -22,4 +22,4 @@ pub use params::{F2ZParams, ParamsError, VirtualParams, VirtualParamsError};
 pub use reduction::ReductionInput;
 pub use shape::{Shape, ShapeError};
 pub use table::{BitTable, TableError};
-pub use virtual_map::{TransposedWeights, VirtualMap, VirtualMapError};
+pub use virtual_map::{TransposedWeights, VirtualMap, VirtualMapError, transpose_query};

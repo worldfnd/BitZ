@@ -372,10 +372,15 @@ const DIGEST_DOMAIN: &[u8] = b"f2z/virtual-map/csc/v1";
 const DIGEST_CHUNK: usize = 1 << 12;
 
 impl VirtualMap for MaterializedMTranspose {
-    /// `h` is zero-padded to a power of two, so truncating the equality table
-    /// to `row_count` drops only weights that multiply a zero.
+    /// `h` is zero-padded out to whatever width the claim was made over, so
+    /// truncating the equality table to `row_count` drops only weights that
+    /// multiply a zero.
+    ///
+    /// The point is as wide as the claim, not as `M`. Those differ whenever
+    /// the shape the fold ran over is larger than `h` needs, which the
+    /// admissibility floor alone can force.
     fn transpose_eq(&self, point: &[F128]) -> Result<TransposedWeights, VirtualMapError> {
-        if point.len() != self.row_count.next_power_of_two().trailing_zeros() as usize {
+        if point.len() >= usize::BITS as usize || 1usize << point.len() < self.row_count {
             return Err(VirtualMapError::PointLengthMismatch);
         }
 

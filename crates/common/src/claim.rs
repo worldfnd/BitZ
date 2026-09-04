@@ -2,6 +2,8 @@
 
 use crypto_primitives::LiftElement;
 use field::Fq;
+use num_traits::ConstZero;
+use poly::{ScaledMleEvaluationClaim, eq_table};
 
 use crate::F2ZParams;
 
@@ -19,6 +21,10 @@ pub enum ClaimError {
     RowWeightCountMismatch,
     /// There is not one weight per column.
     ColumnWeightCountMismatch,
+    /// The evaluation point carries more coordinates than the shape indexes.
+    PointTooWide,
+    /// The scale is zero, so the claim says nothing about the vector.
+    ScaleVanished,
 }
 
 /// The caller's `x_core`: the weights and the value they are claimed to give.
@@ -92,6 +98,53 @@ impl<const Q: u128> LinearClaim<Q> {
     pub fn target(&self) -> Fq<Q> {
         self.target
     }
+
+    /// Rewrites a PIOP's terminal evaluation claim as the claim F2Z takes.
+    ///
+    /// A PIOP ends holding `scale * w(point) = value` for the vector `w` its
+    /// constraints ran over. F2Z takes weights that split as
+    /// `v^(1) (x) v^(2)`, and an equality weight does split, at the row/column
+    /// boundary the shape fixes:
+    ///
+    /// ```text
+    /// w(point) = sum_{i,j} eq(point_row, i) eq(point_col, j) w_{ij}.
+    /// ```
+    ///
+    /// `point` may be narrower than the shape. `w` is zero above its own
+    /// length, so appending zero coordinates leaves the value alone: the added
+    /// equality factor selects the low half, which is all of `w`.
+    ///
+    /// The scale multiplies into `v^(1)` rather than dividing out of the
+    /// value, which keeps the whole conversion free of inversion. Each scaled
+    /// weight is still a field element below `q`, so the fold stays inside the
+    /// bound admissibility fixed.
+    ///
+    /// A zero scale is refused. It would zero every row weight and leave a
+    /// claim of `0 = 0` that any witness satisfies.
+    pub fn from_evaluation(
+        params: &F2ZParams<Q>,
+        claim: &ScaledMleEvaluationClaim<Fq<Q>>,
+    ) -> Result<Self, ClaimError> {
+        let shape = params.shape();
+        if claim.point().len() > shape.log_bits() {
+            return Err(ClaimError::PointTooWide);
+        }
+        let scale = claim.scale();
+        if scale == Fq::ZERO {
+            return Err(ClaimError::ScaleVanished);
+        }
+
+        let mut point = claim.point().to_vec();
+        point.resize(shape.log_bits(), Fq::ZERO);
+        let (rows, columns) = point.split_at(shape.log_rows());
+
+        let row_weights = eq_table(rows)
+            .into_iter()
+            .map(|weight| weight * scale)
+            .collect();
+
+        Self::new(params, row_weights, eq_table(columns), claim.value())
+    }
 }
 
 #[cfg(test)]
@@ -142,6 +195,93 @@ mod tests {
         assert_eq!(
             LinearClaim::new(&params, weights(), vec![Fq::from(1u128)], Fq::from(0u128)).err(),
             Some(ClaimError::ColumnWeightCountMismatch)
+        );
+    }
+
+    /// The conversion has to agree with what F2Z then does with the claim.
+    /// `reconstruct` is the verifier's own tie-back to `mu`, so running it
+    /// against the converted weights checks the split at the row/column
+    /// boundary, the padding, and the scale division at once.
+    #[test]
+    fn the_converted_claim_reconstructs_to_the_evaluation() {
+        use crate::{fold::fold_columns, reconstruct};
+
+        let params = params();
+        let shape = *params.shape();
+        let packed: Vec<field::F128> = (0..shape.rows() * shape.columns() / 128)
+            .map(|i| field::F128::new((i as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15), i as u64))
+            .collect();
+        let table = params.table(&packed).unwrap();
+
+        // One coordinate short of the shape, so the padding path runs.
+        let point: Vec<Fq<Q114>> = (0..shape.log_bits() - 1)
+            .map(|i| Fq::from((i as u128 + 2) * 0x5bd1_e995))
+            .collect();
+
+        // The evaluation, straight from the definition, over the padded point.
+        let mut padded = point.clone();
+        padded.resize(shape.log_bits(), Fq::from(0u128));
+        let (row_point, column_point) = padded.split_at(shape.log_rows());
+        let (eq_rows, eq_columns) = (eq_table(row_point), eq_table(column_point));
+        let mut evaluation = Fq::from(0u128);
+        for (column, &column_weight) in eq_columns.iter().enumerate() {
+            for (row, &row_weight) in eq_rows.iter().enumerate() {
+                if table.bit(column, row) {
+                    evaluation += row_weight * column_weight;
+                }
+            }
+        }
+
+        let scale = Fq::from(0x1234_5678_9abcu128);
+        let converted = LinearClaim::from_evaluation(
+            &params,
+            &ScaledMleEvaluationClaim::new(point.into_boxed_slice(), scale, scale * evaluation),
+        )
+        .unwrap();
+
+        assert_eq!(
+            converted.target(),
+            scale * evaluation,
+            "the target is the claim's own value",
+        );
+        assert_eq!(
+            reconstruct(
+                &converted,
+                &fold_columns(&table, &converted.row_exponents())
+            )
+            .unwrap(),
+            scale * evaluation,
+            "F2Z's own reconstruction disagrees with the evaluation claim",
+        );
+    }
+
+    #[test]
+    fn a_zero_scale_is_rejected() {
+        assert_eq!(
+            LinearClaim::from_evaluation(
+                &params(),
+                &ScaledMleEvaluationClaim::new(
+                    vec![Fq::<Q114>::from(1u128); 22].into_boxed_slice(),
+                    Fq::from(0u128),
+                    Fq::from(0u128),
+                ),
+            ),
+            Err(ClaimError::ScaleVanished)
+        );
+    }
+
+    #[test]
+    fn a_point_wider_than_the_shape_is_rejected() {
+        assert_eq!(
+            LinearClaim::from_evaluation(
+                &params(),
+                &ScaledMleEvaluationClaim::new(
+                    vec![Fq::<Q114>::from(1u128); 23].into_boxed_slice(),
+                    Fq::from(1u128),
+                    Fq::from(0u128),
+                ),
+            ),
+            Err(ClaimError::PointTooWide)
         );
     }
 
