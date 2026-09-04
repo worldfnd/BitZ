@@ -451,7 +451,7 @@ mod tests {
             let (last_value, proof) = prove(leaves.clone(), 1);
 
             let mut tampered = last_value;
-            tampered[0] = tampered[0] + Field::ONE;
+            tampered[0] += Field::ONE;
 
             prop_assert!(!verify(leaves, tampered, proof));
         }
