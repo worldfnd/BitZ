@@ -20,6 +20,8 @@ use flock_core::pcs::ring_switch::{inner_product, tensor_algebra_transpose};
 use crate::CommitError;
 use crate::bridge::as_flock_f128s;
 use crate::ligerito::ReducedClaim;
+use rayon::prelude::*;
+
 pub(super) use crate::ring_switch::{CLAIM_COUNT, Claims};
 
 pub(super) type Challenge = [FlockF128; CLAIM_COUNT];
@@ -125,19 +127,47 @@ fn reconstructed_target(claims: &Claims) -> F128 {
     F128::new(words[0], words[1])
 }
 
+/// One packed element's contribution to every claim.
+#[inline]
+fn accumulate_claim_block(
+    claims: &mut [FlockF128; CLAIM_COUNT],
+    packed: FlockF128,
+    weight_block: &[F128],
+) {
+    if packed == FlockF128::ZERO {
+        return;
+    }
+    let coordinate_polynomials = tensor_algebra_transpose(as_flock_f128s(weight_block));
+    for (claim, polynomial) in claims.iter_mut().zip(coordinate_polynomials) {
+        *claim += packed * constant_coefficient_dual(polynomial);
+    }
+}
+
+/// Each packed element contributes independently and the accumulator is a sum
+/// in characteristic two, so splitting the fold across threads and combining
+/// the partials gives the identical claims.
 fn compute_claims(packed_witness: &[FlockF128], weights: &[F128]) -> [FlockF128; CLAIM_COUNT] {
     debug_assert_eq!(weights.len(), packed_witness.len() * CLAIM_COUNT);
-    let mut claims = [FlockF128::ZERO; CLAIM_COUNT];
-    for (&packed, weight_block) in packed_witness.iter().zip(weights.chunks_exact(CLAIM_COUNT)) {
-        if packed == FlockF128::ZERO {
-            continue;
-        }
-        let coordinate_polynomials = tensor_algebra_transpose(as_flock_f128s(weight_block));
-        for (claim, polynomial) in claims.iter_mut().zip(coordinate_polynomials) {
-            *claim += packed * constant_coefficient_dual(polynomial);
-        }
-    }
-    claims
+
+    packed_witness
+        .par_iter()
+        .zip(weights.par_chunks_exact(CLAIM_COUNT))
+        .fold(
+            || [FlockF128::ZERO; CLAIM_COUNT],
+            |mut claims, (&packed, weight_block)| {
+                accumulate_claim_block(&mut claims, packed, weight_block);
+                claims
+            },
+        )
+        .reduce(
+            || [FlockF128::ZERO; CLAIM_COUNT],
+            |mut left, right| {
+                for (accumulated, added) in left.iter_mut().zip(right) {
+                    *accumulated += added;
+                }
+                left
+            },
+        )
 }
 
 fn build_batched_basis(weights: &[F128], challenges: &Challenge) -> Vec<FlockF128> {

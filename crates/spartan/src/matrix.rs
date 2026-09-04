@@ -8,6 +8,7 @@ use field::{FqDefault, Q100};
 use num_bigint::{BigInt, BigUint};
 use num_traits::{Signed, ToPrimitive};
 use poly::DenseMultilinearExtension;
+use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 use transcript::Encoding;
 
@@ -269,12 +270,25 @@ where
         (&matrices.b, rho),
         (&matrices.c, rho * rho),
     ] {
-        for (row_index, row) in matrix.rows().iter().enumerate() {
-            for &(column, coefficient) in row.entries() {
-                evaluation +=
-                    batch_scale * row_weights[row_index] * column_weights[column] * coefficient;
-            }
-        }
+        // The row's weight is the same for every nonzero in it, so it is
+        // folded in once per row rather than once per entry. Rows contribute
+        // independently and field addition is associative, so the parallel
+        // reduction returns the same element as a sequential one.
+        evaluation += matrix
+            .rows()
+            .par_iter()
+            .enumerate()
+            .map(|(row_index, row)| {
+                let row_scale = batch_scale * row_weights[row_index];
+                let row_sum = row
+                    .entries()
+                    .iter()
+                    .fold(F::ZERO, |sum, &(column, coefficient)| {
+                        sum + column_weights[column] * coefficient
+                    });
+                row_scale * row_sum
+            })
+            .reduce(|| F::ZERO, |left, right| left + right);
     }
 
     Ok(evaluation)
