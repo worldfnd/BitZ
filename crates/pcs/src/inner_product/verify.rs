@@ -7,7 +7,7 @@ use super::ring_switch::RingSwitch;
 use super::validate_profile;
 use crate::ligerito;
 use crate::utils::{
-    bind_inner_product_statement, read_inner_product_claims,
+    ClaimDomain, bind_inner_product_statement, read_claims,
     sample_inner_product_batching_challenges,
 };
 use crate::{CommitError, Pcs, Root, StatementBinding};
@@ -29,11 +29,11 @@ pub(crate) fn verify(
 
     let proof = ligerito::read_proof(pcs, commitment, transcript)?;
 
-    let claims = read_inner_product_claims(transcript)?;
+    let claims = read_claims(transcript, ClaimDomain::InnerProduct)?;
     if !ring_switch.target_matches(&claims, target) {
         return Err(CommitError::VerificationFailed);
     }
     let challenge = sample_inner_product_batching_challenges(transcript);
-    let reduced_claim = ring_switch.reduce_verifier(&claims, &challenge);
+    let reduced_claim = ring_switch.reduce(&claims, &challenge);
     ligerito::verify_dense(pcs, commitment, &proof, reduced_claim, transcript)
 }

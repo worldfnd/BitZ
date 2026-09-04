@@ -5,7 +5,7 @@ use transcript::ProverState;
 
 use super::ring_switch::RingSwitch;
 use crate::ligerito::ReducedProver;
-use crate::utils::{bind_statement, sample_ring_switch_point, write_ring_switch_claims};
+use crate::utils::{ClaimDomain, bind_statement, sample_ring_switch_point, write_claims};
 use crate::{CommitError, Pcs, ProverData, StatementBinding};
 
 pub(crate) fn open(
@@ -25,7 +25,7 @@ pub(crate) fn open(
     }
 
     let prepared_claims = ring_switch.prepare_claims(prover.witness(), target)?;
-    write_ring_switch_claims(transcript, prepared_claims.claims());
+    write_claims(transcript, ClaimDomain::Mle, prepared_claims.claims());
     let challenge = sample_ring_switch_point(transcript);
     let reduced_claim = prepared_claims.reduce(&challenge);
     prover.prove(reduced_claim, transcript)

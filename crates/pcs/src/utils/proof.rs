@@ -17,9 +17,6 @@ pub(crate) fn write_opening_proof(
     let proof_bytes = proof_options()
         .serialize(proof)
         .map_err(map_serialization_error)?;
-    if proof_bytes.len() > PROOF_HINT_LIMIT {
-        return Err(CommitError::ProofTooLarge);
-    }
     transcript.hint_bytes(&proof_bytes);
     Ok(())
 }

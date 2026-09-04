@@ -12,9 +12,7 @@ use crate::bridge::{as_flock_f128, from_flock_f128};
 use super::PublicTranscript;
 
 const EVENT_HEADER_LEN: usize = 24;
-const RING_SWITCH_MESSAGE_TAG: u16 = 0x4001;
 const RING_SWITCH_CHALLENGE_TAG: u16 = 0x4101;
-const INNER_PRODUCT_COORDINATES_TAG: u16 = 0x4201;
 const INNER_PRODUCT_BATCHING_CHALLENGE_TAG: u16 = 0x4301;
 const OPENING_TARGET_TAG: u16 = 0x5001;
 const SQUEEZE_RESULT_BIT: u16 = 0x8000;
@@ -24,39 +22,21 @@ const SINGLE_OPENING_SCOPE: u32 = 0;
 const CLAIMS_PAYLOAD_LEN: u64 =
     size_of::<u32>() as u64 + (CLAIM_COUNT * FIELD_ENCODING_LEN as usize) as u64;
 
-/// Writes the 128 slice evaluations for an MLE ring switch.
-pub(crate) fn write_ring_switch_claims(
+/// Selects the query-specific claim frame.
+#[repr(u16)]
+pub(crate) enum ClaimDomain {
+    Mle = 0x4001,
+    InnerProduct = 0x4201,
+}
+
+/// Writes 128 ring-switch claims in their query-specific frame.
+pub(crate) fn write_claims(
     transcript: &mut ProverState,
+    domain: ClaimDomain,
     values: &[FlockF128; CLAIM_COUNT],
 ) {
-    write_claims(transcript, RING_SWITCH_MESSAGE_TAG, values);
-}
-
-/// Reads the 128 slice evaluations for an MLE ring switch.
-pub(crate) fn read_ring_switch_claims(
-    transcript: &mut VerifierState<'_>,
-) -> Result<[FlockF128; CLAIM_COUNT], CommitError> {
-    read_claims(transcript, RING_SWITCH_MESSAGE_TAG)
-}
-
-/// Writes the 128 packed coordinate claims for an arbitrary bit inner product.
-pub(crate) fn write_inner_product_claims(
-    transcript: &mut ProverState,
-    values: &[FlockF128; CLAIM_COUNT],
-) {
-    write_claims(transcript, INNER_PRODUCT_COORDINATES_TAG, values);
-}
-
-/// Reads the 128 packed coordinate claims for an arbitrary bit inner product.
-pub(crate) fn read_inner_product_claims(
-    transcript: &mut VerifierState<'_>,
-) -> Result<[FlockF128; CLAIM_COUNT], CommitError> {
-    read_claims(transcript, INNER_PRODUCT_COORDINATES_TAG)
-}
-
-fn write_claims(transcript: &mut ProverState, tag: u16, values: &[FlockF128; CLAIM_COUNT]) {
     transcript.prover_message(&event_header(
-        tag,
+        domain as u16,
         SINGLE_OPENING_SCOPE,
         NO_SCOPE,
         NO_SCOPE,
@@ -68,12 +48,13 @@ fn write_claims(transcript: &mut ProverState, tag: u16, values: &[FlockF128; CLA
     }
 }
 
-fn read_claims(
+/// Reads 128 ring-switch claims from their query-specific frame.
+pub(crate) fn read_claims(
     transcript: &mut VerifierState<'_>,
-    tag: u16,
+    domain: ClaimDomain,
 ) -> Result<[FlockF128; CLAIM_COUNT], CommitError> {
     let expected_header = event_header(
-        tag,
+        domain as u16,
         SINGLE_OPENING_SCOPE,
         NO_SCOPE,
         NO_SCOPE,
@@ -208,7 +189,7 @@ mod tests {
         values[CLAIM_COUNT - 1] = FlockF128::new(3, 4);
         let mut prover = build_prover(b"pcs-protocol-test", b"ring-frame");
 
-        write_ring_switch_claims(&mut prover, &values);
+        write_claims(&mut prover, ClaimDomain::Mle, &values);
         let proof = prover.finish();
 
         assert_eq!(proof.narg_string.len(), EVENT_HEADER_LEN + 4 + 128 * 16);
@@ -227,7 +208,10 @@ mod tests {
         );
 
         let mut verifier = build_verifier(b"pcs-protocol-test", b"ring-frame", &proof);
-        assert_eq!(read_ring_switch_claims(&mut verifier).unwrap(), values);
+        assert_eq!(
+            read_claims(&mut verifier, ClaimDomain::Mle).unwrap(),
+            values,
+        );
         verifier.check_eof().unwrap();
     }
 
@@ -238,7 +222,7 @@ mod tests {
         values[CLAIM_COUNT - 1] = FlockF128::new(3, 4);
         let mut prover = build_prover(b"pcs-protocol-test", b"inner-product-frame");
 
-        write_inner_product_claims(&mut prover, &values);
+        write_claims(&mut prover, ClaimDomain::InnerProduct, &values);
         let proof = prover.finish();
 
         assert_eq!(
@@ -247,7 +231,7 @@ mod tests {
         );
         assert_eq!(
             &proof.narg_string[..2],
-            &INNER_PRODUCT_COORDINATES_TAG.to_le_bytes(),
+            &(ClaimDomain::InnerProduct as u16).to_le_bytes(),
         );
         assert_eq!(
             &proof.narg_string[EVENT_HEADER_LEN..EVENT_HEADER_LEN + 4],
@@ -255,14 +239,17 @@ mod tests {
         );
 
         let mut verifier = build_verifier(b"pcs-protocol-test", b"inner-product-frame", &proof);
-        assert_eq!(read_inner_product_claims(&mut verifier).unwrap(), values,);
+        assert_eq!(
+            read_claims(&mut verifier, ClaimDomain::InnerProduct).unwrap(),
+            values,
+        );
         verifier.check_eof().unwrap();
     }
 
     #[test]
     fn inner_product_coordinate_reader_rejects_the_wrong_count() {
         let expected_header = event_header(
-            INNER_PRODUCT_COORDINATES_TAG,
+            ClaimDomain::InnerProduct as u16,
             SINGLE_OPENING_SCOPE,
             NO_SCOPE,
             NO_SCOPE,
@@ -275,7 +262,7 @@ mod tests {
         let mut verifier = build_verifier(b"pcs-protocol-test", b"wrong-coordinate-count", &proof);
 
         assert_eq!(
-            read_inner_product_claims(&mut verifier),
+            read_claims(&mut verifier, ClaimDomain::InnerProduct),
             Err(CommitError::MalformedProof),
         );
     }

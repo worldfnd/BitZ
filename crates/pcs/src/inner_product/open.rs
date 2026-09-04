@@ -7,8 +7,8 @@ use super::ring_switch::RingSwitch;
 use super::validate_profile;
 use crate::ligerito::ReducedProver;
 use crate::utils::{
-    bind_inner_product_statement, sample_inner_product_batching_challenges,
-    write_inner_product_claims,
+    ClaimDomain, bind_inner_product_statement, sample_inner_product_batching_challenges,
+    write_claims,
 };
 use crate::{CommitError, Pcs, ProverData, StatementBinding};
 
@@ -29,9 +29,9 @@ pub(crate) fn open(
         bind_inner_product_statement(pcs, &data.commitment().root, weights, target, transcript);
     }
 
-    let prepared_claims = ring_switch.prepare_claims(prover.witness(), target)?;
-    write_inner_product_claims(transcript, prepared_claims.claims());
+    let claims = ring_switch.prepare_claims(prover.witness(), target)?;
+    write_claims(transcript, ClaimDomain::InnerProduct, &claims);
     let challenge = sample_inner_product_batching_challenges(transcript);
-    let reduced_claim = prepared_claims.reduce(&challenge);
+    let reduced_claim = ring_switch.reduce(&claims, &challenge);
     prover.prove(reduced_claim, transcript)
 }
