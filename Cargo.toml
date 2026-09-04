@@ -9,12 +9,18 @@ rust-version = "1.97"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
+circuit = { path = "crates/circuit" }
 common = { path = "crates/common" }
+e2e = { path = "crates/e2e" }
 field = { path = "crates/field" }
+gkr = { path = "crates/gkr" }
 host = { path = "crates/host" }
 pcs = { path = "crates/pcs" }
 poly = { path = "crates/poly" }
+prof = { path = "crates/prof" }
 prover = { path = "crates/prover" }
+reduction = { path = "crates/reduction" }
+spartan = { path = "crates/spartan" }
 transcript = { path = "crates/transcript" }
 verifier = { path = "crates/verifier" }
 

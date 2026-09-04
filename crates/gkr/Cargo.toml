@@ -1,0 +1,20 @@
+[package]
+name = "gkr"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+crypto-primitives = { workspace = true }
+num-traits = { workspace = true }
+poly = { workspace = true }
+prof = { workspace = true }
+rayon = { workspace = true }
+
+transcript = { workspace = true }
+
+[dev-dependencies]
+field = { path = "../field", features = ["rand"] }
+rand = { workspace = true }
+rand_pcg = { workspace = true }

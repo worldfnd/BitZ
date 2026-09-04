@@ -528,6 +528,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "e2e"
+version = "0.1.0"
+dependencies = [
+ "circuit",
+ "common",
+ "field",
+ "num-bigint 0.4.8",
+ "pcs",
+ "poly",
+ "prof",
+ "prover",
+ "reduction",
+ "spartan",
+ "transcript",
+ "verifier",
+]
+
+[[package]]
 name = "educe"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -671,6 +689,21 @@ dependencies = [
  "cfg-if",
  "libc",
  "r-efi 6.0.0",
+]
+
+[[package]]
+name = "gkr"
+version = "0.1.0"
+dependencies = [
+ "crypto-primitives",
+ "field",
+ "num-traits",
+ "poly",
+ "prof",
+ "rand 0.9.5",
+ "rand_pcg",
+ "rayon",
+ "transcript",
 ]
 
 [[package]]
@@ -1002,7 +1035,9 @@ dependencies = [
  "field",
  "flock-core",
  "poly",
+ "prof",
  "proptest",
+ "rayon",
  "transcript",
 ]
 
@@ -1043,6 +1078,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "prof"
+version = "0.1.0"
+
+[[package]]
 name = "proptest"
 version = "1.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1068,6 +1107,7 @@ dependencies = [
  "common",
  "field",
  "pcs",
+ "prof",
  "transcript",
 ]
 
@@ -1210,6 +1250,24 @@ checksum = "22e18b0f0062d30d4230b2e85ff77fdfe4326feb054b9783a3460d8435c8ab91"
 dependencies = [
  "crossbeam-deque",
  "crossbeam-utils",
+]
+
+[[package]]
+name = "reduction"
+version = "0.1.0"
+dependencies = [
+ "common",
+ "field",
+ "gkr",
+ "num-traits",
+ "pcs",
+ "poly",
+ "prof",
+ "prover",
+ "rand 0.9.5",
+ "rand_pcg",
+ "transcript",
+ "verifier",
 ]
 
 [[package]]
@@ -1383,6 +1441,7 @@ dependencies = [
  "num-bigint 0.4.8",
  "num-traits",
  "poly",
+ "prof",
  "rand 0.9.5",
  "rand_pcg",
  "rayon",
@@ -1483,6 +1542,7 @@ dependencies = [
  "prover",
  "rand_chacha 0.9.0",
  "rand_core 0.9.5",
+ "reduction",
  "transcript",
  "verifier",
 ]
@@ -1620,6 +1680,7 @@ dependencies = [
  "common",
  "field",
  "pcs",
+ "prof",
  "transcript",
 ]
 
