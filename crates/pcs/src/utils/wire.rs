@@ -12,7 +12,7 @@ use crate::bridge::{as_flock_f128, from_flock_f128};
 use super::PublicTranscript;
 
 const EVENT_HEADER_LEN: usize = 24;
-const RING_SWITCH_CHALLENGE_TAG: u16 = 0x4101;
+const MLE_BATCHING_CHALLENGE_TAG: u16 = 0x4101;
 const INNER_PRODUCT_BATCHING_CHALLENGE_TAG: u16 = 0x4301;
 const OPENING_TARGET_TAG: u16 = 0x5001;
 const SQUEEZE_RESULT_BIT: u16 = 0x8000;
@@ -29,11 +29,11 @@ pub(crate) enum ClaimDomain {
     InnerProduct = 0x4201,
 }
 
-/// Writes 128 ring-switch claims in their query-specific frame.
+/// Writes 128 reduction claims in their query-specific frame.
 pub(crate) fn write_claims(
     transcript: &mut ProverState,
     domain: ClaimDomain,
-    values: &[FlockF128; CLAIM_COUNT],
+    claims: &[FlockF128; CLAIM_COUNT],
 ) {
     transcript.prover_message(&event_header(
         domain as u16,
@@ -43,12 +43,12 @@ pub(crate) fn write_claims(
         CLAIMS_PAYLOAD_LEN,
     ));
     transcript.prover_message(&(CLAIM_COUNT as u32));
-    for &value in values {
-        transcript.prover_message(&from_flock_f128(value));
+    for &claim in claims {
+        transcript.prover_message(&from_flock_f128(claim));
     }
 }
 
-/// Reads 128 ring-switch claims from their query-specific frame.
+/// Reads 128 reduction claims from their query-specific frame.
 pub(crate) fn read_claims(
     transcript: &mut VerifierState<'_>,
     domain: ClaimDomain,
@@ -73,24 +73,24 @@ pub(crate) fn read_claims(
         return Err(CommitError::MalformedProof);
     }
 
-    let mut values = [FlockF128::ZERO; CLAIM_COUNT];
-    for value in &mut values {
-        *value = transcript
+    let mut claims = [FlockF128::ZERO; CLAIM_COUNT];
+    for claim in &mut claims {
+        *claim = transcript
             .prover_message::<field::F128>()
             .map(as_flock_f128)
             .map_err(|_| CommitError::MalformedProof)?;
     }
-    Ok(values)
+    Ok(claims)
 }
 
-/// Samples the seven tag-4101 coordinates of the shared ring-switch point.
-pub(crate) fn sample_ring_switch_point(
+/// Samples the seven coordinates of the MLE batching point.
+pub(crate) fn sample_mle_batching_point(
     transcript: &mut impl PublicTranscript,
 ) -> [FlockF128; LOG_PACKING] {
     core::array::from_fn(|index| {
         sample_f128_event(
             transcript,
-            RING_SWITCH_CHALLENGE_TAG,
+            MLE_BATCHING_CHALLENGE_TAG,
             NO_SCOPE,
             NO_SCOPE,
             index as u32,
@@ -98,8 +98,8 @@ pub(crate) fn sample_ring_switch_point(
     })
 }
 
-/// Samples one independent batching challenge for each coordinate claim.
-pub(crate) fn sample_inner_product_batching_challenges(
+/// Samples the 128 coordinates of the inner-product batching point.
+pub(crate) fn sample_inner_product_batching_point(
     transcript: &mut impl PublicTranscript,
 ) -> [FlockF128; CLAIM_COUNT] {
     core::array::from_fn(|index| {
@@ -116,8 +116,8 @@ pub(crate) fn sample_inner_product_batching_challenges(
 /// Absorbs the derived tag-5001 opening target before recursive Ligerito.
 pub(crate) fn observe_opening_target(
     transcript: &mut impl PublicTranscript,
-    m_p: u32,
-    beta: FlockF128,
+    opening_log_n: u32,
+    packed_target: FlockF128,
 ) {
     transcript.public_message(&event_header(
         OPENING_TARGET_TAG,
@@ -126,8 +126,8 @@ pub(crate) fn observe_opening_target(
         NO_SCOPE,
         (size_of::<u32>() + FIELD_ENCODING_LEN as usize) as u64,
     ));
-    transcript.public_message(&m_p);
-    transcript.public_message(&from_flock_f128(beta));
+    transcript.public_message(&opening_log_n);
+    transcript.public_message(&from_flock_f128(packed_target));
 }
 
 fn sample_f128_event(
@@ -183,13 +183,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ring_switch_message_matches_wire_v1() {
-        let mut values = [FlockF128::ZERO; CLAIM_COUNT];
-        values[0] = FlockF128::new(1, 2);
-        values[CLAIM_COUNT - 1] = FlockF128::new(3, 4);
+    fn mle_claim_frame_matches_wire_v1() {
+        let mut claims = [FlockF128::ZERO; CLAIM_COUNT];
+        claims[0] = FlockF128::new(1, 2);
+        claims[CLAIM_COUNT - 1] = FlockF128::new(3, 4);
         let mut prover = build_prover(b"pcs-protocol-test", b"ring-frame");
 
-        write_claims(&mut prover, ClaimDomain::Mle, &values);
+        write_claims(&mut prover, ClaimDomain::Mle, &claims);
         let proof = prover.finish();
 
         assert_eq!(proof.narg_string.len(), EVENT_HEADER_LEN + 4 + 128 * 16);
@@ -210,19 +210,19 @@ mod tests {
         let mut verifier = build_verifier(b"pcs-protocol-test", b"ring-frame", &proof);
         assert_eq!(
             read_claims(&mut verifier, ClaimDomain::Mle).unwrap(),
-            values,
+            claims,
         );
         verifier.check_eof().unwrap();
     }
 
     #[test]
-    fn inner_product_coordinate_message_uses_its_own_frame() {
-        let mut values = [FlockF128::ZERO; CLAIM_COUNT];
-        values[0] = FlockF128::new(1, 2);
-        values[CLAIM_COUNT - 1] = FlockF128::new(3, 4);
+    fn inner_product_claim_frame_matches_wire_v1() {
+        let mut claims = [FlockF128::ZERO; CLAIM_COUNT];
+        claims[0] = FlockF128::new(1, 2);
+        claims[CLAIM_COUNT - 1] = FlockF128::new(3, 4);
         let mut prover = build_prover(b"pcs-protocol-test", b"inner-product-frame");
 
-        write_claims(&mut prover, ClaimDomain::InnerProduct, &values);
+        write_claims(&mut prover, ClaimDomain::InnerProduct, &claims);
         let proof = prover.finish();
 
         assert_eq!(
@@ -241,13 +241,13 @@ mod tests {
         let mut verifier = build_verifier(b"pcs-protocol-test", b"inner-product-frame", &proof);
         assert_eq!(
             read_claims(&mut verifier, ClaimDomain::InnerProduct).unwrap(),
-            values,
+            claims,
         );
         verifier.check_eof().unwrap();
     }
 
     #[test]
-    fn inner_product_coordinate_reader_rejects_the_wrong_count() {
+    fn inner_product_claim_reader_rejects_wrong_count() {
         let expected_header = event_header(
             ClaimDomain::InnerProduct as u16,
             SINGLE_OPENING_SCOPE,
@@ -314,7 +314,7 @@ mod tests {
     }
 
     #[test]
-    fn single_opening_frames_match_wire_v1() {
+    fn mle_batching_and_target_frames_match_wire_v1() {
         let challenges = (1u64..=7).map(F128::from).collect::<VecDeque<_>>();
         let mut transcript = RecordingTranscript {
             absorbed: Vec::new(),
@@ -322,11 +322,11 @@ mod tests {
             squeeze_offsets: Vec::new(),
         };
 
-        let r_dprime = sample_ring_switch_point(&mut transcript);
+        let batching_point = sample_mle_batching_point(&mut transcript);
         observe_opening_target(&mut transcript, 15, FlockF128::new(10, 11));
         let frames = parse_recorded_frames(&transcript.absorbed);
 
-        assert_eq!(r_dprime.len(), LOG_PACKING);
+        assert_eq!(batching_point.len(), LOG_PACKING);
         assert_eq!(
             transcript.squeeze_offsets,
             (0..7).map(|event| 28 + event * 68).collect::<Vec<_>>()
@@ -335,10 +335,13 @@ mod tests {
         for index in 0..LOG_PACKING {
             let request = &frames[2 * index];
             let response = &frames[2 * index + 1];
-            assert_eq!(request.tag, RING_SWITCH_CHALLENGE_TAG);
+            assert_eq!(request.tag, MLE_BATCHING_CHALLENGE_TAG);
             assert_eq!(request.scope, (NO_SCOPE, NO_SCOPE, index as u32));
             assert_eq!(request.payload, FIELD_ENCODING_LEN.to_le_bytes());
-            assert_eq!(response.tag, RING_SWITCH_CHALLENGE_TAG | SQUEEZE_RESULT_BIT);
+            assert_eq!(
+                response.tag,
+                MLE_BATCHING_CHALLENGE_TAG | SQUEEZE_RESULT_BIT
+            );
             assert_eq!(response.scope, request.scope);
             assert_eq!(response.payload, F128::from(index as u64 + 1).to_bytes());
         }
@@ -357,7 +360,7 @@ mod tests {
     }
 
     #[test]
-    fn inner_product_batching_uses_128_dedicated_challenge_frames() {
+    fn inner_product_batching_point_uses_128_challenge_frames() {
         let challenges = (1u64..=CLAIM_COUNT as u64)
             .map(F128::from)
             .collect::<VecDeque<_>>();
@@ -367,7 +370,7 @@ mod tests {
             squeeze_offsets: Vec::new(),
         };
 
-        let sampled = sample_inner_product_batching_challenges(&mut transcript);
+        let sampled = sample_inner_product_batching_point(&mut transcript);
         let frames = parse_recorded_frames(&transcript.absorbed);
 
         assert_eq!(sampled.len(), CLAIM_COUNT);

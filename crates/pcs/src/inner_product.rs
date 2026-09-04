@@ -1,4 +1,4 @@
-//! Algebraic ring switch for explicit inner-product openings.
+//! Ring-switch reduction for explicit inner-product openings.
 //!
 //! Split each public weight block `W_y` into binary coordinate polynomials:
 //! `T_k(W_y) = sum_v bit_k(W_y[v]) X^v`.
@@ -22,7 +22,7 @@ use crate::CommitError;
 use crate::bridge::as_flock_f128s;
 use crate::ligerito::ReducedClaim;
 
-pub(super) type Challenge = [FlockF128; CLAIM_COUNT];
+pub(super) type BatchingPoint = [FlockF128; CLAIM_COUNT];
 const _: () = assert!(CLAIM_COUNT == 128);
 
 /// A validated reduction from explicit bit weights to one packed-field claim.
@@ -58,7 +58,7 @@ impl<'a> RingSwitch<'a> {
         Ok(claims)
     }
 
-    /// Checks the original target against proof-provided ring-switch claims.
+    /// Checks the original target against proof-provided coordinate claims.
     pub(super) fn target_matches(
         &self,
         claims: &[FlockF128; CLAIM_COUNT],
@@ -68,13 +68,13 @@ impl<'a> RingSwitch<'a> {
     }
 
     /// Reduces the coordinate claims to one dense Ligerito claim.
-    pub(super) fn reduce(
+    pub(super) fn reduce_dense(
         &self,
         claims: &[FlockF128; CLAIM_COUNT],
-        challenge: &Challenge,
+        batching_point: &BatchingPoint,
     ) -> ReducedClaim {
-        let packed_target = inner_product(claims, challenge);
-        let packed_basis = build_batched_basis(self.weights, challenge);
+        let packed_target = inner_product(claims, batching_point);
+        let packed_basis = build_batched_basis(self.weights, batching_point);
         ReducedClaim {
             packed_basis,
             packed_target,
@@ -106,9 +106,9 @@ fn compute_claims(packed_witness: &[FlockF128], weights: &[F128]) -> [FlockF128;
     claims
 }
 
-fn build_batched_basis(weights: &[F128], challenges: &Challenge) -> Vec<FlockF128> {
+fn build_batched_basis(weights: &[F128], batching_point: &BatchingPoint) -> Vec<FlockF128> {
     debug_assert_eq!(weights.len() % CLAIM_COUNT, 0);
-    let challenge_table = ChallengeByteTable::new(challenges);
+    let batching_table = BatchingPointByteTable::new(batching_point);
     let dual_monomials: [FlockF128; CLAIM_COUNT] =
         core::array::from_fn(|index| constant_coefficient_dual(monomial(index)));
 
@@ -122,7 +122,7 @@ fn build_batched_basis(weights: &[F128], challenges: &Challenge) -> Vec<FlockF12
                         basis_value
                     } else {
                         basis_value
-                            + *dual_monomial * challenge_table.combine_weight_coordinates(*weight)
+                            + *dual_monomial * batching_table.combine_weight_coordinates(*weight)
                     }
                 },
             )
@@ -131,15 +131,15 @@ fn build_batched_basis(weights: &[F128], challenges: &Challenge) -> Vec<FlockF12
 }
 
 /// A byte lookup table for `sum_k bit_k(weight) * challenge[k]`.
-struct ChallengeByteTable {
+struct BatchingPointByteTable {
     sums: Vec<FlockF128>,
 }
 
-impl ChallengeByteTable {
+impl BatchingPointByteTable {
     const BYTE_COUNT: usize = 16;
     const BYTE_VALUES: usize = 256;
 
-    fn new(challenges: &Challenge) -> Self {
+    fn new(batching_point: &BatchingPoint) -> Self {
         let mut sums = vec![FlockF128::ZERO; Self::BYTE_COUNT * Self::BYTE_VALUES];
         for byte_index in 0..Self::BYTE_COUNT {
             let bit_base = 8 * byte_index;
@@ -147,7 +147,7 @@ impl ChallengeByteTable {
                 let mut sum = FlockF128::ZERO;
                 for bit in 0..8 {
                     if (byte_value >> bit) & 1 == 1 {
-                        sum += challenges[bit_base + bit];
+                        sum += batching_point[bit_base + bit];
                     }
                 }
                 sums[byte_index * Self::BYTE_VALUES + byte_value] = sum;
@@ -275,21 +275,21 @@ mod tests {
                 }
             })
             .collect::<Vec<_>>();
-        let challenges = core::array::from_fn(monomial);
+        let batching_point = core::array::from_fn(monomial);
 
         assert_eq!(
-            build_batched_basis(&weights, &challenges),
-            reference_batched_basis(&weights, &challenges),
+            build_batched_basis(&weights, &batching_point),
+            reference_batched_basis(&weights, &batching_point),
         );
     }
 
     #[test]
-    fn challenge_byte_table_covers_every_byte_value_and_position() {
-        let challenges = core::array::from_fn(monomial);
-        let table = ChallengeByteTable::new(&challenges);
+    fn batching_point_byte_table_covers_every_byte_value_and_position() {
+        let batching_point = core::array::from_fn(monomial);
+        let table = BatchingPointByteTable::new(&batching_point);
 
-        for byte_index in 0..ChallengeByteTable::BYTE_COUNT {
-            for byte_value in 0..ChallengeByteTable::BYTE_VALUES {
+        for byte_index in 0..BatchingPointByteTable::BYTE_COUNT {
+            for byte_value in 0..BatchingPointByteTable::BYTE_VALUES {
                 let mut bytes = [0u8; 16];
                 bytes[byte_index] = byte_value as u8;
                 let weight = F128::from_bytes(bytes);
@@ -312,7 +312,7 @@ mod tests {
         let weights = (0..256u64)
             .map(|index| F128::new(index.wrapping_mul(17), index.rotate_left(11)))
             .collect::<Vec<_>>();
-        let challenges = core::array::from_fn(|index| {
+        let batching_point = core::array::from_fn(|index| {
             let index = index as u64;
             FlockF128::new(index.wrapping_mul(31), index.rotate_left(7))
         });
@@ -321,8 +321,8 @@ mod tests {
         let checked_claims = ring_switch
             .prepare_claims(&packed_witness, reconstructed_target(&claims))
             .unwrap();
-        let reduced = ring_switch.reduce(&checked_claims, &challenges);
-        let verifier_reduction = ring_switch.reduce(&claims, &challenges);
+        let reduced = ring_switch.reduce_dense(&checked_claims, &batching_point);
+        let verifier_reduction = ring_switch.reduce_dense(&claims, &batching_point);
 
         assert_eq!(
             inner_product(&packed_witness, &reduced.packed_basis),
@@ -332,15 +332,15 @@ mod tests {
         assert_eq!(reduced.packed_target, verifier_reduction.packed_target);
     }
 
-    fn reference_batched_basis(weights: &[F128], challenges: &Challenge) -> Vec<FlockF128> {
+    fn reference_batched_basis(weights: &[F128], batching_point: &BatchingPoint) -> Vec<FlockF128> {
         weights
             .chunks_exact(CLAIM_COUNT)
             .map(|weight_block| {
                 tensor_algebra_transpose(as_flock_f128s(weight_block))
                     .into_iter()
-                    .zip(challenges)
-                    .fold(FlockF128::ZERO, |sum, (polynomial, challenge)| {
-                        sum + *challenge * constant_coefficient_dual(polynomial)
+                    .zip(batching_point)
+                    .fold(FlockF128::ZERO, |sum, (polynomial, coefficient)| {
+                        sum + *coefficient * constant_coefficient_dual(polynomial)
                     })
             })
             .collect()

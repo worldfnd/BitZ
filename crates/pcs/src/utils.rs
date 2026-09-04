@@ -6,24 +6,24 @@ mod wire;
 pub(crate) use proof::{read_opening_proof, write_opening_proof};
 pub(crate) use transcript::PublicTranscript;
 pub(crate) use wire::{
-    ClaimDomain, observe_opening_target, read_claims, sample_inner_product_batching_challenges,
-    sample_ring_switch_point, write_claims,
+    ClaimDomain, observe_opening_target, read_claims, sample_inner_product_batching_point,
+    sample_mle_batching_point, write_claims,
 };
 
 use crate::Pcs;
 
-const STATEMENT_LABEL: &[u8] = b"f2z/pcs/mle-opening/v1";
+const MLE_STATEMENT_LABEL: &[u8] = b"f2z/pcs/mle-opening/v1";
 const INNER_PRODUCT_STATEMENT_LABEL: &[u8] = b"f2z/pcs/bit-inner-product/v1";
 
-/// Absorbs the public statement in either transcript.
-pub(crate) fn bind_statement(
+/// Absorbs an MLE statement in either transcript.
+pub(crate) fn bind_mle_statement(
     pcs: &Pcs,
     root: &[u8; 32],
     point: &[field::F128],
     target: field::F128,
     transcript: &mut impl PublicTranscript,
 ) {
-    transcript.public_message(STATEMENT_LABEL);
+    transcript.public_message(MLE_STATEMENT_LABEL);
     transcript.public_message(root);
     transcript.public_message(pcs);
     transcript.public_message(&(point.len() as u64));
@@ -71,7 +71,7 @@ mod tests {
 
     proptest! {
         #[test]
-        fn statement_binding_matches_between_roles(
+        fn mle_statement_binding_matches_between_roles(
             root in any::<[u8; 32]>(),
             point_words in prop::collection::vec((any::<u64>(), any::<u64>()), 0..32),
             target_words in (any::<u64>(), any::<u64>()),
@@ -85,7 +85,7 @@ mod tests {
             let target = F128::new(target_words.0, target_words.1);
 
             let mut prover = build_prover(b"pcs-protocol-test", b"statement-binding");
-            bind_statement(&pcs, &root, &point, target, &mut prover);
+            bind_mle_statement(&pcs, &root, &point, target, &mut prover);
             let expected = prover.verifier_message::<F128>();
             let proof = prover.finish();
 
@@ -94,7 +94,7 @@ mod tests {
                 b"statement-binding",
                 &proof,
             );
-            bind_statement(&pcs, &root, &point, target, &mut verifier);
+            bind_mle_statement(&pcs, &root, &point, target, &mut verifier);
             prop_assert_eq!(verifier.verifier_message::<F128>(), expected);
             prop_assert!(verifier.check_eof().is_ok());
         }

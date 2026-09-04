@@ -19,9 +19,9 @@
 //! The opening splits `r` into `r_lo = r[0..7]` and `r_hi = r[7..m]`.
 //! It computes `s_v = q̂(r_hi, v)` and checks
 //! `target = Σ_v eq(r_lo, v) · s_v`.
-//! Ring-switching transposes `(s_v)` into `(s_u)` and samples `r_dprime`.
-//! It sets `beta0 = Σ_u eq(r_dprime, u) · s_u`.
-//! Recursive Ligerito proves `Σ_y B(y) · q_pkd(y) = beta0` against the committed root.
+//! Ring-switching transposes `(s_v)` into `(s_u)` and samples `batching_point`.
+//! It sets `packed_target = Σ_u eq(batching_point, u) · s_u`.
+//! Recursive Ligerito proves `Σ_y B(y) · q_pkd(y) = packed_target` against the committed root.
 //! Arbitrary inner products apply the GHASH coefficient-projection dual map.
 //! They batch 128 packed coordinate claims into one Ligerito basis opening.
 //!
@@ -92,6 +92,7 @@ mod commitment;
 mod inner_product;
 mod ligerito;
 mod mle;
+mod opening;
 mod utils;
 mod validation;
 
@@ -209,26 +210,14 @@ impl CommitScheme for Pcs {
         statement_binding: StatementBinding,
         transcript: &mut ProverState,
     ) -> Result<(), CommitError> {
-        match query {
-            OpeningQuery::Mle { point, target } => mle::open(
-                self,
-                data,
-                packed_witness,
-                point,
-                *target,
-                statement_binding,
-                transcript,
-            ),
-            OpeningQuery::InnerProduct { weights, target } => inner_product::open(
-                self,
-                data,
-                packed_witness,
-                weights,
-                *target,
-                statement_binding,
-                transcript,
-            ),
-        }
+        opening::prove(
+            self,
+            data,
+            packed_witness,
+            query,
+            statement_binding,
+            transcript,
+        )
     }
 
     fn verify_lin(
@@ -238,23 +227,6 @@ impl CommitScheme for Pcs {
         statement_binding: StatementBinding,
         transcript: &mut VerifierState<'_>,
     ) -> Result<(), CommitError> {
-        match query {
-            OpeningQuery::Mle { point, target } => mle::verify(
-                self,
-                commitment,
-                point,
-                *target,
-                statement_binding,
-                transcript,
-            ),
-            OpeningQuery::InnerProduct { weights, target } => inner_product::verify(
-                self,
-                commitment,
-                weights,
-                *target,
-                statement_binding,
-                transcript,
-            ),
-        }
+        opening::verify(self, commitment, query, statement_binding, transcript)
     }
 }
