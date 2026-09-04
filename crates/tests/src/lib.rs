@@ -205,7 +205,7 @@ impl verifier::Reduction<Q> for HonestStub {
 /// rather than one per bit, and each set bit adds its element's weight to the
 /// low coordinate it sits at. Materialising `eq` over all `m` coordinates would
 /// be `2^m` field elements.
-fn evaluate(table: &BitTable<'_>, point: &[F128]) -> F128 {
+pub fn evaluate(table: &BitTable<'_>, point: &[F128]) -> F128 {
     let shape = table.shape();
     let (low, high) = point.split_at(PACK_BITS as usize);
     let eq_low = eq_table(low);
@@ -231,4 +231,111 @@ fn evaluate(table: &BitTable<'_>, point: &[F128]) -> F128 {
         .fold(F128::default(), |total, (&weight, &sum)| {
             total + weight * sum
         })
+}
+
+/// A public map that copies bits of `1 ‖ f` into `h`, with repeats.
+///
+/// `selects[x]` is the coordinate of `1 ‖ f` that `h_x` takes, so `M` has one
+/// nonzero per row. That is the shape a real frontend emits: `h` is the
+/// witness laid out the way the constraints want it, and every entry is some
+/// committed bit or the constant one.
+pub struct SelectionMap {
+    selects: Vec<usize>,
+    committed_bits: usize,
+}
+
+impl SelectionMap {
+    /// `h_0` is the constant one; every later entry cycles through `f` with a
+    /// stride coprime to its length, so bits repeat without a pattern the
+    /// transposition could accidentally agree with.
+    pub fn strided(h_len: usize, committed_bits: usize) -> Self {
+        let selects = (0..h_len)
+            .map(|x| {
+                if x == 0 {
+                    0
+                } else {
+                    1 + (x.wrapping_mul(2_654_435_761)) % committed_bits
+                }
+            })
+            .collect();
+        Self {
+            selects,
+            committed_bits,
+        }
+    }
+
+    /// `h`, as the bits the map copies out of `1 ‖ f`.
+    pub fn integer_witness(&self, committed: &BitTable<'_>) -> Vec<bool> {
+        let shape = committed.shape();
+        self.selects
+            .iter()
+            .map(|&coordinate| match coordinate {
+                0 => true,
+                index => {
+                    let bit = index - 1;
+                    committed.bit(bit >> shape.log_rows(), bit & (shape.rows() - 1))
+                }
+            })
+            .collect()
+    }
+}
+
+impl common::VirtualMap for SelectionMap {
+    fn transpose_eq(
+        &self,
+        point: &[F128],
+    ) -> Result<common::TransposedWeights, common::VirtualMapError> {
+        if 1usize << point.len() < self.selects.len() {
+            return Err(common::VirtualMapError::PointLengthMismatch);
+        }
+        let weights = eq_table(point);
+        let mut transposed = vec![F128::default(); self.f_len()];
+        for (&coordinate, weight) in self.selects.iter().zip(weights) {
+            transposed[coordinate] += weight;
+        }
+        let constant_weight = transposed[0];
+        Ok(common::TransposedWeights::new(
+            transposed[1..].to_vec(),
+            constant_weight,
+        ))
+    }
+
+    fn digest(&self) -> [u8; 32] {
+        let mut digest = [0u8; 32];
+        let mut accumulator = 0xcbf2_9ce4_8422_2325_u64;
+        for &coordinate in &self.selects {
+            accumulator = (accumulator ^ coordinate as u64).wrapping_mul(0x0100_0000_01b3);
+        }
+        digest[..8].copy_from_slice(&accumulator.to_le_bytes());
+        digest
+    }
+
+    fn h_len(&self) -> usize {
+        self.selects.len()
+    }
+
+    fn f_len(&self) -> usize {
+        self.committed_bits + 1
+    }
+}
+
+/// Packs a bit vector the way the commitment and the bit table both read it:
+/// bit `r` of element `i` is logical bit `128 i + r`.
+pub fn pack_bits(bits: &[bool]) -> Vec<F128> {
+    bits.chunks(128)
+        .map(|chunk| {
+            let mut lo = 0u64;
+            let mut hi = 0u64;
+            for (offset, &bit) in chunk.iter().enumerate() {
+                if bit {
+                    if offset < 64 {
+                        lo |= 1 << offset;
+                    } else {
+                        hi |= 1 << (offset - 64);
+                    }
+                }
+            }
+            F128::new(lo, hi)
+        })
+        .collect()
 }

@@ -24,3 +24,4 @@ verifier = { workspace = true }
 
 [dev-dependencies]
 num-traits = { workspace = true }
+reduction = { workspace = true }

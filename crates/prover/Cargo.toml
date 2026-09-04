@@ -13,4 +13,5 @@ parallel = ["common/parallel"]
 common = { workspace = true }
 field = { workspace = true, features = ["spongefish"] }
 pcs = { workspace = true }
+prof = { workspace = true }
 transcript = { workspace = true }
