@@ -1,12 +1,11 @@
 //! Prover flow for multilinear openings.
 
 use field::F128;
-use flock_core::pcs::RingSwitchProof;
 use transcript::ProverState;
 
 use super::ring_switch::RingSwitch;
 use crate::ligerito::ReducedProver;
-use crate::utils::{bind_ring_switch_message, bind_statement, sample_ring_switch_point};
+use crate::utils::{bind_statement, sample_ring_switch_point, write_ring_switch_claims};
 use crate::{CommitError, Pcs, ProverData, StatementBinding};
 
 pub(crate) fn open(
@@ -26,16 +25,8 @@ pub(crate) fn open(
     }
 
     let prepared_claims = ring_switch.prepare_claims(prover.witness(), target)?;
-    bind_ring_switch_message(transcript, prepared_claims.claims().as_array())?;
-    let proof_claims = prepared_claims.claims().as_array().to_vec();
-
+    write_ring_switch_claims(transcript, prepared_claims.claims());
     let challenge = sample_ring_switch_point(transcript);
     let reduced_claim = prepared_claims.reduce(&challenge);
-    prover.prove(
-        reduced_claim,
-        vec![RingSwitchProof {
-            s_hat_v: proof_claims,
-        }],
-        transcript,
-    )
+    prover.prove(reduced_claim, transcript)
 }

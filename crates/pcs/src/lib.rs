@@ -92,7 +92,6 @@ mod commitment;
 mod inner_product;
 mod ligerito;
 mod mle;
-mod ring_switch;
 mod utils;
 mod validation;
 

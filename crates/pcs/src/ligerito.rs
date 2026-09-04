@@ -9,12 +9,10 @@ use flock_core::pcs::ligerito::{
     LigeritoProof, recursive_prover_with_basis, recursive_verifier_with_basis,
     recursive_verifier_with_basis_succinct,
 };
-use flock_core::pcs::{BatchOpeningProofLigerito, RingSwitchProof};
 use transcript::{ProverState, VerifierState};
 
 use crate::bridge::into_flock_f128s;
 use crate::challenger::{ProverChallenger, VerifierChallenger};
-use crate::ring_switch::CLAIM_COUNT;
 use crate::utils::{observe_opening_target, read_opening_proof, write_opening_proof};
 use crate::validation::{validate_ligerito_proof_shape, validate_prover_data};
 use crate::{CommitError, Pcs, ProverData, Root};
@@ -23,15 +21,6 @@ use crate::{CommitError, Pcs, ProverData, Root};
 pub(crate) struct ReducedClaim {
     pub(crate) packed_basis: Vec<FlockF128>,
     pub(crate) packed_target: FlockF128,
-}
-
-/// Expected query-specific payload in the shared opening proof.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum RingSwitchPayloadShape {
-    /// An explicit inner-product opening has no Flock ring-switch payload.
-    None,
-    /// An MLE opening has one fixed-width Flock ring-switch payload.
-    Single,
 }
 
 /// Validated prover input for the shared Ligerito tail.
@@ -68,7 +57,6 @@ impl<'a> ReducedProver<'a> {
     pub(crate) fn prove(
         self,
         claim: ReducedClaim,
-        ring_switches: Vec<RingSwitchProof>,
         transcript: &mut ProverState,
     ) -> Result<(), CommitError> {
         let ReducedClaim {
@@ -93,50 +81,24 @@ impl<'a> ReducedProver<'a> {
             ));
         }
 
-        write_opening_proof(
-            &BatchOpeningProofLigerito {
-                ring_switches,
-                ligerito,
-            },
-            transcript,
-        )
+        write_opening_proof(&ligerito, transcript)
     }
 }
 
-/// Reads one proof and validates its query-specific and Ligerito shapes.
+/// Reads one proof and validates its Ligerito shape.
 pub(crate) fn read_proof(
     pcs: &Pcs,
     commitment: &Root,
-    ring_switch_shape: RingSwitchPayloadShape,
     transcript: &mut VerifierState<'_>,
-) -> Result<BatchOpeningProofLigerito, CommitError> {
+) -> Result<LigeritoProof, CommitError> {
     let proof = read_opening_proof(transcript)?;
-    validate_proof_shape(pcs, commitment, &proof, ring_switch_shape)?;
-    Ok(proof)
-}
-
-pub(crate) fn validate_proof_shape(
-    pcs: &Pcs,
-    commitment: &Root,
-    proof: &BatchOpeningProofLigerito,
-    ring_switch_shape: RingSwitchPayloadShape,
-) -> Result<(), CommitError> {
-    let ring_switch_shape_matches = match ring_switch_shape {
-        RingSwitchPayloadShape::None => proof.ring_switches.is_empty(),
-        RingSwitchPayloadShape::Single => {
-            proof.ring_switches.len() == 1 && proof.ring_switches[0].s_hat_v.len() == CLAIM_COUNT
-        }
-    };
-    if !ring_switch_shape_matches {
-        return Err(CommitError::VerificationFailed);
-    }
-
     validate_ligerito_proof_shape(
-        &proof.ligerito,
+        &proof,
         pcs.verifier_config(),
         pcs.final_log_n(),
         &commitment.0,
-    )
+    )?;
+    Ok(proof)
 }
 
 /// Verifies a reduced claim with a materialized packed basis.
@@ -248,27 +210,23 @@ mod tests {
         let transcript_proof = prover.finish();
         let mut verifier = build_verifier(SESSION, INSTANCE, &transcript_proof);
         let valid = read_opening_proof(&mut verifier).unwrap();
-        let shape = RingSwitchPayloadShape::Single;
         assert_eq!(
-            validate_proof_shape(&pcs, &commitment, &valid, shape),
+            validate_ligerito_proof_shape(
+                &valid,
+                pcs.verifier_config(),
+                pcs.final_log_n(),
+                &commitment.0,
+            ),
             Ok(())
         );
-        assert_eq!(
-            validate_proof_shape(&pcs, &commitment, &valid, RingSwitchPayloadShape::None),
-            Err(CommitError::VerificationFailed),
-        );
 
-        type ProofMutation = fn(&mut BatchOpeningProofLigerito);
-        let mutations: [(&str, ProofMutation); 4] = [
-            ("ring-switch count", |proof| proof.ring_switches.clear()),
-            ("ring-switch claim count", |proof| {
-                proof.ring_switches[0].s_hat_v.pop();
-            }),
+        type ProofMutation = fn(&mut LigeritoProof);
+        let mutations: [(&str, ProofMutation); 2] = [
             ("recursive-root count", |proof| {
-                proof.ligerito.recursive_roots.pop();
+                proof.recursive_roots.pop();
             }),
             ("opened-row width", |proof| {
-                proof.ligerito.initial_proof.opened_rows[0].pop();
+                proof.initial_proof.opened_rows[0].pop();
             }),
         ];
 
@@ -276,7 +234,12 @@ mod tests {
             let mut proof = valid.clone();
             mutate(&mut proof);
             assert_eq!(
-                validate_proof_shape(&pcs, &commitment, &proof, shape),
+                validate_ligerito_proof_shape(
+                    &proof,
+                    pcs.verifier_config(),
+                    pcs.final_log_n(),
+                    &commitment.0,
+                ),
                 Err(CommitError::VerificationFailed),
                 "{case}",
             );

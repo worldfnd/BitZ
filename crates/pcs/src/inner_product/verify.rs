@@ -3,9 +3,9 @@
 use field::F128;
 use transcript::VerifierState;
 
-use super::ring_switch::{Claims, RingSwitch};
+use super::ring_switch::RingSwitch;
 use super::validate_profile;
-use crate::ligerito::{self, RingSwitchPayloadShape};
+use crate::ligerito;
 use crate::utils::{
     bind_inner_product_statement, read_inner_product_claims,
     sample_inner_product_batching_challenges,
@@ -27,14 +27,13 @@ pub(crate) fn verify(
         bind_inner_product_statement(pcs, &commitment.0, weights, target, transcript);
     }
 
-    let proof = ligerito::read_proof(pcs, commitment, RingSwitchPayloadShape::None, transcript)?;
+    let proof = ligerito::read_proof(pcs, commitment, transcript)?;
 
-    let proof_claims = read_inner_product_claims(transcript)?;
-    let claims = Claims::from_proof(&proof_claims)?;
+    let claims = read_inner_product_claims(transcript)?;
     if !ring_switch.target_matches(&claims, target) {
         return Err(CommitError::VerificationFailed);
     }
     let challenge = sample_inner_product_batching_challenges(transcript);
     let reduced_claim = ring_switch.reduce_verifier(&claims, &challenge);
-    ligerito::verify_dense(pcs, commitment, &proof.ligerito, reduced_claim, transcript)
+    ligerito::verify_dense(pcs, commitment, &proof, reduced_claim, transcript)
 }

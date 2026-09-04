@@ -3,15 +3,13 @@
 use core::mem::size_of;
 
 use flock_core::field::F128 as FlockF128;
-use flock_core::pcs::LOG_PACKING;
+use flock_core::pcs::{LOG_PACKING, pack::PACKING_WIDTH as CLAIM_COUNT};
 use transcript::{ProverState, VerifierState};
 
 use crate::CommitError;
 use crate::bridge::{as_flock_f128, from_flock_f128};
-use crate::ring_switch::CLAIM_COUNT;
 
 use super::PublicTranscript;
-use super::transcript::PcsTranscript;
 
 const EVENT_HEADER_LEN: usize = 24;
 const RING_SWITCH_MESSAGE_TAG: u16 = 0x4001;
@@ -23,33 +21,22 @@ const SQUEEZE_RESULT_BIT: u16 = 0x8000;
 const FIELD_ENCODING_LEN: u32 = 16;
 const NO_SCOPE: u32 = u32::MAX;
 const SINGLE_OPENING_SCOPE: u32 = 0;
-const RING_SWITCH_PAYLOAD_LEN: u64 =
-    size_of::<u32>() as u64 + (CLAIM_COUNT * FIELD_ENCODING_LEN as usize) as u64;
-const INNER_PRODUCT_COORDINATES_PAYLOAD_LEN: u64 =
+const CLAIMS_PAYLOAD_LEN: u64 =
     size_of::<u32>() as u64 + (CLAIM_COUNT * FIELD_ENCODING_LEN as usize) as u64;
 
-/// Binds the single opening's tag-4001 ring-switch vector through NARG.
-pub(crate) fn bind_ring_switch_message(
-    transcript: &mut impl PcsTranscript,
-    values: &[FlockF128],
-) -> Result<(), CommitError> {
-    if values.len() != CLAIM_COUNT {
-        return Err(CommitError::invalid_configuration(
-            "ring-switch vector length mismatch",
-        ));
-    }
-    transcript.bind_prover_message(&event_header(
-        RING_SWITCH_MESSAGE_TAG,
-        SINGLE_OPENING_SCOPE,
-        NO_SCOPE,
-        NO_SCOPE,
-        RING_SWITCH_PAYLOAD_LEN,
-    ))?;
-    transcript.bind_prover_message(&(CLAIM_COUNT as u32))?;
-    for &value in values {
-        transcript.bind_prover_message(&from_flock_f128(value))?;
-    }
-    Ok(())
+/// Writes the 128 slice evaluations for an MLE ring switch.
+pub(crate) fn write_ring_switch_claims(
+    transcript: &mut ProverState,
+    values: &[FlockF128; CLAIM_COUNT],
+) {
+    write_claims(transcript, RING_SWITCH_MESSAGE_TAG, values);
+}
+
+/// Reads the 128 slice evaluations for an MLE ring switch.
+pub(crate) fn read_ring_switch_claims(
+    transcript: &mut VerifierState<'_>,
+) -> Result<[FlockF128; CLAIM_COUNT], CommitError> {
+    read_claims(transcript, RING_SWITCH_MESSAGE_TAG)
 }
 
 /// Writes the 128 packed coordinate claims for an arbitrary bit inner product.
@@ -57,12 +44,23 @@ pub(crate) fn write_inner_product_claims(
     transcript: &mut ProverState,
     values: &[FlockF128; CLAIM_COUNT],
 ) {
+    write_claims(transcript, INNER_PRODUCT_COORDINATES_TAG, values);
+}
+
+/// Reads the 128 packed coordinate claims for an arbitrary bit inner product.
+pub(crate) fn read_inner_product_claims(
+    transcript: &mut VerifierState<'_>,
+) -> Result<[FlockF128; CLAIM_COUNT], CommitError> {
+    read_claims(transcript, INNER_PRODUCT_COORDINATES_TAG)
+}
+
+fn write_claims(transcript: &mut ProverState, tag: u16, values: &[FlockF128; CLAIM_COUNT]) {
     transcript.prover_message(&event_header(
-        INNER_PRODUCT_COORDINATES_TAG,
+        tag,
         SINGLE_OPENING_SCOPE,
         NO_SCOPE,
         NO_SCOPE,
-        INNER_PRODUCT_COORDINATES_PAYLOAD_LEN,
+        CLAIMS_PAYLOAD_LEN,
     ));
     transcript.prover_message(&(CLAIM_COUNT as u32));
     for &value in values {
@@ -70,16 +68,16 @@ pub(crate) fn write_inner_product_claims(
     }
 }
 
-/// Reads the 128 packed coordinate claims for an arbitrary bit inner product.
-pub(crate) fn read_inner_product_claims(
+fn read_claims(
     transcript: &mut VerifierState<'_>,
+    tag: u16,
 ) -> Result<[FlockF128; CLAIM_COUNT], CommitError> {
     let expected_header = event_header(
-        INNER_PRODUCT_COORDINATES_TAG,
+        tag,
         SINGLE_OPENING_SCOPE,
         NO_SCOPE,
         NO_SCOPE,
-        INNER_PRODUCT_COORDINATES_PAYLOAD_LEN,
+        CLAIMS_PAYLOAD_LEN,
     );
     let header = transcript
         .prover_message::<[u8; EVENT_HEADER_LEN]>()
@@ -210,7 +208,7 @@ mod tests {
         values[CLAIM_COUNT - 1] = FlockF128::new(3, 4);
         let mut prover = build_prover(b"pcs-protocol-test", b"ring-frame");
 
-        bind_ring_switch_message(&mut prover, &values).unwrap();
+        write_ring_switch_claims(&mut prover, &values);
         let proof = prover.finish();
 
         assert_eq!(proof.narg_string.len(), EVENT_HEADER_LEN + 4 + 128 * 16);
@@ -229,7 +227,7 @@ mod tests {
         );
 
         let mut verifier = build_verifier(b"pcs-protocol-test", b"ring-frame", &proof);
-        bind_ring_switch_message(&mut verifier, &values).unwrap();
+        assert_eq!(read_ring_switch_claims(&mut verifier).unwrap(), values);
         verifier.check_eof().unwrap();
     }
 
@@ -268,7 +266,7 @@ mod tests {
             SINGLE_OPENING_SCOPE,
             NO_SCOPE,
             NO_SCOPE,
-            INNER_PRODUCT_COORDINATES_PAYLOAD_LEN,
+            CLAIMS_PAYLOAD_LEN,
         );
         let mut prover = build_prover(b"pcs-protocol-test", b"wrong-coordinate-count");
         prover.prover_message(&expected_header);

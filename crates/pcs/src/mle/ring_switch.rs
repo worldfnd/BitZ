@@ -8,18 +8,16 @@
 
 use field::F128;
 use flock_core::field::F128 as FlockF128;
-use flock_core::pcs::LOG_PACKING;
 use flock_core::pcs::ring_switch::{
     build_eq_split, claim_check, eval_rs_eq_finish_from_prefix_binary_q, eval_rs_eq_prefix,
     fold_1b_rows_naive, fold_b128_elems, inner_product, tensor_algebra_transpose,
 };
+use flock_core::pcs::{LOG_PACKING, pack::PACKING_WIDTH as CLAIM_COUNT};
 use flock_core::zerocheck::univariate_skip::build_eq;
 
 use crate::CommitError;
 use crate::bridge::{as_flock_f128, as_flock_f128s};
 use crate::ligerito::ReducedClaim;
-pub(super) use crate::ring_switch::{CLAIM_COUNT, Claims};
-
 pub(super) type Challenge = [FlockF128; LOG_PACKING];
 
 /// A validated MLE point split into packed and unpacked coordinates.
@@ -29,7 +27,7 @@ pub(super) struct RingSwitch<'a> {
 
 /// Ring-switch claims with the prover data needed for challenge reduction.
 pub(super) struct PreparedClaims {
-    claims: Claims,
+    claims: [FlockF128; CLAIM_COUNT],
     suffix_tensor: Vec<FlockF128>,
 }
 
@@ -73,7 +71,7 @@ impl<'a> RingSwitch<'a> {
         }
 
         let claims = claims_from_prover(fold_1b_rows_naive(packed_witness, &suffix_tensor))?;
-        if claim_check(&prefix_tensor, claims.as_array()) != as_flock_f128(claimed_target) {
+        if claim_check(&prefix_tensor, &claims) != as_flock_f128(claimed_target) {
             return Err(CommitError::InvalidClaim);
         }
 
@@ -84,15 +82,19 @@ impl<'a> RingSwitch<'a> {
     }
 
     /// Checks the original MLE target against proof-provided partial evaluations.
-    pub(super) fn target_matches(&self, claims: &Claims, claimed_target: F128) -> bool {
+    pub(super) fn target_matches(
+        &self,
+        claims: &[FlockF128; CLAIM_COUNT],
+        claimed_target: F128,
+    ) -> bool {
         let prefix_tensor = build_eq(&self.point[..LOG_PACKING]);
-        claim_check(&prefix_tensor, claims.as_array()) == as_flock_f128(claimed_target)
+        claim_check(&prefix_tensor, claims) == as_flock_f128(claimed_target)
     }
 
     /// Reduces proof-provided partial evaluations without materializing the basis.
     pub(super) fn reduce_verifier(
         &self,
-        claims: &Claims,
+        claims: &[FlockF128; CLAIM_COUNT],
         challenge: &Challenge,
     ) -> VerifierReduction<'a> {
         let challenge_tensor = build_eq(challenge);
@@ -106,7 +108,7 @@ impl<'a> RingSwitch<'a> {
 }
 
 impl PreparedClaims {
-    pub(super) fn claims(&self) -> &Claims {
+    pub(super) fn claims(&self) -> &[FlockF128; CLAIM_COUNT] {
         &self.claims
     }
 
@@ -148,14 +150,14 @@ impl VerifierReduction<'_> {
     }
 }
 
-fn batch_claims(claims: &Claims, challenge_tensor: &[FlockF128]) -> FlockF128 {
+fn batch_claims(claims: &[FlockF128; CLAIM_COUNT], challenge_tensor: &[FlockF128]) -> FlockF128 {
     debug_assert_eq!(challenge_tensor.len(), CLAIM_COUNT);
-    let transposed_claims = tensor_algebra_transpose(claims.as_array());
+    let transposed_claims = tensor_algebra_transpose(claims);
     inner_product(&transposed_claims, challenge_tensor)
 }
 
 /// Converts the prover result into the fixed protocol shape.
-fn claims_from_prover(values: Vec<FlockF128>) -> Result<Claims, CommitError> {
+fn claims_from_prover(values: Vec<FlockF128>) -> Result<[FlockF128; CLAIM_COUNT], CommitError> {
     let values: [FlockF128; CLAIM_COUNT] =
         values.try_into().map_err(|values: Vec<FlockF128>| {
             CommitError::invalid_configuration(format!(
@@ -163,7 +165,7 @@ fn claims_from_prover(values: Vec<FlockF128>) -> Result<Claims, CommitError> {
                 values.len(),
             ))
         })?;
-    Ok(Claims::from_array(values))
+    Ok(values)
 }
 
 #[cfg(test)]
@@ -178,7 +180,7 @@ mod tests {
         let prepared_claims = ring_switch
             .prepare_claims(&packed_witness, F128::default())
             .unwrap();
-        let claims = prepared_claims.claims().clone();
+        let claims = *prepared_claims.claims();
         let challenge = core::array::from_fn(|index| FlockF128::new(index as u64 + 3, 0));
 
         let dense = prepared_claims.reduce(&challenge);

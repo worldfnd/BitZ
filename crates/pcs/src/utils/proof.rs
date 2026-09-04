@@ -1,9 +1,9 @@
-//! Bounded hint transport for Flock's in-memory opening proof.
+//! Bounded hint transport for the Ligerito proof.
 //!
 //! Hint bytes do not affect transcript challenges.
 
 use bincode::Options;
-use flock_core::pcs::BatchOpeningProofLigerito;
+use flock_core::pcs::ligerito::LigeritoProof;
 use transcript::{ProverState, VerifierState};
 
 use crate::CommitError;
@@ -11,7 +11,7 @@ use crate::CommitError;
 const PROOF_HINT_LIMIT: usize = 64 * 1024 * 1024;
 
 pub(crate) fn write_opening_proof(
-    proof: &BatchOpeningProofLigerito,
+    proof: &LigeritoProof,
     transcript: &mut ProverState,
 ) -> Result<(), CommitError> {
     let proof_bytes = proof_options()
@@ -26,7 +26,7 @@ pub(crate) fn write_opening_proof(
 
 pub(crate) fn read_opening_proof(
     transcript: &mut VerifierState<'_>,
-) -> Result<BatchOpeningProofLigerito, CommitError> {
+) -> Result<LigeritoProof, CommitError> {
     let proof_bytes = transcript
         .hint_bytes(PROOF_HINT_LIMIT)
         .map_err(|_| CommitError::MalformedProof)?;

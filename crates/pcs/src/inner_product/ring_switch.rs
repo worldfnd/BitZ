@@ -15,14 +15,15 @@
 
 use field::F128;
 use flock_core::field::F128 as FlockF128;
+use flock_core::pcs::pack::PACKING_WIDTH as CLAIM_COUNT;
 use flock_core::pcs::ring_switch::{inner_product, tensor_algebra_transpose};
 
 use crate::CommitError;
 use crate::bridge::as_flock_f128s;
 use crate::ligerito::ReducedClaim;
-pub(super) use crate::ring_switch::{CLAIM_COUNT, Claims};
 
 pub(super) type Challenge = [FlockF128; CLAIM_COUNT];
+const _: () = assert!(CLAIM_COUNT == 128);
 
 /// A validated reduction from explicit bit weights to one packed-field claim.
 pub(super) struct RingSwitch<'a> {
@@ -34,11 +35,8 @@ pub(super) struct RingSwitch<'a> {
 pub(super) struct PreparedClaims<'a> {
     weights: &'a [F128],
     packed_len: usize,
-    claims: Claims,
+    claims: [FlockF128; CLAIM_COUNT],
 }
-
-/// One dense packed-field claim for verifier-side Ligerito.
-pub(super) type VerifierReduction = ReducedClaim;
 
 impl<'a> RingSwitch<'a> {
     /// Validates one weight for every bit in the packed witness.
@@ -64,7 +62,7 @@ impl<'a> RingSwitch<'a> {
         if packed_witness.len() != self.packed_len {
             return Err(CommitError::InvalidBitLength);
         }
-        let claims = Claims::from_array(compute_claims(packed_witness, self.weights));
+        let claims = compute_claims(packed_witness, self.weights);
         if !self.target_matches(&claims, claimed_target) {
             return Err(CommitError::InvalidClaim);
         }
@@ -76,22 +74,26 @@ impl<'a> RingSwitch<'a> {
     }
 
     /// Checks the original target against proof-provided ring-switch claims.
-    pub(super) fn target_matches(&self, claims: &Claims, claimed_target: F128) -> bool {
+    pub(super) fn target_matches(
+        &self,
+        claims: &[FlockF128; CLAIM_COUNT],
+        claimed_target: F128,
+    ) -> bool {
         reconstructed_target(claims) == claimed_target
     }
 
     /// Reduces proof-provided claims to one dense Ligerito claim.
     pub(super) fn reduce_verifier(
         &self,
-        claims: &Claims,
+        claims: &[FlockF128; CLAIM_COUNT],
         challenge: &Challenge,
-    ) -> VerifierReduction {
+    ) -> ReducedClaim {
         reduce_claims(self.weights, self.packed_len, claims, challenge)
     }
 }
 
 impl PreparedClaims<'_> {
-    pub(super) fn claims(&self) -> &Claims {
+    pub(super) fn claims(&self) -> &[FlockF128; CLAIM_COUNT] {
         &self.claims
     }
 
@@ -104,10 +106,10 @@ impl PreparedClaims<'_> {
 fn reduce_claims(
     weights: &[F128],
     packed_len: usize,
-    claims: &Claims,
+    claims: &[FlockF128; CLAIM_COUNT],
     challenge: &Challenge,
 ) -> ReducedClaim {
-    let packed_target = inner_product(claims.as_array(), challenge);
+    let packed_target = inner_product(claims, challenge);
     let packed_basis = build_batched_basis(weights, challenge);
     debug_assert_eq!(packed_basis.len(), packed_len);
     ReducedClaim {
@@ -117,9 +119,9 @@ fn reduce_claims(
 }
 
 /// Reconstructs the claimed inner product from constant coefficients.
-fn reconstructed_target(claims: &Claims) -> F128 {
+fn reconstructed_target(claims: &[FlockF128; CLAIM_COUNT]) -> F128 {
     let mut words = [0u64; 2];
-    for (index, value) in claims.as_array().iter().enumerate() {
+    for (index, value) in claims.iter().enumerate() {
         words[index >> 6] |= (value.lo & 1) << (index & 63);
     }
     F128::new(words[0], words[1])
@@ -351,7 +353,7 @@ mod tests {
             FlockF128::new(index.wrapping_mul(31), index.rotate_left(7))
         });
         let ring_switch = RingSwitch::new(&weights, packed_witness.len()).unwrap();
-        let claims = Claims::from_array(compute_claims(&packed_witness, &weights));
+        let claims = compute_claims(&packed_witness, &weights);
         let prepared_claims = ring_switch
             .prepare_claims(&packed_witness, reconstructed_target(&claims))
             .unwrap();

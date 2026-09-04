@@ -321,7 +321,7 @@ fn opening_query_variants_are_not_interchangeable() {
             StatementBinding::Bind,
             &mut verifier,
         ),
-        Err(CommitError::VerificationFailed),
+        Err(CommitError::MalformedProof),
     );
 }
 

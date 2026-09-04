@@ -3,9 +3,9 @@
 use field::F128;
 use transcript::VerifierState;
 
-use super::ring_switch::{Claims, RingSwitch};
-use crate::ligerito::{self, RingSwitchPayloadShape};
-use crate::utils::{bind_ring_switch_message, bind_statement, sample_ring_switch_point};
+use super::ring_switch::RingSwitch;
+use crate::ligerito;
+use crate::utils::{bind_statement, read_ring_switch_claims, sample_ring_switch_point};
 use crate::{CommitError, Pcs, Root, StatementBinding};
 
 pub(crate) fn verify(
@@ -23,11 +23,9 @@ pub(crate) fn verify(
         bind_statement(pcs, &commitment.0, point, target, transcript);
     }
 
-    let proof = ligerito::read_proof(pcs, commitment, RingSwitchPayloadShape::Single, transcript)?;
+    let proof = ligerito::read_proof(pcs, commitment, transcript)?;
 
-    let proof_claims = &proof.ring_switches[0].s_hat_v;
-    let claims = Claims::from_proof(proof_claims)?;
-    bind_ring_switch_message(transcript, claims.as_array())?;
+    let claims = read_ring_switch_claims(transcript)?;
     if !ring_switch.target_matches(&claims, target) {
         return Err(CommitError::VerificationFailed);
     }
@@ -40,7 +38,7 @@ pub(crate) fn verify(
     ligerito::verify_succinct(
         pcs,
         commitment,
-        &proof.ligerito,
+        &proof,
         log_n,
         packed_target,
         evaluate_basis,
