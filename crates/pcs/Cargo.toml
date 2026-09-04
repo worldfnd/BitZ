@@ -11,6 +11,8 @@ blake3 = { workspace = true }
 common = { workspace = true }
 field = { workspace = true, features = ["spongefish"] }
 flock-core = { workspace = true }
+prof = { workspace = true }
+rayon = { workspace = true }
 transcript = { workspace = true }
 
 [dev-dependencies]

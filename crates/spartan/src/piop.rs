@@ -90,15 +90,24 @@ where
         .collect::<Vec<_>>();
     let equality_factors =
         make_equality_factors(&tau).map_err(|_| SpartanMatrixError::InvalidMleOperation)?;
-    let outer = prove_outer_sumcheck(transcript, F::ZERO, equality_factors, products)?;
+    let outer = {
+        let _guard = prof::scope("spartan/outer-prove");
+        prove_outer_sumcheck(transcript, F::ZERO, equality_factors, products)?
+    };
 
     // The outer prover absorbed these evaluations before returning.
     let rho = transcript.squeeze::<F>();
     let inner_initial_claim = outer.proof.az_mle_claim
         + rho * outer.proof.bz_mle_claim
         + rho * rho * outer.proof.cz_mle_claim;
-    let batched_matrix = matrices.bind_and_batch(&outer.eval_points, rho)?;
-    let inner = prove_inner_sumcheck(transcript, inner_initial_claim, batched_matrix, assignment)?;
+    let batched_matrix = {
+        let _guard = prof::scope("spartan/bind-and-batch");
+        matrices.bind_and_batch(&outer.eval_points, rho)?
+    };
+    let inner = {
+        let _guard = prof::scope("spartan/inner-prove");
+        prove_inner_sumcheck(transcript, inner_initial_claim, batched_matrix, assignment)?
+    };
 
     let mle_claim = ScaledMleEvaluationClaim::new(
         inner.sumcheck.eval_points.into_boxed_slice(),
@@ -129,17 +138,25 @@ where
     let tau = (0..num_row_vars)
         .map(|_| transcript.squeeze::<F>())
         .collect::<Vec<_>>();
-    let outer = proof.outer.verify(transcript, F::ZERO, &tau)?;
+    let outer = {
+        let _guard = prof::scope("spartan/outer-verify");
+        proof.outer.verify(transcript, F::ZERO, &tau)?
+    };
 
     // The outer verifier absorbed the product evaluations before returning.
     let rho = transcript.squeeze::<F>();
     let inner_initial_claim =
         outer.az_mle_claim + rho * outer.bz_mle_claim + rho * rho * outer.cz_mle_claim;
-    let (column_point, final_claim) =
+    let (column_point, final_claim) = {
+        let _guard = prof::scope("spartan/inner-verify");
         proof
             .inner
-            .verify(transcript, inner_initial_claim, num_column_vars)?;
-    let matrix_evaluation = matrices.evaluate_batched(&outer.eval_points, rho, &column_point)?;
+            .verify(transcript, inner_initial_claim, num_column_vars)?
+    };
+    let matrix_evaluation = {
+        let _guard = prof::scope("spartan/evaluate-batched");
+        matrices.evaluate_batched(&outer.eval_points, rho, &column_point)?
+    };
 
     Ok(ScaledMleEvaluationClaim::new(
         column_point.into_boxed_slice(),

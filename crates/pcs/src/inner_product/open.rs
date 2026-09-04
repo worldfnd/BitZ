@@ -23,15 +23,23 @@ pub(crate) fn open(
 ) -> Result<(), CommitError> {
     validate_profile(pcs)?;
     let ring_switch = RingSwitch::new(weights, pcs.packed_len())?;
-    let prover = ReducedProver::new(pcs, data, packed_witness)?;
+    let prover = {
+        let _guard = prof::scope("open/reduced-prover");
+        ReducedProver::new(pcs, data, packed_witness)?
+    };
 
     if statement_binding == StatementBinding::Bind {
         bind_inner_product_statement(pcs, &data.commitment().root, weights, target, transcript);
     }
 
-    let prepared_claims = ring_switch.prepare_claims(prover.witness(), target)?;
+    let prepared_claims = {
+        let _guard = prof::scope("open/ring-switch");
+        ring_switch.prepare_claims(prover.witness(), target)?
+    };
     write_inner_product_claims(transcript, prepared_claims.claims().as_array());
     let challenge = sample_inner_product_batching_challenges(transcript);
     let reduced_claim = prepared_claims.reduce(&challenge);
+
+    let _guard = prof::scope("open/ligerito");
     prover.prove(reduced_claim, Vec::new(), transcript)
 }
