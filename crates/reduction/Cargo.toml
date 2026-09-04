@@ -1,0 +1,22 @@
+[package]
+name = "reduction"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+common = { workspace = true }
+field = { workspace = true, features = ["spongefish"] }
+gkr = { workspace = true }
+num-traits = { workspace = true }
+poly = { workspace = true }
+prof = { workspace = true }
+prover = { workspace = true }
+transcript = { workspace = true }
+verifier = { workspace = true }
+
+[dev-dependencies]
+pcs = { workspace = true }
+rand = { workspace = true }
+rand_pcg = { workspace = true }
