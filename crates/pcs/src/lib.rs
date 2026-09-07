@@ -94,7 +94,6 @@ mod ligerito;
 mod mle;
 mod opening;
 mod utils;
-mod validation;
 
 use field::F128;
 use transcript::{ProverState, VerifierState};

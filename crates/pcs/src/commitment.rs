@@ -10,7 +10,7 @@ use core::mem::size_of;
 
 use crate::CommitError;
 use crate::bridge::as_flock_f128s;
-use crate::validation::CheckedLigerito;
+use crate::ligerito::CheckedLigerito;
 use common::{Root, Shape};
 use field::F128;
 pub use flock_core::hash::HashKind;
