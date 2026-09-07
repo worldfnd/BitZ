@@ -9,7 +9,7 @@ use transcript::{ProverState, VerifierState};
 pub type Field = F128;
 
 // TODO modify densemultilinearextension such that no point reversal nor collection is necessary
-fn mle(eval: Vec<Field>, rs: &Point) -> Field {
+pub fn mle(eval: Vec<Field>, rs: &Point) -> Field {
     let num_vars = rs.len();
     let mut point: Vec<Field> = rs.iter().cloned().collect();
     point.reverse();
@@ -27,36 +27,14 @@ fn mle(eval: Vec<Field>, rs: &Point) -> Field {
 type Point = VecDeque<Field>;
 
 // Functions for standalone use. Illusatrates how it would be used within the reset of the system.
-pub fn prove(input: Vec<Field>, groups: usize) -> (Vec<Field>, transcript::Proof) {
-    let circuit = Circuit::new(input);
-    let (last_value, witnesses) = circuit.batched_eval(groups);
+pub fn prove(input: Vec<Field>, log_groups: usize) -> (Vec<Field>, transcript::Proof) {
+    let circuit = GrandProductCircuit::new(input);
+    let (last_value, witnesses) = circuit.batched_eval(log_groups);
 
     // TODO instance is a bit loose and should be replaced by PCS
     let instance = (last_value.clone(), circuit.leafs);
 
     let mut prover = transcript::build_prover("gkr", &instance);
-
-    gpgkr_prove(&mut prover, witnesses);
-    (last_value, prover.finish())
-}
-
-pub fn verify(input: Vec<Field>, output: Vec<Field>, proof: transcript::Proof) -> bool {
-    let circuit = Circuit::new(input);
-    let instance = (&output, &circuit.leafs);
-    let mut verifier = transcript::build_verifier("gkr", &instance, &proof);
-
-    let ok = gpgkr_verify(&mut verifier, output, circuit);
-
-    ok && verifier.check_eof().is_ok()
-}
-
-pub fn gpgkr_prove(
-    ps: &mut ProverState,
-    // All the intermediate witnesses + the input layer. Doesn't contain the output layer
-    witnesses: LayerWitnesses,
-) {
-    // Edge cases
-    // - empty witnesses -> single constant circuit -> one verifier message that permutes the proof state, but a single constant can't have an MLE
 
     let log_groups = match witnesses.next_layer_len() {
         // `next_layer_groups` is twice the output layer's length (`groups`); `.max(1)` avoids
@@ -66,14 +44,46 @@ pub fn gpgkr_prove(
     };
 
     // Extension point chosen by the verifier to evaluate the output layer
-    let mut point: Point = (0..log_groups).map(|_| ps.verifier_message()).collect();
+    let point: Point = (0..log_groups).map(|_| prover.verifier_message()).collect();
 
-    for wnext in witnesses.into_iter() {
-        point = prove_layer(ps, point, wnext);
-    }
+    gpgkr_prove(&mut prover, point, witnesses);
+    (last_value, prover.finish())
 }
 
-fn prove_layer(ps: &mut ProverState, point: Point, mut wnext: Vec<Field>) -> Point {
+pub fn verify(input: Vec<Field>, output: Vec<Field>, proof: transcript::Proof) -> bool {
+    let circuit = GrandProductCircuit::new(input);
+    let instance = (&output, &circuit.leafs);
+    let mut verifier = transcript::build_verifier("gkr", &instance, &proof);
+
+    let log_groups = output.len().max(1).ilog2();
+    let point: Point = (0..log_groups)
+        .map(|_| verifier.verifier_message())
+        .collect();
+    let claim = mle(output, &point);
+
+    let ok = gpgkr_verify(&mut verifier, claim, point, circuit);
+
+    ok && verifier.check_eof().is_ok()
+}
+
+pub fn gpgkr_prove(
+    ps: &mut ProverState,
+    mut point: Point,
+    // All the intermediate witnesses + the input layer. Doesn't contain the output layer
+    witnesses: LayerWitnesses,
+) -> (Point, Field) {
+    // Edge cases
+    // - empty witnesses -> single constant circuit -> one verifier message that permutes the proof state, but a single constant can't have an MLE
+
+    let mut claim = Field::ZERO;
+    for wnext in witnesses.into_iter() {
+        (point, claim) = prove_layer(ps, point, wnext);
+    }
+    // In last run of prove layer we should compute the next claim and pass it on probably
+    (point, claim)
+}
+
+fn prove_layer(ps: &mut ProverState, point: Point, mut wnext: Vec<Field>) -> (Point, Field) {
     let mut suffix_table = SuffixTable::new(&point);
     let mut factor = Field::ONE;
 
@@ -148,8 +158,10 @@ fn prove_layer(ps: &mut ProverState, point: Point, mut wnext: Vec<Field>) -> Poi
     }
 
     ps.prover_message(&[mle_l[0], mle_r[0]]);
-    next_point.push_front(ps.verifier_message());
-    next_point
+    let r = ps.verifier_message();
+    next_point.push_front(r);
+    let claim = mle_l[0] + r * (mle_r[0] - mle_l[0]);
+    (next_point, claim)
 }
 
 /// `eq(r, z) = r*z + (1 - r)*(1 - z)`. Expanding gives
@@ -215,7 +227,12 @@ impl SuffixTable {
 /// MLE-fold shape.
 const PARALLEL_MIN_LANES: usize = 1 << 12;
 
-pub fn gpgkr_verify(vs: &mut VerifierState, last_value: Vec<Field>, circuit: Circuit) -> bool {
+pub fn gpgkr_verify(
+    vs: &mut VerifierState,
+    mut claim: Field,
+    mut point: Point,
+    circuit: GrandProductCircuit,
+) -> bool {
     // Edge cases around input lenghts, 0 meaning empty
     // | circuit | last value |
     //    0 0 -> valid, no circuit has no output
@@ -225,12 +242,9 @@ pub fn gpgkr_verify(vs: &mut VerifierState, last_value: Vec<Field>, circuit: Cir
     //    direct comparison of the two
     // last value being larger than circuit
     //    -> false
-    let log_groups = last_value.len().max(1).ilog2();
+    let log_groups = point.len() as u32;
     let log_leafs = circuit.leafs.len().max(1).ilog2();
     let rounds = log_leafs.saturating_sub(log_groups);
-
-    let mut point: Point = (0..log_groups).map(|_| vs.verifier_message()).collect();
-    let mut claim = mle(last_value, &point);
 
     for _i in 0..rounds {
         match verify_round(vs, claim, point) {
@@ -287,23 +301,23 @@ fn verify_round(vs: &mut VerifierState, mut claim: Field, point: Point) -> Optio
 //TODO circuit and circuit eval can't have their innards directly available as that would break power of 2 requirements for the rest.
 // A circuit is defined by its leaf value only because it is a balanced tree
 // TODO: Optimise for circuits that are padded.
-pub struct Circuit {
+pub struct GrandProductCircuit {
     leafs: Vec<Field>,
 }
 
-impl Circuit {
+impl GrandProductCircuit {
     // Fails if the leafs are 0.
-    fn new(mut leafs: Vec<Field>) -> Self {
+    pub fn new(mut leafs: Vec<Field>) -> Self {
         if !leafs.is_empty() {
             leafs.resize(leafs.len().next_power_of_two(), Field::ONE);
         }
-        Circuit { leafs }
+        GrandProductCircuit { leafs }
     }
 
     // Returns the final evaluation and the witnesses of the intermediate layers
     // Can't consume the input as the circuit is necessary for the initialisation of fiat shamir
     // TODO: replace with leaf lookups and add multithreading
-    fn batched_eval(&self, groups: usize) -> (Vec<Field>, LayerWitnesses) {
+    pub fn batched_eval(&self, groups: usize) -> (Vec<Field>, LayerWitnesses) {
         // +1 to deal with the possible case that the leafs are empty. Given that otherwise the constructor padded it to a power of two, and ilog rounds it down, it becomes a noop
         let mut witnesses = Vec::with_capacity((self.leafs.len() + 1).ilog2() as usize);
 
@@ -385,7 +399,7 @@ mod tests {
         fn eval_preserves_product_across_layers(leaves in prop::collection::vec(field(), 0..12)) {
             let expected = product(&leaves);
 
-            let (top, mut witnesses) = Circuit::new(leaves).batched_eval(1);
+            let (top, mut witnesses) = GrandProductCircuit::new(leaves).batched_eval(1);
 
             prop_assert_eq!(product(&top), expected);
 
@@ -407,7 +421,7 @@ mod tests {
             let mut padded = leaves.clone();
             padded.resize(padded_len, Field::ONE);
 
-            let circuit = Circuit::new(leaves);
+            let circuit = GrandProductCircuit::new(leaves);
             let (top, _witnesses) = circuit.batched_eval(groups);
             prop_assert_eq!(top.len(), groups);
 
