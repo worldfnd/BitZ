@@ -1,5 +1,7 @@
 //! `VerifyF2Z`.
 
+use std::collections::VecDeque;
+
 use common::{LinearClaim, OpeningQuery, ReductionInput, Root};
 use pcs::{CommitError, CommitScheme, Pcs, StatementBinding};
 use transcript::VerifierState;
@@ -60,7 +62,13 @@ impl<const Q: u128> F2ZVerifier<Q> {
             .map_err(VerifyError::Fold)?;
 
         // Step 4, replayed.
-        //
+        // build input based on row_image and the bit table.
+        let circuit = _;
+        let mut point = fold.zeta.clone();
+        point.reverse();
+        let point = VecDeque::from(point);
+
+        gkr::gpgkr_verify(&mut transcript, fold.e0, point, pcs);
         // TODO(#8): both live behind `Reduction`, which nothing implements yet.
         let input = ReductionInput {
             params: self.params(),

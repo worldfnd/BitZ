@@ -1075,6 +1075,8 @@ version = "0.1.0"
 dependencies = [
  "common",
  "field",
+ "gkr",
+ "num-traits",
  "pcs",
  "transcript",
 ]
@@ -1627,6 +1629,7 @@ version = "0.1.0"
 dependencies = [
  "common",
  "field",
+ "gkr",
  "pcs",
  "transcript",
 ]
