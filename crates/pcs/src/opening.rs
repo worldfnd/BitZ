@@ -31,14 +31,14 @@ pub(crate) fn prove(
             }
 
             let prepared_claims = ring_switch.prepare_claims(prover.witness(), *target)?;
-            write_claims(transcript, ClaimDomain::Mle, prepared_claims.claims());
+            write_claims(transcript, ClaimDomain::Mle, &prepared_claims.claims);
             let batching_point = sample_mle_batching_point(transcript);
-            let reduced_claim = prepared_claims.reduce_dense(&batching_point);
-            prover.prove(reduced_claim, transcript)
+            let dense_reduction = prepared_claims.reduce_dense(&batching_point);
+            prover.prove(dense_reduction, transcript)
         }
         OpeningQuery::InnerProduct { weights, target } => {
             validate_inner_product_profile(pcs)?;
-            let ring_switch = inner_product::RingSwitch::new(weights, pcs.packed_len())?;
+            let ring_switch = inner_product::RingSwitch::new(weights, pcs.bit_len())?;
             let prover = ReducedProver::new(pcs, data, packed_witness)?;
 
             if statement_binding == StatementBinding::Bind {
@@ -54,8 +54,8 @@ pub(crate) fn prove(
             let claims = ring_switch.prepare_claims(prover.witness(), *target)?;
             write_claims(transcript, ClaimDomain::InnerProduct, &claims);
             let batching_point = sample_inner_product_batching_point(transcript);
-            let reduced_claim = ring_switch.reduce_dense(&claims, &batching_point);
-            prover.prove(reduced_claim, transcript)
+            let dense_reduction = ring_switch.reduce_dense(&claims, &batching_point);
+            prover.prove(dense_reduction, transcript)
         }
     }
 }
@@ -82,20 +82,20 @@ pub(crate) fn verify(
             }
 
             let batching_point = sample_mle_batching_point(transcript);
-            let reduction = ring_switch.reduce_succinct(&claims, &batching_point);
+            let succinct_reduction = ring_switch.reduce_succinct(&claims, &batching_point);
             ligerito::verify_succinct(
                 pcs,
                 commitment,
                 &proof,
                 ring_switch.suffix_dimension(),
-                reduction.packed_target,
-                |ris, yr_log_n| reduction.evaluate_basis(ris, yr_log_n),
+                succinct_reduction.packed_target,
+                |ris, yr_log_n| succinct_reduction.evaluate_basis(ris, yr_log_n),
                 transcript,
             )
         }
         OpeningQuery::InnerProduct { weights, target } => {
             validate_inner_product_profile(pcs)?;
-            let ring_switch = inner_product::RingSwitch::new(weights, pcs.packed_len())?;
+            let ring_switch = inner_product::RingSwitch::new(weights, pcs.bit_len())?;
 
             if statement_binding == StatementBinding::Bind {
                 bind_inner_product_statement(pcs, &commitment.0, weights, *target, transcript);
@@ -108,8 +108,8 @@ pub(crate) fn verify(
             }
 
             let batching_point = sample_inner_product_batching_point(transcript);
-            let reduced_claim = ring_switch.reduce_dense(&claims, &batching_point);
-            ligerito::verify_dense(pcs, commitment, &proof, reduced_claim, transcript)
+            let dense_reduction = ring_switch.reduce_dense(&claims, &batching_point);
+            ligerito::verify_dense(pcs, commitment, &proof, dense_reduction, transcript)
         }
     }
 }

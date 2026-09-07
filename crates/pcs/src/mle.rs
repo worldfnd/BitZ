@@ -27,7 +27,7 @@ pub(super) struct RingSwitch<'a> {
 
 /// Ring-switch claims with the prover data needed for challenge reduction.
 pub(super) struct PreparedClaims {
-    claims: [FlockF128; CLAIM_COUNT],
+    pub(super) claims: [FlockF128; CLAIM_COUNT],
     suffix_tensor: Vec<FlockF128>,
 }
 
@@ -108,10 +108,6 @@ impl<'a> RingSwitch<'a> {
 }
 
 impl PreparedClaims {
-    pub(super) fn claims(&self) -> &[FlockF128; CLAIM_COUNT] {
-        &self.claims
-    }
-
     /// Materializes the packed basis and batches the partial evaluations.
     pub(super) fn reduce_dense(self, batching_point: &BatchingPoint) -> ReducedClaim {
         let batching_weights = build_eq(batching_point);
@@ -180,13 +176,16 @@ mod tests {
         let prepared_claims = ring_switch
             .prepare_claims(&packed_witness, F128::default())
             .unwrap();
-        let claims = *prepared_claims.claims();
+        let claims = prepared_claims.claims;
         let batching_point = core::array::from_fn(|index| FlockF128::new(index as u64 + 3, 0));
 
-        let dense = prepared_claims.reduce_dense(&batching_point);
-        let succinct = ring_switch.reduce_succinct(&claims, &batching_point);
+        let dense_reduction = prepared_claims.reduce_dense(&batching_point);
+        let succinct_reduction = ring_switch.reduce_succinct(&claims, &batching_point);
 
-        assert_eq!(dense.packed_target, succinct.packed_target);
-        assert_eq!(dense.packed_basis.len(), packed_witness.len());
+        assert_eq!(
+            dense_reduction.packed_target,
+            succinct_reduction.packed_target
+        );
+        assert_eq!(dense_reduction.packed_basis.len(), packed_witness.len());
     }
 }

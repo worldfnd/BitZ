@@ -32,11 +32,8 @@ pub(super) struct RingSwitch<'a> {
 
 impl<'a> RingSwitch<'a> {
     /// Validates one weight for every bit in the packed witness.
-    pub(super) fn new(weights: &'a [F128], packed_len: usize) -> Result<Self, CommitError> {
-        let expected_len = packed_len.checked_mul(CLAIM_COUNT).ok_or_else(|| {
-            CommitError::invalid_configuration("packed witness bit length exceeds usize")
-        })?;
-        if weights.len() != expected_len {
+    pub(super) fn new(weights: &'a [F128], bit_len: usize) -> Result<Self, CommitError> {
+        if weights.len() != bit_len {
             return Err(CommitError::WeightLengthMismatch);
         }
         Ok(Self { weights })
@@ -225,12 +222,10 @@ mod tests {
                     )
                 })
                 .collect::<Vec<_>>();
-            let ring_switch = RingSwitch::new(&weights, 1).unwrap();
-            let claims = ring_switch
+            let ring_switch = RingSwitch::new(&weights, CLAIM_COUNT).unwrap();
+            ring_switch
                 .prepare_claims(&packed_witness, weights[bit_index])
                 .unwrap();
-
-            assert!(ring_switch.target_matches(&claims, weights[bit_index]));
         }
     }
 
@@ -257,10 +252,8 @@ mod tests {
                 }
             }
         }
-        let ring_switch = RingSwitch::new(&weights, packed_witness.len()).unwrap();
-        let claims = ring_switch.prepare_claims(&packed_witness, direct).unwrap();
-
-        assert!(ring_switch.target_matches(&claims, direct));
+        let ring_switch = RingSwitch::new(&weights, packed_witness.len() * CLAIM_COUNT).unwrap();
+        ring_switch.prepare_claims(&packed_witness, direct).unwrap();
     }
 
     #[test]
@@ -316,20 +309,18 @@ mod tests {
             let index = index as u64;
             FlockF128::new(index.wrapping_mul(31), index.rotate_left(7))
         });
-        let ring_switch = RingSwitch::new(&weights, packed_witness.len()).unwrap();
+        let ring_switch = RingSwitch::new(&weights, packed_witness.len() * CLAIM_COUNT).unwrap();
         let claims = compute_claims(&packed_witness, &weights);
         let checked_claims = ring_switch
             .prepare_claims(&packed_witness, reconstructed_target(&claims))
             .unwrap();
-        let reduced = ring_switch.reduce_dense(&checked_claims, &batching_point);
-        let verifier_reduction = ring_switch.reduce_dense(&claims, &batching_point);
+        assert_eq!(checked_claims, claims);
+        let dense_reduction = ring_switch.reduce_dense(&claims, &batching_point);
 
         assert_eq!(
-            inner_product(&packed_witness, &reduced.packed_basis),
-            reduced.packed_target,
+            inner_product(&packed_witness, &dense_reduction.packed_basis),
+            dense_reduction.packed_target,
         );
-        assert_eq!(reduced.packed_basis, verifier_reduction.packed_basis);
-        assert_eq!(reduced.packed_target, verifier_reduction.packed_target);
     }
 
     fn reference_batched_basis(weights: &[F128], batching_point: &BatchingPoint) -> Vec<FlockF128> {
