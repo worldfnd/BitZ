@@ -26,46 +26,6 @@ pub fn mle(eval: Vec<Field>, rs: &Point) -> Field {
 
 type Point = VecDeque<Field>;
 
-// Functions for standalone use. Illusatrates how it would be used within the reset of the system.
-pub fn prove(input: Vec<Field>, log_groups: usize) -> (Vec<Field>, transcript::Proof) {
-    let circuit = GrandProductCircuit::new(input);
-    let (last_value, witnesses) = circuit.batched_eval(log_groups);
-
-    // TODO instance is a bit loose and should be replaced by PCS
-    let instance = (last_value.clone(), circuit.leafs);
-
-    let mut prover = transcript::build_prover("gkr", &instance);
-
-    let log_groups = match witnesses.next_layer_len() {
-        // `next_layer_groups` is twice the output layer's length (`groups`); `.max(1)` avoids
-        // an `ilog2(0)` panic when `groups == 0`, mirroring `gpgkr_verify`'s `last_value.len().max(1).ilog2()`.
-        Some(next_layer_groups) => (next_layer_groups / 2).max(1).ilog2(),
-        None => 0,
-    };
-
-    // Extension point chosen by the verifier to evaluate the output layer
-    let point: Point = (0..log_groups).map(|_| prover.verifier_message()).collect();
-
-    gpgkr_prove(&mut prover, point, witnesses);
-    (last_value, prover.finish())
-}
-
-pub fn verify(input: Vec<Field>, output: Vec<Field>, proof: transcript::Proof) -> bool {
-    let circuit = GrandProductCircuit::new(input);
-    let instance = (&output, &circuit.leafs);
-    let mut verifier = transcript::build_verifier("gkr", &instance, &proof);
-
-    let log_groups = output.len().max(1).ilog2();
-    let point: Point = (0..log_groups)
-        .map(|_| verifier.verifier_message())
-        .collect();
-    let claim = mle(output, &point);
-
-    let ok = gpgkr_verify(&mut verifier, claim, point, circuit);
-
-    ok && verifier.check_eof().is_ok()
-}
-
 pub fn gpgkr_prove(
     ps: &mut ProverState,
     mut point: Point,
@@ -79,7 +39,6 @@ pub fn gpgkr_prove(
     for wnext in witnesses.into_iter() {
         (point, claim) = prove_layer(ps, point, wnext);
     }
-    // In last run of prove layer we should compute the next claim and pass it on probably
     (point, claim)
 }
 
@@ -231,8 +190,8 @@ pub fn gpgkr_verify(
     vs: &mut VerifierState,
     mut claim: Field,
     mut point: Point,
-    circuit: GrandProductCircuit,
-) -> bool {
+    rounds: u32,
+) -> Option<(Point, Field)> {
     // Edge cases around input lenghts, 0 meaning empty
     // | circuit | last value |
     //    0 0 -> valid, no circuit has no output
@@ -242,26 +201,15 @@ pub fn gpgkr_verify(
     //    direct comparison of the two
     // last value being larger than circuit
     //    -> false
-    let log_groups = point.len() as u32;
-    let log_leafs = circuit.leafs.len().max(1).ilog2();
-    let rounds = log_leafs.saturating_sub(log_groups);
 
     for _i in 0..rounds {
-        match verify_round(vs, claim, point) {
-            Some(ret) => {
-                (point, claim) = ret;
-            }
-            None => return false,
-        }
+        (point, claim) = verify_layer(vs, claim, point)?
     }
 
-    // TODO replace by PCS
-    let leaf_check = mle(circuit.leafs, &point);
-
-    leaf_check == claim
+    Some((point, claim))
 }
 
-fn verify_round(vs: &mut VerifierState, mut claim: Field, point: Point) -> Option<(Point, Field)> {
+fn verify_layer(vs: &mut VerifierState, mut claim: Field, point: Point) -> Option<(Point, Field)> {
     let mut prefix = Field::ONE;
 
     let mut next_point: Point = VecDeque::new();
@@ -347,12 +295,6 @@ impl LayerWitnesses {
     pub fn pop(&mut self) -> Option<Vec<Field>> {
         self.0.pop()
     }
-
-    /// Length of the layer `into_iter` yields first -- the one directly
-    /// below the output layer.
-    fn next_layer_len(&self) -> Option<usize> {
-        self.0.last().map(Vec::len)
-    }
 }
 
 impl IntoIterator for LayerWitnesses {
@@ -379,12 +321,15 @@ mod tests {
         xs.iter().fold(Field::ONE, |acc, &x| acc * x)
     }
 
-    /// Proves a grand-product circuit for `leaves` batched into `groups`,
-    /// then checks the verifier accepts the proof against the prover's own
-    /// claimed output layer. Returns that output layer so callers can assert
-    /// further properties of it.
-    fn prove_and_verify(leaves: Vec<Field>, groups: usize) -> Result<Vec<Field>, TestCaseError> {
-        let (last_value, proof) = prove(leaves.clone(), groups);
+    /// Proves a grand-product circuit for `leaves` batched into `2^log_groups`
+    /// groups, then checks the verifier accepts the proof against the
+    /// prover's own claimed output layer. Returns that output layer so
+    /// callers can assert further properties of it.
+    fn prove_and_verify(
+        leaves: Vec<Field>,
+        log_groups: usize,
+    ) -> Result<Vec<Field>, TestCaseError> {
+        let (last_value, proof) = prove(leaves.clone(), log_groups);
         prop_assert!(verify(leaves, last_value.clone(), proof));
         Ok(last_value)
     }
@@ -443,7 +388,7 @@ mod tests {
         fn gpgkr_round_trip(leaves in prop::collection::vec(field(), 1..100)) {
             let expected = product(&leaves);
 
-            let last_value = prove_and_verify(leaves, 1)?;
+            let last_value = prove_and_verify(leaves, 0)?;
             prop_assert_eq!(last_value, vec![expected]);
         }
 
@@ -455,19 +400,65 @@ mod tests {
         ) {
             let padded_len = leaves.len().next_power_of_two();
             let groups_log2 = groups_log2.min(padded_len.ilog2() as usize - 1).max(1);
-            let groups = 1usize << groups_log2;
 
-            prove_and_verify(leaves, groups)?;
+            prove_and_verify(leaves, groups_log2)?;
         }
 
-        // negative/soundness test        #[test]
+        // negative/soundness test
+        #[test]
         fn gpgkr_verify_rejects_tampered_output(leaves in prop::collection::vec(field(), 2..33)) {
-            let (last_value, proof) = prove(leaves.clone(), 1);
+            let (last_value, proof) = prove(leaves.clone(), 0);
 
             let mut tampered = last_value;
             tampered[0] += Field::ONE;
 
             prop_assert!(!verify(leaves, tampered, proof));
+        }
+    }
+
+    pub fn prove(input: Vec<Field>, log_groups: usize) -> (Vec<Field>, transcript::Proof) {
+        let circuit = GrandProductCircuit::new(input);
+        let groups = 1usize << log_groups;
+        let (last_value, witnesses) = circuit.batched_eval(groups);
+
+        // TODO instance is a bit loose and should be replaced by PCS
+        let instance = (last_value.clone(), circuit.leafs);
+
+        let mut prover = transcript::build_prover("gkr", &instance);
+
+        // Extension point chosen by the verifier to evaluate the output layer.
+        // Mirrors `verify`'s `output.len().max(1).ilog2()` exactly, since both
+        // sides must draw the same number of challenges here.
+        let log_groups = last_value.len().max(1).ilog2();
+        let point: Point = (0..log_groups).map(|_| prover.verifier_message()).collect();
+
+        gpgkr_prove(&mut prover, point, witnesses);
+        (last_value, prover.finish())
+    }
+
+    pub fn verify(input: Vec<Field>, output: Vec<Field>, proof: transcript::Proof) -> bool {
+        let circuit = GrandProductCircuit::new(input);
+        let instance = (&output, &circuit.leafs);
+        let mut verifier = transcript::build_verifier("gkr", &instance, &proof);
+
+        let log_groups = output.len().max(1).ilog2();
+        let point: Point = (0..log_groups)
+            .map(|_| verifier.verifier_message())
+            .collect();
+        let claim = mle(output, &point);
+        let log_groups = point.len() as u32;
+        let log_leafs = circuit.leafs.len().max(1).ilog2();
+        let rounds = log_leafs.saturating_sub(log_groups);
+
+        match gpgkr_verify(&mut verifier, claim, point, rounds) {
+            Some((point, claim)) => {
+                let leaf_check = mle(circuit.leafs, &point);
+
+                let ok = leaf_check == claim;
+
+                ok && verifier.check_eof().is_ok()
+            }
+            None => false,
         }
     }
 }
