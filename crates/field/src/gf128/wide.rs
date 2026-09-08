@@ -7,7 +7,7 @@
 //! product. That trades one reduction per term for one per accumulator, the
 //! shape of the sumcheck round bodies.
 
-use std::ops::AddAssign;
+use std::ops::{Add, AddAssign};
 
 use super::{F128, kernel};
 
@@ -37,6 +37,14 @@ impl Wide256 {
     #[inline]
     pub fn reduce(self) -> F128 {
         kernel::wide_reduce(self.0).into()
+    }
+}
+
+impl Add for Wide256 {
+    type Output = Self;
+    #[inline]
+    fn add(self, rhs: Self) -> Self {
+        Self(kernel::wide_add(self.0, rhs.0))
     }
 }
 
