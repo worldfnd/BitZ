@@ -66,8 +66,8 @@ impl From<MleClaimError> for SpartanError {
 pub fn prove_spartan_piop<F>(
     transcript: &mut ProverState,
     matrices: &PreparedConstraintMatrices<F>,
-    products: R1csProductMles<F>,
-    assignment: DenseMultilinearExtension<F>,
+    products: &R1csProductMles<F>,
+    assignment: &DenseMultilinearExtension<F>,
 ) -> Result<(SpartanPiopProof<F>, ScaledMleEvaluationClaim<F>), SpartanError>
 where
     F: ConstField + Copy + Encoding<[u8]> + TranscriptChallenge,
@@ -244,7 +244,7 @@ mod tests {
 
         let mut prover = build_prover(session, UNSATISFIED_INSTANCE);
         let (proof, claim) =
-            prove_spartan_piop(&mut prover, &matrices, products, assignment).unwrap();
+            prove_spartan_piop(&mut prover, &matrices, &products, &assignment).unwrap();
         let transcript_proof = prover.finish();
 
         let unsatisfied_witness = PackedWitness::from_bits(&[true, true]);
@@ -314,7 +314,7 @@ mod tests {
 
         let mut prover = build_prover(session, INSTANCE);
         let (proof, claim) =
-            prove_spartan_piop(&mut prover, &matrices, products, assignment.clone()).unwrap();
+            prove_spartan_piop(&mut prover, &matrices, &products, &assignment).unwrap();
         assert_eq!(proof.outer.sumcheck.round_polynomials.len(), 3);
         assert_eq!(proof.inner.round_polynomials.len(), 3);
         let transcript_proof = prover.finish();

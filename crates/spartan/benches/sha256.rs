@@ -49,7 +49,7 @@ fn main() {
 fn statement(blocks: usize) -> Arc<Statement> {
     let mut cache = STATEMENTS.lock().unwrap();
     if let Some((_, statement)) = cache.iter().find(|(cached, _)| *cached == blocks) {
-        return Arc::clone(statement)
+        return Arc::clone(statement);
     }
     let statement = Arc::new(build(blocks));
     cache.push((blocks, Arc::clone(&statement)));
@@ -119,8 +119,8 @@ fn prove_once(
     let (piop, claim) = prove_spartan_piop(
         &mut prover,
         &statement.matrices,
-        statement.products.clone(),
-        statement.assignment.clone(),
+        &statement.products,
+        &statement.assignment,
     )
     .unwrap();
     let proof = prover.finish();
@@ -145,13 +145,13 @@ fn prove(bencher: Bencher, blocks: usize) {
     let statement = &*statement(blocks);
 
     // Sanity check
-    let (proof, piop, claim) = prove_once(&statement);
-    let claim2 = verify_once(&statement, &proof, &piop);
+    let (proof, piop, claim) = prove_once(statement);
+    let claim2 = verify_once(statement, &proof, &piop);
     assert_eq!(claim, claim2, "prover and verifier disagree on the claim");
     claim.nonsuccinct_verify(&statement.assignment).unwrap();
 
     bencher.bench_local(|| {
-        let result = prove_once(&statement);
+        let result = prove_once(statement);
         black_box(result)
     });
 }
@@ -160,15 +160,15 @@ fn prove(bencher: Bencher, blocks: usize) {
 fn verify(bencher: Bencher, blocks: usize) {
     let statement = &*statement(blocks);
 
-    let (proof, piop, claim) = prove_once(&statement);
+    let (proof, piop, claim) = prove_once(statement);
 
     // Sanity check
-    let claim2 = verify_once(&statement, &proof, &piop);
+    let claim2 = verify_once(statement, &proof, &piop);
     assert_eq!(claim, claim2, "prover and verifier disagree on the claim");
     claim.nonsuccinct_verify(&statement.assignment).unwrap();
 
     bencher.bench_local(|| {
-        let result = verify_once(&statement, &proof, &piop);
+        let result = verify_once(statement, &proof, &piop);
         black_box(result)
     });
 }
