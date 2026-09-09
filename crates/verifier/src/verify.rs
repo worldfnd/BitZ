@@ -84,7 +84,7 @@ fn gkr_reduce(transcript: &mut VerifierState, fold: &Fold) -> Option<(F128, Vec<
         .row_images
         .iter()
         .zip(poly::eq_table(&alfa_b))
-        .map(|(a, b)| *a * b) // Does the later step benefit from wide mul?
+        .map(|(a, b)| (*a - F128::ONE) * b) // Does the later step benefit from wide mul?
         .collect();
     let u2 = poly::eq_table(&alfa_c);
     Some((inner_product_claim, u1, u2))
