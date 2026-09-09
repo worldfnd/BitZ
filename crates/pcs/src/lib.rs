@@ -95,7 +95,6 @@ mod inner_product;
 mod ligerito;
 mod mle;
 mod opening;
-mod utils;
 
 use field::F128;
 use transcript::{ProverState, VerifierState};
