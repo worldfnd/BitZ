@@ -5,6 +5,7 @@ use field::{F128, Fq};
 use pcs::{CommitScheme, Pcs, ProveError as OpeningProveError, ProverData, StatementBinding};
 use std::collections::VecDeque;
 
+use common::Fold;
 use gkr::{GrandProductCircuit, gpgkr_prove};
 use num_traits::{ConstOne, identities::Zero};
 use transcript::ProverState;
@@ -45,9 +46,9 @@ pub trait Reduction<const Q: u128> {
 /// Stands in for #8: runs the grand-product circuit and its sumcheck, but
 /// does not yet turn the resulting claim into a discharged [`OpeningQuery`].
 #[derive(Debug, Default, Clone, Copy)]
-pub struct GkrReduction;
+pub struct Reduce;
 
-impl<const Q: u128> Reduction<Q> for GkrReduction {
+impl<const Q: u128> Reduction<Q> for Reduce {
     type Error = ();
 
     fn reduce(
@@ -58,39 +59,43 @@ impl<const Q: u128> Reduction<Q> for GkrReduction {
     ) -> Result<OpeningQuery, Self::Error> {
         let fold = input.fold;
 
-        // build input based on row_image and the bit table.
-        let dim = table.shape().columns() * table.shape().rows();
-        let mut leafs: Vec<_> = vec![F128::zero(); dim];
-
-        // Do not have to do a bit reverse here, but can do it at the end on the new value
-        for b in 0..table.shape().rows() {
-            for c in 0..table.shape().columns() {
-                leafs[b * table.shape().columns() + c] = if table.bit(c, b) {
-                    fold.row_images[b]
-                } else {
-                    F128::ONE
-                };
-            }
-        }
-
-        let circuit = GrandProductCircuit::new(leafs);
-        let (_last_value, witnesses) = circuit.batched_eval(table.shape().columns());
-
-        // First point is only the c so that should be fine.
-        let mut point = fold.zeta.clone();
-        // Doesn't have to actually reverse can also take a reverse iterator.
-        point.reverse();
-
-        let point = VecDeque::from(point);
-        // Should equal to the same thing after reversing the points
-        // debug_assert_eq!(fold.e0, gkr::mle(last_value, &point));
-
-        let (_point, _gkr_claim) = gpgkr_prove(transcript, point, witnesses);
+        gkr_reduce(transcript, fold, table);
 
         // TODO(#8): turn the sumcheck's output claim into a discharged `OpeningQuery`.
         // Alex / Sina
         todo!("#8")
     }
+}
+
+fn gkr_reduce(
+    transcript: &mut ProverState,
+    fold: &Fold,
+    table: &BitTable,
+) -> (VecDeque<F128>, F128) {
+    let dim = table.shape().columns() * table.shape().rows();
+    let mut leafs: Vec<_> = vec![F128::zero(); dim];
+
+    // TODO optimisation: Handle the leafs and the two layers above it lazily.
+    for b in 0..table.shape().rows() {
+        for c in 0..table.shape().columns() {
+            leafs[b * table.shape().columns() + c] = if table.bit(c, b) {
+                fold.row_images[b]
+            } else {
+                F128::ONE
+            };
+        }
+    }
+
+    let circuit = GrandProductCircuit::new(leafs);
+    let (_last_value, witnesses) = circuit.batched_eval(table.shape().columns());
+
+    // gkr prover uses LSB order while zeta is in MSB
+    // point is less than 25 elements.
+    let mut point = fold.zeta.clone();
+    point.reverse();
+    let point = VecDeque::from(point);
+
+    gpgkr_prove(transcript, point, witnesses)
 }
 
 impl<const Q: u128> BitZProver<Q> {
