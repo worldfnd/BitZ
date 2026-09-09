@@ -33,7 +33,7 @@ impl<const Q: u128> F2ZProver<Q> {
     /// where a length-delimited vector record would belong.
     pub fn send_fold(
         &self,
-        claim: &LinearClaim<Q>,
+        claim: &LinearClaim<field::Fq<Q>>,
         table: &BitTable<'_>,
         transcript: &mut ProverState,
     ) -> Result<Fold, SendError> {

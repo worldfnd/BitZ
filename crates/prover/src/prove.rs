@@ -48,7 +48,7 @@ impl<const Q: u128> F2ZProver<Q> {
     /// arrives carrying the caller's events; this appends and hands it back.
     pub fn prove<R: Reduction<Q>>(
         &self,
-        claim: &LinearClaim<Q>,
+        claim: &LinearClaim<field::Fq<Q>>,
         pcs: &Pcs,
         data: &ProverData,
         packed: Vec<F128>,

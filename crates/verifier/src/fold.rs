@@ -35,7 +35,7 @@ impl<const Q: u128> F2ZVerifier<Q> {
     /// challenge, which must not be reachable until both have passed.
     pub fn receive_fold(
         &self,
-        claim: &LinearClaim<Q>,
+        claim: &LinearClaim<field::Fq<Q>>,
         transcript: &mut VerifierState<'_>,
     ) -> Result<Fold, ReceiveError> {
         let shape = self.params().shape();

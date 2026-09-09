@@ -14,7 +14,7 @@ use crate::{F2ZParams, Fold, LinearClaim, Root};
 #[derive(Clone, Copy)]
 pub struct ReductionInput<'a, const Q: u128> {
     pub params: &'a F2ZParams<Q>,
-    pub claim: &'a LinearClaim<Q>,
+    pub claim: &'a LinearClaim<field::Fq<Q>>,
     pub commitment: Root,
     pub fold: &'a Fold,
 }

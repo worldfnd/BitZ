@@ -39,7 +39,7 @@ impl<const Q: u128> F2ZVerifier<Q> {
     /// arrives carrying the caller's events; this appends and consumes it.
     pub fn verify<R: Reduction<Q>>(
         &self,
-        claim: &LinearClaim<Q>,
+        claim: &LinearClaim<field::Fq<Q>>,
         pcs: &Pcs,
         com: Root,
         reduction: &R,

@@ -5,6 +5,8 @@
 
 use field::F128;
 
+use crate::LinearClaim;
+
 /// A linear opening claim over the original committed bits.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OpeningQuery {
@@ -15,12 +17,10 @@ pub enum OpeningQuery {
         /// The claimed multilinear evaluation at `point`.
         target: F128,
     },
-    /// An arbitrary `F128` inner-product claim.
+    /// An inner-product claim with factored weights over `F128`.
     InnerProduct {
-        /// One weight for each original bit, in commitment index order.
-        weights: Vec<F128>,
-        /// The claimed inner product.
-        target: F128,
+        /// The row weights, column weights, and claimed target.
+        claim: LinearClaim<F128>,
     },
 }
 

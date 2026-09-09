@@ -23,6 +23,8 @@ pub enum ClaimError {
 
 /// The caller's `x_core`: the weights and the value they are claimed to give.
 ///
+/// F2Z uses `LinearClaim<Fq<Q>>`; opening queries use `LinearClaim<field::F128>`.
+/// The following F2Z requirements apply to the `Fq<Q>` input claim.
 /// F2Z verifies nothing upstream of this. The caller runs its own PIOP, and
 /// establishes that its claim holds, that `q` is prime, and that the
 /// coefficient factors as `v = v^(1) (x) v^(2)`. A claim whose coefficient
@@ -31,13 +33,13 @@ pub enum ClaimError {
 ///
 /// The parameters live in [`F2ZParams`]; this is only the claim against them.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LinearClaim<const Q: u128> {
-    row_weights: Vec<Fq<Q>>,
-    column_weights: Vec<Fq<Q>>,
-    target: Fq<Q>,
+pub struct LinearClaim<F> {
+    row_weights: Vec<F>,
+    column_weights: Vec<F>,
+    target: F,
 }
 
-impl<const Q: u128> LinearClaim<Q> {
+impl<const Q: u128> LinearClaim<Fq<Q>> {
     /// Checks the weights against `config` and returns the claim.
     ///
     /// `row_weights` is `v^(1)`, one element per row; `column_weights` is
@@ -108,7 +110,7 @@ mod tests {
         F2ZParams::new(Shape::new(7, 15).unwrap(), smallest_generator()).unwrap()
     }
 
-    fn claim(row_weights: Vec<Fq<Q114>>) -> Result<LinearClaim<Q114>, ClaimError> {
+    fn claim(row_weights: Vec<Fq<Q114>>) -> Result<LinearClaim<Fq<Q114>>, ClaimError> {
         let params = params();
         LinearClaim::new(
             &params,

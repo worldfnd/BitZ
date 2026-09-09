@@ -32,7 +32,7 @@ pub struct Instance {
     pub params: F2ZParams<Q>,
     pub prover: prover::F2ZProver<Q>,
     pub verifier: verifier::F2ZVerifier<Q>,
-    pub claim: LinearClaim<Q>,
+    pub claim: LinearClaim<field::Fq<Q>>,
     pub pcs: Pcs,
     pub com: Root,
     pub data: ProverData,
@@ -95,7 +95,7 @@ impl Instance {
     }
 
     /// The same instance under a different claimed value.
-    pub fn with_target(&self, target: Fq<Q>) -> LinearClaim<Q> {
+    pub fn with_target(&self, target: Fq<Q>) -> LinearClaim<field::Fq<Q>> {
         LinearClaim::new(
             &self.params,
             self.claim.row_weights().to_vec(),
