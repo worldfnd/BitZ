@@ -8,6 +8,7 @@ use field::{FqDefault, Q100};
 use num_bigint::{BigInt, BigUint};
 use num_traits::{Signed, ToPrimitive};
 use poly::DenseMultilinearExtension;
+use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 use transcript::Encoding;
 
@@ -30,15 +31,67 @@ pub enum SpartanMatrixError {
 /// Immutable field-valued constraint matrices prepared for repeated Spartan
 /// proofs and verification.
 ///
-/// Shape validation, Boolean-domain sizing, and canonical statement hashing
-/// are performed once during construction rather than inside the prover or
-/// verifier.
+/// Shape validation, Boolean-domain sizing, canonical statement hashing and
+/// the column chunking are performed once during construction rather than
+/// inside the prover or verifier.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreparedConstraintMatrices<F> {
     matrices: ConstraintMatrices<F>,
+    /// Nonzeros of `a`, `b` and `c` grouped by column chunk.
+    column_chunks: [ColumnChunkIndex; 3],
     digest: [u8; 32],
     num_row_vars: usize,
     num_column_vars: usize,
+}
+
+/// `bind_and_batch` splits the column domain into chunks of `2^16` columns and
+/// accumulates each chunk on its own thread.
+/// A chunk's slice of the dense table fits in cache.
+const BIND_CHUNK_COLUMN_VARS: usize = 16;
+
+/// The nonzeros of one sparse matrix grouped by column chunk.
+///
+/// Chunk `c` owns columns `[c * chunk_len, (c + 1) * chunk_len)` and lists
+/// the entries of every row that fall into it, in row order. The thread
+/// accumulating chunk `c` reads only these entries and writes only these
+/// columns, so threads never share a column.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ColumnChunkIndex {
+    chunk_len: usize,
+    spans: Vec<Vec<RowSpan>>,
+}
+
+/// The entries `[start, end)` of row `row`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RowSpan {
+    row: usize,
+    start: usize,
+    end: usize,
+}
+
+impl ColumnChunkIndex {
+    /// Groups `matrix` into `chunk_count` chunks of `chunk_len` columns.
+    fn new<C>(matrix: &SparseMatrix<C>, chunk_len: usize, chunk_count: usize) -> Self {
+        debug_assert!(chunk_len.is_power_of_two());
+        debug_assert!(chunk_len * chunk_count >= matrix.column_count());
+
+        let mut spans = vec![Vec::new(); chunk_count];
+        for (row, entries) in matrix.rows().iter().enumerate() {
+            let entries = entries.entries();
+            let mut start = 0;
+            while start < entries.len() {
+                // Columns increase within a row, so a chunk's entries are a
+                // contiguous run.
+                let chunk = entries[start].0 / chunk_len;
+                let end = start
+                    + entries[start..].partition_point(|(column, _)| column / chunk_len == chunk);
+                spans[chunk].push(RowSpan { row, start, end });
+                start = end;
+            }
+        }
+
+        Self { chunk_len, spans }
+    }
 }
 
 impl<F> PreparedConstraintMatrices<F>
@@ -47,10 +100,18 @@ where
 {
     pub fn new(matrices: ConstraintMatrices<F>) -> Result<Self, SpartanMatrixError> {
         let (num_row_vars, num_column_vars) = r1cs_num_vars(&matrices)?;
+
+        let num_columns = 1_usize << num_column_vars;
+        let chunk_len = num_columns.min(1_usize << BIND_CHUNK_COLUMN_VARS);
+        let chunk_count = num_columns / chunk_len;
+
+        let column_chunks = [&matrices.a, &matrices.b, &matrices.c]
+            .map(|matrix| ColumnChunkIndex::new(matrix, chunk_len, chunk_count));
         let digest = constraint_matrix_digest(&matrices)?;
 
         Ok(Self {
             matrices,
+            column_chunks,
             digest,
             num_row_vars,
             num_column_vars,
@@ -161,7 +222,9 @@ where
 {
     /// Constructs
     ///
-    /// `D(j) = sum_i eq(i,r_x) (A[i,j] + rho B[i,j] + rho^2 C[i,j])`.
+    /// `D(j) = sum_i eq(i,r_x) (A[i,j] + rho B[i,j] + rho^2 C[i,j])`
+    ///
+    /// as a dense table over the column domain, one column chunk per task.
     pub fn bind_and_batch(
         &self,
         row_point: &[F],
@@ -169,6 +232,7 @@ where
     ) -> Result<DenseMultilinearExtension<F>, SpartanMatrixError> {
         bind_and_batch_with_num_vars(
             &self.matrices,
+            &self.column_chunks,
             row_point,
             rho,
             self.num_row_vars,
@@ -201,6 +265,7 @@ where
 
 fn bind_and_batch_with_num_vars<F>(
     matrices: &ConstraintMatrices<F>,
+    column_chunks: &[ColumnChunkIndex; 3],
     row_point: &[F],
     rho: F,
     num_row_vars: usize,
@@ -217,20 +282,33 @@ where
     }
 
     let row_weights = poly::eq_table(row_point);
-    let mut evaluations = vec![F::ZERO; 1usize << num_column_vars];
+    let batched = [
+        (&matrices.a, &column_chunks[0], F::ONE),
+        (&matrices.b, &column_chunks[1], rho),
+        (&matrices.c, &column_chunks[2], rho * rho),
+    ];
+    let chunk_len = column_chunks[0].chunk_len;
 
-    for (matrix, batch_scale) in [
-        (&matrices.a, F::ONE),
-        (&matrices.b, rho),
-        (&matrices.c, rho * rho),
-    ] {
-        for (row_index, row) in matrix.rows().iter().enumerate() {
-            let row_scale = row_weights[row_index] * batch_scale;
-            for &(column, coefficient) in row.entries() {
-                evaluations[column] += row_scale * coefficient;
+    // Every task owns one column chunk of the table and touches only the
+    // nonzeros landing in it: no two tasks write the same column, and each
+    // task's writes stay within a cache-sized slice.
+    let mut evaluations: Vec<F> =
+        rayon::iter::repeat_n(F::ZERO, 1usize << num_column_vars).collect();
+    evaluations
+        .par_chunks_mut(chunk_len)
+        .enumerate()
+        .for_each(|(chunk, output)| {
+            let base = chunk * chunk_len;
+            for (matrix, index, batch_scale) in batched {
+                for span in &index.spans[chunk] {
+                    let row_scale = row_weights[span.row] * batch_scale;
+                    let entries = &matrix.rows()[span.row].entries()[span.start..span.end];
+                    for &(column, coefficient) in entries {
+                        output[column - base] += row_scale * coefficient;
+                    }
+                }
             }
-        }
-    }
+        });
 
     DenseMultilinearExtension::from_evaluations(num_column_vars, evaluations)
         .map_err(|_| SpartanMatrixError::InvalidMleOperation)

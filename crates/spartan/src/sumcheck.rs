@@ -484,7 +484,7 @@ where
         // scan of the folded tables. The final iteration has no next polynomial,
         // so it only interpolates the last pair in each table.
         let mut coefficients_without_linear =
-            sum_inner_round_coefficients_without_linear(&batched_matrix, &witness_mle);
+            sum_inner_round_coefficients_without_linear(&batched_matrix, witness_mle);
 
         for round in 0..num_vars {
             let challenge = recover_full_round_polynomial_and_sample_next_challenge(
