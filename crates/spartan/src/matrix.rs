@@ -254,6 +254,7 @@ where
     ) -> Result<F, SpartanMatrixError> {
         evaluate_batched_with_num_vars(
             &self.matrices,
+            &self.column_chunks,
             row_point,
             rho,
             column_point,
@@ -316,6 +317,7 @@ where
 
 fn evaluate_batched_with_num_vars<F>(
     matrices: &ConstraintMatrices<F>,
+    column_chunks: &[ColumnChunkIndex; 3],
     row_point: &[F],
     rho: F,
     column_point: &[F],
@@ -339,21 +341,40 @@ where
     }
 
     let row_weights = poly::eq_table(row_point);
-    let column_weights = poly::eq_table(column_point);
-    let mut evaluation = F::ZERO;
+    let batched = [
+        (&matrices.a, &column_chunks[0], F::ONE),
+        (&matrices.b, &column_chunks[1], rho),
+        (&matrices.c, &column_chunks[2], rho * rho),
+    ];
 
-    for (matrix, batch_scale) in [
-        (&matrices.a, F::ONE),
-        (&matrices.b, rho),
-        (&matrices.c, rho * rho),
-    ] {
-        for (row_index, row) in matrix.rows().iter().enumerate() {
-            for &(column, coefficient) in row.entries() {
-                evaluation +=
-                    batch_scale * row_weights[row_index] * column_weights[column] * coefficient;
+    // All tasks share one cache-sized `low` table and a per-chunk factor.
+    // Each task reduces one column chunk of nonzeros to a single field element.
+    let chunk_len = column_chunks[0].chunk_len;
+    let (low_point, high_point) = column_point.split_at(chunk_len.ilog2() as usize);
+    let low_weights = poly::eq_table(low_point);
+    let high_weights = poly::eq_table(high_point);
+    debug_assert_eq!(high_weights.len(), column_chunks[0].spans.len());
+
+    let evaluation = high_weights
+        .par_iter()
+        .enumerate()
+        .map(|(chunk, &chunk_weight)| {
+            let base = chunk * chunk_len;
+            let mut chunk_sum = F::ZERO;
+            for (matrix, index, batch_scale) in batched {
+                let mut matrix_sum = F::ZERO;
+                for span in &index.spans[chunk] {
+                    let entries = &matrix.rows()[span.row].entries()[span.start..span.end];
+                    let span_sum = entries.iter().fold(F::ZERO, |sum, &(column, coefficient)| {
+                        sum + low_weights[column - base] * coefficient
+                    });
+                    matrix_sum += row_weights[span.row] * span_sum;
+                }
+                chunk_sum += batch_scale * matrix_sum;
             }
-        }
-    }
+            chunk_weight * chunk_sum
+        })
+        .reduce(|| F::ZERO, |left, right| left + right);
 
     Ok(evaluation)
 }
@@ -462,4 +483,129 @@ fn modular_vector_mle(
 
     DenseMultilinearExtension::from_evaluations(num_vars, evaluations)
         .map_err(|_| SpartanMatrixError::InvalidMleOperation)
+}
+
+#[cfg(test)]
+mod tests {
+    use circuit::constraints::{ConstraintMatrices, SparseBoolMatrix, SparseMatrix};
+    use field::FqDefault;
+    use rand::{Rng, SeedableRng};
+    use rand_pcg::Pcg64;
+
+    use super::{BIND_CHUNK_COLUMN_VARS, PreparedConstraintMatrices};
+
+    /// Three chunks of columns plus one chunk of padding, so rows straddle
+    /// chunk boundaries and the last chunk holds no nonzeros.
+    const COLUMNS: usize = 3 << BIND_CHUNK_COLUMN_VARS;
+    const ROWS: usize = 37;
+    const ENTRIES_PER_ROW: usize = 24;
+
+    fn random_sparse_matrix(rng: &mut Pcg64) -> SparseMatrix<FqDefault> {
+        let rows = (0..ROWS)
+            .map(|_| {
+                let mut columns: Vec<usize> = (0..ENTRIES_PER_ROW)
+                    .map(|_| rng.random_range(0..COLUMNS))
+                    .collect();
+                columns.sort_unstable();
+                columns.dedup();
+                columns
+                    .into_iter()
+                    .map(|column| (column, FqDefault::from(u128::from(rng.random::<u64>()))))
+                    .collect()
+            })
+            .collect();
+        SparseMatrix::try_from_rows(COLUMNS, rows).unwrap()
+    }
+
+    fn random_prepared_matrices(rng: &mut Pcg64) -> PreparedConstraintMatrices<FqDefault> {
+        let m = SparseBoolMatrix::try_from_rows(1, vec![Vec::new(); COLUMNS]).unwrap();
+        let a = random_sparse_matrix(rng);
+        let b = random_sparse_matrix(rng);
+        let c = random_sparse_matrix(rng);
+        PreparedConstraintMatrices::new(ConstraintMatrices { m, a, b, c }).unwrap()
+    }
+
+    fn random_point(rng: &mut Pcg64, len: usize) -> Vec<FqDefault> {
+        (0..len)
+            .map(|_| FqDefault::from(u128::from(rng.random::<u64>())))
+            .collect()
+    }
+
+    /// `D(r_y)` by the direct triple loop over every nonzero.
+    fn reference_evaluation(
+        matrices: &ConstraintMatrices<FqDefault>,
+        row_point: &[FqDefault],
+        rho: FqDefault,
+        column_point: &[FqDefault],
+    ) -> FqDefault {
+        let row_weights = poly::eq_table(row_point);
+        let column_weights = poly::eq_table(column_point);
+        let mut evaluation = FqDefault::from(0u128);
+        for (matrix, batch_scale) in [
+            (&matrices.a, FqDefault::from(1u128)),
+            (&matrices.b, rho),
+            (&matrices.c, rho * rho),
+        ] {
+            for (row, entries) in matrix.rows().iter().enumerate() {
+                for &(column, coefficient) in entries.entries() {
+                    evaluation +=
+                        batch_scale * row_weights[row] * column_weights[column] * coefficient;
+                }
+            }
+        }
+        evaluation
+    }
+
+    #[test]
+    fn column_chunks_partition_every_row() {
+        let mut rng = Pcg64::seed_from_u64(7);
+        let prepared = random_prepared_matrices(&mut rng);
+        let matrices = prepared.matrices();
+
+        for (matrix, index) in [&matrices.a, &matrices.b, &matrices.c]
+            .into_iter()
+            .zip(&prepared.column_chunks)
+        {
+            let mut spans: Vec<_> = index
+                .spans
+                .iter()
+                .enumerate()
+                .flat_map(|(chunk, spans)| spans.iter().map(move |span| (chunk, *span)))
+                .collect();
+            spans.sort_by_key(|(_, span)| (span.row, span.start));
+
+            let mut spans = spans.into_iter().peekable();
+            for (row, entries) in matrix.rows().iter().enumerate() {
+                let mut next_start = 0;
+                while let Some((chunk, span)) = spans.next_if(|(_, span)| span.row == row) {
+                    assert_eq!(span.start, next_start);
+                    assert!(span.end > span.start);
+                    for &(column, _) in &entries.entries()[span.start..span.end] {
+                        assert_eq!(column / index.chunk_len, chunk);
+                    }
+                    next_start = span.end;
+                }
+                assert_eq!(next_start, entries.entries().len());
+            }
+            assert!(spans.next().is_none());
+        }
+    }
+
+    #[test]
+    fn evaluate_batched_matches_reference_and_bound_table() {
+        let mut rng = Pcg64::seed_from_u64(11);
+        let prepared = random_prepared_matrices(&mut rng);
+        let row_point = random_point(&mut rng, prepared.num_row_vars());
+        let column_point = random_point(&mut rng, prepared.num_column_vars());
+        let rho = FqDefault::from(u128::from(rng.random::<u64>()));
+
+        let expected = reference_evaluation(prepared.matrices(), &row_point, rho, &column_point);
+        let evaluation = prepared
+            .evaluate_batched(&row_point, rho, &column_point)
+            .unwrap();
+        assert_eq!(evaluation, expected);
+
+        let bound = prepared.bind_and_batch(&row_point, rho).unwrap();
+        assert_eq!(bound.evaluate(&column_point).unwrap(), expected);
+    }
 }
