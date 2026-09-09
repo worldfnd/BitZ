@@ -3,6 +3,7 @@
 //! Query modules derive one packed basis and target through their ring switch.
 //! This module validates the prover input and runs the common opening protocol.
 
+use bincode::Options;
 use field::F128;
 use flock_core::field::F128 as FlockF128;
 use flock_core::pcs::LOG_PACKING;
@@ -15,8 +16,9 @@ use transcript::{ProverState, VerifierState};
 
 use crate::bridge::into_flock_f128s;
 use crate::challenger::{ProverChallenger, VerifierChallenger};
-use crate::utils::{read_opening_proof, write_opening_proof};
 use crate::{ConfigError, Pcs, ProveError, ProverData, Root, VerifyError};
+
+const PROOF_HINT_LIMIT: usize = 64 * 1024 * 1024;
 
 #[derive(Clone, Debug)]
 pub(crate) struct CheckedLigerito {
@@ -454,13 +456,92 @@ fn positive_fold_nonce_count(config: &VerifierConfig) -> Result<usize, VerifyErr
         .ok_or(VerifyError::Internal)
 }
 
+fn write_opening_proof(
+    proof: &LigeritoProof,
+    transcript: &mut ProverState,
+) -> Result<(), ProveError> {
+    let proof_bytes = proof_options()
+        .serialize(proof)
+        .map_err(map_serialization_error)?;
+    transcript.hint_bytes(&proof_bytes);
+    Ok(())
+}
+
+fn read_opening_proof(transcript: &mut VerifierState<'_>) -> Result<LigeritoProof, VerifyError> {
+    let proof_bytes = transcript
+        .hint_bytes(PROOF_HINT_LIMIT)
+        .map_err(|_| VerifyError::MalformedProof)?;
+    proof_options()
+        .deserialize(&proof_bytes)
+        .map_err(|_| VerifyError::MalformedProof)
+}
+
+fn map_serialization_error(error: bincode::Error) -> ProveError {
+    if matches!(error.as_ref(), bincode::ErrorKind::SizeLimit) {
+        ProveError::ProofTooLarge
+    } else {
+        ProveError::SerializationFailed
+    }
+}
+
+fn proof_options() -> impl Options {
+    bincode::DefaultOptions::new()
+        .with_fixint_encoding()
+        .with_limit(PROOF_HINT_LIMIT as u64)
+        .reject_trailing_bytes()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{CommitScheme, HashKind, LigeritoProfile, OpeningQuery, StatementBinding};
     use common::Shape;
     use flock_core::pcs::LOG_PACKING;
-    use transcript::{build_prover, build_verifier};
+    use transcript::{NargSerialize, Proof, build_prover, build_verifier};
+
+    #[test]
+    fn proof_serialization_errors_are_specific() {
+        assert_eq!(
+            map_serialization_error(Box::new(bincode::ErrorKind::SizeLimit)),
+            ProveError::ProofTooLarge
+        );
+        assert_eq!(
+            map_serialization_error(Box::new(bincode::ErrorKind::Custom(
+                "serialization failed".to_owned(),
+            ))),
+            ProveError::SerializationFailed
+        );
+    }
+
+    #[test]
+    fn opening_proof_reader_rejects_malformed_bytes() {
+        let mut prover = build_prover(b"pcs-protocol-test", b"malformed-proof");
+        prover.hint_bytes(&[0xff]);
+        let proof = prover.finish();
+        let mut verifier = build_verifier(b"pcs-protocol-test", b"malformed-proof", &proof);
+
+        assert_eq!(
+            read_opening_proof(&mut verifier),
+            Err(VerifyError::MalformedProof)
+        );
+    }
+
+    #[test]
+    fn opening_proof_reader_rejects_an_oversized_hint() {
+        let oversized = u32::try_from(PROOF_HINT_LIMIT + 1).unwrap();
+        let mut hints = Vec::new();
+        oversized.serialize_into_narg(&mut hints);
+        let proof = Proof {
+            narg_string: Vec::new(),
+            hints,
+        };
+        let mut verifier = build_verifier(b"pcs-protocol-test", b"oversized-proof", &proof);
+
+        assert_eq!(
+            read_opening_proof(&mut verifier),
+            Err(VerifyError::MalformedProof)
+        );
+    }
 
     fn registered_config() -> (VerifierConfig, usize, usize) {
         let shape = Shape::new(7, 15).unwrap();
