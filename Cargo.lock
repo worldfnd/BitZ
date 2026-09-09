@@ -1630,7 +1630,9 @@ dependencies = [
  "common",
  "field",
  "gkr",
+ "num-traits",
  "pcs",
+ "poly",
  "transcript",
 ]
 
