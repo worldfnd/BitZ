@@ -17,6 +17,11 @@ sha2 = "0.10"
 transcript = { path = "../transcript" }
 
 [dev-dependencies]
+divan = { workspace = true }
 field = { path = "../field", features = ["rand"] }
 rand = "0.9"
 rand_pcg = "0.9"
+
+[[bench]]
+name = "sha256"
+harness = false
