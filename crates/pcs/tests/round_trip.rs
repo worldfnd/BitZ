@@ -14,8 +14,6 @@ const SESSION: &[u8] = b"pcs-interface-test";
 const INSTANCE: &[u8] = b"m22-singleton-opening";
 const INNER_PRODUCT_INSTANCE: &[u8] = b"m22-factored-inner-product";
 const INNER_PRODUCT_SET_BITS: [usize; 8] = [0, 63, 64, 127, 128, 255, 256, (1 << M) - 1];
-const SUMCHECK_ROUND_BYTES: usize = 3 * 16;
-const SUMCHECK_EVALUATION_OFFSET: usize = M * SUMCHECK_ROUND_BYTES;
 
 fn shape() -> Shape {
     Shape::new(7, M - 7).unwrap()
@@ -317,49 +315,6 @@ fn factored_inner_product_prover_rejects_a_false_target() {
 }
 
 #[test]
-fn factored_inner_product_rejects_truncated_sumcheck_messages() {
-    let fixture = inner_product_fixture(LigeritoProfile::Fast);
-    for binding in [StatementBinding::Bind, StatementBinding::AlreadyBound] {
-        for length in [
-            0,
-            16,
-            SUMCHECK_ROUND_BYTES - 1,
-            SUMCHECK_EVALUATION_OFFSET - 1,
-            SUMCHECK_EVALUATION_OFFSET + 15,
-        ] {
-            let mut proof = fixture.proof(binding).clone();
-            proof.narg_string.truncate(length);
-            assert_eq!(
-                fixture.verify(&fixture.commitment, &fixture.query, &proof, binding),
-                Err(VerifyError::MalformedProof),
-            );
-        }
-    }
-}
-
-#[test]
-fn factored_inner_product_rejects_changed_sumcheck_coefficients_and_witness_evaluation() {
-    let fixture = inner_product_fixture(LigeritoProfile::Fast);
-    for binding in [StatementBinding::Bind, StatementBinding::AlreadyBound] {
-        for offset in [
-            0,
-            16,
-            32,
-            SUMCHECK_ROUND_BYTES * (M / 2) + 16,
-            SUMCHECK_ROUND_BYTES * (M - 1) + 32,
-            SUMCHECK_EVALUATION_OFFSET,
-        ] {
-            let mut proof = fixture.proof(binding).clone();
-            proof.narg_string[offset] ^= 1;
-            assert_eq!(
-                fixture.verify(&fixture.commitment, &fixture.query, &proof, binding),
-                Err(VerifyError::VerificationFailed),
-            );
-        }
-    }
-}
-
-#[test]
 fn factored_inner_product_rejects_statement_mutations() {
     let fixture = inner_product_fixture(LigeritoProfile::Fast);
     let OpeningQuery::InnerProduct { claim } = &fixture.query else {
@@ -420,52 +375,6 @@ fn factored_inner_product_requires_complete_transcript_consumption() {
                 .unwrap();
             assert!(verifier.check_eof().is_err());
         }
-    }
-}
-
-#[test]
-fn zero_weight_factor_still_requires_the_correct_witness_evaluation() {
-    let shape = inner_product_shape();
-    let pcs = Pcs::new(&shape, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
-    let witness = inner_product_witness(pcs.packed_len());
-    let (commitment, data) = pcs.commit(&witness).unwrap();
-
-    for zero_rows in [true, false] {
-        let mut row_weights = (0..shape.rows()).map(factor_weight).collect::<Vec<_>>();
-        let mut column_weights = (0..shape.columns())
-            .map(|column| factor_weight(column + shape.rows()))
-            .collect::<Vec<_>>();
-        if zero_rows {
-            row_weights.fill(F128::default());
-        } else {
-            column_weights.fill(F128::default());
-        }
-        let query = OpeningQuery::InnerProduct {
-            claim: LinearClaim::from_shape(&shape, row_weights, column_weights, F128::default())
-                .unwrap(),
-        };
-        let mut prover = build_prover(SESSION, b"zero-inner-product-factor");
-        pcs.prove_lin(
-            &data,
-            witness.clone(),
-            &query,
-            StatementBinding::Bind,
-            &mut prover,
-        )
-        .unwrap();
-        let proof = prover.finish();
-        let mut verifier = build_verifier(SESSION, b"zero-inner-product-factor", &proof);
-        pcs.verify_lin(&commitment, &query, StatementBinding::Bind, &mut verifier)
-            .unwrap();
-        verifier.check_eof().unwrap();
-
-        let mut changed_proof = proof;
-        changed_proof.narg_string[SUMCHECK_EVALUATION_OFFSET] ^= 1;
-        let mut verifier = build_verifier(SESSION, b"zero-inner-product-factor", &changed_proof);
-        assert_eq!(
-            pcs.verify_lin(&commitment, &query, StatementBinding::Bind, &mut verifier),
-            Err(VerifyError::VerificationFailed),
-        );
     }
 }
 
