@@ -2,30 +2,14 @@ use std::collections::VecDeque;
 
 use field::{F128, Wide256};
 use num_traits::{ConstOne, ConstZero};
-use poly::DenseMultilinearExtension;
 use rayon::prelude::*;
 use transcript::{ProverState, VerifierState};
 
 pub type Field = F128;
 
-// TODO modify densemultilinearextension such that no point reversal nor collection is necessary
-pub fn mle(eval: Vec<Field>, rs: &Point) -> Field {
-    let num_vars = rs.len();
-    let mut point: Vec<Field> = rs.iter().cloned().collect();
-    point.reverse();
-
-    // TODO DenseMultilinearExtension::from_evaluations doesn't need a num_vars; it already checks based on evaluation size.
-    // Possibly we could even do zero padding, but that means memory allocation. Better to have a check beforehand for power of two.
-    // Direction should be a parameter
-    // TODO MLE should be able to handle empty point when given a single evaluation
-    DenseMultilinearExtension::from_evaluations(num_vars, eval)
-        .unwrap()
-        .evaluate(&point)
-        .unwrap()
-}
-
 type Point = VecDeque<Field>;
 
+#[must_use]
 pub fn gpgkr_prove(
     ps: &mut ProverState,
     mut point: Point,
@@ -186,6 +170,7 @@ impl SuffixTable {
 /// MLE-fold shape.
 const PARALLEL_MIN_LANES: usize = 1 << 12;
 
+#[must_use]
 pub fn gpgkr_verify(
     vs: &mut VerifierState,
     mut claim: Field,
@@ -460,5 +445,22 @@ mod tests {
             }
             None => false,
         }
+    }
+
+    use poly::DenseMultilinearExtension;
+    // TODO modify densemultilinearextension such that no point reversal nor collection is necessary
+    fn mle(eval: Vec<Field>, rs: &Point) -> Field {
+        let num_vars = rs.len();
+        let mut point: Vec<Field> = rs.iter().cloned().collect();
+        point.reverse();
+
+        // TODO DenseMultilinearExtension::from_evaluations doesn't need a num_vars; it already checks based on evaluation size.
+        // Possibly we could even do zero padding, but that means memory allocation. Better to have a check beforehand for power of two.
+        // Direction should be a parameter
+        // TODO MLE should be able to handle empty point when given a single evaluation
+        DenseMultilinearExtension::from_evaluations(num_vars, eval)
+            .unwrap()
+            .evaluate(&point)
+            .unwrap()
     }
 }
