@@ -5,8 +5,7 @@ use transcript::{ProverState, VerifierState};
 
 use crate::ligerito::{self, ReducedProver};
 use crate::utils::{
-    ClaimDomain, bind_inner_product_statement, bind_mle_statement, read_claims, sample_challenges,
-    write_claims,
+    bind_inner_product_statement, bind_mle_statement, read_claims, sample_challenges, write_claims,
 };
 use crate::{
     LigeritoProfile, OpeningQuery, Pcs, ProverData, Root, StatementBinding, inner_product, mle,
@@ -103,7 +102,7 @@ pub(crate) fn prove(
             }
 
             let prepared_claims = ring_switch.prepare_claims(prover.witness(), *target)?;
-            write_claims(transcript, ClaimDomain::Mle, &prepared_claims.claims);
+            write_claims(transcript, query, &prepared_claims.claims);
             let batching_point = sample_challenges(transcript);
             let dense_reduction = prepared_claims.reduce_dense(&batching_point);
             prover.prove(dense_reduction, transcript)
@@ -124,7 +123,7 @@ pub(crate) fn prove(
             }
 
             let claims = ring_switch.prepare_claims(prover.witness(), *target)?;
-            write_claims(transcript, ClaimDomain::InnerProduct, &claims);
+            write_claims(transcript, query, &claims);
             let batching_point = sample_challenges(transcript);
             let dense_reduction = ring_switch.reduce_dense(&claims, &batching_point);
             prover.prove(dense_reduction, transcript)
@@ -148,7 +147,7 @@ pub(crate) fn verify(
             }
 
             let proof = ligerito::read_proof(pcs, commitment, transcript)?;
-            let claims = read_claims(transcript, ClaimDomain::Mle)?;
+            let claims = read_claims(transcript, query)?;
             if !ring_switch.target_matches(&claims, *target) {
                 return Err(VerifyError::VerificationFailed);
             }
@@ -174,7 +173,7 @@ pub(crate) fn verify(
             }
 
             let proof = ligerito::read_proof(pcs, commitment, transcript)?;
-            let claims = read_claims(transcript, ClaimDomain::InnerProduct)?;
+            let claims = read_claims(transcript, query)?;
             let batching_point = sample_challenges(transcript);
             let dense_reduction = ring_switch.reduce_verified(&claims, *target, &batching_point)?;
             ligerito::verify_dense(pcs, commitment, &proof, dense_reduction, transcript)

@@ -1,45 +1,23 @@
-//! Shared proof transport and transcript rules for PCS openings.
-
-mod proof;
-
-use flock_core::field::F128 as FlockF128;
-use flock_core::pcs::pack::PACKING_WIDTH as CLAIM_COUNT;
-use transcript::{ProverState, VerifierState};
+//! Shared transcript rules for PCS openings.
 
 use crate::bridge::{as_flock_f128, from_flock_f128};
-use crate::{Pcs, VerifyError};
-
-pub(crate) use proof::{read_opening_proof, write_opening_proof};
+use crate::{OpeningQuery, Pcs, VerifyError};
+use flock_core::field::F128 as FlockF128;
+use flock_core::pcs::pack::PACKING_WIDTH as CLAIM_COUNT;
 pub(crate) use transcript::PublicTranscript;
+use transcript::{ProverState, VerifierState};
 
 const MLE_STATEMENT_LABEL: &[u8] = b"f2z/pcs/mle-opening/v1";
 const INNER_PRODUCT_STATEMENT_LABEL: &[u8] = b"f2z/pcs/bit-inner-product/v1";
-const MLE_CLAIMS_LABEL: &[u8] = b"f2z/pcs/mle-claims/v1";
-const INNER_PRODUCT_CLAIMS_LABEL: &[u8] = b"f2z/pcs/bit-inner-product-claims/v1";
 const CHALLENGES_LABEL: &[u8] = b"f2z/pcs/ring-switch-challenges/v1";
-
-#[derive(Clone, Copy)]
-pub(crate) enum ClaimDomain {
-    Mle,
-    InnerProduct,
-}
-
-impl ClaimDomain {
-    fn label(self) -> &'static [u8] {
-        match self {
-            Self::Mle => MLE_CLAIMS_LABEL,
-            Self::InnerProduct => INNER_PRODUCT_CLAIMS_LABEL,
-        }
-    }
-}
 
 /// Writes one fixed ring-switch claim array.
 pub(crate) fn write_claims(
     transcript: &mut ProverState,
-    domain: ClaimDomain,
+    query: &OpeningQuery,
     claims: &[FlockF128; CLAIM_COUNT],
 ) {
-    transcript.public_message(domain.label());
+    transcript.public_message(query.label());
     let claims: [field::F128; CLAIM_COUNT] =
         core::array::from_fn(|index| from_flock_f128(claims[index]));
     transcript.prover_message(&claims);
@@ -48,9 +26,9 @@ pub(crate) fn write_claims(
 /// Reads one fixed ring-switch claim array.
 pub(crate) fn read_claims(
     transcript: &mut VerifierState<'_>,
-    domain: ClaimDomain,
+    query: &OpeningQuery,
 ) -> Result<[FlockF128; CLAIM_COUNT], VerifyError> {
-    transcript.public_message(domain.label());
+    transcript.public_message(query.label());
     transcript
         .prover_message::<[field::F128; CLAIM_COUNT]>()
         .map(|claims| claims.map(as_flock_f128))
@@ -124,18 +102,27 @@ mod tests {
         let claims = core::array::from_fn(|index| FlockF128::new(index as u64, 0));
         let mut challenges = [F128::default(); 2];
 
-        for (index, domain) in [ClaimDomain::Mle, ClaimDomain::InnerProduct]
-            .into_iter()
-            .enumerate()
+        for (index, query) in [
+            OpeningQuery::Mle {
+                point: Vec::new(),
+                target: F128::default(),
+            },
+            OpeningQuery::InnerProduct {
+                weights: Vec::new(),
+                target: F128::default(),
+            },
+        ]
+        .iter()
+        .enumerate()
         {
             let mut prover = build_prover(b"pcs-protocol-test", b"fixed-claims");
-            write_claims(&mut prover, domain, &claims);
+            write_claims(&mut prover, query, &claims);
             challenges[index] = prover.verifier_message();
             let proof = prover.finish();
             assert_eq!(proof.narg_string.len(), CLAIM_COUNT * 16);
 
             let mut verifier = build_verifier(b"pcs-protocol-test", b"fixed-claims", &proof);
-            assert_eq!(read_claims(&mut verifier, domain).unwrap(), claims);
+            assert_eq!(read_claims(&mut verifier, query).unwrap(), claims);
             assert_eq!(verifier.verifier_message::<F128>(), challenges[index]);
             verifier.check_eof().unwrap();
         }
