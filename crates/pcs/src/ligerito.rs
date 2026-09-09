@@ -279,26 +279,16 @@ pub(crate) fn verify_succinct<F>(
 where
     F: Fn(&[FlockF128], usize) -> Vec<FlockF128>,
 {
-    finish_verification(packed_target, transcript, |challenger| {
-        recursive_verifier_with_basis_succinct(
-            pcs.verifier_config(),
-            proof,
-            log_n,
-            packed_target,
-            &commitment.0,
-            evaluate_basis,
-            challenger,
-        )
-    })
-}
-
-fn finish_verification<'proof>(
-    packed_target: FlockF128,
-    transcript: &mut VerifierState<'proof>,
-    verify: impl FnOnce(&mut VerifierChallenger<'_, 'proof>) -> bool,
-) -> Result<(), VerifyError> {
     let mut challenger = VerifierChallenger::new_ligerito(transcript, packed_target);
-    let valid = verify(&mut challenger);
+    let valid = recursive_verifier_with_basis_succinct(
+        pcs.verifier_config(),
+        proof,
+        log_n,
+        packed_target,
+        &commitment.0,
+        evaluate_basis,
+        &mut challenger,
+    );
     if challenger.failed() {
         return Err(VerifyError::MalformedProof);
     }

@@ -164,23 +164,88 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dense_and_succinct_reductions_have_the_same_target() {
-        let point = vec![F128::from(2u64); LOG_PACKING + 2];
-        let packed_witness = vec![FlockF128::ZERO; 4];
+    fn dense_and_succinct_reductions_match_the_witness_and_residual_basis() {
+        const SUFFIX_DIMENSION: usize = 4;
+        let point = (0..LOG_PACKING + SUFFIX_DIMENSION)
+            .map(|index| F128::new(index as u64 + 2, index as u64 * 13 + 7))
+            .collect::<Vec<_>>();
+        let set_bits = [0, 1, 63, 64, 127, 128, 191, 255, 256, 513, 1027, 2047];
+        let mut packed_witness = vec![FlockF128::ZERO; 1 << SUFFIX_DIMENSION];
+        for index in set_bits {
+            if index % 128 < 64 {
+                packed_witness[index / 128].lo |= 1 << (index % 128);
+            } else {
+                packed_witness[index / 128].hi |= 1 << (index % 128 - 64);
+            }
+        }
+        let target = set_bits
+            .into_iter()
+            .map(|index| {
+                point.iter().copied().enumerate().fold(
+                    F128::from(1u64),
+                    |product, (coordinate, value)| {
+                        product
+                            * if (index >> coordinate) & 1 == 1 {
+                                value
+                            } else {
+                                F128::from(1u64) + value
+                            }
+                    },
+                )
+            })
+            .sum::<F128>();
+        assert_ne!(target, F128::default());
         let ring_switch = RingSwitch::new(&point, point.len()).unwrap();
-        let prepared_claims = ring_switch
-            .prepare_claims(&packed_witness, F128::default())
-            .unwrap();
+        let prepared_claims = ring_switch.prepare_claims(&packed_witness, target).unwrap();
         let claims = prepared_claims.claims;
-        let batching_point = core::array::from_fn(|index| FlockF128::new(index as u64 + 3, 0));
+        let batching_point =
+            core::array::from_fn(|index| FlockF128::new(index as u64 + 3, index as u64 * 17 + 5));
 
         let dense_reduction = prepared_claims.reduce_dense(&batching_point);
         let succinct_reduction = ring_switch.reduce_succinct(&claims, &batching_point);
+        let packed_target = dense_reduction
+            .packed_basis
+            .iter()
+            .zip(&packed_witness)
+            .fold(FlockF128::ZERO, |sum, (&basis, &witness)| {
+                sum + basis * witness
+            });
 
+        assert_ne!(packed_target, FlockF128::ZERO);
+        assert_eq!(dense_reduction.packed_target, packed_target);
         assert_eq!(
             dense_reduction.packed_target,
             succinct_reduction.packed_target
         );
         assert_eq!(dense_reduction.packed_basis.len(), packed_witness.len());
+
+        let residual_points: [[FlockF128; SUFFIX_DIMENSION]; 2] = [
+            core::array::from_fn(|index| FlockF128::new(index as u64 * 11 + 3, index as u64 + 5)),
+            [
+                FlockF128::ZERO,
+                FlockF128::ONE,
+                FlockF128::ONE,
+                FlockF128::ZERO,
+            ],
+        ];
+        for residual_point in residual_points {
+            let mut expected_basis = dense_reduction.packed_basis.clone();
+            for prefix_len in 0..=SUFFIX_DIMENSION {
+                assert_eq!(
+                    succinct_reduction.evaluate_basis(
+                        &residual_point[..prefix_len],
+                        SUFFIX_DIMENSION - prefix_len,
+                    ),
+                    expected_basis,
+                );
+                if prefix_len < SUFFIX_DIMENSION {
+                    let challenge = residual_point[prefix_len];
+                    expected_basis = expected_basis
+                        .chunks_exact(2)
+                        .map(|pair| pair[0] + challenge * (pair[0] + pair[1]))
+                        .collect();
+                }
+            }
+        }
     }
 }
