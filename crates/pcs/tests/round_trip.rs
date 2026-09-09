@@ -1,6 +1,6 @@
 use std::sync::OnceLock;
 
-use common::Shape;
+use common::{LinearClaim, Shape};
 use field::F128;
 use pcs::{
     CommitScheme, HashKind, LigeritoProfile, OpeningQuery, Pcs, ProveError, Root, StatementBinding,
@@ -13,11 +13,15 @@ const M: usize = 22;
 const SINGLETON: usize = (1 << 21) | (1 << 7) | 0b101_0101;
 const SESSION: &[u8] = b"pcs-interface-test";
 const INSTANCE: &[u8] = b"m22-singleton-opening";
-const INNER_PRODUCT_INSTANCE: &[u8] = b"m22-arbitrary-inner-product";
+const INNER_PRODUCT_INSTANCE: &[u8] = b"m22-factored-inner-product";
 const INNER_PRODUCT_SET_BITS: [usize; 8] = [0, 1, 63, 64, 127, 128, SINGLETON, (1 << M) - 1];
 
 fn shape() -> Shape {
     Shape::new(7, M - 7).unwrap()
+}
+
+fn inner_product_shape() -> Shape {
+    Shape::new(8, M - 8).unwrap()
 }
 
 struct RealFixture {
@@ -98,17 +102,20 @@ struct InnerProductFixture {
 
 impl InnerProductFixture {
     fn build() -> Self {
-        let pcs = Pcs::new(&shape(), LigeritoProfile::Secure, HashKind::Blake3).unwrap();
+        let shape = inner_product_shape();
+        let pcs = Pcs::new(&shape, LigeritoProfile::Secure, HashKind::Blake3).unwrap();
         let mut packed_witness = vec![F128::default(); pcs.packed_len()];
         for index in INNER_PRODUCT_SET_BITS {
             set_packed_bit(&mut packed_witness, index);
         }
-        let weights = (0..pcs.bit_len()).map(arbitrary_weight).collect::<Vec<_>>();
         let target = INNER_PRODUCT_SET_BITS
             .into_iter()
-            .map(|index| weights[index])
+            .map(|index| {
+                factor_weight(index / shape.rows() + shape.rows())
+                    * factor_weight(index % shape.rows())
+            })
             .sum();
-        let query = OpeningQuery::InnerProduct { weights, target };
+        let query = factored_query(&shape, target);
         let (commitment, data) = pcs.commit(&packed_witness).unwrap();
         let mut prover = build_prover(SESSION, INNER_PRODUCT_INSTANCE);
         pcs.prove_lin(
@@ -134,12 +141,26 @@ fn inner_product_fixture() -> &'static InnerProductFixture {
     FIXTURE.get_or_init(InnerProductFixture::build)
 }
 
-fn arbitrary_weight(index: usize) -> F128 {
+fn factor_weight(index: usize) -> F128 {
     let index = index as u64;
     F128::new(
         index.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ 0x0123_4567_89ab_cdef,
         index.rotate_left(29) ^ 0xa5a5_5a5a_f0f0_0f0f,
     )
+}
+
+fn factored_query(shape: &Shape, target: F128) -> OpeningQuery {
+    OpeningQuery::InnerProduct {
+        claim: LinearClaim::from_shape(
+            shape,
+            (0..shape.rows()).map(factor_weight).collect(),
+            (0..shape.columns())
+                .map(|column| factor_weight(column + shape.rows()))
+                .collect(),
+            target,
+        )
+        .unwrap(),
+    }
 }
 
 fn set_packed_bit(packed_witness: &mut [F128], index: usize) {
@@ -177,22 +198,25 @@ fn bind_outer_inner_product_statement(
     commitment: &Root,
     query: &OpeningQuery,
 ) {
-    let OpeningQuery::InnerProduct { weights, target } = query else {
+    let OpeningQuery::InnerProduct { claim } = query else {
         panic!("expected an inner-product query");
     };
+    let weight_count = claim.row_weights().len() * claim.column_weights().len();
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"outer/pcs-inner-product-weights/v1");
-    hasher.update(&(weights.len() as u64).to_le_bytes());
-    for weight in weights {
-        hasher.update(&weight.to_bytes());
+    hasher.update(&(weight_count as u64).to_le_bytes());
+    for column_weight in claim.column_weights() {
+        for row_weight in claim.row_weights() {
+            hasher.update(&(*column_weight * *row_weight).to_bytes());
+        }
     }
 
     transcript.public_message(b"outer/pcs-inner-product/v1" as &[u8]);
     transcript.public_message(pcs);
     transcript.public_message(&commitment.0);
-    transcript.public_message(&(weights.len() as u64));
+    transcript.public_message(&(weight_count as u64));
     transcript.public_message(hasher.finalize().as_bytes());
-    transcript.public_message(target);
+    transcript.public_message(&claim.target());
 }
 
 #[test]
@@ -213,7 +237,7 @@ fn real_pcs_opening_round_trip_succeeds() {
 }
 
 #[test]
-fn real_arbitrary_inner_product_round_trip_succeeds() {
+fn real_factored_inner_product_round_trip_succeeds() {
     let fixture = inner_product_fixture();
     let mut verifier = build_verifier(SESSION, INNER_PRODUCT_INSTANCE, &fixture.proof);
 
@@ -230,17 +254,19 @@ fn real_arbitrary_inner_product_round_trip_succeeds() {
 }
 
 #[test]
-fn explicit_mle_weights_match_the_mle_opening_path() {
-    let pcs = Pcs::new(&shape(), LigeritoProfile::Secure, HashKind::Blake3).unwrap();
+fn factored_mle_weights_match_the_mle_opening_path() {
+    let shape = shape();
+    let pcs = Pcs::new(&shape, LigeritoProfile::Secure, HashKind::Blake3).unwrap();
     let point = (0..M)
         .map(|coordinate| F128::from(coordinate as u64 + 2))
         .collect::<Vec<_>>();
-    let weights = eq_table(&point);
-    assert_eq!(weights.len(), pcs.bit_len());
+    let row_weights = eq_table(&point[..shape.log_rows()]);
+    let column_weights = eq_table(&point[shape.log_rows()..]);
+    assert_eq!(row_weights.len() * column_weights.len(), pcs.bit_len());
 
     let target_from_weights = INNER_PRODUCT_SET_BITS
         .into_iter()
-        .map(|index| weights[index])
+        .map(|index| column_weights[index / shape.rows()] * row_weights[index % shape.rows()])
         .sum::<F128>();
     let target_from_point = INNER_PRODUCT_SET_BITS
         .into_iter()
@@ -258,11 +284,11 @@ fn explicit_mle_weights_match_the_mle_opening_path() {
         target: target_from_point,
     };
     let inner_product_query = OpeningQuery::InnerProduct {
-        weights,
-        target: target_from_weights,
+        claim: LinearClaim::from_shape(&shape, row_weights, column_weights, target_from_weights)
+            .unwrap(),
     };
 
-    let mle_instance = b"m22-explicit-mle-weights/mle";
+    let mle_instance = b"m22-factored-mle-weights/mle";
     let mut mle_prover = build_prover(SESSION, mle_instance);
     pcs.prove_lin(
         &data,
@@ -283,7 +309,7 @@ fn explicit_mle_weights_match_the_mle_opening_path() {
     .unwrap();
     mle_verifier.check_eof().unwrap();
 
-    let inner_product_instance = b"m22-explicit-mle-weights/inner-product";
+    let inner_product_instance = b"m22-factored-mle-weights/inner-product";
     let mut inner_product_prover = build_prover(SESSION, inner_product_instance);
     pcs.prove_lin(
         &data,
@@ -327,14 +353,12 @@ fn opening_query_variants_are_not_interchangeable() {
 }
 
 #[test]
-fn arbitrary_inner_product_rejects_wrong_weight_lengths() {
+fn factored_inner_product_rejects_wrong_weight_lengths() {
     let pcs = Pcs::new(&shape(), LigeritoProfile::Secure, HashKind::Blake3).unwrap();
     let packed_witness = vec![F128::default(); pcs.packed_len()];
     let (commitment, data) = pcs.commit(&packed_witness).unwrap();
-    let query = OpeningQuery::InnerProduct {
-        weights: Vec::new(),
-        target: F128::default(),
-    };
+    let larger_shape = Shape::new(8, M - 7).unwrap();
+    let query = factored_query(&larger_shape, F128::default());
 
     let mut prover = build_prover(SESSION, b"wrong-inner-product-weight-count");
     assert_eq!(
@@ -357,11 +381,8 @@ fn arbitrary_inner_product_rejects_wrong_weight_lengths() {
 }
 
 #[test]
-fn arbitrary_inner_product_rejects_non_secure_profiles() {
-    let query = OpeningQuery::InnerProduct {
-        weights: Vec::new(),
-        target: F128::default(),
-    };
+fn factored_inner_product_rejects_non_secure_profiles() {
+    let query = factored_query(&shape(), F128::default());
     let proof = Proof::default();
     let commitment = Root([0; 32]);
 
@@ -390,14 +411,11 @@ fn arbitrary_inner_product_rejects_non_secure_profiles() {
 }
 
 #[test]
-fn arbitrary_inner_product_prover_rejects_a_false_target() {
+fn factored_inner_product_prover_rejects_a_false_target() {
     let pcs = Pcs::new(&shape(), LigeritoProfile::Secure, HashKind::Blake3).unwrap();
     let packed_witness = vec![F128::default(); pcs.packed_len()];
     let (_, data) = pcs.commit(&packed_witness).unwrap();
-    let query = OpeningQuery::InnerProduct {
-        weights: vec![F128::default(); pcs.bit_len()],
-        target: F128::from(1u64),
-    };
+    let query = factored_query(&shape(), F128::from(1u64));
     let mut prover = build_prover(SESSION, b"false-inner-product");
 
     assert_eq!(
@@ -413,13 +431,10 @@ fn arbitrary_inner_product_prover_rejects_a_false_target() {
 }
 
 #[test]
-fn arbitrary_inner_product_accepts_an_already_bound_statement() {
+fn factored_inner_product_accepts_an_already_bound_statement() {
     let pcs = Pcs::new(&shape(), LigeritoProfile::Secure, HashKind::Blake3).unwrap();
     let packed_witness = vec![F128::default(); pcs.packed_len()];
-    let query = OpeningQuery::InnerProduct {
-        weights: vec![F128::default(); pcs.bit_len()],
-        target: F128::default(),
-    };
+    let query = factored_query(&shape(), F128::default());
     let (commitment, data) = pcs.commit(&packed_witness).unwrap();
 
     let mut prover = build_prover(SESSION, b"already-bound-inner-product");
@@ -459,31 +474,51 @@ fn arbitrary_inner_product_accepts_an_already_bound_statement() {
 }
 
 #[test]
-fn arbitrary_inner_product_rejects_statement_and_coordinate_mutations() {
+fn factored_inner_product_rejects_statement_and_coordinate_mutations() {
     let fixture = inner_product_fixture();
-    let mut changed_query = fixture.query.clone();
-    let OpeningQuery::InnerProduct { weights, .. } = &mut changed_query else {
+    let OpeningQuery::InnerProduct { claim } = &fixture.query else {
         unreachable!();
     };
-    weights[2] += F128::from(1u64);
-    let mut verifier = build_verifier(SESSION, INNER_PRODUCT_INSTANCE, &fixture.proof);
-    assert!(
-        fixture
-            .pcs
-            .verify_lin(
-                &fixture.commitment,
-                &changed_query,
-                StatementBinding::Bind,
-                &mut verifier,
+    for change_row in [true, false] {
+        let mut row_weights = claim.row_weights().to_vec();
+        let mut column_weights = claim.column_weights().to_vec();
+        if change_row {
+            row_weights[2] += F128::from(1u64);
+        } else {
+            column_weights[2] += F128::from(1u64);
+        }
+        let changed_query = OpeningQuery::InnerProduct {
+            claim: LinearClaim::from_shape(
+                &inner_product_shape(),
+                row_weights,
+                column_weights,
+                claim.target(),
             )
-            .is_err(),
-    );
+            .unwrap(),
+        };
+        let mut verifier = build_verifier(SESSION, INNER_PRODUCT_INSTANCE, &fixture.proof);
+        assert!(
+            fixture
+                .pcs
+                .verify_lin(
+                    &fixture.commitment,
+                    &changed_query,
+                    StatementBinding::Bind,
+                    &mut verifier,
+                )
+                .is_err(),
+        );
+    }
 
-    let mut changed_query = fixture.query.clone();
-    let OpeningQuery::InnerProduct { target, .. } = &mut changed_query else {
-        unreachable!();
+    let changed_query = OpeningQuery::InnerProduct {
+        claim: LinearClaim::from_shape(
+            &inner_product_shape(),
+            claim.row_weights().to_vec(),
+            claim.column_weights().to_vec(),
+            claim.target() + F128::from(1u64),
+        )
+        .unwrap(),
     };
-    *target += F128::from(1u64);
     let mut verifier = build_verifier(SESSION, INNER_PRODUCT_INSTANCE, &fixture.proof);
     assert_eq!(
         fixture.pcs.verify_lin(

@@ -112,22 +112,26 @@ pub(crate) fn prove(
             let dense_reduction = prepared_claims.reduce_dense(&batching_point);
             prover.prove(dense_reduction, transcript)
         }
-        OpeningQuery::InnerProduct { weights, target } => {
+        OpeningQuery::InnerProduct { claim } => {
             validate_inner_product_profile(pcs)?;
-            let ring_switch = inner_product::RingSwitch::new(weights, pcs.bit_len())?;
+            let ring_switch = inner_product::RingSwitch::new(
+                claim.row_weights(),
+                claim.column_weights(),
+                pcs.bit_len(),
+            )?;
             let prover = ReducedProver::new(pcs, data, packed_witness)?;
 
             if statement_binding == StatementBinding::Bind {
                 bind_inner_product_statement(
                     pcs,
                     &data.commitment().root,
-                    weights,
-                    *target,
+                    &ring_switch,
+                    claim.target(),
                     transcript,
                 );
             }
 
-            let claims = ring_switch.prepare_claims(prover.witness(), *target)?;
+            let claims = ring_switch.prepare_claims(prover.witness(), claim.target())?;
             write_claims(transcript, query, &claims);
             let batching_point = sample_challenges(transcript);
             let dense_reduction = ring_switch.reduce_dense(&claims, &batching_point);
@@ -169,18 +173,29 @@ pub(crate) fn verify(
                 transcript,
             )
         }
-        OpeningQuery::InnerProduct { weights, target } => {
+        OpeningQuery::InnerProduct { claim } => {
             validate_inner_product_profile(pcs)?;
-            let ring_switch = inner_product::RingSwitch::new(weights, pcs.bit_len())?;
+            let ring_switch = inner_product::RingSwitch::new(
+                claim.row_weights(),
+                claim.column_weights(),
+                pcs.bit_len(),
+            )?;
 
             if statement_binding == StatementBinding::Bind {
-                bind_inner_product_statement(pcs, &commitment.0, weights, *target, transcript);
+                bind_inner_product_statement(
+                    pcs,
+                    &commitment.0,
+                    &ring_switch,
+                    claim.target(),
+                    transcript,
+                );
             }
 
             let proof = ligerito::read_proof(pcs, commitment, transcript)?;
             let claims = read_claims(transcript, query)?;
             let batching_point = sample_challenges(transcript);
-            let dense_reduction = ring_switch.reduce_verified(&claims, *target, &batching_point)?;
+            let dense_reduction =
+                ring_switch.reduce_verified(&claims, claim.target(), &batching_point)?;
             ligerito::verify_dense(pcs, commitment, &proof, dense_reduction, transcript)
         }
     }
@@ -241,28 +256,30 @@ fn bind_mle_statement(
     transcript.public_message(&target);
 }
 
-/// Absorbs an arbitrary original-bit inner-product statement in either transcript.
+/// Absorbs the expanded inner-product statement without allocating all weights.
 fn bind_inner_product_statement(
     pcs: &Pcs,
     root: &[u8; 32],
-    weights: &[field::F128],
+    ring_switch: &inner_product::RingSwitch<'_>,
     target: field::F128,
     transcript: &mut impl PublicTranscript,
 ) {
     transcript.public_message(INNER_PRODUCT_STATEMENT_LABEL);
     transcript.public_message(root);
     transcript.public_message(pcs);
-    transcript.public_message(&(weights.len() as u64));
-    transcript.public_message(&weight_digest(weights));
+    transcript.public_message(&(ring_switch.bit_len() as u64));
+    transcript.public_message(&weight_digest(ring_switch));
     transcript.public_message(&target);
 }
 
-fn weight_digest(weights: &[field::F128]) -> [u8; 32] {
+fn weight_digest(ring_switch: &inner_product::RingSwitch<'_>) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(WEIGHT_DIGEST_LABEL);
-    hasher.update(&(weights.len() as u64).to_le_bytes());
-    for weight in weights {
-        hasher.update(&weight.to_bytes());
+    hasher.update(&(ring_switch.bit_len() as u64).to_le_bytes());
+    for block in ring_switch.weight_blocks() {
+        for weight in block {
+            hasher.update(&weight.to_bytes());
+        }
     }
     *hasher.finalize().as_bytes()
 }
@@ -271,7 +288,7 @@ fn weight_digest(weights: &[field::F128]) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use ::transcript::{build_prover, build_verifier};
-    use common::Shape;
+    use common::{LinearClaim, Shape};
     use field::F128;
     use proptest::prelude::*;
 
@@ -289,8 +306,13 @@ mod tests {
                 target: F128::default(),
             },
             OpeningQuery::InnerProduct {
-                weights: Vec::new(),
-                target: F128::default(),
+                claim: LinearClaim::from_shape(
+                    &Shape::new(7, 15).unwrap(),
+                    vec![F128::default(); 128],
+                    vec![F128::default(); 1 << 15],
+                    F128::default(),
+                )
+                .unwrap(),
             },
         ]
         .iter()
@@ -344,20 +366,39 @@ mod tests {
         #[test]
         fn inner_product_statement_binding_matches_between_roles(
             root in any::<[u8; 32]>(),
-            weight_words in prop::collection::vec((any::<u64>(), any::<u64>()), 0..32),
+            row_words in prop::collection::vec((any::<u64>(), any::<u64>()), 256),
+            column_words in prop::collection::vec((any::<u64>(), any::<u64>()), 1..5),
             target_words in (any::<u64>(), any::<u64>()),
         ) {
             let shape = Shape::new(7, 15).unwrap();
             let pcs = Pcs::new(&shape, LigeritoProfile::Secure, HashKind::Blake3).unwrap();
-            let weights = weight_words
-                .iter()
-                .map(|&(lo, hi)| F128::new(lo, hi))
-                .collect::<Vec<_>>();
+            let rows = row_words.iter().map(|&(lo, hi)| F128::new(lo, hi)).collect::<Vec<_>>();
+            let columns = column_words.iter().map(|&(lo, hi)| F128::new(lo, hi)).collect::<Vec<_>>();
+            let bit_len = rows.len() * columns.len();
+            let ring_switch = inner_product::RingSwitch::new(&rows, &columns, bit_len).unwrap();
             let target = F128::new(target_words.0, target_words.1);
 
             let mut prover = build_prover(b"pcs-protocol-test", b"inner-product-statement");
-            bind_inner_product_statement(&pcs, &root, &weights, target, &mut prover);
+            bind_inner_product_statement(&pcs, &root, &ring_switch, target, &mut prover);
             let expected = prover.verifier_message::<F128>();
+
+            let weights = (0..bit_len)
+                .map(|index| columns[index / rows.len()] * rows[index % rows.len()])
+                .collect::<Vec<_>>();
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(WEIGHT_DIGEST_LABEL);
+            hasher.update(&(weights.len() as u64).to_le_bytes());
+            for weight in &weights {
+                hasher.update(&weight.to_bytes());
+            }
+            let mut legacy = build_prover(b"pcs-protocol-test", b"inner-product-statement");
+            legacy.public_message(INNER_PRODUCT_STATEMENT_LABEL);
+            legacy.public_message(&root);
+            legacy.public_message(&pcs);
+            legacy.public_message(&(weights.len() as u64));
+            legacy.public_message(hasher.finalize().as_bytes());
+            legacy.public_message(&target);
+            prop_assert_eq!(legacy.verifier_message::<F128>(), expected);
             let proof = prover.finish();
 
             let mut verifier = build_verifier(
@@ -365,7 +406,7 @@ mod tests {
                 b"inner-product-statement",
                 &proof,
             );
-            bind_inner_product_statement(&pcs, &root, &weights, target, &mut verifier);
+            bind_inner_product_statement(&pcs, &root, &ring_switch, target, &mut verifier);
             prop_assert_eq!(verifier.verifier_message::<F128>(), expected);
             prop_assert!(verifier.check_eof().is_ok());
         }

@@ -3,7 +3,7 @@
 use crypto_primitives::LiftElement;
 use field::Fq;
 
-use crate::F2ZParams;
+use crate::{F2ZParams, Shape};
 
 /// A Merkle root over the committed codeword.
 ///
@@ -50,23 +50,7 @@ impl<const Q: u128> LinearClaim<Fq<Q>> {
         column_weights: Vec<Fq<Q>>,
         target: Fq<Q>,
     ) -> Result<Self, ClaimError> {
-        if row_weights.len() != params.shape().rows() {
-            return Err(ClaimError::RowWeightCountMismatch);
-        }
-        if column_weights.len() != params.shape().columns() {
-            return Err(ClaimError::ColumnWeightCountMismatch);
-        }
-
-        Ok(Self {
-            row_weights,
-            column_weights,
-            target,
-        })
-    }
-
-    /// The per-row weights `v^(1)`, over `F_q`.
-    pub fn row_weights(&self) -> &[Fq<Q>] {
-        &self.row_weights
+        Self::from_shape(params.shape(), row_weights, column_weights, target)
     }
 
     /// `pi_q^{-1}(v^(1)_i)`, the canonical representatives the fold
@@ -81,17 +65,44 @@ impl<const Q: u128> LinearClaim<Fq<Q>> {
             .map(|weight| weight.lift())
             .collect()
     }
+}
 
-    /// The per-column weights `v^(2)`, over `F_q`.
+impl<F: Copy> LinearClaim<F> {
+    /// Checks both weight counts against `shape` and returns the claim.
     ///
-    /// These stay in the field: they are applied only in the reconstruction
-    /// that ties the folds back to `mu`, never in the exponent.
-    pub fn column_weights(&self) -> &[Fq<Q>] {
+    /// The weight at `(row, column)` is `row_weights[row] * column_weights[column]`.
+    pub fn from_shape(
+        shape: &Shape,
+        row_weights: Vec<F>,
+        column_weights: Vec<F>,
+        target: F,
+    ) -> Result<Self, ClaimError> {
+        if row_weights.len() != shape.rows() {
+            return Err(ClaimError::RowWeightCountMismatch);
+        }
+        if column_weights.len() != shape.columns() {
+            return Err(ClaimError::ColumnWeightCountMismatch);
+        }
+
+        Ok(Self {
+            row_weights,
+            column_weights,
+            target,
+        })
+    }
+
+    /// The per-row weights `v^(1)`.
+    pub fn row_weights(&self) -> &[F] {
+        &self.row_weights
+    }
+
+    /// The per-column weights `v^(2)`.
+    pub fn column_weights(&self) -> &[F] {
         &self.column_weights
     }
 
     /// The claimed value `mu`.
-    pub fn target(&self) -> Fq<Q> {
+    pub fn target(&self) -> F {
         self.target
     }
 }
@@ -131,6 +142,28 @@ mod tests {
         let accepted = claim(weights()).unwrap();
         assert_eq!(accepted.row_weights().len(), 1 << 7);
         assert_eq!(accepted.column_weights().len(), 1 << 15);
+    }
+
+    #[test]
+    fn binary_field_claim_checks_each_factor_length() {
+        use field::F128;
+
+        let shape = Shape::new(8, 14).unwrap();
+        let rows = vec![F128::from(2u64); shape.rows()];
+        let columns = vec![F128::from(3u64); shape.columns()];
+        let target = F128::from(5u64);
+        let claim = LinearClaim::from_shape(&shape, rows.clone(), columns.clone(), target).unwrap();
+        assert_eq!(claim.row_weights(), rows);
+        assert_eq!(claim.column_weights(), columns);
+        assert_eq!(claim.target(), target);
+        assert_eq!(
+            LinearClaim::from_shape(&shape, rows[..128].to_vec(), columns.clone(), target),
+            Err(ClaimError::RowWeightCountMismatch),
+        );
+        assert_eq!(
+            LinearClaim::from_shape(&shape, rows, columns[..128].to_vec(), target),
+            Err(ClaimError::ColumnWeightCountMismatch),
+        );
     }
 
     #[test]

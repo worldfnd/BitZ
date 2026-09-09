@@ -1,4 +1,4 @@
-//! Binary polynomial commitments with MLE and arbitrary inner-product openings.
+//! Binary polynomial commitments with MLE and factored inner-product openings.
 //!
 //! # Statement
 //!
@@ -8,7 +8,7 @@
 //! `q̂(r) = Σ_{b ∈ {0,1}^m} q(b) · eq(b, r)`, where
 //! `eq(b, r) = ∏_i (b_i · r_i + (1 - b_i) · (1 - r_i))`.
 //! [`OpeningQuery::Mle`] claims `q̂(point) = target`.
-//! [`OpeningQuery::InnerProduct`] claims `Σ_i q(i) · weights[i] = target`.
+//! [`OpeningQuery::InnerProduct`] claims `Σ_{r,c} q(c * rows + r) · row_weights[r] · column_weights[c] = target`.
 //!
 //! # Packing and opening
 //!
@@ -22,7 +22,7 @@
 //! Ring-switching transposes `(s_v)` into `(s_u)` and samples `batching_point`.
 //! It sets `packed_target = Σ_u eq(batching_point, u) · s_u`.
 //! Recursive Ligerito proves `Σ_y B(y) · q_pkd(y) = packed_target` against the committed root.
-//! Arbitrary inner products apply the GHASH coefficient-projection dual map.
+//! Factored inner products apply the GHASH coefficient-projection dual map to generated weight blocks.
 //! They batch 128 packed coordinate claims into one Ligerito basis opening.
 //!
 //! # Interface
@@ -30,7 +30,7 @@
 //! - [`Pcs`] stores trusted Flock parameters and the expected bit length.
 //! - [`Root`] is the public Merkle root.
 //! - [`ProverData`] retains the codeword and Merkle tree after commitment.
-//! - [`OpeningQuery`] contains an MLE point or explicit inner-product weights.
+//! - [`OpeningQuery`] contains an MLE point and target, or a `common::LinearClaim<F128>`.
 //! - [`CommitScheme`] connects commitment, proving, and verification to project transcripts.
 //! - [`ConfigError`] reports configuration failures.
 //! - [`CommitError`], [`ProveError`], and [`VerifyError`] report operation-specific failures.
@@ -121,7 +121,7 @@ pub enum StatementBinding {
 /// [`OpeningQuery::Mle`] proves
 /// `q̂(r) = Σ_{b ∈ {0,1}^m} q(b) · eq(b, r) = target`, where
 /// `eq(b, r) = ∏_i (b_i · r_i + (1 - b_i) · (1 - r_i))`.
-/// [`OpeningQuery::InnerProduct`] accepts one arbitrary `F128` weight per bit.
+/// [`OpeningQuery::InnerProduct`] accepts row weights, column weights, and a target over `F128`.
 pub trait CommitScheme {
     /// The public commitment.
     type Commitment;
