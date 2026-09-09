@@ -5,5 +5,5 @@ pub mod prove;
 pub mod setup;
 
 pub use fold::SendError;
-pub use prove::{ProveError, Reduction};
+pub use prove::{GkrReduction, ProveError, Reduction};
 pub use setup::BitZProver;

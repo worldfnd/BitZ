@@ -6,4 +6,4 @@ pub mod verify;
 
 pub use fold::ReceiveError;
 pub use setup::BitZVerifier;
-pub use verify::{Reduction, VerifyError};
+pub use verify::{GkrReduction, Reduction, VerifyError};

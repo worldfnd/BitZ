@@ -29,6 +29,7 @@ pub enum VerifyError<E> {
 /// Step 4, replayed.
 ///
 /// TODO: #8 implements this.
+/// Xander: This trait only for mock testing?
 pub trait Reduction<const Q: u128> {
     type Error;
 
@@ -37,6 +38,52 @@ pub trait Reduction<const Q: u128> {
         input: &ReductionInput<'_, Q>,
         transcript: &mut VerifierState<'_>,
     ) -> Result<OpeningQuery, Self::Error>;
+}
+
+/// Stands in for #8: runs the sumcheck verifier over the grand product, but
+/// does not yet turn the resulting claim into a discharged [`OpeningQuery`].
+#[derive(Debug, Default, Clone, Copy)]
+pub struct GkrReduction;
+
+impl<const Q: u128> Reduction<Q> for GkrReduction {
+    type Error = ();
+
+    fn reduce(
+        &self,
+        input: &ReductionInput<'_, Q>,
+        transcript: &mut VerifierState<'_>,
+    ) -> Result<OpeningQuery, Self::Error> {
+        let fold = input.fold;
+
+        // build input based on row_image and the bit table.
+        let mut point = fold.zeta.clone();
+        point.reverse();
+        let point = VecDeque::from(point);
+
+        // Dealing with row_images.len() = 0
+        let r1 = fold.row_images.len().ilog2();
+
+        let (mut point, mle_leaf_claim) =
+            gkr::gpgkr_verify(transcript, fold.e0, point, r1).ok_or(())?;
+
+        // Conversion here feel unnecessary
+        let alfa_c = Vec::from(point.split_off(r1 as usize));
+        let alfa_b = Vec::from(point);
+
+        let _inner_product_claim = mle_leaf_claim - F128::ONE;
+        // How can we reuse the space that is there?
+        // Could reuse the space of the eq_table, but is there a better way?
+        let _u1: Vec<_> = fold
+            .row_images
+            .iter()
+            .zip(poly::eq_table(&alfa_b))
+            .collect();
+        let _u2 = poly::eq_table(&alfa_c);
+
+        // TODO(#8): turn `u1`/`u2`/the inner-product claim into a discharged `OpeningQuery`.
+        // Sina / Alex?
+        todo!("#8")
+    }
 }
 
 impl<const Q: u128> BitZVerifier<Q> {
@@ -69,32 +116,6 @@ impl<const Q: u128> BitZVerifier<Q> {
             .map_err(VerifyError::Fold)?;
 
         // Step 4, replayed.
-        // build input based on row_image and the bit table.
-        let mut point = fold.zeta.clone();
-        point.reverse();
-        let point = VecDeque::from(point);
-
-        // Dealing with row_images.len() = 0
-        let r1 = fold.row_images.len().ilog2();
-
-        let (mut point, mle_leaf_claim) =
-            gkr::gpgkr_verify(&mut transcript, fold.e0, point, r1).unwrap();
-
-        // Conversion here feel unnecessary
-        let alfa_c = Vec::from(point.split_off(r1 as usize));
-        let alfa_b = Vec::from(point);
-
-        let inner_product_claim = mle_leaf_claim - F128::ONE;
-        // How can we reuse the space that is there?
-        // Could reuse the space of the eq_table, but is there a better way?
-        let u1: Vec<_> = fold
-            .row_images
-            .iter()
-            .zip(poly::eq_table(&alfa_b))
-            .collect();
-        let u2 = poly::eq_table(&alfa_c);
-
-        // TODO(#8): both live behind `Reduction`, which nothing implements yet.
         let input = ReductionInput {
             params: self.params(),
             claim,
