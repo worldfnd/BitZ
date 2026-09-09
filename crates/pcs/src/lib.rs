@@ -22,8 +22,7 @@
 //! Ring-switching transposes `(s_v)` into `(s_u)` and samples `batching_point`.
 //! It sets `packed_target = Σ_u eq(batching_point, u) · s_u`.
 //! Recursive Ligerito proves `Σ_y B(y) · q_pkd(y) = packed_target` against the committed root.
-//! Factored inner products apply the GHASH coefficient-projection dual map to generated weight blocks.
-//! They batch 128 packed coordinate claims into one Ligerito basis opening.
+//! Quadratic sumcheck reduces factored inner-product claims to MLE claims before this opening protocol.
 //!
 //! # Interface
 //!
@@ -91,10 +90,10 @@
 mod bridge;
 mod challenger;
 mod commitment;
-mod inner_product;
 mod ligerito;
 mod mle;
 mod opening;
+mod sumcheck;
 
 use field::F128;
 use transcript::{ProverState, VerifierState};
@@ -112,6 +111,8 @@ pub enum StatementBinding {
     /// Uses a statement that the caller already bound.
     ///
     /// The caller must bind the same PCS parameters, commitment, query variant, fields, and target.
+    /// For inner products, this covers both factor lengths, both factors, and the original target.
+    /// The opening code still binds the MLE claim that sumcheck returns.
     AlreadyBound,
 }
 
@@ -122,6 +123,7 @@ pub enum StatementBinding {
 /// `q̂(r) = Σ_{b ∈ {0,1}^m} q(b) · eq(b, r) = target`, where
 /// `eq(b, r) = ∏_i (b_i · r_i + (1 - b_i) · (1 - r_i))`.
 /// [`OpeningQuery::InnerProduct`] accepts row weights, column weights, and a target over `F128`.
+/// Quadratic sumcheck reduces this claim to an MLE claim before the opening protocol.
 pub trait CommitScheme {
     /// The public commitment.
     type Commitment;
@@ -138,7 +140,7 @@ pub trait CommitScheme {
 
     /// Consumes the exact packed witness and proves either opening query.
     ///
-    /// [`OpeningQuery::InnerProduct`] requires [`LigeritoProfile::Secure`].
+    /// Inner-product claims first pass through quadratic sumcheck and then the MLE opening protocol.
     fn prove_lin(
         &self,
         data: &Self::ProverData,
@@ -150,7 +152,7 @@ pub trait CommitScheme {
 
     /// Verifies either opening query against `commitment`.
     ///
-    /// [`OpeningQuery::InnerProduct`] requires [`LigeritoProfile::Secure`].
+    /// Inner-product claims first pass through quadratic sumcheck and then the MLE opening protocol.
     fn verify_lin(
         &self,
         commitment: &Self::Commitment,

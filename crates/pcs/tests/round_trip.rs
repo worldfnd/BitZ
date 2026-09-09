@@ -6,15 +6,16 @@ use pcs::{
     CommitScheme, HashKind, LigeritoProfile, OpeningQuery, Pcs, ProveError, Root, StatementBinding,
     VerifyError,
 };
-use poly::eq_table;
-use transcript::{Proof, PublicTranscript, build_prover, build_verifier};
+use transcript::{Proof, PublicTranscript, VerifierState, build_prover, build_verifier};
 
 const M: usize = 22;
 const SINGLETON: usize = (1 << 21) | (1 << 7) | 0b101_0101;
 const SESSION: &[u8] = b"pcs-interface-test";
 const INSTANCE: &[u8] = b"m22-singleton-opening";
 const INNER_PRODUCT_INSTANCE: &[u8] = b"m22-factored-inner-product";
-const INNER_PRODUCT_SET_BITS: [usize; 8] = [0, 1, 63, 64, 127, 128, SINGLETON, (1 << M) - 1];
+const INNER_PRODUCT_SET_BITS: [usize; 8] = [0, 63, 64, 127, 128, 255, 256, (1 << M) - 1];
+const SUMCHECK_ROUND_BYTES: usize = 3 * 16;
+const SUMCHECK_EVALUATION_OFFSET: usize = M * SUMCHECK_ROUND_BYTES;
 
 fn shape() -> Shape {
     Shape::new(7, M - 7).unwrap()
@@ -93,54 +94,6 @@ fn singleton_target(point: &[F128], index: usize) -> F128 {
         })
 }
 
-struct InnerProductFixture {
-    pcs: Pcs,
-    commitment: Root,
-    query: OpeningQuery,
-    proof: Proof,
-}
-
-impl InnerProductFixture {
-    fn build() -> Self {
-        let shape = inner_product_shape();
-        let pcs = Pcs::new(&shape, LigeritoProfile::Secure, HashKind::Blake3).unwrap();
-        let mut packed_witness = vec![F128::default(); pcs.packed_len()];
-        for index in INNER_PRODUCT_SET_BITS {
-            set_packed_bit(&mut packed_witness, index);
-        }
-        let target = INNER_PRODUCT_SET_BITS
-            .into_iter()
-            .map(|index| {
-                factor_weight(index / shape.rows() + shape.rows())
-                    * factor_weight(index % shape.rows())
-            })
-            .sum();
-        let query = factored_query(&shape, target);
-        let (commitment, data) = pcs.commit(&packed_witness).unwrap();
-        let mut prover = build_prover(SESSION, INNER_PRODUCT_INSTANCE);
-        pcs.prove_lin(
-            &data,
-            packed_witness,
-            &query,
-            StatementBinding::Bind,
-            &mut prover,
-        )
-        .unwrap();
-
-        Self {
-            pcs,
-            commitment,
-            query,
-            proof: prover.finish(),
-        }
-    }
-}
-
-fn inner_product_fixture() -> &'static InnerProductFixture {
-    static FIXTURE: OnceLock<InnerProductFixture> = OnceLock::new();
-    FIXTURE.get_or_init(InnerProductFixture::build)
-}
-
 fn factor_weight(index: usize) -> F128 {
     let index = index as u64;
     F128::new(
@@ -163,14 +116,124 @@ fn factored_query(shape: &Shape, target: F128) -> OpeningQuery {
     }
 }
 
-fn set_packed_bit(packed_witness: &mut [F128], index: usize) {
-    let packed_index = index / 128;
-    let bit_index = index % 128;
-    if bit_index < 64 {
-        packed_witness[packed_index].lo |= 1 << bit_index;
-    } else {
-        packed_witness[packed_index].hi |= 1 << (bit_index - 64);
+fn inner_product_witness(packed_len: usize) -> Vec<F128> {
+    let mut witness = vec![F128::default(); packed_len];
+    for index in INNER_PRODUCT_SET_BITS {
+        if index % 128 < 64 {
+            witness[index / 128].lo |= 1 << (index % 128);
+        } else {
+            witness[index / 128].hi |= 1 << (index % 128 - 64);
+        }
     }
+    witness
+}
+
+fn inner_product_target(shape: &Shape) -> F128 {
+    INNER_PRODUCT_SET_BITS
+        .into_iter()
+        .map(|index| {
+            factor_weight(index / shape.rows() + shape.rows()) * factor_weight(index % shape.rows())
+        })
+        .sum()
+}
+
+struct InnerProductFixture {
+    pcs: Pcs,
+    commitment: Root,
+    query: OpeningQuery,
+    proofs: [Proof; 2],
+}
+
+impl InnerProductFixture {
+    fn build(profile: LigeritoProfile) -> Self {
+        let shape = inner_product_shape();
+        let pcs = Pcs::new(&shape, profile, HashKind::Blake3).unwrap();
+        let witness = inner_product_witness(pcs.packed_len());
+        let target = inner_product_target(&shape);
+        assert_ne!(target, F128::default());
+        let query = factored_query(&shape, target);
+        let (commitment, data) = pcs.commit(&witness).unwrap();
+        let proofs = [StatementBinding::Bind, StatementBinding::AlreadyBound].map(|binding| {
+            let mut prover = build_prover(SESSION, INNER_PRODUCT_INSTANCE);
+            if binding == StatementBinding::AlreadyBound {
+                bind_outer_inner_product_statement(&mut prover, &pcs, &commitment, &query);
+            }
+            pcs.prove_lin(&data, witness.clone(), &query, binding, &mut prover)
+                .unwrap();
+            prover.finish()
+        });
+        Self {
+            pcs,
+            commitment,
+            query,
+            proofs,
+        }
+    }
+
+    fn proof(&self, binding: StatementBinding) -> &Proof {
+        &self.proofs[usize::from(binding == StatementBinding::AlreadyBound)]
+    }
+
+    fn verifier<'proof>(
+        &self,
+        commitment: &Root,
+        query: &OpeningQuery,
+        proof: &'proof Proof,
+        binding: StatementBinding,
+    ) -> VerifierState<'proof> {
+        let mut verifier = build_verifier(SESSION, INNER_PRODUCT_INSTANCE, proof);
+        if binding == StatementBinding::AlreadyBound {
+            bind_outer_inner_product_statement(&mut verifier, &self.pcs, commitment, query);
+        }
+        verifier
+    }
+
+    fn verify(
+        &self,
+        commitment: &Root,
+        query: &OpeningQuery,
+        proof: &Proof,
+        binding: StatementBinding,
+    ) -> Result<(), VerifyError> {
+        let mut verifier = self.verifier(commitment, query, proof, binding);
+        self.pcs
+            .verify_lin(commitment, query, binding, &mut verifier)
+    }
+}
+
+fn inner_product_fixture(profile: LigeritoProfile) -> &'static InnerProductFixture {
+    static FAST: OnceLock<InnerProductFixture> = OnceLock::new();
+    static SLIM: OnceLock<InnerProductFixture> = OnceLock::new();
+    static SECURE: OnceLock<InnerProductFixture> = OnceLock::new();
+    let fixture = match profile {
+        LigeritoProfile::Fast => &FAST,
+        LigeritoProfile::Slim => &SLIM,
+        LigeritoProfile::Secure => &SECURE,
+    };
+    fixture.get_or_init(|| InnerProductFixture::build(profile))
+}
+
+fn bind_outer_inner_product_statement(
+    transcript: &mut impl PublicTranscript,
+    pcs: &Pcs,
+    commitment: &Root,
+    query: &OpeningQuery,
+) {
+    let OpeningQuery::InnerProduct { claim } = query else {
+        panic!("expected an inner-product query");
+    };
+    transcript.public_message(b"outer/pcs-inner-product/v2" as &[u8]);
+    transcript.public_message(pcs);
+    transcript.public_message(&commitment.0);
+    transcript.public_message(&(claim.row_weights().len() as u64));
+    for weight in claim.row_weights() {
+        transcript.public_message(weight);
+    }
+    transcript.public_message(&(claim.column_weights().len() as u64));
+    for weight in claim.column_weights() {
+        transcript.public_message(weight);
+    }
+    transcript.public_message(&claim.target());
 }
 
 fn bind_outer_statement(
@@ -192,33 +255,6 @@ fn bind_outer_statement(
     transcript.public_message(target);
 }
 
-fn bind_outer_inner_product_statement(
-    transcript: &mut impl PublicTranscript,
-    pcs: &Pcs,
-    commitment: &Root,
-    query: &OpeningQuery,
-) {
-    let OpeningQuery::InnerProduct { claim } = query else {
-        panic!("expected an inner-product query");
-    };
-    let weight_count = claim.row_weights().len() * claim.column_weights().len();
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(b"outer/pcs-inner-product-weights/v1");
-    hasher.update(&(weight_count as u64).to_le_bytes());
-    for column_weight in claim.column_weights() {
-        for row_weight in claim.row_weights() {
-            hasher.update(&(*column_weight * *row_weight).to_bytes());
-        }
-    }
-
-    transcript.public_message(b"outer/pcs-inner-product/v1" as &[u8]);
-    transcript.public_message(pcs);
-    transcript.public_message(&commitment.0);
-    transcript.public_message(&(weight_count as u64));
-    transcript.public_message(hasher.finalize().as_bytes());
-    transcript.public_message(&claim.target());
-}
-
 #[test]
 fn real_pcs_opening_round_trip_succeeds() {
     let fixture = fixture();
@@ -237,119 +273,200 @@ fn real_pcs_opening_round_trip_succeeds() {
 }
 
 #[test]
-fn real_factored_inner_product_round_trip_succeeds() {
-    let fixture = inner_product_fixture();
-    let mut verifier = build_verifier(SESSION, INNER_PRODUCT_INSTANCE, &fixture.proof);
-
-    fixture
-        .pcs
-        .verify_lin(
-            &fixture.commitment,
-            &fixture.query,
-            StatementBinding::Bind,
-            &mut verifier,
-        )
-        .unwrap();
-    verifier.check_eof().unwrap();
-}
-
-#[test]
-fn factored_mle_weights_match_the_mle_opening_path() {
-    let shape = shape();
-    let pcs = Pcs::new(&shape, LigeritoProfile::Secure, HashKind::Blake3).unwrap();
-    let point = (0..M)
-        .map(|coordinate| F128::from(coordinate as u64 + 2))
-        .collect::<Vec<_>>();
-    let row_weights = eq_table(&point[..shape.log_rows()]);
-    let column_weights = eq_table(&point[shape.log_rows()..]);
-    assert_eq!(row_weights.len() * column_weights.len(), pcs.bit_len());
-
-    let target_from_weights = INNER_PRODUCT_SET_BITS
-        .into_iter()
-        .map(|index| column_weights[index / shape.rows()] * row_weights[index % shape.rows()])
-        .sum::<F128>();
-    let target_from_point = INNER_PRODUCT_SET_BITS
-        .into_iter()
-        .map(|index| singleton_target(&point, index))
-        .sum::<F128>();
-    assert_eq!(target_from_weights, target_from_point);
-
-    let mut packed_witness = vec![F128::default(); pcs.packed_len()];
-    for index in INNER_PRODUCT_SET_BITS {
-        set_packed_bit(&mut packed_witness, index);
+fn factored_inner_product_round_trip_succeeds_for_all_profiles_and_bindings() {
+    for profile in [
+        LigeritoProfile::Fast,
+        LigeritoProfile::Slim,
+        LigeritoProfile::Secure,
+    ] {
+        let fixture = inner_product_fixture(profile);
+        for binding in [StatementBinding::Bind, StatementBinding::AlreadyBound] {
+            let mut verifier = fixture.verifier(
+                &fixture.commitment,
+                &fixture.query,
+                fixture.proof(binding),
+                binding,
+            );
+            fixture
+                .pcs
+                .verify_lin(&fixture.commitment, &fixture.query, binding, &mut verifier)
+                .unwrap();
+            verifier.check_eof().unwrap();
+        }
     }
-    let (commitment, data) = pcs.commit(&packed_witness).unwrap();
-    let mle_query = OpeningQuery::Mle {
-        point,
-        target: target_from_point,
-    };
-    let inner_product_query = OpeningQuery::InnerProduct {
-        claim: LinearClaim::from_shape(&shape, row_weights, column_weights, target_from_weights)
-            .unwrap(),
-    };
-
-    let mle_instance = b"m22-factored-mle-weights/mle";
-    let mut mle_prover = build_prover(SESSION, mle_instance);
-    pcs.prove_lin(
-        &data,
-        packed_witness.clone(),
-        &mle_query,
-        StatementBinding::Bind,
-        &mut mle_prover,
-    )
-    .unwrap();
-    let mle_proof = mle_prover.finish();
-    let mut mle_verifier = build_verifier(SESSION, mle_instance, &mle_proof);
-    pcs.verify_lin(
-        &commitment,
-        &mle_query,
-        StatementBinding::Bind,
-        &mut mle_verifier,
-    )
-    .unwrap();
-    mle_verifier.check_eof().unwrap();
-
-    let inner_product_instance = b"m22-factored-mle-weights/inner-product";
-    let mut inner_product_prover = build_prover(SESSION, inner_product_instance);
-    pcs.prove_lin(
-        &data,
-        packed_witness,
-        &inner_product_query,
-        StatementBinding::Bind,
-        &mut inner_product_prover,
-    )
-    .unwrap();
-    let inner_product_proof = inner_product_prover.finish();
-    let mut inner_product_verifier =
-        build_verifier(SESSION, inner_product_instance, &inner_product_proof);
-    pcs.verify_lin(
-        &commitment,
-        &inner_product_query,
-        StatementBinding::Bind,
-        &mut inner_product_verifier,
-    )
-    .unwrap();
-    inner_product_verifier.check_eof().unwrap();
 }
 
 #[test]
-fn opening_query_variants_are_not_interchangeable() {
-    let fixture = inner_product_fixture();
-    let query = OpeningQuery::Mle {
-        point: vec![F128::from(2u64); M],
-        target: F128::default(),
-    };
-    let mut verifier = build_verifier(SESSION, INNER_PRODUCT_INSTANCE, &fixture.proof);
+fn factored_inner_product_prover_rejects_a_false_target() {
+    let shape = inner_product_shape();
+    let pcs = Pcs::new(&shape, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
+    let witness = inner_product_witness(pcs.packed_len());
+    let (commitment, data) = pcs.commit(&witness).unwrap();
+    let query = factored_query(&shape, inner_product_target(&shape) + F128::from(1u64));
 
-    assert_eq!(
-        fixture.pcs.verify_lin(
-            &fixture.commitment,
+    for binding in [StatementBinding::Bind, StatementBinding::AlreadyBound] {
+        let mut prover = build_prover(SESSION, INNER_PRODUCT_INSTANCE);
+        if binding == StatementBinding::AlreadyBound {
+            bind_outer_inner_product_statement(&mut prover, &pcs, &commitment, &query);
+        }
+        assert_eq!(
+            pcs.prove_lin(&data, witness.clone(), &query, binding, &mut prover),
+            Err(ProveError::InvalidClaim),
+        );
+    }
+}
+
+#[test]
+fn factored_inner_product_rejects_truncated_sumcheck_messages() {
+    let fixture = inner_product_fixture(LigeritoProfile::Fast);
+    for binding in [StatementBinding::Bind, StatementBinding::AlreadyBound] {
+        for length in [
+            0,
+            16,
+            SUMCHECK_ROUND_BYTES - 1,
+            SUMCHECK_EVALUATION_OFFSET - 1,
+            SUMCHECK_EVALUATION_OFFSET + 15,
+        ] {
+            let mut proof = fixture.proof(binding).clone();
+            proof.narg_string.truncate(length);
+            assert_eq!(
+                fixture.verify(&fixture.commitment, &fixture.query, &proof, binding),
+                Err(VerifyError::MalformedProof),
+            );
+        }
+    }
+}
+
+#[test]
+fn factored_inner_product_rejects_changed_sumcheck_coefficients_and_witness_evaluation() {
+    let fixture = inner_product_fixture(LigeritoProfile::Fast);
+    for binding in [StatementBinding::Bind, StatementBinding::AlreadyBound] {
+        for offset in [
+            0,
+            16,
+            32,
+            SUMCHECK_ROUND_BYTES * (M / 2) + 16,
+            SUMCHECK_ROUND_BYTES * (M - 1) + 32,
+            SUMCHECK_EVALUATION_OFFSET,
+        ] {
+            let mut proof = fixture.proof(binding).clone();
+            proof.narg_string[offset] ^= 1;
+            assert_eq!(
+                fixture.verify(&fixture.commitment, &fixture.query, &proof, binding),
+                Err(VerifyError::VerificationFailed),
+            );
+        }
+    }
+}
+
+#[test]
+fn factored_inner_product_rejects_statement_mutations() {
+    let fixture = inner_product_fixture(LigeritoProfile::Fast);
+    let OpeningQuery::InnerProduct { claim } = &fixture.query else {
+        unreachable!();
+    };
+
+    for binding in [StatementBinding::Bind, StatementBinding::AlreadyBound] {
+        for mutation in 0..3 {
+            let mut row_weights = claim.row_weights().to_vec();
+            let mut column_weights = claim.column_weights().to_vec();
+            let mut target = claim.target();
+            match mutation {
+                0 => row_weights[2] += F128::from(1u64),
+                1 => column_weights[2] += F128::from(1u64),
+                2 => target += F128::from(1u64),
+                _ => unreachable!(),
+            }
+            let query = OpeningQuery::InnerProduct {
+                claim: LinearClaim::from_shape(
+                    &inner_product_shape(),
+                    row_weights,
+                    column_weights,
+                    target,
+                )
+                .unwrap(),
+            };
+            assert_eq!(
+                fixture.verify(&fixture.commitment, &query, fixture.proof(binding), binding),
+                Err(VerifyError::VerificationFailed),
+            );
+        }
+
+        let mut commitment = fixture.commitment;
+        commitment.0[0] ^= 1;
+        assert_eq!(
+            fixture.verify(&commitment, &fixture.query, fixture.proof(binding), binding),
+            Err(VerifyError::VerificationFailed),
+        );
+    }
+}
+
+#[test]
+fn factored_inner_product_requires_complete_transcript_consumption() {
+    let fixture = inner_product_fixture(LigeritoProfile::Fast);
+    for binding in [StatementBinding::Bind, StatementBinding::AlreadyBound] {
+        for append_hint in [false, true] {
+            let mut proof = fixture.proof(binding).clone();
+            if append_hint {
+                proof.hints.push(0);
+            } else {
+                proof.narg_string.push(0);
+            }
+            let mut verifier =
+                fixture.verifier(&fixture.commitment, &fixture.query, &proof, binding);
+            fixture
+                .pcs
+                .verify_lin(&fixture.commitment, &fixture.query, binding, &mut verifier)
+                .unwrap();
+            assert!(verifier.check_eof().is_err());
+        }
+    }
+}
+
+#[test]
+fn zero_weight_factor_still_requires_the_correct_witness_evaluation() {
+    let shape = inner_product_shape();
+    let pcs = Pcs::new(&shape, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
+    let witness = inner_product_witness(pcs.packed_len());
+    let (commitment, data) = pcs.commit(&witness).unwrap();
+
+    for zero_rows in [true, false] {
+        let mut row_weights = (0..shape.rows()).map(factor_weight).collect::<Vec<_>>();
+        let mut column_weights = (0..shape.columns())
+            .map(|column| factor_weight(column + shape.rows()))
+            .collect::<Vec<_>>();
+        if zero_rows {
+            row_weights.fill(F128::default());
+        } else {
+            column_weights.fill(F128::default());
+        }
+        let query = OpeningQuery::InnerProduct {
+            claim: LinearClaim::from_shape(&shape, row_weights, column_weights, F128::default())
+                .unwrap(),
+        };
+        let mut prover = build_prover(SESSION, b"zero-inner-product-factor");
+        pcs.prove_lin(
+            &data,
+            witness.clone(),
             &query,
             StatementBinding::Bind,
-            &mut verifier,
-        ),
-        Err(VerifyError::VerificationFailed),
-    );
+            &mut prover,
+        )
+        .unwrap();
+        let proof = prover.finish();
+        let mut verifier = build_verifier(SESSION, b"zero-inner-product-factor", &proof);
+        pcs.verify_lin(&commitment, &query, StatementBinding::Bind, &mut verifier)
+            .unwrap();
+        verifier.check_eof().unwrap();
+
+        let mut changed_proof = proof;
+        changed_proof.narg_string[SUMCHECK_EVALUATION_OFFSET] ^= 1;
+        let mut verifier = build_verifier(SESSION, b"zero-inner-product-factor", &changed_proof);
+        assert_eq!(
+            pcs.verify_lin(&commitment, &query, StatementBinding::Bind, &mut verifier),
+            Err(VerifyError::VerificationFailed),
+        );
+    }
 }
 
 #[test]
@@ -381,180 +498,38 @@ fn factored_inner_product_rejects_wrong_weight_lengths() {
 }
 
 #[test]
-fn factored_inner_product_rejects_non_secure_profiles() {
-    let query = factored_query(&shape(), F128::default());
-    let proof = Proof::default();
-    let commitment = Root([0; 32]);
-
-    for profile in [LigeritoProfile::Fast, LigeritoProfile::Slim] {
-        let pcs = Pcs::new(&shape(), profile, HashKind::Blake3).unwrap();
-        let packed_witness = vec![F128::default(); pcs.packed_len()];
-        let (_, data) = pcs.commit(&packed_witness).unwrap();
-        let mut prover = build_prover(SESSION, b"unsupported-inner-product-profile");
-        assert_eq!(
-            pcs.prove_lin(
-                &data,
-                packed_witness,
-                &query,
-                StatementBinding::Bind,
-                &mut prover,
-            ),
-            Err(ProveError::UnsupportedInnerProductProfile),
-        );
-
-        let mut verifier = build_verifier(SESSION, b"unsupported-inner-product-profile", &proof);
-        assert_eq!(
-            pcs.verify_lin(&commitment, &query, StatementBinding::Bind, &mut verifier,),
-            Err(VerifyError::UnsupportedInnerProductProfile),
-        );
-    }
-}
-
-#[test]
-fn factored_inner_product_prover_rejects_a_false_target() {
-    let pcs = Pcs::new(&shape(), LigeritoProfile::Secure, HashKind::Blake3).unwrap();
+fn factored_inner_product_rejects_invalid_prover_inputs_before_sumcheck() {
+    let shape = inner_product_shape();
+    let pcs = Pcs::new(&shape, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
     let packed_witness = vec![F128::default(); pcs.packed_len()];
     let (_, data) = pcs.commit(&packed_witness).unwrap();
-    let query = factored_query(&shape(), F128::from(1u64));
-    let mut prover = build_prover(SESSION, b"false-inner-product");
+    let query = factored_query(&shape, F128::default());
 
+    let mut short_witness = packed_witness.clone();
+    short_witness.pop();
+    let mut prover = build_prover(SESSION, b"inner-product-wrong-packed-length");
     assert_eq!(
         pcs.prove_lin(
+            &data,
+            short_witness,
+            &query,
+            StatementBinding::Bind,
+            &mut prover,
+        ),
+        Err(ProveError::PackedWitnessLengthMismatch),
+    );
+
+    let other = Pcs::new(&shape, LigeritoProfile::Slim, HashKind::Blake3).unwrap();
+    let mut prover = build_prover(SESSION, b"inner-product-mismatched-parameters");
+    assert_eq!(
+        other.prove_lin(
             &data,
             packed_witness,
             &query,
             StatementBinding::Bind,
             &mut prover,
         ),
-        Err(ProveError::InvalidClaim),
-    );
-}
-
-#[test]
-fn factored_inner_product_accepts_an_already_bound_statement() {
-    let pcs = Pcs::new(&shape(), LigeritoProfile::Secure, HashKind::Blake3).unwrap();
-    let packed_witness = vec![F128::default(); pcs.packed_len()];
-    let query = factored_query(&shape(), F128::default());
-    let (commitment, data) = pcs.commit(&packed_witness).unwrap();
-
-    let mut prover = build_prover(SESSION, b"already-bound-inner-product");
-    bind_outer_inner_product_statement(&mut prover, &pcs, &commitment, &query);
-    pcs.prove_lin(
-        &data,
-        packed_witness,
-        &query,
-        StatementBinding::AlreadyBound,
-        &mut prover,
-    )
-    .unwrap();
-    let proof = prover.finish();
-
-    let mut verifier = build_verifier(SESSION, b"already-bound-inner-product", &proof);
-    bind_outer_inner_product_statement(&mut verifier, &pcs, &commitment, &query);
-    pcs.verify_lin(
-        &commitment,
-        &query,
-        StatementBinding::AlreadyBound,
-        &mut verifier,
-    )
-    .unwrap();
-    verifier.check_eof().unwrap();
-
-    let mut mismatched_verifier = build_verifier(SESSION, b"already-bound-inner-product", &proof);
-    bind_outer_inner_product_statement(&mut mismatched_verifier, &pcs, &commitment, &query);
-    assert!(
-        pcs.verify_lin(
-            &commitment,
-            &query,
-            StatementBinding::Bind,
-            &mut mismatched_verifier,
-        )
-        .is_err(),
-    );
-}
-
-#[test]
-fn factored_inner_product_rejects_statement_and_coordinate_mutations() {
-    let fixture = inner_product_fixture();
-    let OpeningQuery::InnerProduct { claim } = &fixture.query else {
-        unreachable!();
-    };
-    for change_row in [true, false] {
-        let mut row_weights = claim.row_weights().to_vec();
-        let mut column_weights = claim.column_weights().to_vec();
-        if change_row {
-            row_weights[2] += F128::from(1u64);
-        } else {
-            column_weights[2] += F128::from(1u64);
-        }
-        let changed_query = OpeningQuery::InnerProduct {
-            claim: LinearClaim::from_shape(
-                &inner_product_shape(),
-                row_weights,
-                column_weights,
-                claim.target(),
-            )
-            .unwrap(),
-        };
-        let mut verifier = build_verifier(SESSION, INNER_PRODUCT_INSTANCE, &fixture.proof);
-        assert!(
-            fixture
-                .pcs
-                .verify_lin(
-                    &fixture.commitment,
-                    &changed_query,
-                    StatementBinding::Bind,
-                    &mut verifier,
-                )
-                .is_err(),
-        );
-    }
-
-    let changed_query = OpeningQuery::InnerProduct {
-        claim: LinearClaim::from_shape(
-            &inner_product_shape(),
-            claim.row_weights().to_vec(),
-            claim.column_weights().to_vec(),
-            claim.target() + F128::from(1u64),
-        )
-        .unwrap(),
-    };
-    let mut verifier = build_verifier(SESSION, INNER_PRODUCT_INSTANCE, &fixture.proof);
-    assert_eq!(
-        fixture.pcs.verify_lin(
-            &fixture.commitment,
-            &changed_query,
-            StatementBinding::Bind,
-            &mut verifier,
-        ),
-        Err(VerifyError::VerificationFailed),
-    );
-
-    let mut changed_root = fixture.commitment.0;
-    changed_root[0] ^= 1;
-    let changed_commitment = Root(changed_root);
-    let mut verifier = build_verifier(SESSION, INNER_PRODUCT_INSTANCE, &fixture.proof);
-    assert_eq!(
-        fixture.pcs.verify_lin(
-            &changed_commitment,
-            &fixture.query,
-            StatementBinding::Bind,
-            &mut verifier,
-        ),
-        Err(VerifyError::VerificationFailed),
-    );
-
-    let mut changed_proof = fixture.proof.clone();
-    changed_proof.narg_string[1] ^= 1;
-    let mut verifier = build_verifier(SESSION, INNER_PRODUCT_INSTANCE, &changed_proof);
-    assert_eq!(
-        fixture.pcs.verify_lin(
-            &fixture.commitment,
-            &fixture.query,
-            StatementBinding::Bind,
-            &mut verifier,
-        ),
-        Err(VerifyError::VerificationFailed),
+        Err(ProveError::ProverDataMismatch),
     );
 }
 

@@ -14,5 +14,4 @@ flock-core = { workspace = true }
 transcript = { workspace = true }
 
 [dev-dependencies]
-poly = { workspace = true }
 proptest = { workspace = true }

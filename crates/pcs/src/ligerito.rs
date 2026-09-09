@@ -1,7 +1,7 @@
-//! Shared Ligerito for reduced linear claims.
+//! Ligerito for reduced MLE claims.
 //!
-//! Query modules derive one packed basis and target through their ring switch.
-//! This module validates the prover input and runs the common opening protocol.
+//! The MLE ring switch derives one packed basis and target.
+//! This module validates the prover input and runs the opening protocol.
 
 use bincode::Options;
 use field::F128;
@@ -10,7 +10,7 @@ use flock_core::pcs::LOG_PACKING;
 use flock_core::pcs::PcsParams;
 use flock_core::pcs::ligerito::{
     LigeritoProof, ProverConfig, VerifierConfig, recursive_prover_with_basis,
-    recursive_verifier_with_basis, recursive_verifier_with_basis_succinct,
+    recursive_verifier_with_basis_succinct,
 };
 use transcript::{ProverState, VerifierState};
 
@@ -78,11 +78,11 @@ pub(crate) struct ReducedClaim {
 pub(crate) struct ReducedProver<'a> {
     pcs: &'a Pcs,
     data: &'a ProverData,
-    packed_witness: Vec<FlockF128>,
+    packed_witness: Vec<F128>,
 }
 
 impl<'a> ReducedProver<'a> {
-    /// Validates and converts the packed witness before transcript mutation.
+    /// Validates the packed witness before transcript mutation.
     pub(crate) fn new(
         pcs: &'a Pcs,
         data: &'a ProverData,
@@ -95,12 +95,12 @@ impl<'a> ReducedProver<'a> {
         Ok(Self {
             pcs,
             data,
-            packed_witness: into_flock_f128s(packed_witness),
+            packed_witness,
         })
     }
 
-    /// Returns the packed witness for the query-specific ring switch.
-    pub(crate) fn witness(&self) -> &[FlockF128] {
+    /// Returns the packed witness for sumcheck and the MLE ring switch.
+    pub(crate) fn witness(&self) -> &[F128] {
         &self.packed_witness
     }
 
@@ -118,7 +118,7 @@ impl<'a> ReducedProver<'a> {
         let flock_data = self.data.flock_data();
         let ligerito = recursive_prover_with_basis(
             self.pcs.prover_config(),
-            self.packed_witness,
+            into_flock_f128s(self.packed_witness),
             packed_basis,
             packed_target,
             &flock_data.codeword,
@@ -265,29 +265,6 @@ pub(crate) fn read_proof(
         &commitment.0,
     )?;
     Ok(proof)
-}
-
-pub(crate) fn verify_dense(
-    pcs: &Pcs,
-    commitment: &Root,
-    proof: &LigeritoProof,
-    claim: ReducedClaim,
-    transcript: &mut VerifierState<'_>,
-) -> Result<(), VerifyError> {
-    let ReducedClaim {
-        packed_basis,
-        packed_target,
-    } = claim;
-    finish_verification(packed_target, transcript, |challenger| {
-        recursive_verifier_with_basis(
-            pcs.verifier_config(),
-            proof,
-            &packed_basis,
-            packed_target,
-            &commitment.0,
-            challenger,
-        )
-    })
 }
 
 pub(crate) fn verify_succinct<F>(

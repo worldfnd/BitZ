@@ -23,13 +23,3 @@ pub enum OpeningQuery {
         claim: LinearClaim<F128>,
     },
 }
-
-impl OpeningQuery {
-    /// Returns the transcript domain label for this query's ring-switch claims.
-    pub fn label(&self) -> &'static [u8] {
-        match self {
-            Self::Mle { .. } => b"f2z/pcs/mle-claims/v1",
-            Self::InnerProduct { .. } => b"f2z/pcs/bit-inner-product-claims/v1",
-        }
-    }
-}
