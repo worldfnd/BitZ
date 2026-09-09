@@ -9,9 +9,81 @@ use crate::utils::{
     sample_inner_product_batching_point, sample_mle_batching_point, write_claims,
 };
 use crate::{
-    CommitError, LigeritoProfile, OpeningQuery, Pcs, ProverData, Root, StatementBinding,
-    inner_product, mle,
+    LigeritoProfile, OpeningQuery, Pcs, ProverData, Root, StatementBinding, inner_product, mle,
 };
+
+/// Errors from opening proof creation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ProveError {
+    /// The packed witness length does not match the configured polynomial.
+    PackedWitnessLengthMismatch,
+    /// The weight count does not match the configured polynomial.
+    WeightLengthMismatch,
+    /// The evaluation point length does not match the committed polynomial.
+    PointLengthMismatch,
+    /// The retained prover data uses different PCS parameters.
+    ProverDataMismatch,
+    /// The claimed target does not match the supplied witness.
+    InvalidClaim,
+    /// The selected profile does not support arbitrary inner products.
+    UnsupportedInnerProductProfile,
+    /// The opening proof could not be serialized.
+    SerializationFailed,
+    /// The serialized opening proof exceeds the transcript hint limit.
+    ProofTooLarge,
+    /// An internal PCS invariant failed.
+    Internal,
+}
+
+/// Errors from opening proof verification.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum VerifyError {
+    /// The weight count does not match the configured polynomial.
+    WeightLengthMismatch,
+    /// The evaluation point length does not match the committed polynomial.
+    PointLengthMismatch,
+    /// The selected profile does not support arbitrary inner products.
+    UnsupportedInnerProductProfile,
+    /// The transcript does not contain one complete canonical opening proof.
+    MalformedProof,
+    /// The opening proof does not verify against the statement.
+    VerificationFailed,
+    /// An internal PCS invariant failed.
+    Internal,
+}
+
+/// Query validation shared by prover and verifier entry points.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum QueryError {
+    WeightLengthMismatch,
+    PointLengthMismatch,
+    UnsupportedInnerProductProfile,
+    Internal,
+}
+
+impl From<QueryError> for ProveError {
+    fn from(error: QueryError) -> Self {
+        match error {
+            QueryError::WeightLengthMismatch => Self::WeightLengthMismatch,
+            QueryError::PointLengthMismatch => Self::PointLengthMismatch,
+            QueryError::UnsupportedInnerProductProfile => Self::UnsupportedInnerProductProfile,
+            QueryError::Internal => Self::Internal,
+        }
+    }
+}
+
+impl From<QueryError> for VerifyError {
+    fn from(error: QueryError) -> Self {
+        match error {
+            QueryError::WeightLengthMismatch => Self::WeightLengthMismatch,
+            QueryError::PointLengthMismatch => Self::PointLengthMismatch,
+            QueryError::UnsupportedInnerProductProfile => Self::UnsupportedInnerProductProfile,
+            QueryError::Internal => Self::Internal,
+        }
+    }
+}
 
 pub(crate) fn prove(
     pcs: &Pcs,
@@ -20,7 +92,7 @@ pub(crate) fn prove(
     query: &OpeningQuery,
     statement_binding: StatementBinding,
     transcript: &mut ProverState,
-) -> Result<(), CommitError> {
+) -> Result<(), ProveError> {
     match query {
         OpeningQuery::Mle { point, target } => {
             let ring_switch = mle::RingSwitch::new(point, pcs.params().m)?;
@@ -66,7 +138,7 @@ pub(crate) fn verify(
     query: &OpeningQuery,
     statement_binding: StatementBinding,
     transcript: &mut VerifierState<'_>,
-) -> Result<(), CommitError> {
+) -> Result<(), VerifyError> {
     match query {
         OpeningQuery::Mle { point, target } => {
             let ring_switch = mle::RingSwitch::new(point, pcs.params().m)?;
@@ -78,7 +150,7 @@ pub(crate) fn verify(
             let proof = ligerito::read_proof(pcs, commitment, transcript)?;
             let claims = read_claims(transcript, ClaimDomain::Mle)?;
             if !ring_switch.target_matches(&claims, *target) {
-                return Err(CommitError::VerificationFailed);
+                return Err(VerifyError::VerificationFailed);
             }
 
             let batching_point = sample_mle_batching_point(transcript);
@@ -103,20 +175,16 @@ pub(crate) fn verify(
 
             let proof = ligerito::read_proof(pcs, commitment, transcript)?;
             let claims = read_claims(transcript, ClaimDomain::InnerProduct)?;
-            if !ring_switch.target_matches(&claims, *target) {
-                return Err(CommitError::VerificationFailed);
-            }
-
             let batching_point = sample_inner_product_batching_point(transcript);
-            let dense_reduction = ring_switch.reduce_dense(&claims, &batching_point);
+            let dense_reduction = ring_switch.reduce_verified(&claims, *target, &batching_point)?;
             ligerito::verify_dense(pcs, commitment, &proof, dense_reduction, transcript)
         }
     }
 }
 
-fn validate_inner_product_profile(pcs: &Pcs) -> Result<(), CommitError> {
+fn validate_inner_product_profile(pcs: &Pcs) -> Result<(), QueryError> {
     if pcs.params().profile != LigeritoProfile::Secure {
-        return Err(CommitError::UnsupportedInnerProductProfile);
+        return Err(QueryError::UnsupportedInnerProductProfile);
     }
     Ok(())
 }

@@ -2,7 +2,7 @@
 
 use common::{Root, TableError};
 use field::{F128, Fq};
-use pcs::{CommitError, HashKind, LigeritoProfile, Pcs};
+use pcs::{HashKind, LigeritoProfile, Pcs, VerifyError as PcsVerifyError};
 use prover::ProveError;
 use tests::{
     HonestStub, Instance, large_shape, narrow_shape, prover_transcript, verifier_transcript,
@@ -62,7 +62,7 @@ fn a_proof_replayed_under_a_different_commitment_is_refused() {
             &HonestStub,
             verifier_transcript(&proof)
         ),
-        Err(VerifyError::Opening(CommitError::VerificationFailed))
+        Err(VerifyError::Opening(PcsVerifyError::VerificationFailed))
     );
 }
 
@@ -136,7 +136,7 @@ fn an_opening_against_another_commitment_is_refused() {
             &HonestStub,
             verifier_transcript(&proof)
         ),
-        Err(VerifyError::Opening(CommitError::VerificationFailed))
+        Err(VerifyError::Opening(PcsVerifyError::VerificationFailed))
     );
 }
 
@@ -157,7 +157,7 @@ fn a_tampered_opening_proof_is_refused() {
             &HonestStub,
             verifier_transcript(&proof)
         ),
-        Err(VerifyError::Opening(CommitError::VerificationFailed))
+        Err(VerifyError::Opening(PcsVerifyError::VerificationFailed))
     );
 }
 
@@ -183,7 +183,7 @@ fn a_proof_verified_under_a_different_profile_is_refused() {
             &HonestStub,
             verifier_transcript(&proof)
         ),
-        Err(VerifyError::Opening(CommitError::VerificationFailed))
+        Err(VerifyError::Opening(PcsVerifyError::VerificationFailed))
     );
 }
 

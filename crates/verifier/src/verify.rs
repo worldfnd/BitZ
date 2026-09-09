@@ -1,7 +1,7 @@
 //! `VerifyF2Z`.
 
 use common::{LinearClaim, OpeningQuery, ReductionInput, Root};
-use pcs::{CommitError, CommitScheme, Pcs, StatementBinding};
+use pcs::{CommitScheme, Pcs, StatementBinding, VerifyError as OpeningVerifyError};
 use transcript::VerifierState;
 
 use crate::{F2ZVerifier, ReceiveError};
@@ -14,7 +14,7 @@ pub enum VerifyError<E> {
     /// The reduction failed.
     Reduction(E),
     /// The opening did not discharge the reduction's claim.
-    Opening(CommitError),
+    Opening(OpeningVerifyError),
     /// A stream held bytes the protocol never read.
     TrailingData,
 }

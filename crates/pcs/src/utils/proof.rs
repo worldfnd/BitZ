@@ -6,14 +6,14 @@ use bincode::Options;
 use flock_core::pcs::ligerito::LigeritoProof;
 use transcript::{ProverState, VerifierState};
 
-use crate::CommitError;
+use crate::{ProveError, VerifyError};
 
 const PROOF_HINT_LIMIT: usize = 64 * 1024 * 1024;
 
 pub(crate) fn write_opening_proof(
     proof: &LigeritoProof,
     transcript: &mut ProverState,
-) -> Result<(), CommitError> {
+) -> Result<(), ProveError> {
     let proof_bytes = proof_options()
         .serialize(proof)
         .map_err(map_serialization_error)?;
@@ -23,20 +23,20 @@ pub(crate) fn write_opening_proof(
 
 pub(crate) fn read_opening_proof(
     transcript: &mut VerifierState<'_>,
-) -> Result<LigeritoProof, CommitError> {
+) -> Result<LigeritoProof, VerifyError> {
     let proof_bytes = transcript
         .hint_bytes(PROOF_HINT_LIMIT)
-        .map_err(|_| CommitError::MalformedProof)?;
+        .map_err(|_| VerifyError::MalformedProof)?;
     proof_options()
         .deserialize(&proof_bytes)
-        .map_err(|_| CommitError::MalformedProof)
+        .map_err(|_| VerifyError::MalformedProof)
 }
 
-fn map_serialization_error(error: bincode::Error) -> CommitError {
+fn map_serialization_error(error: bincode::Error) -> ProveError {
     if matches!(error.as_ref(), bincode::ErrorKind::SizeLimit) {
-        CommitError::ProofTooLarge
+        ProveError::ProofTooLarge
     } else {
-        CommitError::SerializationFailed(error.to_string())
+        ProveError::SerializationFailed
     }
 }
 
@@ -57,13 +57,13 @@ mod tests {
     fn proof_serialization_errors_are_specific() {
         assert_eq!(
             map_serialization_error(Box::new(bincode::ErrorKind::SizeLimit)),
-            CommitError::ProofTooLarge
+            ProveError::ProofTooLarge
         );
         assert_eq!(
             map_serialization_error(Box::new(bincode::ErrorKind::Custom(
                 "serialization failed".to_owned(),
             ))),
-            CommitError::SerializationFailed("serialization failed".to_owned())
+            ProveError::SerializationFailed
         );
     }
 
@@ -76,7 +76,7 @@ mod tests {
 
         assert_eq!(
             read_opening_proof(&mut verifier),
-            Err(CommitError::MalformedProof)
+            Err(VerifyError::MalformedProof)
         );
     }
 
@@ -93,7 +93,7 @@ mod tests {
 
         assert_eq!(
             read_opening_proof(&mut verifier),
-            Err(CommitError::MalformedProof)
+            Err(VerifyError::MalformedProof)
         );
     }
 }

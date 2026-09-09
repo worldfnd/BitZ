@@ -15,9 +15,10 @@ use flock_core::pcs::ring_switch::{
 use flock_core::pcs::{LOG_PACKING, pack::PACKING_WIDTH as CLAIM_COUNT};
 use flock_core::zerocheck::univariate_skip::build_eq;
 
-use crate::CommitError;
+use crate::ProveError;
 use crate::bridge::{as_flock_f128, as_flock_f128s};
 use crate::ligerito::ReducedClaim;
+use crate::opening::QueryError;
 pub(super) type BatchingPoint = [FlockF128; LOG_PACKING];
 
 /// A validated MLE point split into packed and unpacked coordinates.
@@ -40,14 +41,12 @@ pub(super) struct SuccinctReduction<'a> {
 
 impl<'a> RingSwitch<'a> {
     /// Validates the point and records its field-compatible view.
-    pub(super) fn new(point: &'a [F128], variable_count: usize) -> Result<Self, CommitError> {
+    pub(super) fn new(point: &'a [F128], variable_count: usize) -> Result<Self, QueryError> {
         if point.len() != variable_count {
-            return Err(CommitError::PointLengthMismatch);
+            return Err(QueryError::PointLengthMismatch);
         }
         if variable_count < LOG_PACKING {
-            return Err(CommitError::invalid_configuration(format!(
-                "PCS variable count {variable_count} is smaller than the packing width {LOG_PACKING}"
-            )));
+            return Err(QueryError::Internal);
         }
         Ok(Self {
             point: as_flock_f128s(point),
@@ -64,15 +63,15 @@ impl<'a> RingSwitch<'a> {
         &self,
         packed_witness: &[FlockF128],
         claimed_target: F128,
-    ) -> Result<PreparedClaims, CommitError> {
+    ) -> Result<PreparedClaims, ProveError> {
         let (prefix_tensor, suffix_tensor) = build_eq_split(self.point, LOG_PACKING);
         if suffix_tensor.len() != packed_witness.len() {
-            return Err(CommitError::InvalidBitLength);
+            return Err(ProveError::PackedWitnessLengthMismatch);
         }
 
         let claims = claims_from_prover(fold_1b_rows_naive(packed_witness, &suffix_tensor))?;
         if claim_check(&prefix_tensor, &claims) != as_flock_f128(claimed_target) {
-            return Err(CommitError::InvalidClaim);
+            return Err(ProveError::InvalidClaim);
         }
 
         Ok(PreparedClaims {
@@ -153,14 +152,10 @@ fn batch_claims(claims: &[FlockF128; CLAIM_COUNT], batching_weights: &[FlockF128
 }
 
 /// Converts the prover result into the fixed protocol shape.
-fn claims_from_prover(values: Vec<FlockF128>) -> Result<[FlockF128; CLAIM_COUNT], CommitError> {
-    let values: [FlockF128; CLAIM_COUNT] =
-        values.try_into().map_err(|values: Vec<FlockF128>| {
-            CommitError::invalid_configuration(format!(
-                "Flock produced {} MLE ring-switch claims, expected {CLAIM_COUNT}",
-                values.len(),
-            ))
-        })?;
+fn claims_from_prover(values: Vec<FlockF128>) -> Result<[FlockF128; CLAIM_COUNT], ProveError> {
+    let values: [FlockF128; CLAIM_COUNT] = values
+        .try_into()
+        .map_err(|_: Vec<FlockF128>| ProveError::Internal)?;
     Ok(values)
 }
 

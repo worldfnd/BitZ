@@ -32,6 +32,8 @@
 //! - [`ProverData`] retains the codeword and Merkle tree after commitment.
 //! - [`OpeningQuery`] contains an MLE point or explicit inner-product weights.
 //! - [`CommitScheme`] connects commitment, proving, and verification to project transcripts.
+//! - [`ConfigError`] reports configuration failures.
+//! - [`CommitError`], [`ProveError`], and [`VerifyError`] report operation-specific failures.
 //!
 //! The caller packs and retains the witness after [`CommitScheme::commit`].
 //! [`CommitScheme::prove_lin`] dispatches both query variants.
@@ -98,9 +100,10 @@ mod utils;
 use field::F128;
 use transcript::{ProverState, VerifierState};
 
-pub use commitment::{HashKind, Pcs, ProverData};
+pub use commitment::{CommitError, ConfigError, HashKind, Pcs, ProverData};
 pub use common::{OpeningQuery, Root};
 pub use flock_core::pcs::ligerito::LigeritoProfile;
+pub use opening::{ProveError, VerifyError};
 
 /// Controls statement binding for one opening.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -111,38 +114,6 @@ pub enum StatementBinding {
     ///
     /// The caller must bind the same PCS parameters, commitment, query variant, fields, and target.
     AlreadyBound,
-}
-
-/// Errors from commitment and linear-query operations.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum CommitError {
-    /// The packed witness represents an unsupported bit length.
-    InvalidBitLength,
-    /// The evaluation point does not match the committed polynomial.
-    PointLengthMismatch,
-    /// The explicit weights do not match the committed bit vector.
-    WeightLengthMismatch,
-    /// The scheme configuration is not valid for Flock, with a description of the failed check.
-    InvalidConfiguration(String),
-    /// The transcript does not contain a complete canonical proof.
-    MalformedProof,
-    /// The opening proof could not be serialized, with the serializer message.
-    SerializationFailed(String),
-    /// The serialized opening proof exceeds the transcript hint limit.
-    ProofTooLarge,
-    /// The linear-query proof did not verify.
-    VerificationFailed,
-    /// The prover received an invalid linear claim.
-    InvalidClaim,
-    /// Arbitrary inner products require the unique-decoding profile.
-    UnsupportedInnerProductProfile,
-}
-
-impl CommitError {
-    pub(crate) fn invalid_configuration(description: impl Into<String>) -> Self {
-        Self::InvalidConfiguration(description.into())
-    }
 }
 
 /// A polynomial commitment scheme for linear claims over committed bit tables.
@@ -176,7 +147,7 @@ pub trait CommitScheme {
         query: &OpeningQuery,
         statement_binding: StatementBinding,
         transcript: &mut ProverState,
-    ) -> Result<(), CommitError>;
+    ) -> Result<(), ProveError>;
 
     /// Verifies either opening query against `commitment`.
     ///
@@ -187,7 +158,7 @@ pub trait CommitScheme {
         query: &OpeningQuery,
         statement_binding: StatementBinding,
         transcript: &mut VerifierState<'_>,
-    ) -> Result<(), CommitError>;
+    ) -> Result<(), VerifyError>;
 }
 
 impl CommitScheme for Pcs {
@@ -208,7 +179,7 @@ impl CommitScheme for Pcs {
         query: &OpeningQuery,
         statement_binding: StatementBinding,
         transcript: &mut ProverState,
-    ) -> Result<(), CommitError> {
+    ) -> Result<(), ProveError> {
         opening::prove(
             self,
             data,
@@ -225,7 +196,7 @@ impl CommitScheme for Pcs {
         query: &OpeningQuery,
         statement_binding: StatementBinding,
         transcript: &mut VerifierState<'_>,
-    ) -> Result<(), CommitError> {
+    ) -> Result<(), VerifyError> {
         opening::verify(self, commitment, query, statement_binding, transcript)
     }
 }

@@ -18,9 +18,10 @@ use flock_core::field::F128 as FlockF128;
 use flock_core::pcs::pack::PACKING_WIDTH as CLAIM_COUNT;
 use flock_core::pcs::ring_switch::{inner_product, tensor_algebra_transpose};
 
-use crate::CommitError;
 use crate::bridge::as_flock_f128s;
 use crate::ligerito::ReducedClaim;
+use crate::opening::QueryError;
+use crate::{ProveError, VerifyError};
 
 pub(super) type BatchingPoint = [FlockF128; CLAIM_COUNT];
 const _: () = assert!(CLAIM_COUNT == 128);
@@ -32,9 +33,9 @@ pub(super) struct RingSwitch<'a> {
 
 impl<'a> RingSwitch<'a> {
     /// Validates one weight for every bit in the packed witness.
-    pub(super) fn new(weights: &'a [F128], bit_len: usize) -> Result<Self, CommitError> {
+    pub(super) fn new(weights: &'a [F128], bit_len: usize) -> Result<Self, QueryError> {
         if weights.len() != bit_len {
-            return Err(CommitError::WeightLengthMismatch);
+            return Err(QueryError::WeightLengthMismatch);
         }
         Ok(Self { weights })
     }
@@ -44,24 +45,15 @@ impl<'a> RingSwitch<'a> {
         &self,
         packed_witness: &[FlockF128],
         claimed_target: F128,
-    ) -> Result<[FlockF128; CLAIM_COUNT], CommitError> {
+    ) -> Result<[FlockF128; CLAIM_COUNT], ProveError> {
         if packed_witness.len() != self.weights.len() / CLAIM_COUNT {
-            return Err(CommitError::InvalidBitLength);
+            return Err(ProveError::PackedWitnessLengthMismatch);
         }
         let claims = compute_claims(packed_witness, self.weights);
-        if !self.target_matches(&claims, claimed_target) {
-            return Err(CommitError::InvalidClaim);
+        if reconstructed_target(&claims) != claimed_target {
+            return Err(ProveError::InvalidClaim);
         }
         Ok(claims)
-    }
-
-    /// Checks the original target against proof-provided coordinate claims.
-    pub(super) fn target_matches(
-        &self,
-        claims: &[FlockF128; CLAIM_COUNT],
-        claimed_target: F128,
-    ) -> bool {
-        reconstructed_target(claims) == claimed_target
     }
 
     /// Reduces the coordinate claims to one dense Ligerito claim.
@@ -76,6 +68,19 @@ impl<'a> RingSwitch<'a> {
             packed_basis,
             packed_target,
         }
+    }
+
+    /// Checks proof claims and reduces them to one dense Ligerito claim.
+    pub(super) fn reduce_verified(
+        &self,
+        claims: &[FlockF128; CLAIM_COUNT],
+        claimed_target: F128,
+        batching_point: &BatchingPoint,
+    ) -> Result<ReducedClaim, VerifyError> {
+        if reconstructed_target(claims) != claimed_target {
+            return Err(VerifyError::VerificationFailed);
+        }
+        Ok(self.reduce_dense(claims, batching_point))
     }
 }
 

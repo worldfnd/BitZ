@@ -6,7 +6,7 @@ use flock_core::field::F128 as FlockF128;
 use flock_core::pcs::{LOG_PACKING, pack::PACKING_WIDTH as CLAIM_COUNT};
 use transcript::{ProverState, VerifierState};
 
-use crate::CommitError;
+use crate::VerifyError;
 use crate::bridge::{as_flock_f128, from_flock_f128};
 
 use super::PublicTranscript;
@@ -52,7 +52,7 @@ pub(crate) fn write_claims(
 pub(crate) fn read_claims(
     transcript: &mut VerifierState<'_>,
     domain: ClaimDomain,
-) -> Result<[FlockF128; CLAIM_COUNT], CommitError> {
+) -> Result<[FlockF128; CLAIM_COUNT], VerifyError> {
     let expected_header = event_header(
         domain as u16,
         SINGLE_OPENING_SCOPE,
@@ -62,15 +62,15 @@ pub(crate) fn read_claims(
     );
     let header = transcript
         .prover_message::<[u8; EVENT_HEADER_LEN]>()
-        .map_err(|_| CommitError::MalformedProof)?;
+        .map_err(|_| VerifyError::MalformedProof)?;
     if header != expected_header {
-        return Err(CommitError::MalformedProof);
+        return Err(VerifyError::MalformedProof);
     }
     let count = transcript
         .prover_message::<u32>()
-        .map_err(|_| CommitError::MalformedProof)?;
+        .map_err(|_| VerifyError::MalformedProof)?;
     if count as usize != CLAIM_COUNT {
-        return Err(CommitError::MalformedProof);
+        return Err(VerifyError::MalformedProof);
     }
 
     let mut claims = [FlockF128::ZERO; CLAIM_COUNT];
@@ -78,7 +78,7 @@ pub(crate) fn read_claims(
         *claim = transcript
             .prover_message::<field::F128>()
             .map(as_flock_f128)
-            .map_err(|_| CommitError::MalformedProof)?;
+            .map_err(|_| VerifyError::MalformedProof)?;
     }
     Ok(claims)
 }
@@ -263,7 +263,7 @@ mod tests {
 
         assert_eq!(
             read_claims(&mut verifier, ClaimDomain::InnerProduct),
-            Err(CommitError::MalformedProof),
+            Err(VerifyError::MalformedProof),
         );
     }
 

@@ -8,7 +8,6 @@
 
 use core::mem::size_of;
 
-use crate::CommitError;
 use crate::bridge::as_flock_f128s;
 use crate::ligerito::CheckedLigerito;
 use common::{Root, Shape};
@@ -23,6 +22,22 @@ use transcript::Encoding;
 /// The value `6` selects 64 lanes
 /// See: https://github.com/succinctlabs/flock/blob/879072249e52b8b9054bf0c6a034cec20f8f6fc7/crates/flock-core/src/pcs/ligerito.rs#L1245
 const LIGERITO_INITIAL_K: usize = 6;
+
+/// Errors from PCS configuration.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ConfigError {
+    /// The configuration violates the named invariant.
+    Invalid(&'static str),
+}
+
+/// Errors from commitment creation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CommitError {
+    /// The packed witness length does not match the configured polynomial.
+    PackedWitnessLengthMismatch,
+}
 
 #[derive(Clone, Debug)]
 pub struct Pcs {
@@ -43,11 +58,11 @@ impl Pcs {
         shape: &Shape,
         security_profile: LigeritoProfile,
         merkle_hash: HashKind,
-    ) -> Result<Self, CommitError> {
+    ) -> Result<Self, ConfigError> {
         let m = shape.log_bits();
-        let bit_len = 1usize.checked_shl(m as u32).ok_or_else(|| {
-            CommitError::invalid_configuration(format!("bit length 2^{m} does not fit usize"))
-        })?;
+        let bit_len = 1usize
+            .checked_shl(m as u32)
+            .ok_or(ConfigError::Invalid("bit length overflow"))?;
         let params = PcsParams {
             m,
             log_inv_rate: security_profile.log_inv_rate(),
@@ -58,9 +73,7 @@ impl Pcs {
         let checked_ligerito = CheckedLigerito::new(&params)?;
         let packed_len = 1usize
             .checked_shl(checked_ligerito.log_n_u32())
-            .ok_or_else(|| {
-                CommitError::invalid_configuration("packed witness length does not fit usize")
-            })?;
+            .ok_or(ConfigError::Invalid("packed length overflow"))?;
 
         Ok(Self {
             params,
@@ -74,7 +87,7 @@ impl Pcs {
     pub fn commit(&self, packed_witness: &[F128]) -> Result<(Root, ProverData), CommitError> {
         // 1. Input Validation
         if packed_witness.len() != self.packed_len() {
-            return Err(CommitError::InvalidBitLength);
+            return Err(CommitError::PackedWitnessLengthMismatch);
         }
 
         // 2. Commit Packed Witness
@@ -254,7 +267,7 @@ mod tests {
 
             prop_assert!(matches!(
                 pcs.commit(&packed_witness),
-                Err(CommitError::InvalidBitLength)
+                Err(CommitError::PackedWitnessLengthMismatch)
             ));
         }
     }

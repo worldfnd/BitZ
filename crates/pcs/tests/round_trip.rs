@@ -3,7 +3,8 @@ use std::sync::OnceLock;
 use common::Shape;
 use field::F128;
 use pcs::{
-    CommitError, CommitScheme, HashKind, LigeritoProfile, OpeningQuery, Pcs, Root, StatementBinding,
+    CommitScheme, HashKind, LigeritoProfile, OpeningQuery, Pcs, ProveError, Root, StatementBinding,
+    VerifyError,
 };
 use poly::eq_table;
 use transcript::{Proof, PublicTranscript, build_prover, build_verifier};
@@ -321,7 +322,7 @@ fn opening_query_variants_are_not_interchangeable() {
             StatementBinding::Bind,
             &mut verifier,
         ),
-        Err(CommitError::MalformedProof),
+        Err(VerifyError::MalformedProof),
     );
 }
 
@@ -344,14 +345,14 @@ fn arbitrary_inner_product_rejects_wrong_weight_lengths() {
             StatementBinding::Bind,
             &mut prover,
         ),
-        Err(CommitError::WeightLengthMismatch),
+        Err(ProveError::WeightLengthMismatch),
     );
 
     let proof = Proof::default();
     let mut verifier = build_verifier(SESSION, b"wrong-inner-product-weight-count", &proof);
     assert_eq!(
-        pcs.verify_lin(&commitment, &query, StatementBinding::Bind, &mut verifier,),
-        Err(CommitError::WeightLengthMismatch),
+        pcs.verify_lin(&commitment, &query, StatementBinding::Bind, &mut verifier),
+        Err(VerifyError::WeightLengthMismatch),
     );
 }
 
@@ -377,13 +378,13 @@ fn arbitrary_inner_product_rejects_non_secure_profiles() {
                 StatementBinding::Bind,
                 &mut prover,
             ),
-            Err(CommitError::UnsupportedInnerProductProfile),
+            Err(ProveError::UnsupportedInnerProductProfile),
         );
 
         let mut verifier = build_verifier(SESSION, b"unsupported-inner-product-profile", &proof);
         assert_eq!(
             pcs.verify_lin(&commitment, &query, StatementBinding::Bind, &mut verifier,),
-            Err(CommitError::UnsupportedInnerProductProfile),
+            Err(VerifyError::UnsupportedInnerProductProfile),
         );
     }
 }
@@ -407,7 +408,7 @@ fn arbitrary_inner_product_prover_rejects_a_false_target() {
             StatementBinding::Bind,
             &mut prover,
         ),
-        Err(CommitError::InvalidClaim),
+        Err(ProveError::InvalidClaim),
     );
 }
 
@@ -491,7 +492,7 @@ fn arbitrary_inner_product_rejects_statement_and_coordinate_mutations() {
             StatementBinding::Bind,
             &mut verifier,
         ),
-        Err(CommitError::VerificationFailed),
+        Err(VerifyError::VerificationFailed),
     );
 
     let mut changed_root = fixture.commitment.0;
@@ -505,7 +506,7 @@ fn arbitrary_inner_product_rejects_statement_and_coordinate_mutations() {
             StatementBinding::Bind,
             &mut verifier,
         ),
-        Err(CommitError::VerificationFailed),
+        Err(VerifyError::VerificationFailed),
     );
 
     let mut changed_proof = fixture.proof.clone();
@@ -518,7 +519,7 @@ fn arbitrary_inner_product_rejects_statement_and_coordinate_mutations() {
             StatementBinding::Bind,
             &mut verifier,
         ),
-        Err(CommitError::VerificationFailed),
+        Err(VerifyError::VerificationFailed),
     );
 }
 
@@ -604,7 +605,7 @@ fn real_pcs_rejects_point_length_mismatches() {
             StatementBinding::Bind,
             &mut prover,
         ),
-        Err(CommitError::PointLengthMismatch)
+        Err(ProveError::PointLengthMismatch)
     );
 
     let long_query = OpeningQuery::Mle {
@@ -620,7 +621,7 @@ fn real_pcs_rejects_point_length_mismatches() {
             StatementBinding::Bind,
             &mut verifier,
         ),
-        Err(CommitError::PointLengthMismatch)
+        Err(VerifyError::PointLengthMismatch)
     );
 }
 
@@ -644,7 +645,7 @@ fn real_pcs_rejects_packed_witness_length_mismatches_during_opening() {
             StatementBinding::Bind,
             &mut prover,
         ),
-        Err(CommitError::InvalidBitLength)
+        Err(ProveError::PackedWitnessLengthMismatch)
     );
 }
 
@@ -660,7 +661,7 @@ fn real_pcs_rejects_mismatched_prover_parameters() {
     };
     let mut prover = build_prover(SESSION, b"mismatched-parameters");
 
-    assert!(matches!(
+    assert_eq!(
         other.prove_lin(
             &data,
             packed_witness,
@@ -668,9 +669,8 @@ fn real_pcs_rejects_mismatched_prover_parameters() {
             StatementBinding::Bind,
             &mut prover,
         ),
-        Err(CommitError::InvalidConfiguration(description))
-            if description.starts_with("prover data parameters do not match the active PCS")
-    ));
+        Err(ProveError::ProverDataMismatch),
+    );
 }
 
 #[test]
@@ -693,7 +693,7 @@ fn real_pcs_prover_rejects_a_false_evaluation_without_consuming_prover_data() {
             StatementBinding::Bind,
             &mut prover,
         ),
-        Err(CommitError::InvalidClaim)
+        Err(ProveError::InvalidClaim)
     );
     assert_eq!(data.codeword_len(), codeword_len);
 }
@@ -726,7 +726,7 @@ fn real_pcs_rejects_an_opening_for_a_different_packed_witness() {
 
     assert_eq!(
         pcs.verify_lin(&commitment, &query, StatementBinding::Bind, &mut verifier,),
-        Err(CommitError::VerificationFailed)
+        Err(VerifyError::VerificationFailed)
     );
 }
 
@@ -747,7 +747,7 @@ fn real_pcs_rejects_statement_mutations() {
             StatementBinding::Bind,
             &mut verifier,
         ),
-        Err(CommitError::VerificationFailed)
+        Err(VerifyError::VerificationFailed)
     );
 
     let mut changed_root = fixture.commitment.0;
@@ -761,7 +761,7 @@ fn real_pcs_rejects_statement_mutations() {
             StatementBinding::Bind,
             &mut verifier,
         ),
-        Err(CommitError::VerificationFailed)
+        Err(VerifyError::VerificationFailed)
     );
 }
 
@@ -779,7 +779,7 @@ fn real_pcs_rejects_malformed_transcript_streams() {
             StatementBinding::Bind,
             &mut verifier,
         ),
-        Err(CommitError::MalformedProof)
+        Err(VerifyError::MalformedProof)
     );
 
     let mut truncated_hint = fixture.proof.clone();
@@ -792,7 +792,7 @@ fn real_pcs_rejects_malformed_transcript_streams() {
             StatementBinding::Bind,
             &mut verifier,
         ),
-        Err(CommitError::MalformedProof)
+        Err(VerifyError::MalformedProof)
     );
 
     let mut changed_hint = fixture.proof.clone();
@@ -805,7 +805,7 @@ fn real_pcs_rejects_malformed_transcript_streams() {
             StatementBinding::Bind,
             &mut verifier,
         ),
-        Err(CommitError::MalformedProof)
+        Err(VerifyError::MalformedProof)
     );
 }
 
