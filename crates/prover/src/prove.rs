@@ -29,6 +29,8 @@ pub enum ProveError<E> {
 ///
 /// TODO: #8 implements this. Until then the round trip stubs it, so the
 /// transcript order below is exercised and the reduction's argument is not.
+///
+/// Xander: This trait only for mock testing?
 pub trait Reduction<const Q: u128> {
     type Error;
 
@@ -38,6 +40,57 @@ pub trait Reduction<const Q: u128> {
         table: &BitTable<'_>,
         transcript: &mut ProverState,
     ) -> Result<OpeningQuery, Self::Error>;
+}
+
+/// Stands in for #8: runs the grand-product circuit and its sumcheck, but
+/// does not yet turn the resulting claim into a discharged [`OpeningQuery`].
+#[derive(Debug, Default, Clone, Copy)]
+pub struct GkrReduction;
+
+impl<const Q: u128> Reduction<Q> for GkrReduction {
+    type Error = ();
+
+    fn reduce(
+        &self,
+        input: &ReductionInput<'_, Q>,
+        table: &BitTable<'_>,
+        transcript: &mut ProverState,
+    ) -> Result<OpeningQuery, Self::Error> {
+        let fold = input.fold;
+
+        // build input based on row_image and the bit table.
+        let dim = table.shape().columns() * table.shape().rows();
+        let mut leafs: Vec<_> = vec![F128::zero(); dim];
+
+        // Do not have to do a bit reverse here, but can do it at the end on the new value
+        for b in 0..table.shape().rows() {
+            for c in 0..table.shape().columns() {
+                leafs[b * table.shape().columns() + c] = if table.bit(c, b) {
+                    fold.row_images[b]
+                } else {
+                    F128::ONE
+                };
+            }
+        }
+
+        let circuit = GrandProductCircuit::new(leafs);
+        let (_last_value, witnesses) = circuit.batched_eval(table.shape().columns());
+
+        // First point is only the c so that should be fine.
+        let mut point = fold.zeta.clone();
+        // Doesn't have to actually reverse can also take a reverse iterator.
+        point.reverse();
+
+        let point = VecDeque::from(point);
+        // Should equal to the same thing after reversing the points
+        // debug_assert_eq!(fold.e0, gkr::mle(last_value, &point));
+
+        let (_point, _gkr_claim) = gpgkr_prove(transcript, point, witnesses);
+
+        // TODO(#8): turn the sumcheck's output claim into a discharged `OpeningQuery`.
+        // Alex / Sina
+        todo!("#8")
+    }
 }
 
 impl<const Q: u128> F2ZProver<Q> {
@@ -84,38 +137,6 @@ impl<const Q: u128> F2ZProver<Q> {
 
         // Step 4: the grand product over the folds, then the sumcheck that
         // turns its affine leaf into a claim on the committed bits.
-
-        // Move into ReductionInput
-        // build input based on row_image and the bit table.
-        let dim = table.shape().columns() * table.shape().rows();
-        let mut leafs: Vec<_> = vec![F128::zero(); dim];
-
-        // Do not have to do a bit reverse here, but can do it at the end on the new value
-        for b in 0..table.shape().rows() {
-            for c in 0..table.shape().columns() {
-                leafs[b * table.shape().columns() + c] = if table.bit(c, b) {
-                    fold.row_images[b]
-                } else {
-                    F128::ONE
-                };
-            }
-        }
-
-        let circuit = GrandProductCircuit::new(leafs);
-        let (last_value, witnesses) = circuit.batched_eval(table.shape().columns());
-
-        // First point is only the c so that should be fine.
-        let mut point = fold.zeta.clone();
-        // Doesn't have to actually reverse can also take a reverse iterator.
-        point.reverse();
-
-        let point = VecDeque::from(point);
-        // Should equal to the same thing after reversing the points
-        // debug_assert_eq!(fold.e0, gkr::mle(last_value, &point));
-
-        let gkr_claim = gpgkr_prove(transcript, point, witnesses);
-
-        // TODO(#8): both live behind `Reduction`, which nothing implements yet.
         let input = ReductionInput {
             params: self.params(),
             claim,
