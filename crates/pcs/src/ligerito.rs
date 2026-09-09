@@ -15,7 +15,7 @@ use transcript::{ProverState, VerifierState};
 
 use crate::bridge::into_flock_f128s;
 use crate::challenger::{ProverChallenger, VerifierChallenger};
-use crate::utils::{observe_opening_target, read_opening_proof, write_opening_proof};
+use crate::utils::{read_opening_proof, write_opening_proof};
 use crate::{ConfigError, Pcs, ProveError, ProverData, Root, VerifyError};
 
 #[derive(Clone, Debug)]
@@ -112,7 +112,6 @@ impl<'a> ReducedProver<'a> {
             packed_basis,
             packed_target,
         } = claim;
-        observe_opening_target(transcript, self.pcs.opening_log_n(), packed_target);
         let mut challenger = ProverChallenger::new_ligerito(transcript, packed_target);
         let flock_data = self.data.flock_data();
         let ligerito = recursive_prover_with_basis(
@@ -277,21 +276,16 @@ pub(crate) fn verify_dense(
         packed_basis,
         packed_target,
     } = claim;
-    finish_verification(
-        pcs.opening_log_n(),
-        packed_target,
-        transcript,
-        |challenger| {
-            recursive_verifier_with_basis(
-                pcs.verifier_config(),
-                proof,
-                &packed_basis,
-                packed_target,
-                &commitment.0,
-                challenger,
-            )
-        },
-    )
+    finish_verification(packed_target, transcript, |challenger| {
+        recursive_verifier_with_basis(
+            pcs.verifier_config(),
+            proof,
+            &packed_basis,
+            packed_target,
+            &commitment.0,
+            challenger,
+        )
+    })
 }
 
 pub(crate) fn verify_succinct<F>(
@@ -306,31 +300,24 @@ pub(crate) fn verify_succinct<F>(
 where
     F: Fn(&[FlockF128], usize) -> Vec<FlockF128>,
 {
-    finish_verification(
-        pcs.opening_log_n(),
-        packed_target,
-        transcript,
-        |challenger| {
-            recursive_verifier_with_basis_succinct(
-                pcs.verifier_config(),
-                proof,
-                log_n,
-                packed_target,
-                &commitment.0,
-                evaluate_basis,
-                challenger,
-            )
-        },
-    )
+    finish_verification(packed_target, transcript, |challenger| {
+        recursive_verifier_with_basis_succinct(
+            pcs.verifier_config(),
+            proof,
+            log_n,
+            packed_target,
+            &commitment.0,
+            evaluate_basis,
+            challenger,
+        )
+    })
 }
 
 fn finish_verification<'proof>(
-    opening_log_n: u32,
     packed_target: FlockF128,
     transcript: &mut VerifierState<'proof>,
     verify: impl FnOnce(&mut VerifierChallenger<'_, 'proof>) -> bool,
 ) -> Result<(), VerifyError> {
-    observe_opening_target(transcript, opening_log_n, packed_target);
     let mut challenger = VerifierChallenger::new_ligerito(transcript, packed_target);
     let valid = verify(&mut challenger);
     if challenger.failed() {

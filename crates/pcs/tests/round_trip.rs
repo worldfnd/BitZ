@@ -322,7 +322,7 @@ fn opening_query_variants_are_not_interchangeable() {
             StatementBinding::Bind,
             &mut verifier,
         ),
-        Err(VerifyError::MalformedProof),
+        Err(VerifyError::VerificationFailed),
     );
 }
 
@@ -510,7 +510,7 @@ fn arbitrary_inner_product_rejects_statement_and_coordinate_mutations() {
     );
 
     let mut changed_proof = fixture.proof.clone();
-    changed_proof.narg_string[24 + 4 + 1] ^= 1;
+    changed_proof.narg_string[1] ^= 1;
     let mut verifier = build_verifier(SESSION, INNER_PRODUCT_INSTANCE, &changed_proof);
     assert_eq!(
         fixture.pcs.verify_lin(
@@ -769,9 +769,9 @@ fn real_pcs_rejects_statement_mutations() {
 fn real_pcs_rejects_malformed_transcript_streams() {
     let fixture = fixture();
 
-    let mut changed_stream = fixture.proof.clone();
-    changed_stream.narg_string[0] ^= 1;
-    let mut verifier = build_verifier(SESSION, INSTANCE, &changed_stream);
+    let mut truncated_stream = fixture.proof.clone();
+    truncated_stream.narg_string.truncate(1);
+    let mut verifier = build_verifier(SESSION, INSTANCE, &truncated_stream);
     assert_eq!(
         fixture.pcs.verify_lin(
             &fixture.commitment,

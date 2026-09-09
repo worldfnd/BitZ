@@ -120,10 +120,6 @@ impl Pcs {
         &self.params
     }
 
-    pub(crate) fn opening_log_n(&self) -> u32 {
-        self.checked_ligerito.log_n_u32()
-    }
-
     pub(crate) fn prover_config(&self) -> &flock_core::pcs::ligerito::ProverConfig {
         self.checked_ligerito.prover_config()
     }
