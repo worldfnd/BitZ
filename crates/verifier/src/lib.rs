@@ -6,4 +6,4 @@ pub mod verify;
 
 pub use fold::ReceiveError;
 pub use setup::F2ZVerifier;
-pub use verify::{GkrReduction, Reduction, VerifyError};
+pub use verify::{Reduce, Reduction, VerifyError};

@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 
-use common::{LinearClaim, OpeningQuery, ReductionInput, Root};
+use common::{Fold, LinearClaim, OpeningQuery, ReductionInput, Root};
 use field::F128;
 use num_traits::ConstOne;
 use pcs::{CommitError, CommitScheme, Pcs, StatementBinding};
@@ -40,10 +40,14 @@ pub trait Reduction<const Q: u128> {
 /// Stands in for #8: runs the sumcheck verifier over the grand product, but
 /// does not yet turn the resulting claim into a discharged [`OpeningQuery`].
 #[derive(Debug, Default, Clone, Copy)]
-pub struct GkrReduction;
+pub struct Reduce;
 
-impl<const Q: u128> Reduction<Q> for GkrReduction {
-    type Error = ();
+pub enum ReduceError {
+    GKR,
+}
+
+impl<const Q: u128> Reduction<Q> for Reduce {
+    type Error = ReduceError;
 
     fn reduce(
         &self,
@@ -52,35 +56,38 @@ impl<const Q: u128> Reduction<Q> for GkrReduction {
     ) -> Result<OpeningQuery, Self::Error> {
         let fold = input.fold;
 
-        // build input based on row_image and the bit table.
-        let mut point = fold.zeta.clone();
-        point.reverse();
-        let point = VecDeque::from(point);
-
-        // Dealing with row_images.len() = 0
-        let r1 = fold.row_images.len().ilog2();
-
-        let (mut point, mle_leaf_claim) =
-            gkr::gpgkr_verify(transcript, fold.e0, point, r1).ok_or(())?;
-
-        // Conversion here feel unnecessary
-        let alfa_c = Vec::from(point.split_off(r1 as usize));
-        let alfa_b = Vec::from(point);
-
-        let _inner_product_claim = mle_leaf_claim - F128::ONE;
-        // How can we reuse the space that is there?
-        // Could reuse the space of the eq_table, but is there a better way?
-        let _u1: Vec<_> = fold
-            .row_images
-            .iter()
-            .zip(poly::eq_table(&alfa_b))
-            .collect();
-        let _u2 = poly::eq_table(&alfa_c);
+        let (_inner_product_claim, _u1, _u2) =
+            gkr_reduce(transcript, fold).ok_or(ReduceError::GKR)?;
 
         // TODO(#8): turn `u1`/`u2`/the inner-product claim into a discharged `OpeningQuery`.
         // Sina / Alex?
         todo!("#8")
     }
+}
+
+fn gkr_reduce(transcript: &mut VerifierState, fold: &Fold) -> Option<(F128, Vec<F128>, Vec<F128>)> {
+    // throughout the function point is less than r1+r2 elements
+    let mut point = fold.zeta.clone();
+    point.reverse();
+    let point = VecDeque::from(point);
+
+    let r1 = fold.row_images.len().max(1).ilog2();
+
+    let (mut point, mle_leaf_claim) = gkr::gpgkr_verify(transcript, fold.e0, point, r1)?;
+
+    let alfa_c = Vec::from(point.split_off(r1 as usize));
+    let alfa_b = Vec::from(point);
+
+    let inner_product_claim = mle_leaf_claim - F128::ONE;
+    // Allocates 2*l1+l2 space if the compiler doesn't fuse.
+    let u1: Vec<_> = fold
+        .row_images
+        .iter()
+        .zip(poly::eq_table(&alfa_b))
+        .map(|(a, b)| *a * b) // Does the later step benefit from wide mul?
+        .collect();
+    let u2 = poly::eq_table(&alfa_c);
+    Some((inner_product_claim, u1, u2))
 }
 
 impl<const Q: u128> F2ZVerifier<Q> {
