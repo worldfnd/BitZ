@@ -9,7 +9,7 @@ pub type Field = F128;
 
 type Point = VecDeque<Field>;
 
-#[must_use]
+// TODO #[must_use], requires changing the test suite
 pub fn gpgkr_prove(
     ps: &mut ProverState,
     mut point: Point,
