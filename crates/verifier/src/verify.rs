@@ -69,25 +69,17 @@ fn gkr_reduce(transcript: &mut VerifierState, fold: &Fold) -> Option<(F128, Vec<
     // throughout the function point is less than r1+r2 elements
     let r1 = fold.row_images.len().max(1).ilog2();
 
-    let (mut point, mle_leaf_claim) = gkr::gpgkr_verify(transcript, fold.e0, &fold.zeta, r1)?;
+    let (point, mle_leaf_claim) = gkr::gpgkr_verify(transcript, fold.e0, &fold.zeta, r1)?;
 
-    // gpgkr_verify reverses in and out internally now (see its doc comment),
-    // so `point` is already in eq_table's little-endian convention. But the
-    // r1 new (row) coordinates it grew the point by land at the END of that
-    // little-endian point, not the front -- so alfa_b is the LAST r1
-    // entries and the split position is r2, not r1 -- see prove.rs's
-    // gkr_reduce and order_check::u1_dot_m_matches_the_circuits_own_claim
-    // there.
     let r2 = point.len() - r1 as usize;
-    // TODO can be done without allocating alfa_c
-    let alfa_b = point.split_off(r2);
+    let alfa_b = &point[r2..];
 
     let inner_product_claim = mle_leaf_claim - F128::ONE;
     // Allocates 2*l1 space if the compiler doesn't fuse.
     let u1: Vec<_> = fold
         .row_images
         .iter()
-        .zip(poly::eq_table(&alfa_b))
+        .zip(poly::eq_table(alfa_b))
         .map(|(a, b)| (*a - F128::ONE) * b) // Does the later step benefit from wide mul?
         .collect();
 
@@ -188,7 +180,7 @@ impl<const Q: u128> BitZVerifier<Q> {
 }
 
 #[cfg(test)]
-mod round_trip {
+mod round_trip_ai_test {
     //! Drives a real proof through `gkr::GrandProductCircuit` +
     //! `gkr::gpgkr_prove` (mirroring what `prover::prove::gkr_reduce` does --
     //! that function is crate-private, so it can't be called directly from

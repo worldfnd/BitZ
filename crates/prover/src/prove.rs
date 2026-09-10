@@ -93,12 +93,6 @@ fn gkr_reduce(
 
     let inner_product_claim = claim - F128::ONE;
 
-    // gpgkr_prove reverses in and out internally now (see its doc comment),
-    // so `point` is already in eq_table's little-endian convention. But the
-    // r1 new (row) coordinates it grew the point by land at the END of that
-    // little-endian point, not the front -- so alfa_b is the LAST r1
-    // entries and the split position is r2, not r1. Verified against
-    // order_check::u1_dot_m_matches_the_circuits_own_claim.
     let r1 = fold.row_images.len().max(1).ilog2();
     let r2 = point.len() - r1 as usize;
     let alfa_b = point.split_off(r2);
@@ -113,15 +107,14 @@ fn gkr_reduce(
 
     let u2 = eq_table(&alfa_c);
 
-    // Going for eq_table rather than MLE directly to prevent blow up of the bits. Now it's just an inner product.
+    // Inner product / eq_table approach to prevent blowup
     fn m_table(u2: Vec<F128>, table: &BitTable) -> Vec<F128> {
         let columns = table.shape().columns();
         let rows = table.shape().rows();
         debug_assert_eq!(u2.len(), columns);
 
         let mut m = vec![F128::ZERO; rows];
-        for j in 0..columns {
-            let factor = u2[j];
+        for (j, factor) in u2.iter().enumerate() {
             for (i, b) in table.column_bits(j).enumerate() {
                 if b {
                     m[i] += factor;
@@ -135,7 +128,6 @@ fn gkr_reduce(
     let m = m_table(u2, table);
 
     (u1, m, inner_product_claim)
-    // think about ordering
 }
 
 impl<const Q: u128> BitZProver<Q> {
@@ -225,8 +217,9 @@ impl<const Q: u128> BitZProver<Q> {
 }
 
 #[cfg(test)]
-mod order_check {
-    //! Temporary, throwaway: checks that `gkr_reduce`'s leaf construction and
+mod order_check_ai_test {
+    //! AI generated
+    //! Checks that `gkr_reduce`'s leaf construction and
     //! its later alfa_b/alfa_c/u1/m extraction agree with each other, by
     //! verifying the identity <u1,m> == inner_product_claim on concrete data
     //! with high entropy in both the row and column dimension (so a swapped

@@ -11,17 +11,6 @@ type Point = VecDeque<Field>;
 
 /// Proves the layer-by-layer sumcheck reduction from a claim at `point`
 /// (an evaluation point on the output layer) down to a claim on the leaves.
-///
-/// `point` and the returned point are both in the ordinary little-endian
-/// convention (`eq_table`'s and `DenseMultilinearExtension::evaluate`'s: bit
-/// `i` of an index corresponds to variable `i`). Internally the layer
-/// reduction builds up new variables at the *front* of its own working
-/// point, so this reverses `point` on the way in and reverses the result on
-/// the way out -- callers never see gkr's internal MSB-first convention.
-/// Each layer consumed prepends one new coordinate ahead of the coordinates
-/// carried in, so in the returned (already-reversed) point the newest `n`
-/// coordinates -- one per witness layer -- are the *last* `n` entries, not
-/// the first.
 // TODO #[must_use], requires changing the test suite
 pub fn gpgkr_prove(
     ps: &mut ProverState,
@@ -190,12 +179,6 @@ impl SuffixTable {
 /// MLE-fold shape.
 const PARALLEL_MIN_LANES: usize = 1 << 12;
 
-/// Verifies the reduction `gpgkr_prove` produces. See its doc comment for
-/// the point convention: `point` and the returned point are both
-/// little-endian (`eq_table`'s convention), reversed to and from gkr's own
-/// internal convention internally, and the `rounds` new coordinates the
-/// reduction adds end up as the *last* `rounds` entries of the returned
-/// point, not the first.
 #[must_use]
 pub fn gpgkr_verify(
     vs: &mut VerifierState,
@@ -227,6 +210,7 @@ pub fn gpgkr_verify(
     Some((point, claim))
 }
 
+/// Point's orientation is the reverse of gpgkr_verify
 fn verify_layer(vs: &mut VerifierState, mut claim: Field, point: Point) -> Option<(Point, Field)> {
     let mut prefix = Field::ONE;
 
@@ -481,15 +465,10 @@ mod tests {
     }
 
     use poly::DenseMultilinearExtension;
-    // gpgkr_prove/gpgkr_verify now do their own reverse-in/reverse-out
-    // internally (see their doc comments), so the points they consume and
-    // return are already in DenseMultilinearExtension::evaluate's own
-    // little-endian convention -- no reversal needed here any more.
     fn mle(eval: Vec<Field>, point: &[Field]) -> Field {
         let num_vars = point.len();
 
         // TODO DenseMultilinearExtension::from_evaluations doesn't need a num_vars; it already checks based on evaluation size.
-        // Possibly we could even do zero padding, but that means memory allocation. Better to have a check beforehand for power of two.
         // TODO MLE should be able to handle empty point when given a single evaluation
         DenseMultilinearExtension::from_evaluations(num_vars, eval)
             .unwrap()
