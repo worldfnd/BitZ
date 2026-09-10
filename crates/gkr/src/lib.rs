@@ -9,20 +9,40 @@ pub type Field = F128;
 
 type Point = VecDeque<Field>;
 
+/// Proves the layer-by-layer sumcheck reduction from a claim at `point`
+/// (an evaluation point on the output layer) down to a claim on the leaves.
+///
+/// `point` and the returned point are both in the ordinary little-endian
+/// convention (`eq_table`'s and `DenseMultilinearExtension::evaluate`'s: bit
+/// `i` of an index corresponds to variable `i`). Internally the layer
+/// reduction builds up new variables at the *front* of its own working
+/// point, so this reverses `point` on the way in and reverses the result on
+/// the way out -- callers never see gkr's internal MSB-first convention.
+/// Each layer consumed prepends one new coordinate ahead of the coordinates
+/// carried in, so in the returned (already-reversed) point the newest `n`
+/// coordinates -- one per witness layer -- are the *last* `n` entries, not
+/// the first.
 // TODO #[must_use], requires changing the test suite
 pub fn gpgkr_prove(
     ps: &mut ProverState,
-    mut point: Point,
+    point: &[F128],
     // All the intermediate witnesses + the input layer. Doesn't contain the output layer
     witnesses: LayerWitnesses,
-) -> (Point, Field) {
+) -> (Vec<F128>, Field) {
     // Edge cases
     // - empty witnesses -> single constant circuit -> one verifier message that permutes the proof state, but a single constant can't have an MLE
+    let mut point = point.to_owned();
+    point.reverse();
+
+    let mut point = VecDeque::from(point);
 
     let mut claim = Field::ZERO;
     for wnext in witnesses.into_iter() {
         (point, claim) = prove_layer(ps, point, wnext);
     }
+
+    let mut point = Vec::from(point);
+    point.reverse();
     (point, claim)
 }
 
@@ -170,13 +190,19 @@ impl SuffixTable {
 /// MLE-fold shape.
 const PARALLEL_MIN_LANES: usize = 1 << 12;
 
+/// Verifies the reduction `gpgkr_prove` produces. See its doc comment for
+/// the point convention: `point` and the returned point are both
+/// little-endian (`eq_table`'s convention), reversed to and from gkr's own
+/// internal convention internally, and the `rounds` new coordinates the
+/// reduction adds end up as the *last* `rounds` entries of the returned
+/// point, not the first.
 #[must_use]
 pub fn gpgkr_verify(
     vs: &mut VerifierState,
     mut claim: Field,
-    mut point: Point,
+    point: &[F128],
     rounds: u32,
-) -> Option<(Point, Field)> {
+) -> Option<(Vec<F128>, Field)> {
     // Edge cases around input lenghts, 0 meaning empty
     // | circuit | last value |
     //    0 0 -> valid, no circuit has no output
@@ -186,10 +212,17 @@ pub fn gpgkr_verify(
     //    direct comparison of the two
     // last value being larger than circuit
     //    -> false
+    //
+    let mut point = point.to_owned();
+    point.reverse();
+    let mut point = VecDeque::from(point);
 
     for _i in 0..rounds {
         (point, claim) = verify_layer(vs, claim, point)?
     }
+
+    let mut point = Vec::from(point);
+    point.reverse();
 
     Some((point, claim))
 }
@@ -415,9 +448,9 @@ mod tests {
         // Mirrors `verify`'s `output.len().max(1).ilog2()` exactly, since both
         // sides must draw the same number of challenges here.
         let log_groups = last_value.len().max(1).ilog2();
-        let point: Point = (0..log_groups).map(|_| prover.verifier_message()).collect();
+        let point: Vec<Field> = (0..log_groups).map(|_| prover.verifier_message()).collect();
 
-        gpgkr_prove(&mut prover, point, witnesses);
+        gpgkr_prove(&mut prover, &point, witnesses);
         (last_value, prover.finish())
     }
 
@@ -427,7 +460,7 @@ mod tests {
         let mut verifier = transcript::build_verifier("gkr", &instance, &proof);
 
         let log_groups = output.len().max(1).ilog2();
-        let point: Point = (0..log_groups)
+        let point: Vec<Field> = (0..log_groups)
             .map(|_| verifier.verifier_message())
             .collect();
         let claim = mle(output, &point);
@@ -435,7 +468,7 @@ mod tests {
         let log_leafs = circuit.leafs.len().max(1).ilog2();
         let rounds = log_leafs.saturating_sub(log_groups);
 
-        match gpgkr_verify(&mut verifier, claim, point, rounds) {
+        match gpgkr_verify(&mut verifier, claim, &point, rounds) {
             Some((point, claim)) => {
                 let leaf_check = mle(circuit.leafs, &point);
 
@@ -448,19 +481,19 @@ mod tests {
     }
 
     use poly::DenseMultilinearExtension;
-    // TODO modify densemultilinearextension such that no point reversal nor collection is necessary
-    fn mle(eval: Vec<Field>, rs: &Point) -> Field {
-        let num_vars = rs.len();
-        let mut point: Vec<Field> = rs.iter().cloned().collect();
-        point.reverse();
+    // gpgkr_prove/gpgkr_verify now do their own reverse-in/reverse-out
+    // internally (see their doc comments), so the points they consume and
+    // return are already in DenseMultilinearExtension::evaluate's own
+    // little-endian convention -- no reversal needed here any more.
+    fn mle(eval: Vec<Field>, point: &[Field]) -> Field {
+        let num_vars = point.len();
 
         // TODO DenseMultilinearExtension::from_evaluations doesn't need a num_vars; it already checks based on evaluation size.
         // Possibly we could even do zero padding, but that means memory allocation. Better to have a check beforehand for power of two.
-        // Direction should be a parameter
         // TODO MLE should be able to handle empty point when given a single evaluation
         DenseMultilinearExtension::from_evaluations(num_vars, eval)
             .unwrap()
-            .evaluate(&point)
+            .evaluate(point)
             .unwrap()
     }
 }

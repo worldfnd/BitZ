@@ -1,7 +1,5 @@
 //! `ProveF2Z`.
 
-use std::collections::VecDeque;
-
 use common::{BitTable, Fold, LinearClaim, OpeningQuery, ReductionInput, TableError};
 use field::F128;
 use gkr::{GrandProductCircuit, gpgkr_prove};
@@ -89,28 +87,20 @@ fn gkr_reduce(
     let circuit = GrandProductCircuit::new(leafs);
     let (_last_value, witnesses) = circuit.batched_eval(table.shape().columns());
 
-    // gkr prover uses LSB order while zeta is in MSB
-    // point is less than 25 elements.
-    let mut point = fold.zeta.clone();
-    point.reverse();
-    let point = VecDeque::from(point);
-
-    let (mut point, claim) = gpgkr_prove(transcript, point, witnesses);
+    let (mut point, claim) = gpgkr_prove(transcript, &fold.zeta, witnesses);
 
     let inner_product_claim = claim - F128::ONE;
 
-    // gpgkr_prove's returned point is in gkr's own MSB-first convention
-    // (like the zeta it consumed above, before *that* reversal) -- not the
-    // little-endian convention eq_table/DenseMultilinearExtension::evaluate
-    // expect (see gkr::tests::mle, which does the identical reversal before
-    // evaluating). Reversing back here flips which end is b and which is c,
-    // so the split position swaps from r1 to r2 too. Verified against
+    // gpgkr_prove reverses in and out internally now (see its doc comment),
+    // so `point` is already in eq_table's little-endian convention. But the
+    // r1 new (row) coordinates it grew the point by land at the END of that
+    // little-endian point, not the front -- so alfa_b is the LAST r1
+    // entries and the split position is r2, not r1. Verified against
     // order_check::u1_dot_m_matches_the_circuits_own_claim.
-    point.make_contiguous().reverse();
     let r1 = fold.row_images.len().max(1).ilog2();
     let r2 = point.len() - r1 as usize;
-    let alfa_b = Vec::from(point.split_off(r2));
-    let alfa_c = Vec::from(point);
+    let alfa_b = point.split_off(r2);
+    let alfa_c = point;
 
     let u1: Vec<_> = fold
         .row_images
