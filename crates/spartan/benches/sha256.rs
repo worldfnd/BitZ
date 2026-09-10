@@ -86,22 +86,7 @@ fn build(blocks: usize) -> R1csInstanceWitness {
         build_assignment_mle::<FqDefault>(&assignment_bits, matrices.a.column_count()).unwrap();
     let matrices = PreparedConstraintMatrices::new(matrices).unwrap();
 
-    let nonzeros: usize = [
-        &matrices.matrices().a,
-        &matrices.matrices().b,
-        &matrices.matrices().c,
-    ]
-    .iter()
-    .flat_map(|matrix| matrix.rows())
-    .map(|row| row.entries().len())
-    .sum();
-    eprintln!(
-        "SHA-256 {blocks} blocks: {} r1cs rows -> 2^{}, {} h entries -> 2^{}, {nonzeros} nonzeros",
-        matrices.matrices().a.row_count(),
-        matrices.num_row_vars(),
-        matrices.matrices().a.column_count(),
-        matrices.num_column_vars(),
-    );
+    eprintln!("SHA-256 {blocks} blocks: {}", matrices.short_debug_info());
 
     R1csInstanceWitness {
         instance: matrices,

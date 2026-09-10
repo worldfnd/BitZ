@@ -118,6 +118,22 @@ where
         })
     }
 
+    /// Returns human-readable info about R1CS matrices and their nonzero entries.
+    pub fn short_debug_info(&self) -> String {
+        let nonzeros: usize = [&self.matrices.a, &self.matrices.b, &self.matrices.c]
+            .iter()
+            .flat_map(|matrix| matrix.rows())
+            .map(|row| row.entries().len())
+            .sum();
+        format!(
+            "{} r1cs rows -> 2^{}, {} h entries -> 2^{}, {nonzeros} nonzeros",
+            self.matrices.a.row_count(),
+            self.num_row_vars(),
+            self.matrices.a.column_count(),
+            self.num_column_vars(),
+        )
+    }
+
     pub fn matrices(&self) -> &ConstraintMatrices<F> {
         &self.matrices
     }
