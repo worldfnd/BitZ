@@ -7,7 +7,8 @@ use std::collections::VecDeque;
 
 use common::Fold;
 use gkr::{GrandProductCircuit, gpgkr_prove};
-use num_traits::{ConstOne, identities::Zero};
+use num_traits::{ConstOne, ConstZero, identities::Zero};
+use poly::eq_table;
 use transcript::ProverState;
 
 use crate::{BitZProver, SendError};
@@ -71,7 +72,7 @@ fn gkr_reduce(
     transcript: &mut ProverState,
     fold: &Fold,
     table: &BitTable,
-) -> (VecDeque<F128>, F128) {
+) -> (Vec<F128>, Vec<F128>, F128) {
     let dim = table.shape().columns() * table.shape().rows();
     let mut leafs: Vec<_> = vec![F128::zero(); dim];
 
@@ -95,7 +96,55 @@ fn gkr_reduce(
     point.reverse();
     let point = VecDeque::from(point);
 
-    gpgkr_prove(transcript, point, witnesses)
+    let (mut point, claim) = gpgkr_prove(transcript, point, witnesses);
+
+    let inner_product_claim = claim - F128::ONE;
+
+    // gpgkr_prove's returned point is in gkr's own MSB-first convention
+    // (like the zeta it consumed above, before *that* reversal) -- not the
+    // little-endian convention eq_table/DenseMultilinearExtension::evaluate
+    // expect (see gkr::tests::mle, which does the identical reversal before
+    // evaluating). Reversing back here flips which end is b and which is c,
+    // so the split position swaps from r1 to r2 too. Verified against
+    // order_check::u1_dot_m_matches_the_circuits_own_claim.
+    point.make_contiguous().reverse();
+    let r1 = fold.row_images.len().max(1).ilog2();
+    let r2 = point.len() - r1 as usize;
+    let alfa_b = Vec::from(point.split_off(r2));
+    let alfa_c = Vec::from(point);
+
+    let u1: Vec<_> = fold
+        .row_images
+        .iter()
+        .zip(poly::eq_table(&alfa_b))
+        .map(|(a, b)| (*a - F128::ONE) * b) // Does the later step benefit from wide mul?
+        .collect();
+
+    let u2 = eq_table(&alfa_c);
+
+    // Going for eq_table rather than MLE directly to prevent blow up of the bits. Now it's just an inner product.
+    fn m_table(u2: Vec<F128>, table: &BitTable) -> Vec<F128> {
+        let columns = table.shape().columns();
+        let rows = table.shape().rows();
+        debug_assert_eq!(u2.len(), columns);
+
+        let mut m = vec![F128::ZERO; rows];
+        for j in 0..columns {
+            let factor = u2[j];
+            for i in 0..rows {
+                if table.bit(j, i) {
+                    m[i] += factor;
+                }
+            }
+        }
+
+        m
+    }
+
+    let m = m_table(u2, table);
+
+    (u1, m, inner_product_claim)
+    // think about ordering
 }
 
 impl<const Q: u128> BitZProver<Q> {
@@ -181,5 +230,123 @@ impl<const Q: u128> BitZProver<Q> {
         reduction
             .reduce(&input, table, transcript)
             .map_err(ProveError::Reduction)
+    }
+}
+
+#[cfg(test)]
+mod order_check {
+    //! Temporary, throwaway: checks that `gkr_reduce`'s leaf construction and
+    //! its later alfa_b/alfa_c/u1/m extraction agree with each other, by
+    //! verifying the identity <u1,m> == inner_product_claim on concrete data
+    //! with high entropy in both the row and column dimension (so a swapped
+    //! or misordered point would break it with overwhelming probability).
+    use super::*;
+    use common::{F2ZParams, Fold, Shape};
+    use field::gf128::smallest_generator;
+
+    const Q: u128 = (1 << 114) - 11;
+
+    fn shape() -> Shape {
+        Shape::new(7, 15).unwrap()
+    }
+
+    fn params() -> F2ZParams<Q> {
+        F2ZParams::new(shape(), smallest_generator()).unwrap()
+    }
+
+    fn packed_witness(shape: &Shape, bit_fn: impl Fn(usize, usize) -> bool) -> Vec<F128> {
+        let mut packed = vec![F128::ZERO; (1 << shape.log_bits()) / 128];
+        for column in 0..shape.columns() {
+            for row in 0..shape.rows() {
+                if bit_fn(column, row) {
+                    let index = (column << shape.log_rows()) | row;
+                    let element = &mut packed[index >> 7];
+                    let offset = index % 128;
+                    if offset < 64 {
+                        element.lo |= 1u64 << offset;
+                    } else {
+                        element.hi |= 1u64 << (offset - 64);
+                    }
+                }
+            }
+        }
+        packed
+    }
+
+    #[test]
+    fn u1_dot_m_matches_the_circuits_own_claim() {
+        let shape = shape();
+
+        // High-entropy bit pattern mixing row and column, so a b/c swap or a
+        // reversed/misplaced point coordinate breaks the identity below.
+        let packed = packed_witness(&shape, |c, b| {
+            let h =
+                (b as u64).wrapping_mul(2654435761) ^ (c as u64).wrapping_mul(0x9E3779B97F4A7C15);
+            (h >> 5) & 1 == 1
+        });
+        let table = params().table(&packed).unwrap();
+
+        let row_images: Vec<F128> = (0..shape.rows())
+            .map(|b| F128::from(((b as u128) + 1) * 0x9E3779B97F4A7C15u128 + 7))
+            .collect();
+        let zeta: Vec<F128> = (0..shape.log_columns())
+            .map(|i| F128::from((i as u128 + 3) * 0xABCDEF12345u128 + 1))
+            .collect();
+
+        let images = vec![F128::ONE; shape.columns()];
+        let folds = vec![0u128; shape.columns()];
+        let fold = Fold::new(&shape, folds, images, row_images, zeta).unwrap();
+
+        let mut prover = transcript::build_prover("order-check", &F128::ZERO);
+        let (u1, m, inner_product_claim) = gkr_reduce(&mut prover, &fold, &table);
+
+        let dot: F128 = u1
+            .iter()
+            .zip(m.iter())
+            .fold(F128::ZERO, |acc, (&a, &b)| acc + a * b);
+
+        assert_eq!(
+            dot, inner_product_claim,
+            "<u1,m> did not match the circuit's own inner_product_claim -- \
+             row/column order is mixed somewhere between the leaf construction \
+             and the u1/m extraction"
+        );
+    }
+
+    /// Isolates the row/`b` pathway: every column has the identical bit
+    /// pattern (a function of `b` alone), so every column's grand product is
+    /// the same value and the column/`c` dimension drops out of the picture
+    /// entirely. If this still fails, the bug is in the b-pathway (leaf
+    /// construction, circuit reduction, or u1/alfa_b) independent of c.
+    #[test]
+    fn b_only_pattern_isolates_the_row_pathway() {
+        let shape = shape();
+
+        let packed = packed_witness(&shape, |_c, b| (b * 2654435761) >> 5 & 1 == 1);
+        let table = params().table(&packed).unwrap();
+
+        let row_images: Vec<F128> = (0..shape.rows())
+            .map(|b| F128::from(((b as u128) + 1) * 0x9E3779B97F4A7C15u128 + 7))
+            .collect();
+        let zeta: Vec<F128> = (0..shape.log_columns())
+            .map(|i| F128::from((i as u128 + 3) * 0xABCDEF12345u128 + 1))
+            .collect();
+
+        let images = vec![F128::ONE; shape.columns()];
+        let folds = vec![0u128; shape.columns()];
+        let fold = Fold::new(&shape, folds, images, row_images, zeta).unwrap();
+
+        let mut prover = transcript::build_prover("order-check-b", &F128::ZERO);
+        let (u1, m, inner_product_claim) = gkr_reduce(&mut prover, &fold, &table);
+
+        let dot: F128 = u1
+            .iter()
+            .zip(m.iter())
+            .fold(F128::ZERO, |acc, (&a, &b)| acc + a * b);
+
+        assert_eq!(
+            dot, inner_product_claim,
+            "row-only pathway is already broken"
+        );
     }
 }
