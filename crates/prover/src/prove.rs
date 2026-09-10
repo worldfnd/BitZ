@@ -126,7 +126,6 @@ fn gkr_reduce(
     let m = m_table(u2, table);
 
     (u1, m, inner_product_claim)
-    // think about ordering
 }
 
 impl<const Q: u128> F2ZProver<Q> {
