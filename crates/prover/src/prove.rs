@@ -122,8 +122,8 @@ fn gkr_reduce(
         let mut m = vec![F128::ZERO; rows];
         for j in 0..columns {
             let factor = u2[j];
-            for i in 0..rows {
-                if table.bit(j, i) {
+            for (i, b) in table.column_bits(j).enumerate() {
+                if b {
                     m[i] += factor;
                 }
             }
