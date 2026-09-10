@@ -86,12 +86,6 @@ impl<'a> BitTable<'a> {
     }
 
     /// The column's bits, in ascending row order.
-    ///
-    /// Walks the elements from [`BitTable::column`] without calling
-    /// [`BitTable::bit`] once per row: that would redo the element lookup and
-    /// `offset % HALF_BITS` at every row. Here each half is shifted down one
-    /// bit at a time and `hi` is swapped in once `lo` runs dry, so a row costs
-    /// one shift, one mask and a decrement.
     pub fn column_bits(&self, column: usize) -> ColumnBits<'a> {
         ColumnBits {
             elements: self.column(column).iter(),
