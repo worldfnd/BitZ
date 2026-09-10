@@ -1,6 +1,6 @@
 //! Spartan PIOP prover and verifier over the block-aligned SHA-256 R1CS.
 //!
-//! Run with `cargo bench -p spartan --bench sha256`. The statement is built
+//! Run with `cargo bench -p spartan --bench sha256`. The instance-witness pair is built
 //! once per block count, the way the e2e proof builds it, and shared by both
 //! benchmarks. Allocation counts are reported alongside timings.
 
@@ -28,35 +28,37 @@ const INSTANCE: &[u8] = b"bench";
 /// 2^22-bit committed shape.
 const BLOCKS: &[usize] = &[608];
 
-/// The prover's inputs for one message, built once.
+/// An R1CS instance with a witness satisfying it.
 #[derive(Debug, Clone)]
-struct Statement {
-    matrices: PreparedConstraintMatrices<FqDefault>,
+struct R1csInstanceWitness {
+    instance: PreparedConstraintMatrices<FqDefault>,
+    witness: DenseMultilinearExtension<FqDefault>,
+    /// Holds precomputed `Az`, `Bz` and `Cz` tables.
     products: R1csProductMles<FqDefault>,
-    assignment: DenseMultilinearExtension<FqDefault>,
 }
 
-static STATEMENTS: Mutex<Vec<(usize, Arc<Statement>)>> = Mutex::new(Vec::new());
+static R1CS_INSTANCE_WITNESSES: Mutex<Vec<(usize, Arc<R1csInstanceWitness>)>> =
+    Mutex::new(Vec::new());
 
 fn main() {
     BLOCKS.iter().for_each(|&blocks| {
-        let _ = statement(blocks);
+        let _ = r1cs_instance_witness(blocks);
     });
     divan::main();
 }
 
-/// The statement for `blocks`, built on first use.
-fn statement(blocks: usize) -> Arc<Statement> {
-    let mut cache = STATEMENTS.lock().unwrap();
-    if let Some((_, statement)) = cache.iter().find(|(cached, _)| *cached == blocks) {
-        return Arc::clone(statement);
+/// The instance-witness pair for `blocks`, built on first use.
+fn r1cs_instance_witness(blocks: usize) -> Arc<R1csInstanceWitness> {
+    let mut cache = R1CS_INSTANCE_WITNESSES.lock().unwrap();
+    if let Some((_, r1cs)) = cache.iter().find(|(cached, _)| *cached == blocks) {
+        return Arc::clone(r1cs);
     }
-    let statement = Arc::new(build(blocks));
-    cache.push((blocks, Arc::clone(&statement)));
-    statement
+    let r1cs = Arc::new(build(blocks));
+    cache.push((blocks, Arc::clone(&r1cs)));
+    r1cs
 }
 
-fn build(blocks: usize) -> Statement {
+fn build(blocks: usize) -> R1csInstanceWitness {
     // Pool spin-up is not the prover's.
     let _ = rayon::ThreadPoolBuilder::new().build_global();
     rayon::broadcast(|_| {});
@@ -101,39 +103,34 @@ fn build(blocks: usize) -> Statement {
         matrices.num_column_vars(),
     );
 
-    Statement {
-        matrices,
+    R1csInstanceWitness {
+        instance: matrices,
+        witness: assignment,
         products,
-        assignment,
     }
 }
 
-fn prove_once(
-    statement: &Statement,
+fn spartan_prove(
+    r1cs: &R1csInstanceWitness,
 ) -> (
     Proof,
     SpartanPiopProof<FqDefault>,
     ScaledMleEvaluationClaim<FqDefault>,
 ) {
     let mut prover = build_prover(SESSION, INSTANCE);
-    let (piop, claim) = prove_spartan_piop(
-        &mut prover,
-        &statement.matrices,
-        &statement.products,
-        &statement.assignment,
-    )
-    .unwrap();
+    let (piop, claim) =
+        prove_spartan_piop(&mut prover, &r1cs.instance, &r1cs.products, &r1cs.witness).unwrap();
     let proof = prover.finish();
     (proof, piop, claim)
 }
 
-fn verify_once(
-    statement: &Statement,
+fn spartan_verify(
+    r1cs_instance: &PreparedConstraintMatrices<FqDefault>,
     proof: &Proof,
     piop: &SpartanPiopProof<FqDefault>,
 ) -> ScaledMleEvaluationClaim<FqDefault> {
     let mut verifier = build_verifier(SESSION, INSTANCE, proof);
-    let claim = verify_spartan_proof(&mut verifier, &statement.matrices, piop).unwrap();
+    let claim = verify_spartan_proof(&mut verifier, r1cs_instance, piop).unwrap();
     verifier.check_eof().unwrap();
     claim
 }
@@ -142,33 +139,33 @@ fn verify_once(
 /// the timing; the e2e proof pays for the same clones.
 #[divan::bench(args = BLOCKS, sample_count = 10, sample_size = 1)]
 fn prove(bencher: Bencher, blocks: usize) {
-    let statement = &*statement(blocks);
+    let r1cs = &*r1cs_instance_witness(blocks);
 
     // Sanity check
-    let (proof, piop, claim) = prove_once(statement);
-    let claim2 = verify_once(statement, &proof, &piop);
+    let (proof, piop, claim) = spartan_prove(r1cs);
+    let claim2 = spartan_verify(&r1cs.instance, &proof, &piop);
     assert_eq!(claim, claim2, "prover and verifier disagree on the claim");
-    claim.nonsuccinct_verify(&statement.assignment).unwrap();
+    claim.nonsuccinct_verify(&r1cs.witness).unwrap();
 
     bencher.bench_local(|| {
-        let result = prove_once(statement);
+        let result = spartan_prove(r1cs);
         black_box(result)
     });
 }
 
 #[divan::bench(args = BLOCKS, sample_count = 10, sample_size = 1)]
 fn verify(bencher: Bencher, blocks: usize) {
-    let statement = &*statement(blocks);
+    let r1cs = &*r1cs_instance_witness(blocks);
 
-    let (proof, piop, claim) = prove_once(statement);
+    let (proof, piop, claim) = spartan_prove(r1cs);
 
     // Sanity check
-    let claim2 = verify_once(statement, &proof, &piop);
+    let claim2 = spartan_verify(&r1cs.instance, &proof, &piop);
     assert_eq!(claim, claim2, "prover and verifier disagree on the claim");
-    claim.nonsuccinct_verify(&statement.assignment).unwrap();
+    claim.nonsuccinct_verify(&r1cs.witness).unwrap();
 
     bencher.bench_local(|| {
-        let result = verify_once(statement, &proof, &piop);
+        let result = spartan_verify(&r1cs.instance, &proof, &piop);
         black_box(result)
     });
 }
