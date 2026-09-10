@@ -56,8 +56,7 @@ impl<const Q: u128> Reduction<Q> for Reduce {
     ) -> Result<OpeningQuery, Self::Error> {
         let fold = input.fold;
 
-        let (_inner_product_claim, _u1, _u2) =
-            gkr_reduce(transcript, fold).ok_or(ReduceError::GKR)?;
+        let (_inner_product_claim, _u1) = gkr_reduce(transcript, fold).ok_or(ReduceError::GKR)?;
 
         // TODO(#8): turn `u1`/`u2`/the inner-product claim into a discharged `OpeningQuery`.
         // Sina / Alex?
@@ -65,7 +64,7 @@ impl<const Q: u128> Reduction<Q> for Reduce {
     }
 }
 
-fn gkr_reduce(transcript: &mut VerifierState, fold: &Fold) -> Option<(F128, Vec<F128>, Vec<F128>)> {
+fn gkr_reduce(transcript: &mut VerifierState, fold: &Fold) -> Option<(F128, Vec<F128>)> {
     // throughout the function point is less than r1+r2 elements
     let mut point = fold.zeta.clone();
     point.reverse();
@@ -75,19 +74,28 @@ fn gkr_reduce(transcript: &mut VerifierState, fold: &Fold) -> Option<(F128, Vec<
 
     let (mut point, mle_leaf_claim) = gkr::gpgkr_verify(transcript, fold.e0, point, r1)?;
 
-    let alfa_c = Vec::from(point.split_off(r1 as usize));
-    let alfa_b = Vec::from(point);
+    // gpgkr_verify's returned point is in gkr's own MSB-first convention,
+    // not the little-endian convention eq_table expects (see
+    // gkr::tests::mle, which does the identical reversal). Reversing back
+    // here flips which end is b and which is c, so the split position
+    // swaps from r1 to r2 too -- see prove.rs's gkr_reduce and
+    // order_check::u1_dot_m_matches_the_circuits_own_claim there.
+    point.make_contiguous().reverse();
+    let r2 = point.len() - r1 as usize;
+    // TODO can be done without allocating alfa_c
+    let alfa_b = Vec::from(point.split_off(r2));
+    let _alfa_c = Vec::from(point);
 
     let inner_product_claim = mle_leaf_claim - F128::ONE;
-    // Allocates 2*l1+l2 space if the compiler doesn't fuse.
+    // Allocates 2*l1 space if the compiler doesn't fuse.
     let u1: Vec<_> = fold
         .row_images
         .iter()
         .zip(poly::eq_table(&alfa_b))
         .map(|(a, b)| (*a - F128::ONE) * b) // Does the later step benefit from wide mul?
         .collect();
-    let u2 = poly::eq_table(&alfa_c);
-    Some((inner_product_claim, u1, u2))
+
+    Some((inner_product_claim, u1))
 }
 
 impl<const Q: u128> F2ZVerifier<Q> {

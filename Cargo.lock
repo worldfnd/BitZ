@@ -1078,6 +1078,7 @@ dependencies = [
  "gkr",
  "num-traits",
  "pcs",
+ "poly",
  "transcript",
 ]
 
