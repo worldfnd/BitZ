@@ -17,3 +17,11 @@ transcript = { workspace = true }
 gkr = {workspace = true}
 num-traits = {workspace = true}
 poly = {workspace= true}
+
+[dev-dependencies]
+divan = { workspace = true }
+rand = {workspace = true}
+
+[[bench]]
+name = "prover"
+harness = false

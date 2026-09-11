@@ -8,7 +8,7 @@ use num_traits::{
 };
 #[cfg(feature = "rand")]
 use rand::{
-    Rng,
+    Rng, RngExt,
     distr::{Distribution, StandardUniform},
 };
 use std::fmt::{Display, Formatter, Result as FmtResult};

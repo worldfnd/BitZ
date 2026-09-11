@@ -598,7 +598,7 @@ dependencies = [
  "divan",
  "flock-core",
  "num-traits",
- "rand 0.9.5",
+ "rand 0.10.2",
  "rand_core 0.9.5",
  "rand_pcg",
  "spongefish",
@@ -671,6 +671,7 @@ dependencies = [
  "cfg-if",
  "libc",
  "r-efi 6.0.0",
+ "rand_core 0.10.1",
 ]
 
 [[package]]
@@ -1077,11 +1078,13 @@ name = "prover"
 version = "0.1.0"
 dependencies = [
  "common",
+ "divan",
  "field",
  "gkr",
  "num-traits",
  "pcs",
  "poly",
+ "rand 0.10.2",
  "transcript",
 ]
 
