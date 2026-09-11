@@ -69,11 +69,7 @@ impl<const Q: u128> Reduction<Q> for Reduce {
     }
 }
 
-fn gkr_reduce(
-    transcript: &mut ProverState,
-    fold: &Fold,
-    table: &BitTable,
-) -> (Vec<F128>, Vec<F128>, F128) {
+fn init_circuit(table: &BitTable, fold: &Fold) -> GrandProductCircuit {
     let dim = table.shape().columns() * table.shape().rows();
     let mut leafs: Vec<_> = vec![F128::zero(); dim];
 
@@ -88,7 +84,15 @@ fn gkr_reduce(
         }
     }
 
-    let circuit = GrandProductCircuit::new(leafs);
+    GrandProductCircuit::new(leafs)
+}
+
+pub fn gkr_reduce(
+    transcript: &mut ProverState,
+    fold: &Fold,
+    table: &BitTable,
+) -> (Vec<F128>, Vec<F128>, F128) {
+    let circuit = init_circuit(table, fold);
     let (_last_value, witnesses) = circuit.batched_eval(table.shape().columns());
 
     let (mut point, claim) = gpgkr_prove(transcript, &fold.zeta, witnesses);
