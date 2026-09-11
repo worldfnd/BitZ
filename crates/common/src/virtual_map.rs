@@ -16,20 +16,18 @@ use field::F128;
 /// A map that does not describe the protocol it belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VirtualMapError {
-    /// The point does not have enough coordinates to index every entry of `h`.
-    PointLengthMismatch,
-    /// The transposed weights are not one per coordinate of `1 ‖ f`.
+    /// The input omits coordinates of `h`, or the output does not have one weight per bit of `f`.
     WeightCountMismatch,
 }
 
 /// What the protocol asks of `M`.
 pub trait VirtualMap {
-    /// `M^T eq(point, .)`, indexed over `1 ‖ f`.
+    /// Computes `M^T weights`, splitting off the constant-one coordinate.
     ///
-    /// Takes a point rather than a weight vector because the reduction
-    /// normalises its claim to a point before handing it over. The point may
-    /// index zero-padded entries beyond `h_len()`; their weights are ignored.
-    fn transpose_eq(&self, point: &[F128]) -> Result<TransposedWeights, VirtualMapError>;
+    /// `weights[i]` multiplies bit `h[i]`. At least `h_len()` weights are required;
+    /// any remaining weights multiply zero-padded bits of `h` and are ignored.
+    /// The result has `f_len() - 1` bit weights and the constant-column weight.
+    fn transpose(&self, weights: &[F128]) -> Result<TransposedWeights, VirtualMapError>;
 
     /// Binds the map into the statement frame.
     ///
@@ -46,7 +44,7 @@ pub trait VirtualMap {
 
 /// `M^T v`, split at the coordinate that multiplies the constant one.
 ///
-/// `M`'s first row is the constant one, so `M^T v` is indexed over `1 ‖ f`.
+/// `M`'s first column multiplies the constant one, so `M^T v` is indexed over `1 ‖ f`.
 /// Holding the leading coordinate back leaves `f` as the committed vector.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransposedWeights {
@@ -88,7 +86,6 @@ impl TransposedWeights {
 mod tests {
     use super::*;
     use num_traits::{ConstOne, ConstZero};
-    use poly::eq_table;
 
     /// Dense `M`, the reference the sparse implementations are checked against.
     struct DenseMap {
@@ -98,16 +95,15 @@ mod tests {
     }
 
     impl VirtualMap for DenseMap {
-        fn transpose_eq(&self, point: &[F128]) -> Result<TransposedWeights, VirtualMapError> {
-            if point.len() < self.h_len().next_power_of_two().trailing_zeros() as usize {
-                return Err(VirtualMapError::PointLengthMismatch);
+        fn transpose(&self, weights: &[F128]) -> Result<TransposedWeights, VirtualMapError> {
+            if weights.len() < self.h_len() {
+                return Err(VirtualMapError::WeightCountMismatch);
             }
-            let weights = eq_table(point);
             let mut transposed = vec![F128::ZERO; self.columns];
             for (row, weight) in self.rows.iter().zip(weights) {
                 for (column, set) in row.iter().enumerate() {
                     if *set {
-                        transposed[column] += weight;
+                        transposed[column] += *weight;
                     }
                 }
             }
@@ -148,8 +144,12 @@ mod tests {
     #[test]
     fn transposing_preserves_the_claim() {
         let map = map();
-        let point = [F128::new(7, 11), F128::new(3, 5)];
-        let weights = eq_table(&point);
+        let weights = [
+            F128::new(7, 11),
+            F128::new(3, 5),
+            F128::new(13, 17),
+            F128::new(19, 23),
+        ];
 
         for bits in 0..4_u32 {
             let f = [bits & 1 == 1, bits >> 1 & 1 == 1];
@@ -161,7 +161,7 @@ mod tests {
                 .filter(|(bit, _)| **bit)
                 .fold(F128::ZERO, |sum, (_, weight)| sum + *weight);
 
-            let transposed = map.transpose_eq(&point).unwrap();
+            let transposed = map.transpose(&weights).unwrap();
             let through_f = f
                 .iter()
                 .zip(transposed.weights())
@@ -188,15 +188,19 @@ mod tests {
     }
 
     #[test]
-    fn a_point_of_the_wrong_width_is_rejected() {
+    fn missing_virtual_witness_weights_are_rejected() {
         assert_eq!(
-            map().transpose_eq(&[F128::ONE]),
-            Err(VirtualMapError::PointLengthMismatch)
+            map().transpose(&[F128::ONE; 3]),
+            Err(VirtualMapError::WeightCountMismatch)
         );
     }
 
     #[test]
-    fn a_point_that_indexes_zero_padding_is_accepted() {
-        assert!(map().transpose_eq(&[F128::ONE; 3]).is_ok());
+    fn weights_on_zero_padding_do_not_change_the_transpose() {
+        let map = map();
+        let weights = [F128::new(7, 11); 4];
+        let mut padded = weights.to_vec();
+        padded.extend([F128::new(13, 17); 4]);
+        assert_eq!(map.transpose(&weights), map.transpose(&padded));
     }
 }

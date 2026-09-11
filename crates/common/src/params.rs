@@ -205,7 +205,7 @@ mod tests {
     }
 
     impl VirtualMap for Dimensions {
-        fn transpose_eq(
+        fn transpose(
             &self,
             _: &[F128],
         ) -> Result<crate::TransposedWeights, crate::VirtualMapError> {
