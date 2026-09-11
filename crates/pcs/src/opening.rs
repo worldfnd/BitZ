@@ -261,13 +261,7 @@ fn bind_inner_product_statement(
     transcript.public_message(INNER_PRODUCT_STATEMENT_LABEL);
     transcript.public_message(root);
     transcript.public_message(pcs);
-    for weights in [claim.row_weights(), claim.column_weights()] {
-        transcript.public_message(&(weights.len() as u64));
-        for weight in weights {
-            transcript.public_message(weight);
-        }
-    }
-    transcript.public_message(&claim.target());
+    transcript.public_message(claim);
 }
 
 #[cfg(test)]

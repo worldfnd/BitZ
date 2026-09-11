@@ -223,15 +223,7 @@ fn bind_outer_inner_product_statement(
     transcript.public_message(b"outer/pcs-inner-product/v2" as &[u8]);
     transcript.public_message(pcs);
     transcript.public_message(&commitment.0);
-    transcript.public_message(&(claim.row_weights().len() as u64));
-    for weight in claim.row_weights() {
-        transcript.public_message(weight);
-    }
-    transcript.public_message(&(claim.column_weights().len() as u64));
-    for weight in claim.column_weights() {
-        transcript.public_message(weight);
-    }
-    transcript.public_message(&claim.target());
+    transcript.public_message(claim);
 }
 
 fn bind_outer_statement(

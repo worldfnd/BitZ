@@ -42,15 +42,7 @@ fn sparse_witness(packed_len: usize) -> Vec<F128> {
 
 fn bind_claim(transcript: &mut impl PublicTranscript, claim: &LinearClaim<F128>) {
     transcript.public_message(b"sumcheck-test/claim/v1" as &[u8]);
-    transcript.public_message(&(claim.row_weights().len() as u64));
-    for weight in claim.row_weights() {
-        transcript.public_message(weight);
-    }
-    transcript.public_message(&(claim.column_weights().len() as u64));
-    for weight in claim.column_weights() {
-        transcript.public_message(weight);
-    }
-    transcript.public_message(&claim.target());
+    transcript.public_message(claim);
 }
 
 struct Fixture {

@@ -2,6 +2,7 @@
 
 use crypto_primitives::LiftElement;
 use field::Fq;
+use spongefish::Encoding;
 
 use crate::{F2ZParams, Shape};
 
@@ -37,6 +38,21 @@ pub struct LinearClaim<F> {
     row_weights: Vec<F>,
     column_weights: Vec<F>,
     target: F,
+}
+
+/// Encodes each weight vector with a little-endian `u64` length, followed by the target.
+impl<F: Encoding<[u8]>> Encoding<[u8]> for LinearClaim<F> {
+    fn encode(&self) -> impl AsRef<[u8]> {
+        let mut bytes = Vec::new();
+        for weights in [&self.row_weights, &self.column_weights] {
+            bytes.extend_from_slice(&(weights.len() as u64).to_le_bytes());
+            for weight in weights {
+                bytes.extend_from_slice(weight.encode().as_ref());
+            }
+        }
+        bytes.extend_from_slice(self.target.encode().as_ref());
+        bytes
+    }
 }
 
 impl<const Q: u128> LinearClaim<Fq<Q>> {
@@ -135,6 +151,29 @@ mod tests {
         (0..params().shape().rows())
             .map(|row| Fq::from(row as u128))
             .collect()
+    }
+
+    #[test]
+    fn encoding_preserves_length_prefixes_and_field_order() {
+        fn check<F: Encoding<[u8]>>(values: [F; 4]) {
+            let [row, column_a, column_b, target] = values;
+            let mut expected = 1u64.to_le_bytes().to_vec();
+            expected.extend_from_slice(row.encode().as_ref());
+            expected.extend_from_slice(&2u64.to_le_bytes());
+            expected.extend_from_slice(column_a.encode().as_ref());
+            expected.extend_from_slice(column_b.encode().as_ref());
+            expected.extend_from_slice(target.encode().as_ref());
+
+            let claim = LinearClaim {
+                row_weights: vec![row],
+                column_weights: vec![column_a, column_b],
+                target,
+            };
+            assert_eq!(claim.encode().as_ref(), expected);
+        }
+
+        check([1u64, 2, 3, 4].map(field::F128::from));
+        check([1u128, 2, 3, 4].map(Fq::<Q114>::from));
     }
 
     #[test]
