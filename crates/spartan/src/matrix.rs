@@ -8,6 +8,7 @@ use field::{FqDefault, Q100};
 use num_bigint::{BigInt, BigUint};
 use num_traits::{Signed, ToPrimitive};
 use poly::DenseMultilinearExtension;
+use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 use transcript::Encoding;
 
@@ -30,15 +31,67 @@ pub enum SpartanMatrixError {
 /// Immutable field-valued constraint matrices prepared for repeated Spartan
 /// proofs and verification.
 ///
-/// Shape validation, Boolean-domain sizing, and canonical statement hashing
-/// are performed once during construction rather than inside the prover or
-/// verifier.
+/// Shape validation, Boolean-domain sizing, canonical statement hashing and
+/// the column chunking are performed once during construction rather than
+/// inside the prover or verifier.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreparedConstraintMatrices<F> {
     matrices: ConstraintMatrices<F>,
+    /// Nonzeros of `a`, `b` and `c` grouped by column chunk.
+    column_chunks: [ColumnChunkIndex; 3],
     digest: [u8; 32],
     num_row_vars: usize,
     num_column_vars: usize,
+}
+
+/// `bind_and_batch` splits the column domain into chunks of `2^16` columns and
+/// accumulates each chunk on its own thread.
+/// A chunk's slice of the dense table fits in cache.
+const BIND_CHUNK_COLUMN_VARS: usize = 16;
+
+/// The nonzeros of one sparse matrix grouped by column chunk.
+///
+/// Chunk `c` owns columns `[c * chunk_len, (c + 1) * chunk_len)` and lists
+/// the entries of every row that fall into it, in row order. The thread
+/// accumulating chunk `c` reads only these entries and writes only these
+/// columns, so threads never share a column.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ColumnChunkIndex {
+    chunk_len: usize,
+    spans: Vec<Vec<RowSpan>>,
+}
+
+/// The entries `[start, end)` of row `row`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RowSpan {
+    row: usize,
+    start: usize,
+    end: usize,
+}
+
+impl ColumnChunkIndex {
+    /// Groups `matrix` into `chunk_count` chunks of `chunk_len` columns.
+    fn new<C>(matrix: &SparseMatrix<C>, chunk_len: usize, chunk_count: usize) -> Self {
+        debug_assert!(chunk_len.is_power_of_two());
+        debug_assert!(chunk_len * chunk_count >= matrix.column_count());
+
+        let mut spans = vec![Vec::new(); chunk_count];
+        for (row, entries) in matrix.rows().iter().enumerate() {
+            let entries = entries.entries();
+            let mut start = 0;
+            while start < entries.len() {
+                // Columns increase within a row, so a chunk's entries are a
+                // contiguous run.
+                let chunk = entries[start].0 / chunk_len;
+                let end = start
+                    + entries[start..].partition_point(|(column, _)| column / chunk_len == chunk);
+                spans[chunk].push(RowSpan { row, start, end });
+                start = end;
+            }
+        }
+
+        Self { chunk_len, spans }
+    }
 }
 
 impl<F> PreparedConstraintMatrices<F>
@@ -47,14 +100,38 @@ where
 {
     pub fn new(matrices: ConstraintMatrices<F>) -> Result<Self, SpartanMatrixError> {
         let (num_row_vars, num_column_vars) = r1cs_num_vars(&matrices)?;
+
+        let num_columns = 1_usize << num_column_vars;
+        let chunk_len = num_columns.min(1_usize << BIND_CHUNK_COLUMN_VARS);
+        let chunk_count = num_columns / chunk_len;
+
+        let column_chunks = [&matrices.a, &matrices.b, &matrices.c]
+            .map(|matrix| ColumnChunkIndex::new(matrix, chunk_len, chunk_count));
         let digest = constraint_matrix_digest(&matrices)?;
 
         Ok(Self {
             matrices,
+            column_chunks,
             digest,
             num_row_vars,
             num_column_vars,
         })
+    }
+
+    /// Returns human-readable info about R1CS matrices and their nonzero entries.
+    pub fn short_debug_info(&self) -> String {
+        let nonzeros: usize = [&self.matrices.a, &self.matrices.b, &self.matrices.c]
+            .iter()
+            .flat_map(|matrix| matrix.rows())
+            .map(|row| row.entries().len())
+            .sum();
+        format!(
+            "{} r1cs rows -> 2^{}, {} h entries -> 2^{}, {nonzeros} nonzeros",
+            self.matrices.a.row_count(),
+            self.num_row_vars(),
+            self.matrices.a.column_count(),
+            self.num_column_vars(),
+        )
     }
 
     pub fn matrices(&self) -> &ConstraintMatrices<F> {
@@ -161,7 +238,9 @@ where
 {
     /// Constructs
     ///
-    /// `D(j) = sum_i eq(i,r_x) (A[i,j] + rho B[i,j] + rho^2 C[i,j])`.
+    /// `D(j) = sum_i eq(i,r_x) (A[i,j] + rho B[i,j] + rho^2 C[i,j])`
+    ///
+    /// as a dense table over the column domain, one column chunk per task.
     pub fn bind_and_batch(
         &self,
         row_point: &[F],
@@ -169,6 +248,7 @@ where
     ) -> Result<DenseMultilinearExtension<F>, SpartanMatrixError> {
         bind_and_batch_with_num_vars(
             &self.matrices,
+            &self.column_chunks,
             row_point,
             rho,
             self.num_row_vars,
@@ -190,6 +270,7 @@ where
     ) -> Result<F, SpartanMatrixError> {
         evaluate_batched_with_num_vars(
             &self.matrices,
+            &self.column_chunks,
             row_point,
             rho,
             column_point,
@@ -201,6 +282,7 @@ where
 
 fn bind_and_batch_with_num_vars<F>(
     matrices: &ConstraintMatrices<F>,
+    column_chunks: &[ColumnChunkIndex; 3],
     row_point: &[F],
     rho: F,
     num_row_vars: usize,
@@ -217,20 +299,33 @@ where
     }
 
     let row_weights = poly::eq_table(row_point);
-    let mut evaluations = vec![F::ZERO; 1usize << num_column_vars];
+    let batched = [
+        (&matrices.a, &column_chunks[0], F::ONE),
+        (&matrices.b, &column_chunks[1], rho),
+        (&matrices.c, &column_chunks[2], rho * rho),
+    ];
+    let chunk_len = column_chunks[0].chunk_len;
 
-    for (matrix, batch_scale) in [
-        (&matrices.a, F::ONE),
-        (&matrices.b, rho),
-        (&matrices.c, rho * rho),
-    ] {
-        for (row_index, row) in matrix.rows().iter().enumerate() {
-            let row_scale = row_weights[row_index] * batch_scale;
-            for &(column, coefficient) in row.entries() {
-                evaluations[column] += row_scale * coefficient;
+    // Every task owns one column chunk of the table and touches only the
+    // nonzeros landing in it: no two tasks write the same column, and each
+    // task's writes stay within a cache-sized slice.
+    let mut evaluations: Vec<F> =
+        rayon::iter::repeat_n(F::ZERO, 1usize << num_column_vars).collect();
+    evaluations
+        .par_chunks_mut(chunk_len)
+        .enumerate()
+        .for_each(|(chunk, output)| {
+            let base = chunk * chunk_len;
+            for (matrix, index, batch_scale) in batched {
+                for span in &index.spans[chunk] {
+                    let row_scale = row_weights[span.row] * batch_scale;
+                    let entries = &matrix.rows()[span.row].entries()[span.start..span.end];
+                    for &(column, coefficient) in entries {
+                        output[column - base] += row_scale * coefficient;
+                    }
+                }
             }
-        }
-    }
+        });
 
     DenseMultilinearExtension::from_evaluations(num_column_vars, evaluations)
         .map_err(|_| SpartanMatrixError::InvalidMleOperation)
@@ -238,6 +333,7 @@ where
 
 fn evaluate_batched_with_num_vars<F>(
     matrices: &ConstraintMatrices<F>,
+    column_chunks: &[ColumnChunkIndex; 3],
     row_point: &[F],
     rho: F,
     column_point: &[F],
@@ -261,21 +357,40 @@ where
     }
 
     let row_weights = poly::eq_table(row_point);
-    let column_weights = poly::eq_table(column_point);
-    let mut evaluation = F::ZERO;
+    let batched = [
+        (&matrices.a, &column_chunks[0], F::ONE),
+        (&matrices.b, &column_chunks[1], rho),
+        (&matrices.c, &column_chunks[2], rho * rho),
+    ];
 
-    for (matrix, batch_scale) in [
-        (&matrices.a, F::ONE),
-        (&matrices.b, rho),
-        (&matrices.c, rho * rho),
-    ] {
-        for (row_index, row) in matrix.rows().iter().enumerate() {
-            for &(column, coefficient) in row.entries() {
-                evaluation +=
-                    batch_scale * row_weights[row_index] * column_weights[column] * coefficient;
+    // All tasks share one cache-sized `low` table and a per-chunk factor.
+    // Each task reduces one column chunk of nonzeros to a single field element.
+    let chunk_len = column_chunks[0].chunk_len;
+    let (low_point, high_point) = column_point.split_at(chunk_len.ilog2() as usize);
+    let low_weights = poly::eq_table(low_point);
+    let high_weights = poly::eq_table(high_point);
+    debug_assert_eq!(high_weights.len(), column_chunks[0].spans.len());
+
+    let evaluation = high_weights
+        .par_iter()
+        .enumerate()
+        .map(|(chunk, &chunk_weight)| {
+            let base = chunk * chunk_len;
+            let mut chunk_sum = F::ZERO;
+            for (matrix, index, batch_scale) in batched {
+                let mut matrix_sum = F::ZERO;
+                for span in &index.spans[chunk] {
+                    let entries = &matrix.rows()[span.row].entries()[span.start..span.end];
+                    let span_sum = entries.iter().fold(F::ZERO, |sum, &(column, coefficient)| {
+                        sum + low_weights[column - base] * coefficient
+                    });
+                    matrix_sum += row_weights[span.row] * span_sum;
+                }
+                chunk_sum += batch_scale * matrix_sum;
             }
-        }
-    }
+            chunk_weight * chunk_sum
+        })
+        .reduce(|| F::ZERO, |left, right| left + right);
 
     Ok(evaluation)
 }
@@ -384,4 +499,129 @@ fn modular_vector_mle(
 
     DenseMultilinearExtension::from_evaluations(num_vars, evaluations)
         .map_err(|_| SpartanMatrixError::InvalidMleOperation)
+}
+
+#[cfg(test)]
+mod tests {
+    use circuit::constraints::{ConstraintMatrices, SparseBoolMatrix, SparseMatrix};
+    use field::FqDefault;
+    use rand::{Rng, SeedableRng};
+    use rand_pcg::Pcg64;
+
+    use super::{BIND_CHUNK_COLUMN_VARS, PreparedConstraintMatrices};
+
+    /// Three chunks of columns plus one chunk of padding, so rows straddle
+    /// chunk boundaries and the last chunk holds no nonzeros.
+    const COLUMNS: usize = 3 << BIND_CHUNK_COLUMN_VARS;
+    const ROWS: usize = 37;
+    const ENTRIES_PER_ROW: usize = 24;
+
+    fn random_sparse_matrix(rng: &mut Pcg64) -> SparseMatrix<FqDefault> {
+        let rows = (0..ROWS)
+            .map(|_| {
+                let mut columns: Vec<usize> = (0..ENTRIES_PER_ROW)
+                    .map(|_| rng.random_range(0..COLUMNS))
+                    .collect();
+                columns.sort_unstable();
+                columns.dedup();
+                columns
+                    .into_iter()
+                    .map(|column| (column, FqDefault::from(u128::from(rng.random::<u64>()))))
+                    .collect()
+            })
+            .collect();
+        SparseMatrix::try_from_rows(COLUMNS, rows).unwrap()
+    }
+
+    fn random_prepared_matrices(rng: &mut Pcg64) -> PreparedConstraintMatrices<FqDefault> {
+        let m = SparseBoolMatrix::try_from_rows(1, vec![Vec::new(); COLUMNS]).unwrap();
+        let a = random_sparse_matrix(rng);
+        let b = random_sparse_matrix(rng);
+        let c = random_sparse_matrix(rng);
+        PreparedConstraintMatrices::new(ConstraintMatrices { m, a, b, c }).unwrap()
+    }
+
+    fn random_point(rng: &mut Pcg64, len: usize) -> Vec<FqDefault> {
+        (0..len)
+            .map(|_| FqDefault::from(u128::from(rng.random::<u64>())))
+            .collect()
+    }
+
+    /// `D(r_y)` by the direct triple loop over every nonzero.
+    fn reference_evaluation(
+        matrices: &ConstraintMatrices<FqDefault>,
+        row_point: &[FqDefault],
+        rho: FqDefault,
+        column_point: &[FqDefault],
+    ) -> FqDefault {
+        let row_weights = poly::eq_table(row_point);
+        let column_weights = poly::eq_table(column_point);
+        let mut evaluation = FqDefault::from(0u128);
+        for (matrix, batch_scale) in [
+            (&matrices.a, FqDefault::from(1u128)),
+            (&matrices.b, rho),
+            (&matrices.c, rho * rho),
+        ] {
+            for (row, entries) in matrix.rows().iter().enumerate() {
+                for &(column, coefficient) in entries.entries() {
+                    evaluation +=
+                        batch_scale * row_weights[row] * column_weights[column] * coefficient;
+                }
+            }
+        }
+        evaluation
+    }
+
+    #[test]
+    fn column_chunks_partition_every_row() {
+        let mut rng = Pcg64::seed_from_u64(7);
+        let prepared = random_prepared_matrices(&mut rng);
+        let matrices = prepared.matrices();
+
+        for (matrix, index) in [&matrices.a, &matrices.b, &matrices.c]
+            .into_iter()
+            .zip(&prepared.column_chunks)
+        {
+            let mut spans: Vec<_> = index
+                .spans
+                .iter()
+                .enumerate()
+                .flat_map(|(chunk, spans)| spans.iter().map(move |span| (chunk, *span)))
+                .collect();
+            spans.sort_by_key(|(_, span)| (span.row, span.start));
+
+            let mut spans = spans.into_iter().peekable();
+            for (row, entries) in matrix.rows().iter().enumerate() {
+                let mut next_start = 0;
+                while let Some((chunk, span)) = spans.next_if(|(_, span)| span.row == row) {
+                    assert_eq!(span.start, next_start);
+                    assert!(span.end > span.start);
+                    for &(column, _) in &entries.entries()[span.start..span.end] {
+                        assert_eq!(column / index.chunk_len, chunk);
+                    }
+                    next_start = span.end;
+                }
+                assert_eq!(next_start, entries.entries().len());
+            }
+            assert!(spans.next().is_none());
+        }
+    }
+
+    #[test]
+    fn evaluate_batched_matches_reference_and_bound_table() {
+        let mut rng = Pcg64::seed_from_u64(11);
+        let prepared = random_prepared_matrices(&mut rng);
+        let row_point = random_point(&mut rng, prepared.num_row_vars());
+        let column_point = random_point(&mut rng, prepared.num_column_vars());
+        let rho = FqDefault::from(u128::from(rng.random::<u64>()));
+
+        let expected = reference_evaluation(prepared.matrices(), &row_point, rho, &column_point);
+        let evaluation = prepared
+            .evaluate_batched(&row_point, rho, &column_point)
+            .unwrap();
+        assert_eq!(evaluation, expected);
+
+        let bound = prepared.bind_and_batch(&row_point, rho).unwrap();
+        assert_eq!(bound.evaluate(&column_point).unwrap(), expected);
+    }
 }

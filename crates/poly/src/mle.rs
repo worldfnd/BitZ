@@ -90,7 +90,7 @@ where
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DenseMultilinearExtension<T> {
     /// Evaluations on `{0,1}^num_vars` in little-endian index order.
-    evaluations: Vec<T>,
+    pub evaluations: Vec<T>,
 }
 
 impl<T> DenseMultilinearExtension<T> {
@@ -121,12 +121,6 @@ impl<T> DenseMultilinearExtension<T> {
     pub fn num_vars(&self) -> usize {
         debug_assert!(self.evaluations.len().is_power_of_two());
         self.evaluations.len().ilog2() as usize
-    }
-
-    /// Consumes the MLE and returns its little-endian Boolean-hypercube
-    /// evaluation table without copying it.
-    pub fn into_evaluations(self) -> Vec<T> {
-        self.evaluations
     }
 }
 
@@ -402,7 +396,7 @@ mod tests {
     fn consuming_the_mle_returns_its_evaluation_table() {
         let mle = DenseMultilinearExtension::from_evaluations(2, vec![1u32, 2, 3, 4]).unwrap();
 
-        assert_eq!(mle.into_evaluations(), vec![1, 2, 3, 4]);
+        assert_eq!(mle.evaluations, vec![1, 2, 3, 4]);
     }
 
     #[test]

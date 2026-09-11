@@ -61,7 +61,8 @@ fn sha256_compression_verifies_through_spartan_piop() {
     assert_eq!(assignment.num_vars(), 15);
 
     let mut prover = build_prover(SESSION, INSTANCE);
-    let (proof, claim) = prove_spartan_piop(&mut prover, &matrices, products, assignment).unwrap();
+    let (proof, claim) =
+        prove_spartan_piop(&mut prover, &matrices, &products, &assignment).unwrap();
     assert_eq!(proof.outer.sumcheck.round_polynomials.len(), 8);
     assert_eq!(proof.inner.round_polynomials.len(), 15);
     let transcript_proof = prover.finish();

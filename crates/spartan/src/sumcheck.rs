@@ -255,7 +255,7 @@ pub fn prove_outer_sumcheck<F>(
     transcript: &mut ProverState,
     initial_claim: F,
     (eq_low, eq_high): (DenseMultilinearExtension<F>, DenseMultilinearExtension<F>),
-    products: R1csProductMles<F>,
+    products: &R1csProductMles<F>,
 ) -> Result<OuterSumcheckOutput<F>, SumcheckError>
 where
     F: ConstField + Copy + Encoding<[u8]> + TranscriptChallenge,
@@ -276,7 +276,8 @@ where
     let zero = F::ZERO;
     let mut eq_low: Vec<_> = eq_low.into_iter().collect();
     let mut eq_high: Vec<_> = eq_high.into_iter().collect();
-    let mut products = R1csProductTableBuffers::from_mles(products);
+    // It's possible to avoid cloning here but its impact is negligible
+    let mut products = R1csProductTableBuffers::from_mles(products.clone());
 
     // Each destination is allocated once at half the initial table size. After
     // a fold, swapping makes the old input allocation the next scratch table.
@@ -446,7 +447,7 @@ pub fn prove_inner_sumcheck<F>(
     transcript: &mut ProverState,
     initial_claim: F,
     batched_matrix_mle: DenseMultilinearExtension<F>,
-    witness_mle: DenseMultilinearExtension<F>,
+    witness_mle: &DenseMultilinearExtension<F>,
 ) -> Result<InnerSumcheckOutput<F>, SumcheckError>
 where
     F: ConstField + Copy + Encoding<[u8]> + TranscriptChallenge,
@@ -457,18 +458,21 @@ where
     }
 
     let zero = F::ZERO;
-    let mut batched_matrix = batched_matrix_mle.into_evaluations();
-    let mut witness = witness_mle.into_evaluations();
+    let mut batched_matrix = batched_matrix_mle.evaluations;
     let mut current_claim = initial_claim;
     let mut eval_points = Vec::with_capacity(num_vars);
     let mut round_polynomials = Vec::with_capacity(num_vars);
 
-    if num_vars > 0 {
-        // Each round halves both evaluation tables. Allocate the output buffers
-        // once, then reuse the previous input buffers as scratch space after
-        // swapping them with the newly folded tables.
+    // Round zero folds the witness straight out of the caller's MLE, so its
+    // table is never cloned. From then on two buffers alternate as fold input
+    // and output; round zero writes half the table, round one a quarter.
+    let witness_evaluation = if num_vars > 0 {
+        // Each round halves both evaluation tables. Allocate the output buffer
+        // once, then reuse the previous input buffer as scratch space after
+        // swapping it with the newly folded table.
         let mut batched_matrix_scratch = vec![zero; batched_matrix.len() / 2];
-        let mut witness_scratch = vec![zero; witness.len() / 2];
+        let mut witness_scratch = vec![zero; witness_mle.len() / 2];
+        let mut witness_scratch_2 = vec![zero; witness_mle.len() / 4];
 
         // The loop below pipelines the rounds so each table fold can also
         // prepare the following round polynomial. `coefficients_without_linear`
@@ -480,9 +484,9 @@ where
         // scan of the folded tables. The final iteration has no next polynomial,
         // so it only interpolates the last pair in each table.
         let mut coefficients_without_linear =
-            sum_inner_round_coefficients_without_linear(&batched_matrix, &witness);
+            sum_inner_round_coefficients_without_linear(&batched_matrix, witness_mle);
 
-        for _round in 0..num_vars {
+        for round in 0..num_vars {
             let challenge = recover_full_round_polynomial_and_sample_next_challenge(
                 transcript,
                 &mut current_claim,
@@ -491,8 +495,13 @@ where
                 &mut eval_points,
             );
 
+            let witness_input: &[F] = if round == 0 {
+                &witness_mle.evaluations
+            } else {
+                &witness_scratch_2
+            };
             let next_len = batched_matrix.len() / 2;
-            debug_assert_eq!(witness.len() / 2, next_len);
+            debug_assert_eq!(witness_input.len() / 2, next_len);
             debug_assert!(batched_matrix_scratch.len() >= next_len);
             debug_assert!(witness_scratch.len() >= next_len);
             batched_matrix_scratch.truncate(next_len);
@@ -504,7 +513,8 @@ where
                 // `witness(r_y)`. No next-round polynomial needs to be prepared.
                 batched_matrix_scratch[0] =
                     interpolate_pair([batched_matrix[0], batched_matrix[1]], challenge);
-                witness_scratch[0] = interpolate_pair([witness[0], witness[1]], challenge);
+                witness_scratch[0] =
+                    interpolate_pair([witness_input[0], witness_input[1]], challenge);
             } else {
                 // More rounds remain. Evaluate every adjacent pair at this
                 // challenge to halve both tables. The fused helper also uses
@@ -512,7 +522,7 @@ where
                 coefficients_without_linear =
                     fold_and_compute_next_inner_round_coefficients_without_linear(
                         &batched_matrix,
-                        &witness,
+                        witness_input,
                         &mut batched_matrix_scratch,
                         &mut witness_scratch,
                         challenge,
@@ -522,12 +532,16 @@ where
             // Use the folded tables as the next round's inputs and recycle the
             // old input buffers as scratch space.
             std::mem::swap(&mut batched_matrix, &mut batched_matrix_scratch);
-            std::mem::swap(&mut witness, &mut witness_scratch);
+            std::mem::swap(&mut witness_scratch_2, &mut witness_scratch);
         }
-    }
+
+        witness_scratch_2[0]
+    } else {
+        // With no rounds nothing was folded and the MLE is its own evaluation.
+        witness_mle.evaluations[0]
+    };
 
     let batched_matrix_evaluation = batched_matrix[0];
-    let witness_evaluation = witness[0];
     debug_assert_eq!(
         current_claim,
         batched_matrix_evaluation * witness_evaluation
@@ -1255,7 +1269,7 @@ mod tests {
 
         let mut prover = build_prover(session, &instance);
         let prover_output =
-            prove_outer_sumcheck(&mut prover, F::ZERO, eq_factors, products).unwrap();
+            prove_outer_sumcheck(&mut prover, F::ZERO, eq_factors, &products).unwrap();
         let proof = prover.finish();
 
         let mut verifier = build_verifier(session, &instance, &proof);
@@ -1374,7 +1388,7 @@ mod tests {
                     DenseMultilinearExtension::zero_vars(fq(1)),
                     DenseMultilinearExtension::zero_vars(fq(1)),
                 ),
-                invalid_products,
+                &invalid_products,
             ),
             Err(SumcheckError::InvalidProductDimensions)
         );
@@ -1390,7 +1404,7 @@ mod tests {
                     DenseMultilinearExtension::zero_vars(fq(1)),
                     DenseMultilinearExtension::zero_vars(fq(1)),
                 ),
-                inputs.products,
+                &inputs.products,
             ),
             Err(SumcheckError::InvalidEqualityDimensions)
         );
@@ -1489,7 +1503,7 @@ mod tests {
             &mut prover,
             FqDefault::from(41u128),
             batched_matrix,
-            witness,
+            &witness,
         )
         .unwrap();
 
@@ -1527,7 +1541,7 @@ mod tests {
             &mut prover,
             FqDefault::from(507u128),
             batched_matrix,
-            witness,
+            &witness,
         )
         .unwrap();
 
@@ -1654,7 +1668,7 @@ mod tests {
         let mut prover = build_prover(session, &instance);
 
         let output =
-            prove_inner_sumcheck(&mut prover, initial_claim, batched_matrix_mle, witness_mle)
+            prove_inner_sumcheck(&mut prover, initial_claim, batched_matrix_mle, &witness_mle)
                 .unwrap();
         let next_prover_challenge = prover.squeeze::<F>();
         let transcript_proof = prover.finish();
@@ -1694,7 +1708,7 @@ mod tests {
         let mut prover = build_prover(INNER_SESSION, b"zero-variables");
 
         let output =
-            prove_inner_sumcheck(&mut prover, initial_claim, batched_matrix, witness).unwrap();
+            prove_inner_sumcheck(&mut prover, initial_claim, batched_matrix, &witness).unwrap();
 
         assert!(output.sumcheck.proof.round_polynomials.is_empty());
         assert!(output.sumcheck.eval_points.is_empty());
@@ -1729,7 +1743,12 @@ mod tests {
         let mut prover = build_prover(INNER_SESSION, b"mismatched-dimensions");
 
         assert_eq!(
-            prove_inner_sumcheck(&mut prover, FqDefault::from(0u128), batched_matrix, witness,),
+            prove_inner_sumcheck(
+                &mut prover,
+                FqDefault::from(0u128),
+                batched_matrix,
+                &witness
+            ),
             Err(SumcheckError::InvalidProductDimensions)
         );
 
