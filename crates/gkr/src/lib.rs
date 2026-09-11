@@ -141,7 +141,7 @@ struct SuffixTable(Vec<Vec<Field>>);
 impl SuffixTable {
     /// Allocates all directly as it is as much space as a double buffer approach would take.
     fn new(point: &Point) -> SuffixTable {
-        let mut table = Vec::with_capacity(1 << point.len().saturating_sub(1));
+        let mut table = Vec::with_capacity(point.len().max(1));
         let mut prev = Vec::from([Field::ONE]);
 
         // The selector is the first entry of the point and we need to skip
@@ -153,7 +153,7 @@ impl SuffixTable {
         // Suffix table is in the reverse order of the point
         for &z in c.rev() {
             let size = prev.len() << 1;
-            let mut entry = vec![Field::ZERO; size];
+            let mut entry = Field::zeroed_vec(size);
             let (low, hi) = entry.split_at_mut(size >> 1);
 
             for (i, &e) in prev.iter().enumerate() {
