@@ -72,7 +72,6 @@ impl<const Q: u128> Reduction<Q> for Reduce {
 fn init_circuit(table: &BitTable, fold: &Fold) -> GrandProductCircuit {
     let dim = table.shape().columns() * table.shape().rows();
     let mut leafs: Vec<_> = vec![F128::zero(); dim];
-
     // TODO optimisation: Handle the leafs and the two layers above it lazily.
     for b in 0..table.shape().rows() {
         for c in 0..table.shape().columns() {
@@ -114,27 +113,30 @@ pub fn gkr_reduce(
     let u2 = eq_table(&alfa_c);
     todo!("Move m_table into pcs::lin and return u2");
 
-    // Inner product / eq_table approach to prevent blowup
-    fn m_table(u2: Vec<F128>, table: &BitTable) -> Vec<F128> {
-        let columns = table.shape().columns();
-        let rows = table.shape().rows();
-        debug_assert_eq!(u2.len(), columns);
-
-        let mut m = vec![F128::ZERO; rows];
-        for (j, factor) in u2.iter().enumerate() {
-            for (i, b) in table.column_bits(j).enumerate() {
-                if b {
-                    m[i] += factor;
-                }
-            }
-        }
-
-        m
-    }
-
     let m = m_table(u2, table);
 
     (u1, m, inner_product_claim)
+}
+
+// Inner product / eq_table approach to prevent blowup
+// #[inline(never)]
+fn m_table(u2: Vec<F128>, table: &BitTable) -> Vec<F128> {
+    let columns = table.shape().columns();
+    let rows = table.shape().rows();
+    debug_assert_eq!(u2.len(), columns);
+
+    let mut m = vec![F128::ZERO; rows];
+    for (j, factor) in u2.iter().enumerate() {
+        for (i, b) in table.column_bits(j).enumerate() {
+            let mask = 0u64.wrapping_sub(b as u64);
+            m[i] += F128 {
+                lo: factor.lo & mask,
+                hi: factor.hi & mask,
+            };
+        }
+    }
+
+    m
 }
 
 impl<const Q: u128> BitZProver<Q> {

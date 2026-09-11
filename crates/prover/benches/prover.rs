@@ -4,7 +4,7 @@
 
 use std::hint::black_box;
 
-use common::{BitTable, F2ZParams, Fold, Shape};
+use common::{BitTable, BitZParams, Fold, Shape};
 use divan::Bencher;
 use field::F128;
 use num_traits::ConstOne;
@@ -20,8 +20,8 @@ fn random_table(shape: Shape) -> BitTable<'static> {
     let packed: Box<Vec<_>> =
         Box::new((0..n).map(|_| F128::from(rand::random::<u128>())).collect());
     let packed: &'static _ = packed.leak();
-    let params: F2ZParams<Q114> =
-        F2ZParams::new(shape, field::gf128::smallest_generator()).unwrap();
+    let params: BitZParams<Q114> =
+        BitZParams::new(shape, field::gf128::smallest_generator()).unwrap();
 
     params.table(packed).unwrap()
 }
