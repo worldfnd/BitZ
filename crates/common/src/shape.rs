@@ -5,6 +5,10 @@
 pub const PACK_BITS: u32 = 7;
 
 /// The commitment size window the opening parameters are fixed for.
+///
+/// `22..=35` is not derived from a security bound here; it is the range
+/// `flock-core`'s Ligerito configs are precomputed for (one shipped TOML per
+/// `m` in that range, per profile). Sizes outside it have no config to load.
 pub const MIN_LOG_BITS: usize = 22;
 /// The upper end of that window.
 pub const MAX_LOG_BITS: usize = 35;

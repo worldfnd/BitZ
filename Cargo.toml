@@ -31,7 +31,7 @@ flock-core = { git = "https://github.com/succinctlabs/flock.git", rev = "8790722
 num-bigint = "0.4"
 num-traits = "0.2"
 proptest = "1.11.0"
-rand = "0.9"
+rand = "0.10"
 rand_chacha = "0.9"
 rand_core = "0.9"
 rand_pcg = "0.9"
@@ -39,7 +39,25 @@ rayon = "1.10"
 spongefish = "0.7.4"
 thiserror = "2.0"
 
+
+
 # Benchmark parity: without these, kernels lose cross-unit inlining.
+# debug = true keeps symbols for samply without changing codegen.
+# split-debuginfo = "packed" bundles a .dSYM so samply can read source/line
+# info (macOS's default "unpacked" mode leaves DWARF in per-CGU .o files that
+# samply doesn't follow via the OSO indirection).
 [profile.release]
 lto = true
 codegen-units = 1
+
+# Same as release, but without whole-program LTO / a single codegen unit:
+# those collapse call boundaries across the whole crate graph, which makes a
+# sampling profiler attribute time to the wrong (or a merged) frame. Use this
+# profile when profiling instead of `release`; it isn't representative of the
+# real benchmark numbers, only of where time goes.
+[profile.profiling]
+inherits = "release"
+debug = true
+split-debuginfo = "packed"
+lto = false
+codegen-units = 16

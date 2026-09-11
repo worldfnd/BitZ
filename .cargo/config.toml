@@ -1,0 +1,3 @@
+# Frame pointers needed for samply/Instruments to get accurate/deep call stacks on macOS.
+[build]
+rustflags = ["-C", "force-frame-pointers=yes"]
