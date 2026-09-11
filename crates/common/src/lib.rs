@@ -20,4 +20,4 @@ pub use opening::OpeningQuery;
 pub use params::{F2ZParams, ParamsError};
 pub use reduction::ReductionInput;
 pub use shape::{Shape, ShapeError};
-pub use table::{BitTable, TableError};
+pub use table::{BitTable, TableError, TransposeError, TransposedBitTable};

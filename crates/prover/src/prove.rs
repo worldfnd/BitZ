@@ -65,17 +65,32 @@ impl<const Q: u128> Reduction<Q> for Reduce {
     }
 }
 
+#[inline(never)]
 fn init_circuit(table: &BitTable, fold: &Fold) -> GrandProductCircuit {
-    let dim = table.shape().columns() * table.shape().rows();
+    let columns = table.shape().columns();
+    let dim = columns * table.shape().rows();
     let mut leafs = F128::zeroed_vec(dim);
+
+    // `table` is column-major (see `BitTable`'s docs), but the leaves below
+    // are laid out row-major, so walking `table` directly here would be one
+    // `bit()` call -- a bounds check, two shifts, and a cache miss -- per
+    // cell. Transposing once up front turns each row of `table` into a
+    // column of `transposed`, which `column_bits` then walks sequentially:
+    // every source element read once, in the order it sits in memory.
+    //
+    // `table.shape().log_columns() >= 7` always holds in this protocol's
+    // configs (`m` in `22..=35` with `log_rows >= 7` leaves nowhere near a
+    // sub-128-column shape), so `transpose` never actually rejects here.
+    let transposed = table
+        .transpose()
+        .expect("F2Z shapes commit far more than 128 columns");
+    let transposed = transposed.as_table();
+
     // TODO optimisation: Handle the leafs and the two layers above it lazily.
-    for b in 0..table.shape().rows() {
-        for c in 0..table.shape().columns() {
-            leafs[b * table.shape().columns() + c] = if table.bit(c, b) {
-                fold.row_images[b]
-            } else {
-                F128::ONE
-            };
+    for (b, &row_image) in fold.row_images.iter().enumerate() {
+        let leafs = &mut leafs[b * columns..(b + 1) * columns];
+        for (leaf, bit) in leafs.iter_mut().zip(transposed.column_bits(b)) {
+            *leaf = if bit { row_image } else { F128::ONE };
         }
     }
 
