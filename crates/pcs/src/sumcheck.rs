@@ -1,15 +1,8 @@
-//! Temporary reference implementation of the inner-product reduction.
-//!
-//! Replace the reduction internals here, while preserving `prove`, `verify`, and the `MleClaim` contract.
-//! The current quadratic sumcheck uses a dense witness table with one `F128` element per bit.
-//! Its tests own the round encoding and byte offsets, so those details can change together.
-//!
 //! The input contains arbitrary row and column weights over `F128`.
 //! Bit `column * row_weights.len() + row` has weight `row_weights[row] * column_weights[column]`.
 //! Each packed witness element stores bits 0 through 63 in `lo`, then bits 64 through 127 in `hi`.
 //! Packed element `i`, local bit `v`, supplies logical bit `128 * i + v`.
 //! The target is the claimed weighted sum of the original committed bits.
-//! An optimized reduction over rows alone needs an explicit column evaluation point, which this input does not provide.
 //!
 //! `LinearClaim` ensures nonempty factors whose lengths are powers of two.
 //! Opening code checks the total weight count, packed witness length, and retained prover parameters.
