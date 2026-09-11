@@ -593,6 +593,7 @@ version = "0.1.0"
 dependencies = [
  "aes",
  "binius-field",
+ "bytemuck",
  "crypto-primitives",
  "crypto-primitives-proc-macros",
  "divan",

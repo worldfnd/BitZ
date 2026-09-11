@@ -6,7 +6,7 @@ use pcs::{CommitScheme, Pcs, ProveError as OpeningProveError, ProverData, Statem
 
 use common::Fold;
 use gkr::{GrandProductCircuit, gpgkr_prove};
-use num_traits::{ConstOne, ConstZero, identities::Zero};
+use num_traits::ConstOne;
 use poly::eq_table;
 use transcript::ProverState;
 
@@ -71,7 +71,7 @@ impl<const Q: u128> Reduction<Q> for Reduce {
 
 fn init_circuit(table: &BitTable, fold: &Fold) -> GrandProductCircuit {
     let dim = table.shape().columns() * table.shape().rows();
-    let mut leafs: Vec<_> = vec![F128::zero(); dim];
+    let mut leafs = F128::zeroed_vec(dim);
     // TODO optimisation: Handle the leafs and the two layers above it lazily.
     for b in 0..table.shape().rows() {
         for c in 0..table.shape().columns() {
@@ -125,7 +125,7 @@ fn m_table(u2: Vec<F128>, table: &BitTable) -> Vec<F128> {
     let rows = table.shape().rows();
     debug_assert_eq!(u2.len(), columns);
 
-    let mut m = vec![F128::ZERO; rows];
+    let mut m = F128::zeroed_vec(rows);
     for (j, factor) in u2.iter().enumerate() {
         for (i, b) in table.column_bits(j).enumerate() {
             let mask = 0u64.wrapping_sub(b as u64);
@@ -236,6 +236,7 @@ mod order_check_ai_test {
     use super::*;
     use common::{BitZParams, Fold, Shape};
     use field::gf128::smallest_generator;
+    use num_traits::ConstZero;
 
     const Q: u128 = (1 << 114) - 11;
 
