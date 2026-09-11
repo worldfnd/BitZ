@@ -2,8 +2,9 @@
 
 use crypto_primitives::LiftElement;
 use field::Fq;
+use spongefish::Encoding;
 
-use crate::F2ZParams;
+use crate::{F2ZParams, Shape};
 
 /// A Merkle root over the committed codeword.
 ///
@@ -23,6 +24,8 @@ pub enum ClaimError {
 
 /// The caller's `x_core`: the weights and the value they are claimed to give.
 ///
+/// F2Z uses `LinearClaim<Fq<Q>>`; opening queries use `LinearClaim<field::F128>`.
+/// The following F2Z requirements apply to the `Fq<Q>` input claim.
 /// F2Z verifies nothing upstream of this. The caller runs its own PIOP, and
 /// establishes that its claim holds, that `q` is prime, and that the
 /// coefficient factors as `v = v^(1) (x) v^(2)`. A claim whose coefficient
@@ -31,13 +34,28 @@ pub enum ClaimError {
 ///
 /// The parameters live in [`F2ZParams`]; this is only the claim against them.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LinearClaim<const Q: u128> {
-    row_weights: Vec<Fq<Q>>,
-    column_weights: Vec<Fq<Q>>,
-    target: Fq<Q>,
+pub struct LinearClaim<F> {
+    row_weights: Vec<F>,
+    column_weights: Vec<F>,
+    target: F,
 }
 
-impl<const Q: u128> LinearClaim<Q> {
+/// Encodes each weight vector with a little-endian `u64` length, followed by the target.
+impl<F: Encoding<[u8]>> Encoding<[u8]> for LinearClaim<F> {
+    fn encode(&self) -> impl AsRef<[u8]> {
+        let mut bytes = Vec::new();
+        for weights in [&self.row_weights, &self.column_weights] {
+            bytes.extend_from_slice(&(weights.len() as u64).to_le_bytes());
+            for weight in weights {
+                bytes.extend_from_slice(weight.encode().as_ref());
+            }
+        }
+        bytes.extend_from_slice(self.target.encode().as_ref());
+        bytes
+    }
+}
+
+impl<const Q: u128> LinearClaim<Fq<Q>> {
     /// Checks the weights against `config` and returns the claim.
     ///
     /// `row_weights` is `v^(1)`, one element per row; `column_weights` is
@@ -48,23 +66,7 @@ impl<const Q: u128> LinearClaim<Q> {
         column_weights: Vec<Fq<Q>>,
         target: Fq<Q>,
     ) -> Result<Self, ClaimError> {
-        if row_weights.len() != params.shape().rows() {
-            return Err(ClaimError::RowWeightCountMismatch);
-        }
-        if column_weights.len() != params.shape().columns() {
-            return Err(ClaimError::ColumnWeightCountMismatch);
-        }
-
-        Ok(Self {
-            row_weights,
-            column_weights,
-            target,
-        })
-    }
-
-    /// The per-row weights `v^(1)`, over `F_q`.
-    pub fn row_weights(&self) -> &[Fq<Q>] {
-        &self.row_weights
+        Self::from_shape(params.shape(), row_weights, column_weights, target)
     }
 
     /// `pi_q^{-1}(v^(1)_i)`, the canonical representatives the fold
@@ -79,17 +81,44 @@ impl<const Q: u128> LinearClaim<Q> {
             .map(|weight| weight.lift())
             .collect()
     }
+}
 
-    /// The per-column weights `v^(2)`, over `F_q`.
+impl<F: Copy> LinearClaim<F> {
+    /// Checks both weight counts against `shape` and returns the claim.
     ///
-    /// These stay in the field: they are applied only in the reconstruction
-    /// that ties the folds back to `mu`, never in the exponent.
-    pub fn column_weights(&self) -> &[Fq<Q>] {
+    /// The weight at `(row, column)` is `row_weights[row] * column_weights[column]`.
+    pub fn from_shape(
+        shape: &Shape,
+        row_weights: Vec<F>,
+        column_weights: Vec<F>,
+        target: F,
+    ) -> Result<Self, ClaimError> {
+        if row_weights.len() != shape.rows() {
+            return Err(ClaimError::RowWeightCountMismatch);
+        }
+        if column_weights.len() != shape.columns() {
+            return Err(ClaimError::ColumnWeightCountMismatch);
+        }
+
+        Ok(Self {
+            row_weights,
+            column_weights,
+            target,
+        })
+    }
+
+    /// The per-row weights `v^(1)`.
+    pub fn row_weights(&self) -> &[F] {
+        &self.row_weights
+    }
+
+    /// The per-column weights `v^(2)`.
+    pub fn column_weights(&self) -> &[F] {
         &self.column_weights
     }
 
     /// The claimed value `mu`.
-    pub fn target(&self) -> Fq<Q> {
+    pub fn target(&self) -> F {
         self.target
     }
 }
@@ -108,7 +137,7 @@ mod tests {
         F2ZParams::new(Shape::new(7, 15).unwrap(), smallest_generator()).unwrap()
     }
 
-    fn claim(row_weights: Vec<Fq<Q114>>) -> Result<LinearClaim<Q114>, ClaimError> {
+    fn claim(row_weights: Vec<Fq<Q114>>) -> Result<LinearClaim<Fq<Q114>>, ClaimError> {
         let params = params();
         LinearClaim::new(
             &params,
@@ -125,10 +154,55 @@ mod tests {
     }
 
     #[test]
+    fn encoding_preserves_length_prefixes_and_field_order() {
+        fn check<F: Encoding<[u8]>>(values: [F; 4]) {
+            let [row, column_a, column_b, target] = values;
+            let mut expected = 1u64.to_le_bytes().to_vec();
+            expected.extend_from_slice(row.encode().as_ref());
+            expected.extend_from_slice(&2u64.to_le_bytes());
+            expected.extend_from_slice(column_a.encode().as_ref());
+            expected.extend_from_slice(column_b.encode().as_ref());
+            expected.extend_from_slice(target.encode().as_ref());
+
+            let claim = LinearClaim {
+                row_weights: vec![row],
+                column_weights: vec![column_a, column_b],
+                target,
+            };
+            assert_eq!(claim.encode().as_ref(), expected);
+        }
+
+        check([1u64, 2, 3, 4].map(field::F128::from));
+        check([1u128, 2, 3, 4].map(Fq::<Q114>::from));
+    }
+
+    #[test]
     fn accepts_a_well_formed_statement() {
         let accepted = claim(weights()).unwrap();
         assert_eq!(accepted.row_weights().len(), 1 << 7);
         assert_eq!(accepted.column_weights().len(), 1 << 15);
+    }
+
+    #[test]
+    fn binary_field_claim_checks_each_factor_length() {
+        use field::F128;
+
+        let shape = Shape::new(8, 14).unwrap();
+        let rows = vec![F128::from(2u64); shape.rows()];
+        let columns = vec![F128::from(3u64); shape.columns()];
+        let target = F128::from(5u64);
+        let claim = LinearClaim::from_shape(&shape, rows.clone(), columns.clone(), target).unwrap();
+        assert_eq!(claim.row_weights(), rows);
+        assert_eq!(claim.column_weights(), columns);
+        assert_eq!(claim.target(), target);
+        assert_eq!(
+            LinearClaim::from_shape(&shape, rows[..128].to_vec(), columns.clone(), target),
+            Err(ClaimError::RowWeightCountMismatch),
+        );
+        assert_eq!(
+            LinearClaim::from_shape(&shape, rows, columns[..128].to_vec(), target),
+            Err(ClaimError::ColumnWeightCountMismatch),
+        );
     }
 
     #[test]

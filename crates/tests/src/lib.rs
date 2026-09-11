@@ -32,7 +32,7 @@ pub struct Instance {
     pub params: F2ZParams<Q>,
     pub prover: prover::F2ZProver<Q>,
     pub verifier: verifier::F2ZVerifier<Q>,
-    pub claim: LinearClaim<Q>,
+    pub claim: LinearClaim<field::Fq<Q>>,
     pub pcs: Pcs,
     pub com: Root,
     pub data: ProverData,
@@ -95,7 +95,7 @@ impl Instance {
     }
 
     /// The same instance under a different claimed value.
-    pub fn with_target(&self, target: Fq<Q>) -> LinearClaim<Q> {
+    pub fn with_target(&self, target: Fq<Q>) -> LinearClaim<field::Fq<Q>> {
         LinearClaim::new(
             &self.params,
             self.claim.row_weights().to_vec(),
@@ -177,7 +177,7 @@ impl prover::Reduction<Q> for HonestStub {
         let target = evaluate(table, &point);
         transcript.prover_message(&target);
 
-        Ok(OpeningQuery { point, target })
+        Ok(OpeningQuery::Mle { point, target })
     }
 }
 
@@ -194,7 +194,7 @@ impl verifier::Reduction<Q> for HonestStub {
             .collect();
         let target = transcript.prover_message::<F128>().map_err(|_| ())?;
 
-        Ok(OpeningQuery { point, target })
+        Ok(OpeningQuery::Mle { point, target })
     }
 }
 

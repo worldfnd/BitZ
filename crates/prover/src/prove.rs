@@ -2,7 +2,7 @@
 
 use common::{BitTable, LinearClaim, OpeningQuery, ReductionInput, TableError};
 use field::F128;
-use pcs::{CommitError, CommitScheme, Pcs, ProverData, StatementBinding};
+use pcs::{CommitScheme, Pcs, ProveError as OpeningProveError, ProverData, StatementBinding};
 use transcript::ProverState;
 
 use crate::{F2ZProver, SendError};
@@ -17,7 +17,7 @@ pub enum ProveError<E> {
     /// The reduction failed.
     Reduction(E),
     /// The opening failed, so the reduction's claim was never discharged.
-    Opening(CommitError),
+    Opening(OpeningProveError),
 }
 
 /// Step 4: the grand product, and the sumcheck that turns its affine leaf
@@ -48,7 +48,7 @@ impl<const Q: u128> F2ZProver<Q> {
     /// arrives carrying the caller's events; this appends and hands it back.
     pub fn prove<R: Reduction<Q>>(
         &self,
-        claim: &LinearClaim<Q>,
+        claim: &LinearClaim<field::Fq<Q>>,
         pcs: &Pcs,
         data: &ProverData,
         packed: Vec<F128>,
