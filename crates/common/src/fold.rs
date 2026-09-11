@@ -111,7 +111,7 @@ pub fn row_images(comb: &FixedBasePow, exponents: &[u128]) -> Vec<F128> {
 /// otherwise sum over a prefix and return a value that is right for no
 /// instance -- and for the common `y = 0` it would look correct.
 pub fn reconstruct<const Q: u128>(
-    claim: &LinearClaim<field::Fq<Q>>,
+    claim: &LinearClaim<Fq<Q>>,
     folds: &[u128],
 ) -> Result<Fq<Q>, FoldError> {
     if folds.len() != claim.column_weights().len() {
