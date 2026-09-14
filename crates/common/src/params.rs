@@ -180,6 +180,14 @@ mod tests {
         );
     }
 
+    #[test]
+    fn rejects_a_map_without_the_constant_column() {
+        assert_eq!(
+            virtual_params_for(4, 0),
+            Err(VirtualParamsError::MissingConstantColumn)
+        );
+    }
+
     /// A shared frame would let a proof of one claim replay as a proof of the
     /// other.
     #[test]
@@ -262,9 +270,11 @@ mod tests {
 /// a vector the oracle does not commit to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VirtualParamsError {
+    /// The map has no column for the constant-one coordinate.
+    MissingConstantColumn,
     /// `h` has more coordinates than the claim shape indexes.
     ClaimShapeTooSmall,
-    /// `1 ‖ f` has more coordinates than the committed shape indexes, so some
+    /// `f` has more coordinates than the committed shape indexes, so some
     /// bit the map reads was never committed.
     CommittedShapeTooSmall,
 }
@@ -295,7 +305,11 @@ impl<const Q: u128> VirtualParams<Q> {
         if map.h_len() > 1 << claim.shape().log_bits() {
             return Err(VirtualParamsError::ClaimShapeTooSmall);
         }
-        if map.f_len() - 1 > 1 << committed.log_bits() {
+        let committed_bits = map
+            .f_len()
+            .checked_sub(1)
+            .ok_or(VirtualParamsError::MissingConstantColumn)?;
+        if committed_bits > 1 << committed.log_bits() {
             return Err(VirtualParamsError::CommittedShapeTooSmall);
         }
 
