@@ -136,8 +136,12 @@ fn eq_factor(r: Field, z: Field) -> Field {
 /// multiply -- but the second is left unreduced, so callers can batch its
 /// reduction with the rest of a running wide sum instead of paying for it on
 /// every term.
+///
+/// The first step uses `Field`'s own fused multiply-reduce (`a * b`, 6 PMULL
+/// on aarch64) rather than `Wide256::mul(a, b).reduce()` (4 PMULL to widen +
+/// 3 more to reduce = 7): same result, one fewer PMULL.
 fn mul3_wide(a: Field, b: Field, c: Field) -> Wide256 {
-    Wide256::mul(Wide256::mul(a, b).reduce(), c)
+    Wide256::mul(a * b, c)
 }
 
 // TODO:  SuffixTable becomes a wrapper around a preallocated vector that is large enough for all rounds.
