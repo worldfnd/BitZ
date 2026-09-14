@@ -283,12 +283,12 @@ impl GrandProductCircuit {
     // Returns the final evaluation and the witnesses of the intermediate layers
     // Can't consume the input as the circuit is necessary for the initialisation of fiat shamir
     // TODO: replace with leaf lookups and add multithreading
-    pub fn batched_eval(&self, groups: usize) -> (Vec<Field>, LayerWitnesses) {
+    pub fn batched_eval(self, groups: usize) -> (Vec<Field>, LayerWitnesses) {
         // +1 to deal with the possible case that the leafs are empty. Given that otherwise the constructor padded it to a power of two, and ilog rounds it down, it becomes a noop
         let mut witnesses = Vec::with_capacity((self.leafs.len() + 1).ilog2() as usize);
 
         // TODO expensive clone going to get replaced by leaf lookups
-        let mut prev_eval = self.leafs.clone();
+        let mut prev_eval = self.leafs;
 
         // Stop when there is one output per group
         while prev_eval.len() > groups {
@@ -436,11 +436,15 @@ mod tests {
 
     pub fn prove(input: Vec<Field>, log_groups: usize) -> (Vec<Field>, transcript::Proof) {
         let circuit = GrandProductCircuit::new(input);
+        // Fake hashing
+        let n = circuit.leafs.len() as u128;
+
+        let log_bits = circuit.leafs.len().max(1).ilog2() as usize;
         let groups = 1usize << log_groups;
         let (last_value, witnesses) = circuit.batched_eval(groups);
 
         // TODO instance is a bit loose and should be replaced by PCS
-        let instance = (last_value.clone(), circuit.leafs);
+        let instance = (last_value.clone(), n);
 
         let mut prover = transcript::build_prover("gkr", &instance);
 
@@ -450,13 +454,14 @@ mod tests {
         let log_groups = last_value.len().max(1).ilog2();
         let point: Vec<Field> = (0..log_groups).map(|_| prover.verifier_message()).collect();
 
-        gpgkr_prove(&mut prover, &point, witnesses);
+        gpgkr_prove(&mut prover, log_bits, &point, witnesses);
         (last_value, prover.finish())
     }
 
     pub fn verify(input: Vec<Field>, output: Vec<Field>, proof: transcript::Proof) -> bool {
         let circuit = GrandProductCircuit::new(input);
-        let instance = (&output, &circuit.leafs);
+        // Fake hashing
+        let instance = (&output, circuit.leafs.len() as u128);
         let mut verifier = transcript::build_verifier("gkr", &instance, &proof);
 
         let log_groups = output.len().max(1).ilog2();
