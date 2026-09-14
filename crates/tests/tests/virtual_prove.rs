@@ -1,18 +1,19 @@
 //! Virtual prove/verify through GKR, matrix transposition, and the real PCS.
 
 use common::{
-    BitZParams, LinearClaim, Shape, TransposedWeights, VirtualMap, VirtualMapError,
-    VirtualStatement,
+    BitZParams, LinearClaim, Root, Shape, TableError, TransposedWeights, VirtualMap,
+    VirtualMapError, VirtualStatement,
 };
 use field::{F128, Fq, gf128::smallest_generator};
-use pcs::{HashKind, LigeritoProfile, Pcs};
-use prover::{BitZProver, VirtualWitness};
+use pcs::{HashKind, LigeritoProfile, Pcs, ProverData};
+use prover::{BitZProver, ProveError, VirtualWitness};
 use tests::{Q, WINDOW, prover_transcript, verifier_transcript};
-use verifier::BitZVerifier;
+use transcript::Proof;
+use verifier::{BitZVerifier, VerifyError};
 
 /// `h[0] = 1`, `h[1] = f[0]`, `h[128] = f[1]`, `h[129] = f[0] XOR f[1]`.
 /// All other virtual bits are zero.
-struct Map;
+struct Map(u8);
 
 impl VirtualMap for Map {
     fn transpose(&self, weights: &[F128]) -> Result<TransposedWeights, VirtualMapError> {
@@ -26,8 +27,8 @@ impl VirtualMap for Map {
     }
 
     fn digest(&self) -> [u8; 32] {
-        // Both roles use this fixed map, so a constant identifier suffices.
-        [7; 32]
+        // The tag lets replay tests change only the public map identifier.
+        [self.0; 32]
     }
 
     fn h_len(&self) -> usize {
@@ -38,42 +39,269 @@ impl VirtualMap for Map {
     }
 }
 
-#[test]
-fn virtual_inner_product_opens_the_committed_bits() {
-    let claim_shape = Shape::new(7, 15).unwrap();
-    let committed_shape = Shape::new(8, 14).unwrap();
-    let params = BitZParams::<Q>::new(claim_shape, smallest_generator()).unwrap();
-    let claim = LinearClaim::new(
-        &params,
-        vec![Fq::from(1u128); claim_shape.rows()],
-        vec![Fq::from(1u128); claim_shape.columns()],
-        Fq::from(3u128),
-    )
-    .unwrap();
-    let statement = VirtualStatement::new(params, committed_shape, &Map, &claim).unwrap();
-    let mut packed = vec![F128::default(); 1 << committed_shape.log_packed_len()];
-    packed[0] = F128::from(1u64);
-    let mut virtual_packed = vec![F128::default(); 1 << claim_shape.log_packed_len()];
-    virtual_packed[0] = F128::from(3u64);
-    virtual_packed[1] = F128::from(2u64);
+struct Instance {
+    params: BitZParams<Q>,
+    committed_shape: Shape,
+    claim: LinearClaim<Fq<Q>>,
+    committed_bits: Vec<F128>,
+    virtual_bits: Vec<F128>,
+    pcs: Pcs,
+    root: Root,
+    data: ProverData,
+}
 
-    let pcs = Pcs::new(&committed_shape, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
-    let (root, data) = pcs.commit(&packed).unwrap();
-    let mut transcript = prover_transcript();
-    BitZProver::new(params, WINDOW)
-        .prove_virtual(
-            &statement,
-            &pcs,
-            &data,
-            VirtualWitness {
-                committed_bits: packed,
-                virtual_bits: &virtual_packed,
-            },
-            &mut transcript,
+impl Instance {
+    fn new() -> Self {
+        let claim_shape = Shape::new(7, 15).unwrap();
+        let committed_shape = Shape::new(8, 14).unwrap();
+        let params = BitZParams::<Q>::new(claim_shape, smallest_generator()).unwrap();
+        let claim = LinearClaim::new(
+            &params,
+            vec![Fq::from(1u128); claim_shape.rows()],
+            vec![Fq::from(1u128); claim_shape.columns()],
+            Fq::from(3u128),
         )
         .unwrap();
-    let proof = transcript.finish();
-    BitZVerifier::new(params, WINDOW)
-        .verify_virtual(&statement, &pcs, root, verifier_transcript(&proof))
+        let mut committed_bits = vec![F128::default(); 1 << committed_shape.log_packed_len()];
+        committed_bits[0] = F128::from(1u64);
+        let mut virtual_bits = vec![F128::default(); 1 << claim_shape.log_packed_len()];
+        virtual_bits[0] = F128::from(3u64);
+        virtual_bits[1] = F128::from(2u64);
+
+        let pcs = Pcs::new(&committed_shape, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
+        let (root, data) = pcs.commit(&committed_bits).unwrap();
+        Self {
+            params,
+            committed_shape,
+            claim,
+            committed_bits,
+            virtual_bits,
+            pcs,
+            root,
+            data,
+        }
+    }
+
+    fn statement(&self) -> VirtualStatement<'_, Q, Map> {
+        VirtualStatement::new(self.params, self.committed_shape, &Map(7), &self.claim).unwrap()
+    }
+
+    fn prove(&self) -> Proof {
+        let mut transcript = prover_transcript();
+        BitZProver::new(self.params, WINDOW)
+            .prove_virtual(
+                &self.statement(),
+                &self.pcs,
+                &self.data,
+                VirtualWitness {
+                    committed_bits: self.committed_bits.clone(),
+                    virtual_bits: &self.virtual_bits,
+                },
+                &mut transcript,
+            )
+            .unwrap();
+        transcript.finish()
+    }
+
+    fn verify(
+        &self,
+        statement: &VirtualStatement<'_, Q, Map>,
+        root: Root,
+        proof: &Proof,
+    ) -> Result<(), VerifyError> {
+        BitZVerifier::new(self.params, WINDOW).verify_virtual(
+            statement,
+            &self.pcs,
+            root,
+            verifier_transcript(proof),
+        )
+    }
+}
+
+#[test]
+fn virtual_inner_product_opens_the_committed_bits() {
+    let instance = Instance::new();
+    let proof = instance.prove();
+    instance
+        .verify(&instance.statement(), instance.root, &proof)
         .unwrap();
+}
+
+#[test]
+fn changed_virtual_statements_are_rejected() {
+    let instance = Instance::new();
+    let statement = instance.statement();
+    let proof = instance.prove();
+    instance.verify(&statement, instance.root, &proof).unwrap();
+
+    let mut changed_root = instance.root;
+    changed_root.0[0] ^= 1;
+    assert!(instance.verify(&statement, changed_root, &proof).is_err());
+
+    let changed_map = VirtualStatement::new(
+        instance.params,
+        instance.committed_shape,
+        &Map(8),
+        &instance.claim,
+    )
+    .unwrap();
+    assert!(
+        instance
+            .verify(&changed_map, instance.root, &proof)
+            .is_err()
+    );
+
+    // Changing a weight on a zero virtual row preserves the integer target.
+    // Rejection must therefore depend on the statement, not a false claim.
+    let mut rows = instance.claim.row_weights().to_vec();
+    rows[2] += Fq::from(1u128);
+    let changed_claim = LinearClaim::new(
+        &instance.params,
+        rows,
+        instance.claim.column_weights().to_vec(),
+        instance.claim.target(),
+    )
+    .unwrap();
+    let changed_statement = VirtualStatement::new(
+        instance.params,
+        instance.committed_shape,
+        &Map(7),
+        &changed_claim,
+    )
+    .unwrap();
+    assert!(
+        instance
+            .verify(&changed_statement, instance.root, &proof)
+            .is_err()
+    );
+}
+
+#[test]
+fn malformed_virtual_proofs_are_rejected() {
+    let instance = Instance::new();
+    let proof = instance.prove();
+    let verify = |proof: &Proof| instance.verify(&instance.statement(), instance.root, proof);
+    verify(&proof).unwrap();
+
+    for hints in [false, true] {
+        let mut changed = proof.clone();
+        let bytes = if hints {
+            &mut changed.hints
+        } else {
+            &mut changed.narg_string
+        };
+        bytes.push(0);
+        assert_eq!(verify(&changed), Err(VerifyError::TrailingData));
+
+        let mut changed = proof.clone();
+        let bytes = if hints {
+            &mut changed.hints
+        } else {
+            &mut changed.narg_string
+        };
+        assert!(bytes.pop().is_some());
+        assert!(verify(&changed).is_err());
+
+        let mut changed = proof.clone();
+        let bytes = if hints {
+            &mut changed.hints
+        } else {
+            &mut changed.narg_string
+        };
+        let middle = bytes.len() / 2;
+        bytes[middle] ^= 0xff;
+        assert!(verify(&changed).is_err());
+    }
+}
+
+#[test]
+fn virtual_witness_lengths_and_setup_must_match_the_statement() {
+    let instance = Instance::new();
+    let statement = instance.statement();
+    let prover = BitZProver::new(instance.params, WINDOW);
+    for committed in [false, true] {
+        let mut committed_bits = instance.committed_bits.clone();
+        let mut virtual_bits = instance.virtual_bits.clone();
+        if committed {
+            committed_bits.pop();
+        } else {
+            virtual_bits.pop();
+        }
+        let mut transcript = prover_transcript();
+        assert_eq!(
+            prover.prove_virtual(
+                &statement,
+                &instance.pcs,
+                &instance.data,
+                VirtualWitness {
+                    committed_bits,
+                    virtual_bits: &virtual_bits
+                },
+                &mut transcript,
+            ),
+            Err(ProveError::Witness(TableError::BitCountMismatch))
+        );
+        assert_eq!(transcript.finish(), Proof::default());
+    }
+
+    let other_params = BitZParams::new(instance.committed_shape, smallest_generator()).unwrap();
+    let larger_commitment = VirtualStatement::new(
+        instance.params,
+        Shape::new(13, 15).unwrap(),
+        &Map(7),
+        &instance.claim,
+    )
+    .unwrap();
+    for (params, statement) in [
+        (other_params, statement),
+        (instance.params, larger_commitment),
+    ] {
+        let mut transcript = prover_transcript();
+        assert_eq!(
+            BitZProver::new(params, WINDOW).prove_virtual(
+                &statement,
+                &instance.pcs,
+                &instance.data,
+                VirtualWitness {
+                    committed_bits: instance.committed_bits.clone(),
+                    virtual_bits: &instance.virtual_bits,
+                },
+                &mut transcript,
+            ),
+            Err(ProveError::ParameterMismatch)
+        );
+        assert_eq!(transcript.finish(), Proof::default());
+        assert_eq!(
+            BitZVerifier::new(params, WINDOW).verify_virtual(
+                &statement,
+                &instance.pcs,
+                instance.root,
+                verifier_transcript(&Proof::default()),
+            ),
+            Err(VerifyError::ParameterMismatch)
+        );
+    }
+}
+
+#[test]
+fn virtual_bits_inconsistent_with_the_map_cannot_be_opened() {
+    let instance = Instance::new();
+    let mut virtual_bits = instance.virtual_bits.clone();
+    // Move the constant-one bit to row two. The integer sum stays three,
+    // but the virtual witness no longer equals M (1 || f).
+    virtual_bits[0] = F128::from(6u64);
+    let mut transcript = prover_transcript();
+    assert_eq!(
+        BitZProver::new(instance.params, WINDOW).prove_virtual(
+            &instance.statement(),
+            &instance.pcs,
+            &instance.data,
+            VirtualWitness {
+                committed_bits: instance.committed_bits.clone(),
+                virtual_bits: &virtual_bits,
+            },
+            &mut transcript,
+        ),
+        Err(ProveError::Opening(pcs::ProveError::InvalidClaim))
+    );
 }
