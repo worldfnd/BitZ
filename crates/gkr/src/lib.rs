@@ -128,7 +128,7 @@ fn prove_layer(
 /// this is just `1 + r + z` -- no multiplication at all, and so nothing for
 /// widemul to help with.
 fn eq_factor(r: Field, z: Field) -> Field {
-    poly::eq::eq_eval(&[r], &[z])
+    Field::ONE + r + z
 }
 
 /// `a * b * c`: two multiplications in a row. The first is reduced -- it has
@@ -292,12 +292,9 @@ impl GrandProductCircuit {
 
         // Stop when there is one output per group
         while prev_eval.len() > groups {
-            let mut eval = Vec::with_capacity(prev_eval.len() >> 1);
             let mid = prev_eval.len() / 2;
             let (l, r) = prev_eval.split_at(mid);
-            for (&a, &b) in l.iter().zip(r) {
-                eval.push(a * b)
-            }
+            let eval: Vec<Field> = l.iter().zip(r).map(|(&a, &b)| a * b).collect();
             witnesses.push(prev_eval);
             prev_eval = eval;
         }
