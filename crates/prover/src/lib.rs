@@ -6,5 +6,5 @@ mod reduce;
 pub mod setup;
 
 pub use fold::SendError;
-pub use prove::ProveError;
+pub use prove::{ProveError, VirtualWitness};
 pub use setup::BitZProver;

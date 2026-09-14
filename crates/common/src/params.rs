@@ -109,8 +109,7 @@ pub enum VirtualParamsError {
     MissingConstantColumn,
     /// `h` has more coordinates than the claim shape indexes.
     ClaimShapeTooSmall,
-    /// `f` has more coordinates than the committed shape indexes, so some
-    /// bit the map reads was never committed.
+    /// The map declares more bits of `f` than the committed shape holds.
     CommittedShapeTooSmall,
 }
 
