@@ -220,7 +220,8 @@ mod round_trip_ai_test {
         let fold = Fold::new(&shape, folds, top_layer, row_images.clone(), zeta.clone()).unwrap();
 
         let mut prover = transcript::build_prover("verifier-round-trip", &F128::ZERO);
-        let (mut point, claim) = gpgkr_prove(&mut prover, &zeta, witnesses);
+        let (mut point, claim) =
+            gpgkr_prove(&mut prover, table.shape().log_bits(), &zeta, witnesses);
         let proof = prover.finish();
 
         // Expected values, derived independently from the prover's own

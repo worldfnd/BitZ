@@ -14,6 +14,7 @@ type Point = VecDeque<Field>;
 // TODO #[must_use], requires changing the test suite
 pub fn gpgkr_prove(
     ps: &mut ProverState,
+    log_bits: usize,
     point: &[F128],
     // All the intermediate witnesses + the input layer. Doesn't contain the output layer
     witnesses: LayerWitnesses,
@@ -26,8 +27,9 @@ pub fn gpgkr_prove(
     let mut point = VecDeque::from(point);
 
     let mut claim = Field::ZERO;
+    let mut storage = Field::zeroed_vec(1 << log_bits);
     for wnext in witnesses.into_iter() {
-        (point, claim) = prove_layer(ps, point, wnext);
+        (point, claim) = prove_layer(ps, &mut storage, point, wnext);
     }
 
     let mut point = Vec::from(point);
@@ -35,8 +37,13 @@ pub fn gpgkr_prove(
     (point, claim)
 }
 
-fn prove_layer(ps: &mut ProverState, point: Point, mut wnext: Vec<Field>) -> (Point, Field) {
-    let mut suffix_table = SuffixTable::new(&point);
+fn prove_layer(
+    ps: &mut ProverState,
+    storage: &mut [Field],
+    point: Point,
+    mut wnext: Vec<Field>,
+) -> (Point, Field) {
+    let mut suffix_table = SuffixTable::new(storage, &point);
     let mut factor = Field::ONE;
 
     let mid = wnext.len() / 2;
@@ -47,11 +54,11 @@ fn prove_layer(ps: &mut ProverState, point: Point, mut wnext: Vec<Field>) -> (Po
     // Can go up to ~21 allocations assuming input of 2^35 and 6:4 split
     let mut next_point = VecDeque::with_capacity(point.len() + 1);
 
-    for z in point {
+    for (i, z) in (0..point.len()).rev().zip(point) {
         // TODO: special-case eq.len() == 1 (final round) to skip the `eq[i] *`
         // multiplications below entirely.
         // TODO: unwrap will be dealt with in upcoming approach to SuffixTable
-        let eq = suffix_table.pop().unwrap();
+        let eq = suffix_table.layer(i);
         let h = mle_l.len() / 2;
         debug_assert_eq!(eq.len(), h);
 
@@ -136,14 +143,25 @@ fn mul3_wide(a: Field, b: Field, c: Field) -> Wide256 {
 // TODO:  SuffixTable becomes a wrapper around a preallocated vector that is large enough for all rounds.
 //          SuffixTable can be 'created' each round / destroyed to ensure proper truncation of the underlying vector
 // TODO: Split suffix table
-struct SuffixTable(Vec<Vec<Field>>);
+struct SuffixTable<'a> {
+    storage: &'a mut [Field],
+    offset: usize,
+}
 
-impl SuffixTable {
+impl<'a> SuffixTable<'a> {
+    fn layer(&mut self, i: usize) -> &mut [Field] {
+        let start = (1 << i) - 1 - self.offset;
+        let end = (1 << (i + 1)) - 1 - self.offset;
+        &mut self.storage[start..end]
+    }
+}
+
+impl<'a> SuffixTable<'a> {
     /// Allocates all directly as it is as much space as a double buffer approach would take.
-    fn new(point: &Point) -> SuffixTable {
-        let mut table = Vec::with_capacity(point.len().max(1));
-        let mut prev = Vec::from([Field::ONE]);
-
+    #[inline(never)]
+    fn new(storage: &'a mut [Field], point: &Point) -> SuffixTable<'a> {
+        storage[0] = F128::ONE;
+        let (mut prev, mut remaining) = storage.split_at_mut(1);
         // The selector is the first entry of the point and we need to skip
         // that -- except when `point` is itself empty, in which case there
         // is no selector and `c` must stay empty too (`min(1)` keeps the
@@ -153,7 +171,7 @@ impl SuffixTable {
         // Suffix table is in the reverse order of the point
         for &z in c.rev() {
             let size = prev.len() << 1;
-            let mut entry = Field::zeroed_vec(size);
+            let (entry, next) = remaining.split_at_mut(size);
             let (low, hi) = entry.split_at_mut(size >> 1);
 
             for (i, &e) in prev.iter().enumerate() {
@@ -162,15 +180,13 @@ impl SuffixTable {
                 (low[i], hi[i]) = (e - tmp, tmp)
             }
 
-            table.push(prev);
             prev = entry;
+            remaining = next;
         }
-        table.push(prev);
-        SuffixTable(table)
-    }
-
-    fn pop(&mut self) -> Option<Vec<Field>> {
-        self.0.pop()
+        SuffixTable {
+            storage: storage,
+            offset: 0,
+        }
     }
 }
 
