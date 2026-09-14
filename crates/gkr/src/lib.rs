@@ -40,7 +40,7 @@ pub fn gpgkr_prove(
 fn prove_layer(
     ps: &mut ProverState,
     storage: &mut [Field],
-    point: Point,
+    mut point: Point,
     mut wnext: Vec<Field>,
 ) -> (Point, Field) {
     let mut suffix_table = SuffixTable::new(storage, &point);
@@ -50,57 +50,62 @@ fn prove_layer(
     // Tree is encoded in LSB order
     let (mut mle_l, mut mle_r) = wnext.split_at_mut(mid);
 
+    let rounds = point.len();
     // TODO: use a double buffer or override approach? Now there is a point allocation each layer
     // Can go up to ~21 allocations assuming input of 2^35 and 6:4 split
-    let mut next_point = VecDeque::with_capacity(point.len() + 1);
+    let mut next_point = VecDeque::with_capacity(rounds + 1);
 
-    for (i, z) in (0..point.len()).rev().zip(point) {
-        // TODO: special-case eq.len() == 1 (final round) to skip the `eq[i] *`
-        // multiplications below entirely.
+    // `SuffixTable::layer(i)` has length `2^i`, so `h` is even on every round
+    // except the last (`i == 0`). Peel that round out instead of checking
+    // for it on every iteration.
+    let last_z = point.pop_back();
+
+    for (i, z) in (1..rounds).rev().zip(point) {
         // TODO: unwrap will be dealt with in upcoming approach to SuffixTable
         let eq = suffix_table.layer(i);
         let h = mle_l.len() / 2;
         debug_assert_eq!(eq.len(), h);
+        debug_assert_eq!(h % 2, 0);
 
         let (lo_l, hi_l) = mle_l.split_at_mut(h);
         let (lo_r, hi_r) = mle_r.split_at_mut(h);
 
-        let (sum_0, sum_inf) = lo_l
-            .par_iter_mut()
-            .zip(lo_r.par_iter_mut())
-            .zip(hi_l.par_iter())
-            .zip(hi_r.par_iter())
-            .zip(eq.par_iter())
-            .with_min_len(PARALLEL_MIN_LANES)
-            .fold(
-                || (Wide256::zero(), Wide256::zero()),
-                |(mut sum_0, mut sum_inf), ((((l_lo, r_lo), &l_hi), &r_hi), &e)| {
-                    let (d_l, d_r) = (l_hi - *l_lo, r_hi - *r_lo);
+        // Two elements at a time: both elements' first-stage (fused)
+        // multiplies are issued before either second-stage widening
+        // multiply, so there are two independent PMULL chains in flight
+        // instead of one, for the CPU (or LLVM's scheduler) to overlap.
+        let mut sum_0 = Wide256::zero();
+        let mut sum_inf = Wide256::zero();
 
-                    // `e * l0 * r0` and `e * (l_hi-l0) * (r_hi-r0)`: each is
-                    // two multiplications in a row, deferred into the
-                    // running wide sums by `mul3_wide`
-                    sum_0 += mul3_wide(e, *l_lo, *r_lo);
-                    sum_inf += mul3_wide(e, d_l, d_r);
+        for ((((l_lo, r_lo), l_hi), r_hi), e) in lo_l
+            .chunks_exact(2)
+            .zip(lo_r.chunks_exact(2))
+            .zip(hi_l.chunks_exact(2))
+            .zip(hi_r.chunks_exact(2))
+            .zip(eq.chunks_exact(2))
+        {
+            let (d_l0, d_r0) = (l_hi[0] - l_lo[0], r_hi[0] - r_lo[0]);
+            let (d_l1, d_r1) = (l_hi[1] - l_lo[1], r_hi[1] - r_lo[1]);
 
-                    (sum_0, sum_inf)
-                },
-            )
-            .reduce(
-                || (Wide256::zero(), Wide256::zero()),
-                |(a0, ainf), (b0, binf)| (a0 + b0, ainf + binf),
-            );
+            let (a0, b0) = (e[0] * l_lo[0], e[0] * d_l0);
+            let (a1, b1) = (e[1] * l_lo[1], e[1] * d_l1);
+
+            sum_0 += Wide256::mul(a0, r_lo[0]);
+            sum_inf += Wide256::mul(b0, d_r0);
+            sum_0 += Wide256::mul(a1, r_lo[1]);
+            sum_inf += Wide256::mul(b1, d_r1);
+        }
 
         ps.prover_message(&[factor * sum_0.reduce(), factor * sum_inf.reduce()]);
 
         let r = ps.verifier_message();
         next_point.push_back(r);
 
-        lo_l.par_iter_mut()
-            .zip(lo_r.par_iter_mut())
-            .zip(hi_l.par_iter())
-            .zip(hi_r.par_iter())
-            .with_min_len(PARALLEL_MIN_LANES)
+        lo_l.iter_mut()
+            .zip(lo_r.iter_mut())
+            .zip(hi_l.iter())
+            .zip(hi_r.iter())
+            // .with_min_len(PARALLEL_MIN_LANES)
             .for_each(|(((l_lo, r_lo), &l_hi), &r_hi)| {
                 // Recalculating delta rather than writing it in the top half of the array in the previous loop to save on writes.
                 // No benchmarking has been done to check the difference.
@@ -112,6 +117,32 @@ fn prove_layer(
             });
         mle_l = &mut mle_l[..h];
         mle_r = &mut mle_r[..h];
+
+        factor *= eq_factor(r, z);
+    }
+
+    if let Some(z) = last_z {
+        // i == 0, h == 1: `SuffixTable::new` always seeds the base layer
+        // (`eq[0]`) with `Field::ONE`, so the `eq[i] *` multiplication every
+        // other round needs is the identity here -- skipped rather than
+        // spent multiplying by one.
+        debug_assert_eq!(mle_l.len(), 2);
+        let (l_lo, l_hi) = (mle_l[0], mle_l[1]);
+        let (r_lo, r_hi) = (mle_r[0], mle_r[1]);
+        let (d_l, d_r) = (l_hi - l_lo, r_hi - r_lo);
+
+        let sum_0 = Wide256::mul(l_lo, r_lo);
+        let sum_inf = Wide256::mul(d_l, d_r);
+
+        ps.prover_message(&[factor * sum_0.reduce(), factor * sum_inf.reduce()]);
+
+        let r = ps.verifier_message();
+        next_point.push_back(r);
+
+        mle_l[0] = l_lo + r * d_l;
+        mle_r[0] = r_lo + r * d_r;
+        mle_l = &mut mle_l[..1];
+        mle_r = &mut mle_r[..1];
 
         factor *= eq_factor(r, z);
     }
@@ -129,19 +160,6 @@ fn prove_layer(
 /// widemul to help with.
 fn eq_factor(r: Field, z: Field) -> Field {
     Field::ONE + r + z
-}
-
-/// `a * b * c`: two multiplications in a row. The first is reduced -- it has
-/// to come back down to a field element to feed the second carryless
-/// multiply -- but the second is left unreduced, so callers can batch its
-/// reduction with the rest of a running wide sum instead of paying for it on
-/// every term.
-///
-/// The first step uses `Field`'s own fused multiply-reduce (`a * b`, 6 PMULL
-/// on aarch64) rather than `Wide256::mul(a, b).reduce()` (4 PMULL to widen +
-/// 3 more to reduce = 7): same result, one fewer PMULL.
-fn mul3_wide(a: Field, b: Field, c: Field) -> Wide256 {
-    Wide256::mul(a * b, c)
 }
 
 // TODO:  SuffixTable becomes a wrapper around a preallocated vector that is large enough for all rounds.
