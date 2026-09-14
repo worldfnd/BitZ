@@ -16,7 +16,7 @@ use field::F128;
 /// A map that does not describe the protocol it belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VirtualMapError {
-    /// The point does not carry one coordinate per variable of `h`.
+    /// The point does not have enough coordinates to index every entry of `h`.
     PointLengthMismatch,
     /// The transposed weights are not one per coordinate of `1 ‖ f`.
     WeightCountMismatch,
@@ -27,7 +27,8 @@ pub trait VirtualMap {
     /// `M^T eq(point, .)`, indexed over `1 ‖ f`.
     ///
     /// Takes a point rather than a weight vector because the reduction
-    /// normalises its claim to a point before handing it over.
+    /// normalises its claim to a point before handing it over. The point may
+    /// index zero-padded entries beyond `h_len()`; their weights are ignored.
     fn transpose_eq(&self, point: &[F128]) -> Result<TransposedWeights, VirtualMapError>;
 
     /// Binds the map into the statement frame.
@@ -98,7 +99,7 @@ mod tests {
 
     impl VirtualMap for DenseMap {
         fn transpose_eq(&self, point: &[F128]) -> Result<TransposedWeights, VirtualMapError> {
-            if point.len() != self.h_len().trailing_zeros() as usize {
+            if point.len() < self.h_len().next_power_of_two().trailing_zeros() as usize {
                 return Err(VirtualMapError::PointLengthMismatch);
             }
             let weights = eq_table(point);
@@ -192,5 +193,10 @@ mod tests {
             map().transpose_eq(&[F128::ONE]),
             Err(VirtualMapError::PointLengthMismatch)
         );
+    }
+
+    #[test]
+    fn a_point_that_indexes_zero_padding_is_accepted() {
+        assert!(map().transpose_eq(&[F128::ONE; 3]).is_ok());
     }
 }

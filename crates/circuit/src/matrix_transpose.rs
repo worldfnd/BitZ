@@ -375,7 +375,7 @@ impl VirtualMap for MaterializedMTranspose {
     /// `h` is zero-padded to a power of two, so truncating the equality table
     /// to `row_count` drops only weights that multiply a zero.
     fn transpose_eq(&self, point: &[F128]) -> Result<TransposedWeights, VirtualMapError> {
-        if point.len() != self.row_count.next_power_of_two().trailing_zeros() as usize {
+        if point.len() < self.row_count.next_power_of_two().trailing_zeros() as usize {
             return Err(VirtualMapError::PointLengthMismatch);
         }
 
@@ -620,6 +620,17 @@ mod tests {
             map.transpose_eq(&challenges(short)),
             Err(VirtualMapError::PointLengthMismatch)
         );
+    }
+
+    #[test]
+    fn a_point_that_indexes_zero_padding_is_accepted() {
+        let mut materializer = MTransposeGenerator::new(3);
+        let inputs = materializer.take_boxed_inputs();
+        example_circuit(&mut materializer, &inputs);
+        let map = materializer.finish();
+        let wide = challenges(point(map.h_len()).len() + 1);
+
+        assert!(map.transpose_eq(&wide).is_ok());
     }
 
     #[test]
