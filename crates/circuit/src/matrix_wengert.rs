@@ -1252,12 +1252,12 @@ impl Circuit for WengertGenerator {
         ScalarBits([WengertBit; N])
     }
 
-    fn f2z<const LIMBS: usize>(&mut self, _: WengertBit) -> WengertValue<LIMBS> {
+    fn bitz<const LIMBS: usize>(&mut self, _: WengertBit) -> WengertValue<LIMBS> {
         let node = self.recorder.with_mut(Recorder::push_input);
         WengertValue::attached(self.recorder.clone(), node, Z::one())
     }
 
-    fn f2z_unsigned<const LIMBS: usize, const N: usize, const M: usize, const LOW: usize>(
+    fn bitz_unsigned<const LIMBS: usize, const N: usize, const M: usize, const LOW: usize>(
         &mut self,
         _: &<WengertBit as BoolWitness>::Repr<N, M>,
     ) -> (WengertValue<LIMBS>, WengertValue<LIMBS>) {
@@ -1268,7 +1268,7 @@ impl Circuit for WengertGenerator {
         let mut power = Z::<LIMBS>::one();
         let lifted: Vec<_> = (0..N)
             .map(|_| {
-                let value = self.f2z::<LIMBS>(WengertBit) * power;
+                let value = self.bitz::<LIMBS>(WengertBit) * power;
                 power += power;
                 value
             })
@@ -1370,9 +1370,9 @@ mod tests {
     use crate::sha256::{COMPRESSION_INPUT_BITS, compression_circuit};
 
     fn example_circuit<CS: Circuit>(circuit: &mut CS, inputs: &[CS::Bool; 3]) {
-        let a = circuit.f2z::<2>(inputs[0].clone());
-        let b = circuit.f2z::<2>(inputs[1].clone());
-        let c = circuit.f2z::<2>(inputs[2].clone());
+        let a = circuit.bitz::<2>(inputs[0].clone());
+        let b = circuit.bitz::<2>(inputs[1].clone());
+        let c = circuit.bitz::<2>(inputs[2].clone());
         let seven = CS::Coefficient::<2>::from(7);
         let eleven = CS::Coefficient::<2>::from(11);
         let thirteen = CS::Coefficient::<2>::from(13);
@@ -1589,8 +1589,8 @@ mod tests {
     fn dead_arithmetic_is_pruned_and_unused_inputs_return_zero() {
         let mut generator = WengertGenerator::new(2);
         let inputs = generator.take_boxed_inputs::<2>();
-        let used = generator.f2z::<1>(inputs[0]);
-        let unused = generator.f2z::<1>(inputs[1]);
+        let used = generator.bitz::<1>(inputs[0]);
+        let unused = generator.bitz::<1>(inputs[1]);
         let _dead = unused.clone() + unused;
         generator.assert_r1c(used, WengertValue::zero(), WengertValue::zero());
         let tape = generator.finish();

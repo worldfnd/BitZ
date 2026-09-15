@@ -1,4 +1,4 @@
-//! Binary polynomial commitments for multilinear extensions of bit tables.
+//! Binary polynomial commitments with MLE and factored inner-product openings.
 //!
 //! # Statement
 //!
@@ -7,7 +7,8 @@
 //! For `r ∈ F128^m`, the multilinear extension is
 //! `q̂(r) = Σ_{b ∈ {0,1}^m} q(b) · eq(b, r)`, where
 //! `eq(b, r) = ∏_i (b_i · r_i + (1 - b_i) · (1 - r_i))`.
-//! An [`OpeningQuery`] claims that `q̂(query.point) = query.target`.
+//! [`OpeningQuery::Mle`] claims `q̂(point) = target`.
+//! [`OpeningQuery::InnerProduct`] claims `Σ_{r,c} q(c * rows + r) · row_weights[r] · column_weights[c] = target`.
 //!
 //! # Packing and opening
 //!
@@ -17,21 +18,25 @@
 //!
 //! The opening splits `r` into `r_lo = r[0..7]` and `r_hi = r[7..m]`.
 //! It computes `s_v = q̂(r_hi, v)` and checks
-//! `query.target = Σ_v eq(r_lo, v) · s_v`.
-//! Ring-switching transposes `(s_v)` into `(s_u)` and samples `r_dprime`.
-//! It sets `beta0 = Σ_u eq(r_dprime, u) · s_u`.
-//! Recursive Ligerito proves `Σ_y B(y) · q_pkd(y) = beta0` against the committed root.
+//! `target = Σ_v eq(r_lo, v) · s_v`.
+//! Ring-switching transposes `(s_v)` into `(s_u)` and samples `batching_point`.
+//! It sets `packed_target = Σ_u eq(batching_point, u) · s_u`.
+//! Recursive Ligerito proves `Σ_y B(y) · q_pkd(y) = packed_target` against the committed root.
+//! Quadratic sumcheck reduces factored inner-product claims to MLE claims before this opening protocol.
 //!
 //! # Interface
 //!
 //! - [`Pcs`] stores trusted Flock parameters and the expected bit length.
 //! - [`Root`] is the public Merkle root.
 //! - [`ProverData`] retains the codeword and Merkle tree after commitment.
-//! - [`OpeningQuery`] contains one evaluation point and its claimed value.
+//! - [`OpeningQuery`] contains an MLE point and target, or a `common::LinearClaim<F128>`.
 //! - [`CommitScheme`] connects commitment, proving, and verification to project transcripts.
+//! - [`ConfigError`] reports configuration failures.
+//! - [`CommitError`], [`ProveError`], and [`VerifyError`] report operation-specific failures.
 //!
 //! The caller packs and retains the witness after [`CommitScheme::commit`].
-//! [`CommitScheme::prove_lin`] consumes the packed witness and borrows [`ProverData`].
+//! [`CommitScheme::prove_lin`] dispatches both query variants.
+//! It consumes the packed witness and borrows [`ProverData`].
 //! The caller must use matching transcript session and instance labels.
 //! The caller must also call `VerifierState::check_eof` after successful verification.
 //!
@@ -54,7 +59,7 @@
 //! let point = (0..M)
 //!     .map(|coordinate| F128::from(coordinate as u64 + 2))
 //!     .collect();
-//! let query = OpeningQuery {
+//! let query = OpeningQuery::Mle {
 //!     point,
 //!     target: F128::from(0u64),
 //! };
@@ -85,10 +90,11 @@
 mod bridge;
 mod challenger;
 mod commitment;
-mod open;
+mod ligerito;
+mod mle;
+mod opening;
+mod sumcheck;
 mod transpose;
-mod utils;
-mod verify;
 
 #[cfg(test)]
 #[path = "transpose/tests.rs"]
@@ -97,55 +103,32 @@ mod transpose_tests;
 use field::F128;
 use transcript::{ProverState, VerifierState};
 
-pub use commitment::{HashKind, Pcs, ProverData};
+pub use commitment::{CommitError, ConfigError, HashKind, Pcs, ProverData};
 pub use common::{OpeningQuery, Root};
 pub use flock_core::pcs::ligerito::LigeritoProfile;
+pub use opening::{ProveError, VerifyError};
 
 /// Controls statement binding for one opening.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StatementBinding {
-    /// Binds the PCS parameters, commitment, point, and target.
+    /// Binds the PCS parameters, commitment, query, and target.
     Bind,
     /// Uses a statement that the caller already bound.
     ///
-    /// The caller must bind the same PCS parameters, commitment, point, and target.
+    /// The caller must bind the same PCS parameters, commitment, query variant, fields, and target.
+    /// For inner products, this covers both factor lengths, both factors, and the original target.
+    /// The opening code still binds the MLE claim that sumcheck returns.
     AlreadyBound,
 }
 
-/// Errors from commitment and linear-query operations.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum CommitError {
-    /// The packed witness represents an unsupported bit length.
-    InvalidBitLength,
-    /// The evaluation point does not match the committed polynomial.
-    PointLengthMismatch,
-    /// The scheme configuration is not valid for Flock, with a description of the failed check.
-    InvalidConfiguration(String),
-    /// The transcript does not contain a complete canonical proof.
-    MalformedProof,
-    /// The opening proof could not be serialized, with the serializer message.
-    SerializationFailed(String),
-    /// The serialized opening proof exceeds the transcript hint limit.
-    ProofTooLarge,
-    /// The linear-query proof did not verify.
-    VerificationFailed,
-    /// The prover received an invalid evaluation claim.
-    InvalidClaim,
-}
-
-impl CommitError {
-    pub(crate) fn invalid_configuration(description: impl Into<String>) -> Self {
-        Self::InvalidConfiguration(description.into())
-    }
-}
-
-/// A polynomial commitment scheme for multilinear extensions of bit tables.
+/// A polynomial commitment scheme for linear claims over committed bit tables.
 ///
 /// Let `q: {0,1}^m → F2` be the committed bit table. For `r ∈ F128^m`,
-/// this trait proves
-/// `q̂(r) = Σ_{b ∈ {0,1}^m} q(b) · eq(b, r) = query.target`, where
+/// [`OpeningQuery::Mle`] proves
+/// `q̂(r) = Σ_{b ∈ {0,1}^m} q(b) · eq(b, r) = target`, where
 /// `eq(b, r) = ∏_i (b_i · r_i + (1 - b_i) · (1 - r_i))`.
+/// [`OpeningQuery::InnerProduct`] accepts row weights, column weights, and a target over `F128`.
+/// Quadratic sumcheck reduces this claim to an MLE claim before the opening protocol.
 pub trait CommitScheme {
     /// The public commitment.
     type Commitment;
@@ -160,7 +143,9 @@ pub trait CommitScheme {
         packed_witness: &[F128],
     ) -> Result<(Self::Commitment, Self::ProverData), CommitError>;
 
-    /// Consumes the exact packed witness and proves the claim without consuming the prover data.
+    /// Consumes the exact packed witness and proves either opening query.
+    ///
+    /// Inner-product claims first pass through quadratic sumcheck and then the MLE opening protocol.
     fn prove_lin(
         &self,
         data: &Self::ProverData,
@@ -168,16 +153,18 @@ pub trait CommitScheme {
         query: &OpeningQuery,
         statement_binding: StatementBinding,
         transcript: &mut ProverState,
-    ) -> Result<(), CommitError>;
+    ) -> Result<(), ProveError>;
 
-    /// Verifies the same multilinear claim against `commitment`.
+    /// Verifies either opening query against `commitment`.
+    ///
+    /// Inner-product claims first pass through quadratic sumcheck and then the MLE opening protocol.
     fn verify_lin(
         &self,
         commitment: &Self::Commitment,
         query: &OpeningQuery,
         statement_binding: StatementBinding,
         transcript: &mut VerifierState<'_>,
-    ) -> Result<(), CommitError>;
+    ) -> Result<(), VerifyError>;
 }
 
 impl CommitScheme for Pcs {
@@ -198,8 +185,8 @@ impl CommitScheme for Pcs {
         query: &OpeningQuery,
         statement_binding: StatementBinding,
         transcript: &mut ProverState,
-    ) -> Result<(), CommitError> {
-        open::open(
+    ) -> Result<(), ProveError> {
+        opening::prove(
             self,
             data,
             packed_witness,
@@ -215,7 +202,7 @@ impl CommitScheme for Pcs {
         query: &OpeningQuery,
         statement_binding: StatementBinding,
         transcript: &mut VerifierState<'_>,
-    ) -> Result<(), CommitError> {
-        verify::verify(self, commitment, query, statement_binding, transcript)
+    ) -> Result<(), VerifyError> {
+        opening::verify(self, commitment, query, statement_binding, transcript)
     }
 }

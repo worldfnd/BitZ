@@ -1,14 +1,14 @@
 //! The fold round, prover against verifier.
 
-use common::{F2ZParams, FoldError, LinearClaim};
+use common::{BitZParams, FoldError, LinearClaim};
 use field::{F128, Fq, gf128::smallest_generator};
 use num_traits::{ConstOne, ConstZero};
-use prover::{F2ZProver, SendError};
+use prover::{BitZProver, SendError};
 use tests::{
     Instance, Q, WINDOW, narrow_shape, prover_transcript, verifier_transcript, wide_shape,
 };
 use transcript::Proof;
-use verifier::{F2ZVerifier, ReceiveError};
+use verifier::{BitZVerifier, ReceiveError};
 
 /// Runs an honest prover and returns the round it produced with its proof.
 fn prove(instance: &Instance) -> (common::Fold, Proof) {
@@ -97,9 +97,9 @@ fn a_fold_at_the_bound_is_accepted_and_one_past_it_is_not() {
     let packed = vec![F128::new(u64::MAX, u64::MAX); (1 << shape.log_bits()) / 128];
 
     let fold = (shape.rows() as u128) * (Q - 1);
-    let params = F2ZParams::<Q>::new(shape, smallest_generator()).unwrap();
-    let prover = F2ZProver::new(params, WINDOW);
-    let verifier = F2ZVerifier::new(params, WINDOW);
+    let params = BitZParams::<Q>::new(shape, smallest_generator()).unwrap();
+    let prover = BitZProver::new(params, WINDOW);
+    let verifier = BitZVerifier::new(params, WINDOW);
     let table = params.table(&packed).unwrap();
     let claim = LinearClaim::new(
         &params,
@@ -198,9 +198,9 @@ fn a_truncated_proof_is_refused_rather_than_read_past() {
 fn an_all_zero_witness_folds_to_zero_and_still_round_trips() {
     let shape = narrow_shape();
     let packed = vec![F128::ZERO; (1 << shape.log_bits()) / 128];
-    let params = F2ZParams::<Q>::new(shape, smallest_generator()).unwrap();
-    let prover = F2ZProver::new(params, WINDOW);
-    let verifier = F2ZVerifier::new(params, WINDOW);
+    let params = BitZParams::<Q>::new(shape, smallest_generator()).unwrap();
+    let prover = BitZProver::new(params, WINDOW);
+    let verifier = BitZVerifier::new(params, WINDOW);
     let claim = LinearClaim::new(
         &params,
         vec![Fq::from(Q - 1); shape.rows()],

@@ -11,6 +11,7 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 common = { path = "crates/common" }
 field = { path = "crates/field" }
+host = { path = "crates/host" }
 pcs = { path = "crates/pcs" }
 poly = { path = "crates/poly" }
 prover = { path = "crates/prover" }
@@ -29,11 +30,13 @@ flock-core = { git = "https://github.com/succinctlabs/flock.git", rev = "8790722
 num-bigint = "0.4"
 num-traits = "0.2"
 proptest = "1.11.0"
+rand = "0.9"
 rand_chacha = "0.9"
 rand_core = "0.9"
 rand_pcg = "0.9"
 rayon = "1.10"
 spongefish = "0.7.4"
+thiserror = "2.0"
 
 # Benchmark parity: without these, kernels lose cross-unit inlining.
 [profile.release]

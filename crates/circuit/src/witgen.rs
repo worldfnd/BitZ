@@ -233,6 +233,13 @@ pub struct PackedWitness {
 }
 
 impl PackedWitness {
+    /// Packs Boolean values least-significant-bit first into witness storage.
+    pub fn from_bits(bits: &[bool]) -> Self {
+        let mut witness = Self::with_capacity(bits.len());
+        witness.extend(bits);
+        witness
+    }
+
     fn with_capacity(bit_capacity: usize) -> Self {
         Self {
             words: Vec::with_capacity(bit_capacity.div_ceil(64)),
@@ -377,11 +384,11 @@ impl Circuit for WitnessOnly {
         bits
     }
 
-    fn f2z<const LIMBS: usize>(&mut self, value: bool) -> Z<LIMBS> {
+    fn bitz<const LIMBS: usize>(&mut self, value: bool) -> Z<LIMBS> {
         if value { Z::one() } else { Z::zero() }
     }
 
-    fn f2z_unsigned<const LIMBS: usize, const N: usize, const M: usize, const LOW: usize>(
+    fn bitz_unsigned<const LIMBS: usize, const N: usize, const M: usize, const LOW: usize>(
         &mut self,
         bits_le: &<bool as BoolWitness>::Repr<N, M>,
     ) -> (Z<LIMBS>, Z<LIMBS>) {
@@ -424,10 +431,10 @@ impl Witgen {
         &self.witness
     }
 
-    /// Packed values returned by logical `f2z` calls.
+    /// Packed values returned by logical `BitZ` calls.
     ///
     /// Entry zero is the implicit integer constant one. Every later entry is
-    /// the 0/1 result of one `f2z`, in circuit order, so this is exactly `M * w`.
+    /// the 0/1 result of one `BitZ`, in circuit order, so this is exactly `M * w`.
     pub fn integer_witness(&self) -> &PackedWitness {
         &self.integer_witness
     }
@@ -514,12 +521,12 @@ impl Circuit for Witgen {
         bits
     }
 
-    fn f2z<const LIMBS: usize>(&mut self, value: bool) -> Z<LIMBS> {
+    fn bitz<const LIMBS: usize>(&mut self, value: bool) -> Z<LIMBS> {
         self.integer_witness.extend(&[value]);
         if value { Z::one() } else { Z::zero() }
     }
 
-    fn f2z_unsigned<const LIMBS: usize, const N: usize, const M: usize, const LOW: usize>(
+    fn bitz_unsigned<const LIMBS: usize, const N: usize, const M: usize, const LOW: usize>(
         &mut self,
         bits_le: &<bool as BoolWitness>::Repr<N, M>,
     ) -> (Z<LIMBS>, Z<LIMBS>) {
@@ -634,15 +641,15 @@ impl Circuit for ProductWitgen {
         self.witgen.hint(hint)
     }
 
-    fn f2z<const LIMBS: usize>(&mut self, value: bool) -> Z<LIMBS> {
-        self.witgen.f2z(value)
+    fn bitz<const LIMBS: usize>(&mut self, value: bool) -> Z<LIMBS> {
+        self.witgen.bitz(value)
     }
 
-    fn f2z_unsigned<const LIMBS: usize, const N: usize, const M: usize, const LOW: usize>(
+    fn bitz_unsigned<const LIMBS: usize, const N: usize, const M: usize, const LOW: usize>(
         &mut self,
         bits_le: &<bool as BoolWitness>::Repr<N, M>,
     ) -> (Z<LIMBS>, Z<LIMBS>) {
-        self.witgen.f2z_unsigned::<LIMBS, N, M, LOW>(bits_le)
+        self.witgen.bitz_unsigned::<LIMBS, N, M, LOW>(bits_le)
     }
 
     fn assert_r1c<const LIMBS: usize>(&mut self, a: Z<LIMBS>, b: Z<LIMBS>, c: Z<LIMBS>) {
@@ -739,16 +746,16 @@ mod tests {
             bits,
             PackedBits::<4, 1>::from_array([true, false, true, true])
         );
-        assert_eq!(witgen.f2z::<1>(true), Z::<1>::one());
+        assert_eq!(witgen.bitz::<1>(true), Z::<1>::one());
     }
 
     #[test]
-    fn records_the_integer_witness_in_logical_f2z_order() {
+    fn records_the_integer_witness_in_logical_bitz_order() {
         let mut witgen = Witgen::new();
-        let _ = witgen.f2z::<1>(true);
-        let _ = witgen.f2z::<8>(false);
+        let _ = witgen.bitz::<1>(true);
+        let _ = witgen.bitz::<8>(false);
         let bits = PackedBits::<4, 1>::from_array([false, true, true, false]);
-        let _: (Z<1>, Z<1>) = witgen.f2z_unsigned::<1, 4, 1, 2>(&bits);
+        let _: (Z<1>, Z<1>) = witgen.bitz_unsigned::<1, 4, 1, 2>(&bits);
 
         let expected = [true, true, false, false, true, true, false];
         assert_eq!(witgen.integer_witness().bit_len(), expected.len());
@@ -763,9 +770,9 @@ mod tests {
     #[test]
     fn one_runner_supports_local_widths_and_explicit_sign_extension() {
         let mut witgen = Witgen::new();
-        let small: Z<1> = witgen.f2z::<1>(true);
+        let small: Z<1> = witgen.bitz::<1>(true);
         let large: Z<128> = witgen.sign_extend_z::<1, 128>(-small);
-        let rsa_bit: Z<128> = witgen.f2z::<128>(false);
+        let rsa_bit: Z<128> = witgen.bitz::<128>(false);
 
         assert_eq!(large.words(), &[u64::MAX; 128]);
         assert_eq!(rsa_bit.words(), &[0; 128]);

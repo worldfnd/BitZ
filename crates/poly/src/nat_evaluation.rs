@@ -56,7 +56,7 @@ impl<F: ConstField + Copy> LagrangeInterpolationDomain<F> {
         };
 
         #[cfg(not(feature = "parallel"))]
-        let mut weights: Vec<F128> = (0..len).map(|i| lagrange_denominator(&points, i)).collect();
+        let mut weights: Vec<F> = (0..len).map(|i| lagrange_denominator(&points, i)).collect();
 
         batch_invert_nonzero(&mut weights);
 
@@ -190,7 +190,7 @@ fn combine_evaluation_blocks<F: Field + Copy>(
 ///
 /// Serial, in-place adaptation of Flock's chunked batch inverse:
 /// <https://github.com/succinctlabs/flock/blob/85fc0e7cc002e7ca4dffdff805ba89976e9a5293/crates/flock-core/src/permutation.rs#L133-L159>
-/// Flock's parallel path uses `2^14`-element chunks; F2Z's natural domains are
+/// Flock's parallel path uses `2^14`-element chunks; BitZ's natural domains are
 /// far smaller, so one scan and one inversion avoid unnecessary task overhead.
 fn batch_invert_nonzero<F: Field + Copy>(values: &mut [F]) {
     let Some((&first, remaining)) = values.split_first() else {

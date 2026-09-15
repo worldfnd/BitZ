@@ -95,7 +95,7 @@ impl Sum for Dummy {
 
 /// The dimensions printed by Freigen's constraint-system statistics.
 ///
-/// Freigen defines `mRows` as the number of F2Z rows plus one. Its `mCols` is
+/// Freigen defines `mRows` as the number of BitZ rows plus one. Its `mCols` is
 /// the largest referenced, zero-based witness index plus two; for a densely
 /// allocated circuit whose final witness is referenced, that is the witness
 /// count plus one.
@@ -111,8 +111,8 @@ pub struct LeanStats {
 pub struct Stats {
     /// Boolean witnesses supplied as inputs or allocated by hints.
     pub witnesses: usize,
-    /// Calls to [`Circuit::f2z`].
-    pub f2z_calls: usize,
+    /// Calls to [`Circuit::bitz`].
+    pub bitz_calls: usize,
     /// Calls to [`Circuit::assert_r1c`].
     pub constraints: usize,
 }
@@ -122,7 +122,7 @@ impl Stats {
     pub const fn new(input_witnesses: usize) -> Self {
         Self {
             witnesses: input_witnesses,
-            f2z_calls: 0,
+            bitz_calls: 0,
             constraints: 0,
         }
     }
@@ -139,7 +139,7 @@ impl Stats {
     /// densely allocated and the final allocated witness is referenced.
     pub const fn lean_stats(&self) -> LeanStats {
         LeanStats {
-            m_rows: self.f2z_calls + 1,
+            m_rows: self.bitz_calls + 1,
             m_cols: self.witnesses + 1,
             r1cs_rows: self.constraints,
         }
@@ -173,17 +173,17 @@ impl Circuit for Stats {
         ScalarBits([Dummy; N])
     }
 
-    fn f2z<const LIMBS: usize>(&mut self, _: Dummy) -> Dummy {
-        self.f2z_calls = self.f2z_calls.checked_add(1).expect("f2z count overflow");
+    fn bitz<const LIMBS: usize>(&mut self, _: Dummy) -> Dummy {
+        self.bitz_calls = self.bitz_calls.checked_add(1).expect("BitZ count overflow");
         Dummy
     }
 
-    fn f2z_unsigned<const LIMBS: usize, const N: usize, const M: usize, const LOW: usize>(
+    fn bitz_unsigned<const LIMBS: usize, const N: usize, const M: usize, const LOW: usize>(
         &mut self,
         _: &<Dummy as BoolWitness>::Repr<N, M>,
     ) -> (Dummy, Dummy) {
         assert!(LOW <= N, "low part cannot be wider than the input");
-        self.f2z_calls = self.f2z_calls.checked_add(N).expect("f2z count overflow");
+        self.bitz_calls = self.bitz_calls.checked_add(N).expect("BitZ count overflow");
         (Dummy, Dummy)
     }
 
@@ -217,7 +217,7 @@ mod tests {
         stats.add_input_witnesses(2);
         let _: ScalarBits<Dummy, 4> =
             stats.hint::<1, 4, 1, _>(|_| Ok(PackedBits::<4, 1>::from_u64(0)));
-        stats.f2z::<1>(Dummy);
+        stats.bitz::<1>(Dummy);
         stats.assert_r1c::<1>(Dummy, Dummy, Dummy);
         assert_eq!(stats.sign_extend_z::<1, 128>(Dummy), Dummy);
 
@@ -225,7 +225,7 @@ mod tests {
             stats,
             Stats {
                 witnesses: 9,
-                f2z_calls: 1,
+                bitz_calls: 1,
                 constraints: 1,
             }
         );

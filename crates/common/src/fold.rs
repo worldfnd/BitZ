@@ -111,7 +111,7 @@ pub fn row_images(comb: &FixedBasePow, exponents: &[u128]) -> Vec<F128> {
 /// otherwise sum over a prefix and return a value that is right for no
 /// instance -- and for the common `y = 0` it would look correct.
 pub fn reconstruct<const Q: u128>(
-    claim: &LinearClaim<Q>,
+    claim: &LinearClaim<Fq<Q>>,
     folds: &[u128],
 ) -> Result<Fq<Q>, FoldError> {
     if folds.len() != claim.column_weights().len() {
@@ -190,7 +190,7 @@ mod tests {
     use num_traits::{ConstOne, ConstZero};
 
     use super::*;
-    use crate::{F2ZParams, Shape};
+    use crate::{BitZParams, Shape};
 
     const Q114: u128 = (1 << 114) - 11;
     /// Comb window: `FixedBasePow` always covers the full 128-bit exponent
@@ -202,15 +202,15 @@ mod tests {
         Shape::new(7, 15).unwrap()
     }
 
-    fn params() -> F2ZParams<Q114> {
-        F2ZParams::new(shape(), smallest_generator()).unwrap()
+    fn params() -> BitZParams<Q114> {
+        BitZParams::new(shape(), smallest_generator()).unwrap()
     }
 
     fn comb() -> FixedBasePow {
         FixedBasePow::new(smallest_generator(), WINDOW)
     }
 
-    fn claim(row_weights: Vec<Fq<Q114>>, column_weights: Vec<Fq<Q114>>) -> LinearClaim<Q114> {
+    fn claim(row_weights: Vec<Fq<Q114>>, column_weights: Vec<Fq<Q114>>) -> LinearClaim<Fq<Q114>> {
         LinearClaim::new(&params(), row_weights, column_weights, Fq::from(0u128)).unwrap()
     }
 

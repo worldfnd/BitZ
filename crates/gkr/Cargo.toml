@@ -1,0 +1,16 @@
+[package]
+name = "gkr"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+field = { path = "../field", features = ["spongefish"] }
+transcript = {path ="../transcript"}
+poly = { path = "../poly" }
+num-traits = { workspace = true }
+rayon = { workspace = true }
+
+[dev-dependencies]
+proptest = "1.11.0"

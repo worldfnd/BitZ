@@ -1,4 +1,4 @@
-//! SHA-256 circuits built from the backend-independent F2Z operations.
+//! SHA-256 circuits built from the backend-independent BitZ operations.
 //!
 //! Words are represented twice: as little-endian F2 bits for Boolean logic and
 //! as lifted Z bits for integer linear combinations. This follows Freigen's
@@ -23,6 +23,16 @@ pub const ROUND_CONSTANTS: [u32; 64] = [
 /// SHA-256 initial chaining value from FIPS 180-4 section 5.3.3.
 pub const INITIAL_STATE: [u32; 8] = [
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+];
+
+/// Single padded SHA-256 block for the FIPS 180-4 `"abc"` test vector.
+pub const ABC_BLOCK: [u32; 16] = [
+    0x61626380, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x00000018,
+];
+
+/// SHA-256 digest of the FIPS 180-4 `"abc"` test vector.
+pub const ABC_DIGEST: [u32; 8] = [
+    0xba7816bf, 0x8f01cfea, 0x414140de, 0x5dae2223, 0xb00361a3, 0x96177a9c, 0xb410ff61, 0xf20015ad,
 ];
 
 /// Number of bytes accepted by [`sha256_2kb_circuit`].
@@ -153,7 +163,7 @@ fn uint_from_word<CS, const N: usize, const M: usize>(
 where
     CS: Circuit,
 {
-    let (full, low_32) = circuit.f2z_unsigned::<SHA256_Z_LIMBS, N, M, 32>(&word.bits_le);
+    let (full, low_32) = circuit.bitz_unsigned::<SHA256_Z_LIMBS, N, M, 32>(&word.bits_le);
     let z_values = ZValues { full, low_32 };
     UInt { word, z_values }
 }
@@ -638,7 +648,7 @@ mod tests {
             crate::ScalarBits::from_packed(hint(&Values).expect("SHA-256 hint should be defined"))
         }
 
-        fn f2z<const LIMBS: usize>(&mut self, value: Bit) -> i128 {
+        fn bitz<const LIMBS: usize>(&mut self, value: Bit) -> i128 {
             i128::from(value.0)
         }
 
@@ -673,7 +683,7 @@ mod tests {
         CS: Circuit,
     {
         let digest = sha256_2kb_circuit(circuit, message);
-        let small = circuit.f2z::<SHA256_Z_LIMBS>(digest[0].clone());
+        let small = circuit.bitz::<SHA256_Z_LIMBS>(digest[0].clone());
         circuit.sign_extend_z::<SHA256_Z_LIMBS, 128>(small)
     }
 
@@ -694,22 +704,13 @@ mod tests {
 
     #[test]
     fn compression_matches_the_fips_abc_vector() {
-        let block_values: [u32; 16] = [
-            0x61626380, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x00000018,
-        ];
-        let block = block_values.map(|word| Word::constant(u64::from(word)));
+        let block = ABC_BLOCK.map(|word| Word::constant(u64::from(word)));
         let mut circuit = EvaluatingCircuit::default();
 
         let output = compress(&mut circuit, block, initial_state());
         let output = output.map(|word| value(&word.word));
 
-        assert_eq!(
-            output,
-            [
-                0xba7816bf, 0x8f01cfea, 0x414140de, 0x5dae2223, 0xb00361a3, 0x96177a9c, 0xb410ff61,
-                0xf20015ad,
-            ]
-        );
+        assert_eq!(output, ABC_DIGEST);
         assert_eq!(circuit.assertions, 184);
     }
 
@@ -798,7 +799,7 @@ mod tests {
             stats,
             Stats {
                 witnesses: 7_144,
-                f2z_calls: 20_456,
+                bitz_calls: 20_456,
                 constraints: 184,
             }
         );

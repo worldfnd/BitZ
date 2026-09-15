@@ -22,7 +22,7 @@ pub enum ShapeError {
 /// How the committed bits are laid out, as the two index widths.
 ///
 /// One counts the bits of a column, the other the columns; the paper writes
-/// them `t` and `s`. Geometry only: the modulus sits in [`crate::F2ZParams`],
+/// them `t` and `s`. Geometry only: the modulus sits in [`crate::BitZParams`],
 /// with the one gate that couples the two.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Shape {

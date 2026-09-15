@@ -13,8 +13,9 @@
 //!   [`Encoding`]. The verifier deserializes from the narg string and
 //!   re-absorbs the canonical re-encoding, so both sponges see identical
 //!   bytes exactly when the wire bytes are canonical.
-//! - **F3** Challenges leave the sponge only through `verifier_message`
-//!   squeezes.
+//! - **F3** Challenges leave the sponge only through `verifier_message`,
+//!   either directly or through typed [`ProverState::squeeze`] and
+//!   [`VerifierState::squeeze`] calls.
 //! - **F4** Hints bypass the sponge entirely. A value may ride as a hint
 //!   only if already-absorbed data determines it and it is verified before
 //!   the next challenge is sampled — this layer cannot enforce that, the
@@ -22,13 +23,17 @@
 //!   [`VerifierState::check_eof`] fails on leftover narg or hint bytes.
 //! - **F5** Field wire formats are fixed in `field::codec`, one canonical
 //!   form per element.
+//! - **F6** Records are not self-delimiting. The protocol's fixed order gives
+//!   the next record's type, and the type gives how to read it.
 
 mod bytes;
+mod challenge;
 mod domain;
 mod proof;
 mod prover;
 mod verifier;
 
+pub use challenge::TranscriptChallenge;
 pub use domain::{PROTOCOL_LABEL, build_prover, build_verifier};
 pub use proof::Proof;
 pub use prover::ProverState;

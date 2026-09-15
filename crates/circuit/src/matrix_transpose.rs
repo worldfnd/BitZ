@@ -9,7 +9,9 @@ use std::fmt::{self, Display};
 use std::mem::size_of;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use common::{TransposedWeights, VirtualMap, VirtualMapError};
 use field::F128;
+use poly::eq_table;
 use rayon::prelude::*;
 
 use crate::witgen::Z;
@@ -364,6 +366,58 @@ impl MaterializedMTranspose {
     }
 }
 
+/// Domain separation for the digest.
+const DIGEST_DOMAIN: &[u8] = b"bitz/virtual-map/csc/v1";
+
+const DIGEST_CHUNK: usize = 1 << 12;
+
+impl VirtualMap for MaterializedMTranspose {
+    /// `h` is zero-padded to a power of two, so truncating the equality table
+    /// to `row_count` drops only weights that multiply a zero.
+    fn transpose_eq(&self, point: &[F128]) -> Result<TransposedWeights, VirtualMapError> {
+        if point.len() < self.row_count.next_power_of_two().trailing_zeros() as usize {
+            return Err(VirtualMapError::PointLengthMismatch);
+        }
+
+        let mut weights = eq_table(point);
+        weights.truncate(self.row_count);
+        let mut transposed = self
+            .apply(&weights)
+            .map_err(|_| VirtualMapError::PointLengthMismatch)?;
+
+        // Column zero is `M`'s constant column.
+        let on_bits = transposed.split_off(1);
+        Ok(TransposedWeights::new(on_bits, transposed[0]))
+    }
+
+    fn digest(&self) -> [u8; 32] {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(DIGEST_DOMAIN);
+        for count in [self.row_count, self.column_count(), self.nonzero_count()] {
+            hasher.update(&(count as u64).to_le_bytes());
+        }
+        // Hash the offsets too: two matrices can share every row index and
+        // still split the columns differently.
+        for indices in [&self.column_offsets, &self.row_indices] {
+            let mut bytes = Vec::with_capacity(DIGEST_CHUNK * size_of::<u32>());
+            for chunk in indices.chunks(DIGEST_CHUNK) {
+                bytes.clear();
+                bytes.extend(chunk.iter().flat_map(|index| index.to_le_bytes()));
+                hasher.update(&bytes);
+            }
+        }
+        *hasher.finalize().as_bytes()
+    }
+
+    fn h_len(&self) -> usize {
+        self.row_count
+    }
+
+    fn f_len(&self) -> usize {
+        self.column_count()
+    }
+}
+
 /// A challenge-vector dimension mismatch while applying materialized `M^T`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MatrixApplyError {
@@ -445,12 +499,12 @@ impl Circuit for MTransposeGenerator {
         ScalarBits(std::array::from_fn(|_| self.recorder.allocate_witness()))
     }
 
-    fn f2z<const LIMBS: usize>(&mut self, value: MatrixBit) -> Z<LIMBS> {
+    fn bitz<const LIMBS: usize>(&mut self, value: MatrixBit) -> Z<LIMBS> {
         self.recorder.push_row(&value);
         Z::from(u64::from(value.constant_term()))
     }
 
-    fn f2z_unsigned<const LIMBS: usize, const N: usize, const M: usize, const LOW: usize>(
+    fn bitz_unsigned<const LIMBS: usize, const N: usize, const M: usize, const LOW: usize>(
         &mut self,
         bits_le: &<MatrixBit as BoolWitness>::Repr<N, M>,
     ) -> (Z<LIMBS>, Z<LIMBS>) {
@@ -477,6 +531,7 @@ impl Circuit for MTransposeGenerator {
 mod tests {
     use crate::constraints::ConstraintGenerator;
     use crate::sha256::{COMPRESSION_HINT_BITS, COMPRESSION_INPUT_BITS, compression_circuit};
+    use crate::witgen::Witgen;
     use crate::{BoolRepresentation, BoolWitness, Circuit};
 
     use super::*;
@@ -484,8 +539,8 @@ mod tests {
     fn example_circuit<CS: Circuit>(circuit: &mut CS, inputs: &[CS::Bool; 3]) {
         let xy = circuit.xor(inputs[0].clone(), inputs[1].clone());
         let not_xy = circuit.xor(xy.clone(), CS::Bool::from(true));
-        let _ = circuit.f2z::<1>(xy);
-        let _ = circuit.f2z::<1>(not_xy);
+        let _ = circuit.bitz::<1>(xy);
+        let _ = circuit.bitz::<1>(not_xy);
 
         let captured = inputs[2].clone();
         let hinted = circuit.hint::<1, 2, 1, _>(move |context| {
@@ -499,8 +554,8 @@ mod tests {
                 1,
             >>::bit(&hinted, 0);
         let mixed = circuit.xor(hinted_zero, inputs[0].clone());
-        let _ = circuit.f2z::<1>(mixed);
-        let _: (CS::Z<1>, CS::Z<1>) = circuit.f2z_unsigned::<1, 2, 1, 1>(&hinted);
+        let _ = circuit.bitz::<1>(mixed);
+        let _: (CS::Z<1>, CS::Z<1>) = circuit.bitz_unsigned::<1, 2, 1, 1>(&hinted);
     }
 
     fn challenges(count: usize) -> Vec<F128> {
@@ -512,6 +567,85 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    /// A point over the padded `h`.
+    fn point(rows: usize) -> Vec<F128> {
+        challenges(rows.next_power_of_two().trailing_zeros() as usize)
+    }
+
+    /// `<M^T eq, (1 || f)>` must equal `<eq, h>`.
+    #[test]
+    fn the_transposed_claim_matches_the_claim_on_the_integer_witness() {
+        let inputs = [true, false, true];
+
+        let mut materializer = MTransposeGenerator::new(inputs.len());
+        let matrix_inputs = materializer.take_boxed_inputs();
+        example_circuit(&mut materializer, &matrix_inputs);
+        let map = materializer.finish();
+
+        let mut witgen = Witgen::with_inputs(&inputs);
+        example_circuit(&mut witgen, &inputs);
+        let (f, h) = witgen.into_witnesses();
+
+        assert_eq!(map.h_len(), h.bit_len(), "one M row per integer witness");
+        assert_eq!(map.f_len(), f.bit_len() + 1, "M's columns are 1 || f");
+        assert!(h.bit(0), "M's first row is the constant one");
+
+        let point = point(map.h_len());
+        let weights = eq_table(&point);
+        let direct = (0..h.bit_len())
+            .filter(|index| h.bit(*index))
+            .fold(F128::new(0, 0), |sum, index| sum + weights[index]);
+
+        let transposed = map.transpose_eq(&point).unwrap();
+        let through_f = (0..f.bit_len())
+            .filter(|index| f.bit(*index))
+            .fold(transposed.constant_weight(), |sum, index| {
+                sum + transposed.weights()[index]
+            });
+
+        assert_eq!(direct, through_f);
+    }
+
+    #[test]
+    fn a_point_that_does_not_index_the_padded_rows_is_rejected() {
+        let mut materializer = MTransposeGenerator::new(3);
+        let inputs = materializer.take_boxed_inputs();
+        example_circuit(&mut materializer, &inputs);
+        let map = materializer.finish();
+
+        let short = point(map.h_len()).len() - 1;
+        assert_eq!(
+            map.transpose_eq(&challenges(short)),
+            Err(VirtualMapError::PointLengthMismatch)
+        );
+    }
+
+    #[test]
+    fn a_point_that_indexes_zero_padding_is_accepted() {
+        let mut materializer = MTransposeGenerator::new(3);
+        let inputs = materializer.take_boxed_inputs();
+        example_circuit(&mut materializer, &inputs);
+        let map = materializer.finish();
+        let wide = challenges(point(map.h_len()).len() + 1);
+
+        assert!(map.transpose_eq(&wide).is_ok());
+    }
+
+    #[test]
+    fn the_digest_separates_different_matrices() {
+        let mut first = MTransposeGenerator::new(3);
+        let inputs = first.take_boxed_inputs();
+        example_circuit(&mut first, &inputs);
+
+        let mut second = MTransposeGenerator::new(3);
+        let other: Box<[MatrixBit; 3]> = second.take_boxed_inputs();
+        example_circuit(&mut second, &other);
+        let extra = second.xor(other[0], other[2]);
+        let _ = second.bitz::<1>(extra);
+
+        assert_ne!(first.finish().digest(), second.finish().digest());
     }
 
     #[test]

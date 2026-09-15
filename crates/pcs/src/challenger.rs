@@ -109,7 +109,6 @@ impl Challenger for ProverChallenger<'_> {
                 self.failed = true;
             }
             prefix.label_seen = true;
-            return;
         }
         self.transcript.public_message(label);
     }
@@ -119,6 +118,7 @@ impl Challenger for ProverChallenger<'_> {
             if !prefix.label_seen || value != prefix.expected_target {
                 self.failed = true;
             }
+            self.transcript.public_message(&from_flock_f128(value));
             return;
         }
         self.transcript.prover_message(&from_flock_f128(value));
@@ -170,7 +170,6 @@ impl Challenger for VerifierChallenger<'_, '_> {
                 self.failed = true;
             }
             prefix.label_seen = true;
-            return;
         }
         self.transcript.public_message(label);
     }
@@ -180,6 +179,7 @@ impl Challenger for VerifierChallenger<'_, '_> {
             if !prefix.label_seen || value != prefix.expected_target {
                 self.failed = true;
             }
+            self.transcript.public_message(&from_flock_f128(value));
             return;
         }
         if self.read::<LocalF128>() != Some(from_flock_f128(value)) {
@@ -251,7 +251,7 @@ fn pow_valid(seed: &[u8; 16], nonce: u64, bits: u32) -> bool {
         return nonce == 0;
     }
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"f2z-pcs-pow-v1");
+    hasher.update(b"bitz-pcs-pow-v1");
     hasher.update(seed);
     hasher.update(&nonce.to_le_bytes());
     let digest = hasher.finalize();
@@ -372,6 +372,19 @@ mod tests {
             assert!(!challenger.failed());
         }
         verifier.check_eof().unwrap();
+    }
+
+    #[test]
+    fn ligerito_public_target_changes_the_challenge() {
+        fn sample(target: FlockF128) -> FlockF128 {
+            let mut prover = build_prover(b"pcs-challenger-test", b"public-opening-target");
+            let mut challenger = ProverChallenger::new_ligerito(&mut prover, target);
+            challenger.observe_label(LIGERITO_BASIS_LABEL);
+            challenger.observe_f128(target);
+            challenger.sample_f128()
+        }
+
+        assert_ne!(sample(FlockF128::ZERO), sample(FlockF128::ONE));
     }
 
     proptest! {

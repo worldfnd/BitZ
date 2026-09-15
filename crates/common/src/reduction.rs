@@ -4,7 +4,8 @@
 //! — is not implemented here. What is here is the contract: what that reduction
 //! is handed, and what it must hand back.
 
-use crate::{F2ZParams, Fold, LinearClaim, Root};
+use crate::{BitZParams, Fold, LinearClaim, Root};
+use field::Fq;
 
 /// Everything the reduction reads, which is the bundle Step 4 names.
 ///
@@ -13,8 +14,8 @@ use crate::{F2ZParams, Fold, LinearClaim, Root};
 /// reference rather than restating them.
 #[derive(Clone, Copy)]
 pub struct ReductionInput<'a, const Q: u128> {
-    pub params: &'a F2ZParams<Q>,
-    pub claim: &'a LinearClaim<Q>,
+    pub params: &'a BitZParams<Q>,
+    pub claim: &'a LinearClaim<Fq<Q>>,
     pub commitment: Root,
     pub fold: &'a Fold,
 }
