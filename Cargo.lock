@@ -993,6 +993,7 @@ dependencies = [
  "bincode",
  "blake3",
  "common",
+ "divan",
  "field",
  "flock-core",
  "proptest",

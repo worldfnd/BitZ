@@ -86,8 +86,13 @@ mod bridge;
 mod challenger;
 mod commitment;
 mod open;
+mod transpose;
 mod utils;
 mod verify;
+
+#[cfg(test)]
+#[path = "transpose/tests.rs"]
+mod transpose_tests;
 
 use field::F128;
 use transcript::{ProverState, VerifierState};

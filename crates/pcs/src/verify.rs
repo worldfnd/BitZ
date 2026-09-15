@@ -23,7 +23,6 @@ use flock_core::field::F128 as FlockF128;
 use flock_core::pcs::ligerito::{VerifierConfig, recursive_verifier_with_basis_succinct};
 use flock_core::pcs::ring_switch::{
     claim_check, eval_rs_eq_finish_from_prefix_binary_q, eval_rs_eq_prefix, inner_product,
-    tensor_algebra_transpose,
 };
 use flock_core::pcs::{BatchOpeningProofLigerito, LOG_PACKING};
 use flock_core::zerocheck::univariate_skip::build_eq;
@@ -31,6 +30,7 @@ use transcript::VerifierState;
 
 use crate::bridge::as_flock_f128s;
 use crate::challenger::VerifierChallenger;
+use crate::transpose::tensor_algebra_transpose;
 use crate::utils::{
     bind_ring_switch_message, bind_statement, observe_opening_target, read_opening_proof,
     sample_ring_switch_point,

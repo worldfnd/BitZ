@@ -22,6 +22,7 @@
 
 use crate::bridge::{as_flock_f128s, into_flock_f128s};
 use crate::challenger::ProverChallenger;
+use crate::transpose::tensor_algebra_transpose;
 use crate::utils::{
     bind_ring_switch_message, bind_statement, observe_opening_target, sample_ring_switch_point,
     write_opening_proof,
@@ -31,7 +32,6 @@ use field::F128;
 use flock_core::pcs::ligerito::recursive_prover_with_basis;
 use flock_core::pcs::ring_switch::{
     build_eq_split, claim_check, fold_1b_rows_naive, fold_b128_elems, inner_product,
-    tensor_algebra_transpose,
 };
 use flock_core::pcs::{BatchOpeningProofLigerito, RingSwitchProof};
 use flock_core::{pcs::LOG_PACKING, zerocheck::univariate_skip::build_eq};
