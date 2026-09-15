@@ -272,7 +272,7 @@ fn uint_from_repr<CS: Circuit, const N: usize, const M: usize>(
     circuit: &mut CS,
     bits: <CS::Bool as BoolWitness>::Repr<N, M>,
 ) -> UInt<CS, N, M> {
-    let (z, _) = circuit.BitZ_unsigned::<P256_Z_LIMBS, N, M, N>(&bits);
+    let (z, _) = circuit.bitz_unsigned::<P256_Z_LIMBS, N, M, N>(&bits);
     UInt {
         bits,
         value: Lc { z },
@@ -288,7 +288,7 @@ fn uint_from_repr_with_lifts<CS: Circuit, const N: usize, const M: usize>(
     let mut z = P256Z::<CS>::zero();
     let mut power = P256Coefficient::<CS>::one();
     for bit in handles {
-        let bit_z = circuit.BitZ::<P256_Z_LIMBS>(bit);
+        let bit_z = circuit.bitz::<P256_Z_LIMBS>(bit);
         z += bit_z.clone() * power.clone();
         lifted.push(Lc { z: bit_z });
         power += power.clone();
@@ -1223,7 +1223,7 @@ fn indicators_impl<CS: Circuit, const N: usize, const M: usize>(
     let mut full = P256Z::<CS>::zero();
     let mut power = P256Coefficient::<CS>::one();
     for bit in &bit_handles {
-        let z = circuit.BitZ::<P256_Z_LIMBS>(bit.clone());
+        let z = circuit.bitz::<P256_Z_LIMBS>(bit.clone());
         full += z.clone() * power.clone();
         lifted.push(Lc { z });
         power += power.clone();
@@ -1419,7 +1419,7 @@ fn lift_input_word<CS: Circuit>(
     let mut z = P256Z::<CS>::zero();
     let mut power = P256Coefficient::<CS>::one();
     for bit in handles {
-        let bit_z = circuit.BitZ::<P256_Z_LIMBS>(bit.clone());
+        let bit_z = circuit.bitz::<P256_Z_LIMBS>(bit.clone());
         z += bit_z.clone() * power.clone();
         lifted.push(Lc { z: bit_z });
         power += power.clone();

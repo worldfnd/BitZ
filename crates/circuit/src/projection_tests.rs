@@ -194,7 +194,7 @@ impl Circuit for DirectAbcProjector<'_> {
         ScalarBits([Dummy; N])
     }
 
-    fn BitZ<const LIMBS: usize>(&mut self, _: Dummy) -> BigInt {
+    fn bitz<const LIMBS: usize>(&mut self, _: Dummy) -> BigInt {
         let witness = self.next_integer_witness;
         self.next_integer_witness += 1;
         BigInt::from(self.integer_witness.bit(witness + 1))
@@ -357,7 +357,7 @@ impl Circuit for DirectMProjector<'_> {
         }))
     }
 
-    fn BitZ<const LIMBS: usize>(&mut self, value: BoolLinearCombination) -> Dummy {
+    fn bitz<const LIMBS: usize>(&mut self, value: BoolLinearCombination) -> Dummy {
         self.project_row(&value);
         Dummy
     }

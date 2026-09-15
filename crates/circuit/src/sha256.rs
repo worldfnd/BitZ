@@ -163,7 +163,7 @@ fn uint_from_word<CS, const N: usize, const M: usize>(
 where
     CS: Circuit,
 {
-    let (full, low_32) = circuit.BitZ_unsigned::<SHA256_Z_LIMBS, N, M, 32>(&word.bits_le);
+    let (full, low_32) = circuit.bitz_unsigned::<SHA256_Z_LIMBS, N, M, 32>(&word.bits_le);
     let z_values = ZValues { full, low_32 };
     UInt { word, z_values }
 }
@@ -648,7 +648,7 @@ mod tests {
             crate::ScalarBits::from_packed(hint(&Values).expect("SHA-256 hint should be defined"))
         }
 
-        fn BitZ<const LIMBS: usize>(&mut self, value: Bit) -> i128 {
+        fn bitz<const LIMBS: usize>(&mut self, value: Bit) -> i128 {
             i128::from(value.0)
         }
 
@@ -683,7 +683,7 @@ mod tests {
         CS: Circuit,
     {
         let digest = sha256_2kb_circuit(circuit, message);
-        let small = circuit.BitZ::<SHA256_Z_LIMBS>(digest[0].clone());
+        let small = circuit.bitz::<SHA256_Z_LIMBS>(digest[0].clone());
         circuit.sign_extend_z::<SHA256_Z_LIMBS, 128>(small)
     }
 
@@ -799,7 +799,7 @@ mod tests {
             stats,
             Stats {
                 witnesses: 7_144,
-                BitZ_calls: 20_456,
+                bitz_calls: 20_456,
                 constraints: 184,
             }
         );

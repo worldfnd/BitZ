@@ -364,9 +364,9 @@ mod tests {
     use crate::matrix_wengert::WengertGenerator;
 
     fn example_circuit<CS: Circuit>(circuit: &mut CS, inputs: &[CS::Bool; 3]) {
-        let a = circuit.BitZ::<2>(inputs[0].clone());
-        let b = circuit.BitZ::<2>(inputs[1].clone());
-        let c = circuit.BitZ::<2>(inputs[2].clone());
+        let a = circuit.bitz::<2>(inputs[0].clone());
+        let b = circuit.bitz::<2>(inputs[1].clone());
+        let c = circuit.bitz::<2>(inputs[2].clone());
         circuit.assert_r1c(
             a.clone() * CS::Coefficient::<2>::from(7) - b.clone(),
             b.clone() * CS::Coefficient::<2>::from(11)

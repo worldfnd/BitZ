@@ -384,11 +384,11 @@ impl Circuit for WitnessOnly {
         bits
     }
 
-    fn BitZ<const LIMBS: usize>(&mut self, value: bool) -> Z<LIMBS> {
+    fn bitz<const LIMBS: usize>(&mut self, value: bool) -> Z<LIMBS> {
         if value { Z::one() } else { Z::zero() }
     }
 
-    fn BitZ_unsigned<const LIMBS: usize, const N: usize, const M: usize, const LOW: usize>(
+    fn bitz_unsigned<const LIMBS: usize, const N: usize, const M: usize, const LOW: usize>(
         &mut self,
         bits_le: &<bool as BoolWitness>::Repr<N, M>,
     ) -> (Z<LIMBS>, Z<LIMBS>) {
@@ -521,12 +521,12 @@ impl Circuit for Witgen {
         bits
     }
 
-    fn BitZ<const LIMBS: usize>(&mut self, value: bool) -> Z<LIMBS> {
+    fn bitz<const LIMBS: usize>(&mut self, value: bool) -> Z<LIMBS> {
         self.integer_witness.extend(&[value]);
         if value { Z::one() } else { Z::zero() }
     }
 
-    fn BitZ_unsigned<const LIMBS: usize, const N: usize, const M: usize, const LOW: usize>(
+    fn bitz_unsigned<const LIMBS: usize, const N: usize, const M: usize, const LOW: usize>(
         &mut self,
         bits_le: &<bool as BoolWitness>::Repr<N, M>,
     ) -> (Z<LIMBS>, Z<LIMBS>) {
@@ -641,15 +641,15 @@ impl Circuit for ProductWitgen {
         self.witgen.hint(hint)
     }
 
-    fn BitZ<const LIMBS: usize>(&mut self, value: bool) -> Z<LIMBS> {
-        self.witgen.BitZ(value)
+    fn bitz<const LIMBS: usize>(&mut self, value: bool) -> Z<LIMBS> {
+        self.witgen.bitz(value)
     }
 
-    fn BitZ_unsigned<const LIMBS: usize, const N: usize, const M: usize, const LOW: usize>(
+    fn bitz_unsigned<const LIMBS: usize, const N: usize, const M: usize, const LOW: usize>(
         &mut self,
         bits_le: &<bool as BoolWitness>::Repr<N, M>,
     ) -> (Z<LIMBS>, Z<LIMBS>) {
-        self.witgen.BitZ_unsigned::<LIMBS, N, M, LOW>(bits_le)
+        self.witgen.bitz_unsigned::<LIMBS, N, M, LOW>(bits_le)
     }
 
     fn assert_r1c<const LIMBS: usize>(&mut self, a: Z<LIMBS>, b: Z<LIMBS>, c: Z<LIMBS>) {
@@ -746,16 +746,16 @@ mod tests {
             bits,
             PackedBits::<4, 1>::from_array([true, false, true, true])
         );
-        assert_eq!(witgen.BitZ::<1>(true), Z::<1>::one());
+        assert_eq!(witgen.bitz::<1>(true), Z::<1>::one());
     }
 
     #[test]
-    fn records_the_integer_witness_in_logical_BitZ_order() {
+    fn records_the_integer_witness_in_logical_bitz_order() {
         let mut witgen = Witgen::new();
-        let _ = witgen.BitZ::<1>(true);
-        let _ = witgen.BitZ::<8>(false);
+        let _ = witgen.bitz::<1>(true);
+        let _ = witgen.bitz::<8>(false);
         let bits = PackedBits::<4, 1>::from_array([false, true, true, false]);
-        let _: (Z<1>, Z<1>) = witgen.BitZ_unsigned::<1, 4, 1, 2>(&bits);
+        let _: (Z<1>, Z<1>) = witgen.bitz_unsigned::<1, 4, 1, 2>(&bits);
 
         let expected = [true, true, false, false, true, true, false];
         assert_eq!(witgen.integer_witness().bit_len(), expected.len());
@@ -770,9 +770,9 @@ mod tests {
     #[test]
     fn one_runner_supports_local_widths_and_explicit_sign_extension() {
         let mut witgen = Witgen::new();
-        let small: Z<1> = witgen.BitZ::<1>(true);
+        let small: Z<1> = witgen.bitz::<1>(true);
         let large: Z<128> = witgen.sign_extend_z::<1, 128>(-small);
-        let rsa_bit: Z<128> = witgen.BitZ::<128>(false);
+        let rsa_bit: Z<128> = witgen.bitz::<128>(false);
 
         assert_eq!(large.words(), &[u64::MAX; 128]);
         assert_eq!(rsa_bit.words(), &[0; 128]);
