@@ -3,8 +3,12 @@
 use std::collections::VecDeque;
 
 use common::{LinearClaim, OpeningQuery, ReductionInput, Root};
+use field::F128;
 use field::Fq;
-use pcs::{CommitScheme, Pcs, StatementBinding, VerifyError as OpeningVerifyError};
+use num_traits::ConstOne;
+use pcs::CommitScheme;
+use pcs::VerifyError as OpeningVerifyError;
+use pcs::{Pcs, StatementBinding};
 use transcript::VerifierState;
 
 use crate::{BitZVerifier, ReceiveError};
@@ -66,12 +70,30 @@ impl<const Q: u128> BitZVerifier<Q> {
 
         // Step 4, replayed.
         // build input based on row_image and the bit table.
-        let circuit = _;
         let mut point = fold.zeta.clone();
         point.reverse();
         let point = VecDeque::from(point);
 
-        gkr::gpgkr_verify(&mut transcript, fold.e0, point, pcs);
+        // Dealing with row_images.len() = 0
+        let r1 = fold.row_images.len().ilog2();
+
+        let (mut point, mle_leaf_claim) =
+            gkr::gpgkr_verify(&mut transcript, fold.e0, point, r1).unwrap();
+
+        // Conversion here feel unnecessary
+        let alfa_c = Vec::from(point.split_off(r1 as usize));
+        let alfa_b = Vec::from(point);
+
+        let inner_product_claim = mle_leaf_claim - F128::ONE;
+        // How can we reuse the space that is there?
+        // Could reuse the space of the eq_table, but is there a better way?
+        let u1: Vec<_> = fold
+            .row_images
+            .iter()
+            .zip(poly::eq_table(&alfa_b))
+            .collect();
+        let u2 = poly::eq_table(&alfa_c);
+
         // TODO(#8): both live behind `Reduction`, which nothing implements yet.
         let input = ReductionInput {
             params: self.params(),
