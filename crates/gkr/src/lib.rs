@@ -217,7 +217,7 @@ fn verify_layer(vs: &mut VerifierState, mut claim: Field, point: Point) -> Optio
     let mut next_point: Point = VecDeque::new();
 
     for z in point {
-        let [sum0, suminf]: [Field; 2] = vs.prover_message().unwrap();
+        let [sum0, suminf]: [Field; 2] = vs.prover_message().ok()?;
         let eqjsum0 = (Field::ONE - z) * sum0;
         let eqjsum1 = claim - eqjsum0;
         let sum1 = eqjsum1 / z;
@@ -233,7 +233,7 @@ fn verify_layer(vs: &mut VerifierState, mut claim: Field, point: Point) -> Optio
         prefix *= factor;
     }
 
-    let elem_lr: [Field; 2] = vs.prover_message().unwrap();
+    let elem_lr: [Field; 2] = vs.prover_message().ok()?;
     // Check if line polynomial hits same spot as sumcheck check
     if (prefix * elem_lr[0] * elem_lr[1]) != claim {
         None
@@ -415,6 +415,25 @@ mod tests {
             tampered[0] += Field::ONE;
 
             prop_assert!(!verify(leaves, tampered, proof));
+        }
+    }
+
+    #[test]
+    fn gpgkr_verify_rejects_every_truncated_prefix() {
+        let leaves: Vec<Field> = (1u128..=8).map(Field::from).collect();
+        for log_groups in [0, 1] {
+            let (output, proof) = prove(leaves.clone(), log_groups);
+            assert!(verify(leaves.clone(), output.clone(), proof.clone()));
+
+            // Cover partial field elements and missing messages in every layer.
+            for len in 0..proof.narg_string.len() {
+                let mut truncated = proof.clone();
+                truncated.narg_string.truncate(len);
+                assert!(
+                    !verify(leaves.clone(), output.clone(), truncated),
+                    "accepted {len} bytes with log_groups = {log_groups}",
+                );
+            }
         }
     }
 
