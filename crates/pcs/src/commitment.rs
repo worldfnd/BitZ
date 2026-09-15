@@ -18,10 +18,6 @@ use flock_core::pcs::ligerito::LigeritoProfile;
 use flock_core::pcs::{PcsParams, ProverData as FlockProverData};
 use transcript::Encoding;
 
-/// Initial Ligerito fold size required by Flock's registered security profiles.
-/// The value `6` selects 64 lanes
-/// See: https://github.com/succinctlabs/flock/blob/879072249e52b8b9054bf0c6a034cec20f8f6fc7/crates/flock-core/src/pcs/ligerito.rs#L1245
-const LIGERITO_INITIAL_K: usize = 6;
 
 /// Errors from PCS configuration.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -63,14 +59,18 @@ impl Pcs {
         let bit_len = 1usize
             .checked_shl(m as u32)
             .ok_or(ConfigError::Invalid("bit length overflow"))?;
+        // The ladder fixes the L0 interleaving: the commit must use the same
+        // `log_batch_size` as the opening's `initial_k`, or the L0 tree is not
+        // reusable as Ligerito's first oracle.
+        let security = crate::ligerito::security_config(m, security_profile, merkle_hash)?;
         let params = PcsParams {
             m,
             log_inv_rate: security_profile.log_inv_rate(),
-            log_batch_size: LIGERITO_INITIAL_K,
+            log_batch_size: security.initial_k,
             profile: security_profile,
             merkle_hash,
         };
-        let checked_ligerito = CheckedLigerito::new(&params)?;
+        let checked_ligerito = CheckedLigerito::new(&params, &security)?;
         let packed_len = 1usize
             .checked_shl(checked_ligerito.log_n_u32())
             .ok_or(ConfigError::Invalid("packed length overflow"))?;
@@ -236,10 +236,16 @@ mod tests {
         ] {
             for (hash, hash_tag) in [(HashKind::Sha256, 0), (HashKind::Blake3, 1)] {
                 let pcs = Pcs::new(&shape(), profile, hash).unwrap();
+                // `Fast` runs the k = 4 ladder; the other profiles keep flock's
+                // embedded k = 6 generation.
+                let initial_k = match profile {
+                    LigeritoProfile::Fast => 4,
+                    LigeritoProfile::Slim | LigeritoProfile::Secure => 6,
+                };
                 let expected_tags = [
                     22,
                     profile.log_inv_rate() as u64,
-                    LIGERITO_INITIAL_K as u64,
+                    initial_k,
                     profile_tag,
                     hash_tag,
                 ];
