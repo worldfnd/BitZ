@@ -1,7 +1,5 @@
 //! `VerifyBitZ`.
 
-use std::collections::VecDeque;
-
 use common::{Fold, LinearClaim, OpeningQuery, ReductionInput, Root};
 use field::F128;
 use field::Fq;
@@ -69,25 +67,20 @@ impl<const Q: u128> Reduction<Q> for Reduce {
 
 fn gkr_reduce(transcript: &mut VerifierState, fold: &Fold) -> Option<(F128, Vec<F128>)> {
     // throughout the function point is less than r1+r2 elements
-    let mut point = fold.zeta.clone();
-    point.reverse();
-    let point = VecDeque::from(point);
-
     let r1 = fold.row_images.len().max(1).ilog2();
 
-    let (mut point, mle_leaf_claim) = gkr::gpgkr_verify(transcript, fold.e0, point, r1)?;
+    let (mut point, mle_leaf_claim) = gkr::gpgkr_verify(transcript, fold.e0, &fold.zeta, r1)?;
 
-    // gpgkr_verify's returned point is in gkr's own MSB-first convention,
-    // not the little-endian convention eq_table expects (see
-    // gkr::tests::mle, which does the identical reversal). Reversing back
-    // here flips which end is b and which is c, so the split position
-    // swaps from r1 to r2 too -- see prove.rs's gkr_reduce and
-    // order_check::u1_dot_m_matches_the_circuits_own_claim there.
-    point.make_contiguous().reverse();
+    // gpgkr_verify reverses in and out internally now (see its doc comment),
+    // so `point` is already in eq_table's little-endian convention. But the
+    // r1 new (row) coordinates it grew the point by land at the END of that
+    // little-endian point, not the front -- so alfa_b is the LAST r1
+    // entries and the split position is r2, not r1 -- see prove.rs's
+    // gkr_reduce and order_check::u1_dot_m_matches_the_circuits_own_claim
+    // there.
     let r2 = point.len() - r1 as usize;
     // TODO can be done without allocating alfa_c
-    let alfa_b = Vec::from(point.split_off(r2));
-    let _alfa_c = Vec::from(point);
+    let alfa_b = point.split_off(r2);
 
     let inner_product_claim = mle_leaf_claim - F128::ONE;
     // Allocates 2*l1 space if the compiler doesn't fuse.
@@ -191,5 +184,118 @@ impl<const Q: u128> BitZVerifier<Q> {
         reduction
             .reduce(&input, transcript)
             .map_err(VerifyError::Reduction)
+    }
+}
+
+#[cfg(test)]
+mod round_trip {
+    //! Drives a real proof through `gkr::GrandProductCircuit` +
+    //! `gkr::gpgkr_prove` (mirroring what `prover::prove::gkr_reduce` does --
+    //! that function is crate-private, so it can't be called directly from
+    //! here) and checks this crate's own `gkr_reduce` recovers the same
+    //! `alfa_b`/`u1`/`inner_product_claim` a prover computes from the same
+    //! challenges. This is the check `order_check` (in the `prover` crate)
+    //! can't provide on its own: that this crate's independent reverse/split
+    //! logic agrees with the prover's, not just that each is internally
+    //! self-consistent.
+    use common::{F2ZParams, Fold, Shape};
+    use field::gf128::smallest_generator;
+    use gkr::{GrandProductCircuit, gpgkr_prove};
+    use num_traits::{ConstOne, ConstZero, identities::Zero};
+
+    use super::*;
+
+    const Q: u128 = (1 << 114) - 11;
+
+    fn shape() -> Shape {
+        Shape::new(7, 15).unwrap()
+    }
+
+    fn params() -> F2ZParams<Q> {
+        F2ZParams::new(shape(), smallest_generator()).unwrap()
+    }
+
+    #[test]
+    fn verifier_agrees_with_a_real_prover_transcript() {
+        let shape = shape();
+
+        let mut packed = vec![F128::ZERO; (1 << shape.log_bits()) / 128];
+        for column in 0..shape.columns() {
+            for row in 0..shape.rows() {
+                let h = (row as u64).wrapping_mul(2654435761)
+                    ^ (column as u64).wrapping_mul(0x9E3779B97F4A7C15);
+                if (h >> 5) & 1 == 1 {
+                    let index = (column << shape.log_rows()) | row;
+                    let element = &mut packed[index >> 7];
+                    let offset = index % 128;
+                    if offset < 64 {
+                        element.lo |= 1u64 << offset;
+                    } else {
+                        element.hi |= 1u64 << (offset - 64);
+                    }
+                }
+            }
+        }
+        let table = params().table(&packed).unwrap();
+
+        let row_images: Vec<F128> = (0..shape.rows())
+            .map(|b| F128::from(((b as u128) + 1) * 0x9E3779B97F4A7C15u128 + 7))
+            .collect();
+        let zeta: Vec<F128> = (0..shape.log_columns())
+            .map(|i| F128::from((i as u128 + 3) * 0xABCDEF12345u128 + 1))
+            .collect();
+
+        // Real prover-side leaf construction and GKR proof, matching
+        // `prover::prove::gkr_reduce` exactly, so the transcript this
+        // produces is one this crate's `gkr_reduce` must accept.
+        let mut leafs = vec![F128::zero(); shape.columns() * shape.rows()];
+        for b in 0..shape.rows() {
+            for c in 0..shape.columns() {
+                leafs[b * shape.columns() + c] = if table.bit(c, b) {
+                    row_images[b]
+                } else {
+                    F128::ONE
+                };
+            }
+        }
+        let circuit = GrandProductCircuit::new(leafs);
+        let (top_layer, witnesses) = circuit.batched_eval(shape.columns());
+
+        // `gpgkr_verify`'s starting claim is `fold.e0`, so it has to be the
+        // real circuit's own top (output) layer evaluated at `zeta` -- not
+        // an arbitrary placeholder -- or the verifier correctly rejects.
+        let folds = vec![0u128; shape.columns()];
+        let fold = Fold::new(&shape, folds, top_layer, row_images.clone(), zeta.clone()).unwrap();
+
+        let mut prover = transcript::build_prover("verifier-round-trip", &F128::ZERO);
+        let (mut point, claim) = gpgkr_prove(&mut prover, &zeta, witnesses);
+        let proof = prover.finish();
+
+        // Expected values, derived independently from the prover's own
+        // returned point/claim using the same r1/r2 split `gkr_reduce` (in
+        // both crates) relies on.
+        let r1 = row_images.len().max(1).ilog2();
+        let r2 = point.len() - r1 as usize;
+        let expected_alfa_b = point.split_off(r2);
+        let expected_u1: Vec<F128> = row_images
+            .iter()
+            .zip(poly::eq_table(&expected_alfa_b))
+            .map(|(a, b)| (*a - F128::ONE) * b)
+            .collect();
+        let expected_inner_product_claim = claim - F128::ONE;
+
+        let mut verifier = transcript::build_verifier("verifier-round-trip", &F128::ZERO, &proof);
+        let (inner_product_claim, u1) = gkr_reduce(&mut verifier, &fold).unwrap();
+        verifier.check_eof().unwrap();
+
+        assert_eq!(
+            inner_product_claim, expected_inner_product_claim,
+            "verifier's inner_product_claim disagrees with the prover's"
+        );
+        assert_eq!(
+            u1, expected_u1,
+            "verifier's u1 disagrees with the prover's -- alfa_b is split \
+             or ordered differently between the two crates"
+        );
     }
 }
