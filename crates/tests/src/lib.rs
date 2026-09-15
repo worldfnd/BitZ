@@ -10,7 +10,7 @@
 //! rather than once per test binary.
 
 use common::{
-    BitTable, F2ZParams, LinearClaim, OpeningQuery, ReductionInput, Root, Shape, shape::PACK_BITS,
+    BitTable, BitZParams, LinearClaim, OpeningQuery, ReductionInput, Root, Shape, shape::PACK_BITS,
 };
 use crypto_primitives::LiftElement;
 use field::{F128, Fq, gf128::smallest_generator};
@@ -29,9 +29,9 @@ pub const WINDOW: u32 = 8;
 
 /// An instance whose claim actually holds, committed under a real scheme.
 pub struct Instance {
-    pub params: F2ZParams<Q>,
-    pub prover: prover::F2ZProver<Q>,
-    pub verifier: verifier::F2ZVerifier<Q>,
+    pub params: BitZParams<Q>,
+    pub prover: prover::BitZProver<Q>,
+    pub verifier: verifier::BitZVerifier<Q>,
     pub claim: LinearClaim<field::Fq<Q>>,
     pub pcs: Pcs,
     pub com: Root,
@@ -49,7 +49,7 @@ impl Instance {
     /// runs.
     pub fn honest(shape: Shape, seed: u64) -> Self {
         let mut rng = ChaCha8Rng::seed_from_u64(seed);
-        let params = F2ZParams::<Q>::new(shape, smallest_generator()).unwrap();
+        let params = BitZParams::<Q>::new(shape, smallest_generator()).unwrap();
 
         let packed: Vec<F128> = (0..(1 << shape.log_bits()) / 128)
             .map(|_| F128::new(rng.next_u64(), rng.next_u64()))
@@ -80,8 +80,8 @@ impl Instance {
 
         Self {
             params,
-            prover: prover::F2ZProver::new(params, WINDOW),
-            verifier: verifier::F2ZVerifier::new(params, WINDOW),
+            prover: prover::BitZProver::new(params, WINDOW),
+            verifier: verifier::BitZVerifier::new(params, WINDOW),
             claim,
             pcs,
             com,
@@ -136,7 +136,7 @@ pub fn large_shape() -> Shape {
     Shape::new(13, 15).unwrap()
 }
 
-const SESSION: &str = "f2z-tests";
+const SESSION: &str = "BitZ-tests";
 const INSTANCE: &str = "fold-round-trip";
 
 pub fn prover_transcript() -> ProverState {

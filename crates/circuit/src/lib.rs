@@ -1,4 +1,4 @@
-//! Backend-independent operations used to build an F2Z circuit.
+//! Backend-independent operations used to build an BitZ circuit.
 //!
 //! The traits in this crate deliberately separate symbolic witnesses from the
 //! values used while generating a witness.  In particular, a [`Circuit::hint`]
@@ -97,7 +97,7 @@ pub trait WitnessContext<ZW, BW, C> {
     fn eval_bool(&self, witness: &BW) -> bool;
 }
 
-/// Arithmetic required of coefficients on the Z side of an F2Z circuit.
+/// Arithmetic required of coefficients on the Z side of an BitZ circuit.
 ///
 /// This is a ring-like programming interface, rather than a claim that every
 /// implementation obeys the ring laws.  It is kept separate from the symbolic
@@ -446,7 +446,7 @@ impl BoolWitness for bool {
     type Repr<const N: usize, const M: usize> = PackedBits<N, M>;
 }
 
-/// Operations needed to construct an F2Z circuit.
+/// Operations needed to construct an BitZ circuit.
 ///
 /// Z witnesses and coefficients are backend-owned type families indexed by a
 /// gadget-local limb bound. This lets one polymorphic circuit combine gadgets
@@ -501,17 +501,17 @@ pub trait Circuit {
             + 'static;
 
     /// Converts an F2 linear combination into a constrained Z witness.
-    fn f2z<const LIMBS: usize>(&mut self, value: Self::Bool) -> Self::Z<LIMBS>;
+    fn BitZ<const LIMBS: usize>(&mut self, value: Self::Bool) -> Self::Z<LIMBS>;
 
     /// Lifts a little-endian bit-vector and returns both its full unsigned
     /// value and the value of its low `LOW` bits.
     ///
     /// This is a fusion hook: its default implementation is exactly `N`
-    /// calls to [`Circuit::f2z`] followed by the corresponding linear
+    /// calls to [`Circuit::BitZ`] followed by the corresponding linear
     /// combinations. Value-oriented backends can override it to evaluate a
     /// packed machine word directly, while layout-building backends retain the
-    /// scalar `f2z` calls and therefore produce the identical circuit.
-    fn f2z_unsigned<const LIMBS: usize, const N: usize, const M: usize, const LOW: usize>(
+    /// scalar `BitZ` calls and therefore produce the identical circuit.
+    fn BitZ_unsigned<const LIMBS: usize, const N: usize, const M: usize, const LOW: usize>(
         &mut self,
         bits_le: &<Self::Bool as BoolWitness>::Repr<N, M>,
     ) -> (Self::Z<LIMBS>, Self::Z<LIMBS>) {
@@ -520,7 +520,7 @@ pub trait Circuit {
         let mut low = Self::Z::<LIMBS>::zero();
         let mut power = Self::Coefficient::<LIMBS>::one();
         for index in 0..N {
-            let lifted = self.f2z::<LIMBS>(bits_le.bit(index));
+            let lifted = self.BitZ::<LIMBS>(bits_le.bit(index));
             let term = lifted * power.clone();
             full += term.clone();
             if index < LOW {
@@ -782,7 +782,7 @@ mod tests {
             ScalarBits::from_packed(hint(&Values).expect("test hint should succeed"))
         }
 
-        fn f2z<const LIMBS: usize>(&mut self, value: Bit) -> Z {
+        fn BitZ<const LIMBS: usize>(&mut self, value: Bit) -> Z {
             Z(Mod7::new(i32::from(value.0)))
         }
 
@@ -812,7 +812,7 @@ mod tests {
 
         assert_eq!([high, low], [Bit(true), Bit(true)]);
 
-        let lifted = circuit.f2z::<1>(high);
+        let lifted = circuit.BitZ::<1>(high);
         let expression = lifted * Mod7::new(3) + Z::from(Mod7::new(2));
         circuit.assert_r1c::<1>(Z::from(Mod7::one()), expression, z);
         assert_eq!(circuit.constraints, vec![(Z(Mod7::one()), z, z)]);

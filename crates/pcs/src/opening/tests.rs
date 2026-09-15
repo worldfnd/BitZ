@@ -93,7 +93,7 @@ fn fixed_mle_claim_arrays_keep_the_existing_domain_and_encoding() {
     assert_eq!(proof.narg_string.len(), CLAIM_COUNT * 16);
 
     let mut expected = build_prover(SESSION, INSTANCE);
-    expected.public_message(b"f2z/pcs/mle-claims/v1" as &[u8]);
+    expected.public_message(b"BitZ/pcs/mle-claims/v1" as &[u8]);
     expected.prover_message(&claims.map(from_flock_f128));
     assert_eq!(expected.verifier_message::<F128>(), challenge);
 

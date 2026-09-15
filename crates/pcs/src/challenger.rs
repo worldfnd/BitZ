@@ -251,7 +251,7 @@ fn pow_valid(seed: &[u8; 16], nonce: u64, bits: u32) -> bool {
         return nonce == 0;
     }
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"f2z-pcs-pow-v1");
+    hasher.update(b"BitZ-pcs-pow-v1");
     hasher.update(seed);
     hasher.update(&nonce.to_le_bytes());
     let digest = hasher.finalize();

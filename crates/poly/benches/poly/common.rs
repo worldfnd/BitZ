@@ -7,7 +7,7 @@ pub const POWER_OF_TWO_NATURAL_SIZES: &[usize] = &[8, 32, 128, 256, 512];
 /// Non-power-of-two lengths for the general quadratic domain constructor.
 pub const GENERAL_NATURAL_SIZES: &[usize] = &[7, 31, 127, 255, 511];
 
-/// Natural-polynomial lengths used by the current F2Z sumcheck verifier.
+/// Natural-polynomial lengths used by the current BitZ sumcheck verifier.
 pub const PROTOCOL_NATURAL_SIZES: &[usize] = &[3, 4, 6];
 
 /// Step used to generate deterministic but non-sequential benchmark values.

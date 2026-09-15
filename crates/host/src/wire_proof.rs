@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! offset size field
-//! 0      8    magic = 46 32 5a 50 43 53 00 00   ("F2ZPCS\0\0")
+//! 0      8    magic = 42 69 74 5a 50 43 53 00   ("BitZPCS\0")
 //! 8      2    wire_version = 1
 //! 10     2    header_len = 32
 //! 12     4    flags = 0
@@ -18,7 +18,7 @@ use thiserror::Error;
 use transcript::Proof;
 
 /// The eight-byte proof container magic.
-pub const MAGIC: [u8; 8] = *b"F2ZPCS\0\0";
+pub const MAGIC: [u8; 8] = *b"BitZPCS\0";
 /// The only wire version this codec reads or writes.
 pub const WIRE_VERSION: u16 = 1;
 /// The fixed header length, in bytes.
@@ -202,7 +202,7 @@ mod tests {
     #[test]
     fn the_encoding_is_the_grammar_in_the_module_docs() {
         let mut bytes = Vec::new();
-        bytes.extend_from_slice(b"F2ZPCS\0\0");
+        bytes.extend_from_slice(b"BitZPCS\0");
         bytes.extend_from_slice(&[0x01, 0x00]); // wire_version = 1
         bytes.extend_from_slice(&[0x20, 0x00]); // header_len = 32
         bytes.extend_from_slice(&[0x00; 4]); // flags = 0

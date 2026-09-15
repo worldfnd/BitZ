@@ -6,7 +6,7 @@
 //! run starts by checking that agreement, because a timing against a different
 //! field is not a comparison.
 //!
-//! Run with `cargo bench -p field --bench binius64`. Reps via `F2Z_BENCH_REPS`.
+//! Run with `cargo bench -p field --bench binius64`. Reps via `BitZ_BENCH_REPS`.
 //!
 //! The two implementations are timed rep by rep in the same loop rather than
 //! one after the other, so the drift that makes a single run on this machine
@@ -39,7 +39,7 @@ const PASSES: usize = if cfg!(all(target_arch = "aarch64", target_feature = "aes
 const SLOW_PASSES: usize = 16;
 
 fn reps() -> usize {
-    std::env::var("F2Z_BENCH_REPS")
+    std::env::var("BitZ_BENCH_REPS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(15)
