@@ -5,8 +5,7 @@ use field::{F128, Fq};
 use pcs::{HashKind, LigeritoProfile, Pcs, VerifyError as PcsVerifyError};
 use prover::ProveError;
 use tests::{
-    HonestStub, Instance, large_shape, narrow_shape, prover_transcript, verifier_transcript,
-    wide_shape,
+    Instance, large_shape, narrow_shape, prover_transcript, verifier_transcript, wide_shape,
 };
 use transcript::Proof;
 use verifier::{ReceiveError, VerifyError};
@@ -20,7 +19,6 @@ fn prove(instance: &Instance) -> Proof {
             &instance.pcs,
             &instance.data,
             instance.packed.clone(),
-            &HonestStub,
             &mut transcript,
         )
         .expect("honest instance");
@@ -39,7 +37,6 @@ fn an_honest_proof_verifies_on_every_shape_the_profile_admits() {
                 &instance.claim,
                 &instance.pcs,
                 instance.com,
-                &HonestStub,
                 verifier_transcript(&proof),
             )
             .unwrap_or_else(|error| panic!("t = {}: {error:?}", shape.log_rows()));
@@ -51,18 +48,15 @@ fn a_proof_replayed_under_a_different_commitment_is_refused() {
     let instance = Instance::honest(narrow_shape(), 32);
     let proof = prove(&instance);
 
-    // The root is not in the proof, so this is not a decode failure: the two
-    // sponges diverge at step 1, the point the stub squeezes moves with them,
-    // and the opening is left discharging a claim at the wrong point.
+    // Binding a different root changes the fold batching point, so GKR rejects.
     assert_eq!(
         instance.verifier.verify(
             &instance.claim,
             &instance.pcs,
             Root([0xffu8; 32]),
-            &HonestStub,
             verifier_transcript(&proof)
         ),
-        Err(VerifyError::Opening(PcsVerifyError::VerificationFailed))
+        Err(VerifyError::Reduction(verifier::ReduceError::GKR))
     );
 }
 
@@ -80,7 +74,6 @@ fn the_statement_is_bound_before_the_first_challenge() {
             &retargeted,
             &instance.pcs,
             instance.com,
-            &HonestStub,
             verifier_transcript(&proof)
         ),
         Err(VerifyError::Fold(ReceiveError::TargetMismatch))
@@ -98,7 +91,6 @@ fn a_proof_with_trailing_bytes_is_refused() {
             &instance.claim,
             &instance.pcs,
             instance.com,
-            &HonestStub,
             verifier_transcript(&proof)
         ),
         Err(VerifyError::TrailingData)
@@ -109,7 +101,7 @@ fn a_proof_with_trailing_bytes_is_refused() {
 fn an_opening_against_another_commitment_is_refused() {
     // Everything but the opening lines up: the root the prover binds is the one
     // the verifier is given, the folds are over the witness the claim describes,
-    // and the stub's evaluation is true of that witness. Only the codeword and
+    // and the GKR claim is true of that witness. Only the codeword and
     // the Merkle tree the opening reads belong to a different commitment.
     let proved = Instance::honest(narrow_shape(), 35);
     let committed = Instance::honest(narrow_shape(), 36);
@@ -122,7 +114,6 @@ fn an_opening_against_another_commitment_is_refused() {
             &proved.pcs,
             &committed.data,
             proved.packed.clone(),
-            &HonestStub,
             &mut transcript,
         )
         .expect("the prover checks the claim, not the commitment behind it");
@@ -133,7 +124,6 @@ fn an_opening_against_another_commitment_is_refused() {
             &proved.claim,
             &proved.pcs,
             committed.com,
-            &HonestStub,
             verifier_transcript(&proof)
         ),
         Err(VerifyError::Opening(PcsVerifyError::VerificationFailed))
@@ -154,7 +144,6 @@ fn a_tampered_opening_proof_is_refused() {
             &instance.claim,
             &instance.pcs,
             instance.com,
-            &HonestStub,
             verifier_transcript(&proof)
         ),
         Err(VerifyError::Opening(PcsVerifyError::VerificationFailed))
@@ -180,7 +169,6 @@ fn a_proof_verified_under_a_different_profile_is_refused() {
             &instance.claim,
             &slim,
             instance.com,
-            &HonestStub,
             verifier_transcript(&proof)
         ),
         Err(VerifyError::Opening(PcsVerifyError::VerificationFailed))
@@ -198,7 +186,6 @@ fn a_witness_of_the_wrong_length_is_refused_before_anything_is_written() {
             &instance.pcs,
             &instance.data,
             vec![F128::default(); 10],
-            &HonestStub,
             &mut transcript,
         ),
         Err(ProveError::Witness(TableError::BitCountMismatch))
