@@ -173,7 +173,7 @@ mod round_trip_ai_test {
     //! can't provide on its own: that this crate's independent reverse/split
     //! logic agrees with the prover's, not just that each is internally
     //! self-consistent.
-    use common::{F2ZParams, Fold, Shape};
+    use common::{BitZParams, Fold, Shape};
     use field::gf128::smallest_generator;
     use gkr::{GrandProductCircuit, gpgkr_prove};
     use num_traits::{ConstOne, ConstZero, identities::Zero};
@@ -186,8 +186,8 @@ mod round_trip_ai_test {
         Shape::new(7, 15).unwrap()
     }
 
-    fn params() -> F2ZParams<Q> {
-        F2ZParams::new(shape(), smallest_generator()).unwrap()
+    fn params() -> BitZParams<Q> {
+        BitZParams::new(shape(), smallest_generator()).unwrap()
     }
 
     #[test]

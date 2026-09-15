@@ -225,7 +225,7 @@ mod order_check_ai_test {
     //! with high entropy in both the row and column dimension (so a swapped
     //! or misordered point would break it with overwhelming probability).
     use super::*;
-    use common::{F2ZParams, Fold, Shape};
+    use common::{BitZParams, Fold, Shape};
     use field::gf128::smallest_generator;
 
     const Q: u128 = (1 << 114) - 11;
@@ -234,8 +234,8 @@ mod order_check_ai_test {
         Shape::new(7, 15).unwrap()
     }
 
-    fn params() -> F2ZParams<Q> {
-        F2ZParams::new(shape(), smallest_generator()).unwrap()
+    fn params() -> BitZParams<Q> {
+        BitZParams::new(shape(), smallest_generator()).unwrap()
     }
 
     fn packed_witness(shape: &Shape, bit_fn: impl Fn(usize, usize) -> bool) -> Vec<F128> {
