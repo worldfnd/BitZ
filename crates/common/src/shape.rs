@@ -52,6 +52,22 @@ impl Shape {
         })
     }
 
+    /// The reference split for `log_bits` committed bits, the one the F2Z
+    /// reference implementation uses for its measurements: `t = ⌈0.6·n⌉`,
+    /// no narrower than the packing width and leaving at least one column
+    /// bit, `s = n − t`. Both sides must pick the same shape for the same
+    /// `n`, so this is the rule and not a heuristic to re-derive.
+    pub fn for_log_bits(log_bits: usize) -> Result<Self, ShapeError> {
+        if log_bits == 0 {
+            return Err(ShapeError::CommitmentSizeOutOfRange);
+        }
+        let log_rows = (3 * log_bits)
+            .div_ceil(5)
+            .max(PACK_BITS as usize)
+            .min(log_bits - 1);
+        Self::new(log_rows, log_bits - log_rows)
+    }
+
     /// The number of row-index bits, the paper's `t`.
     pub fn log_rows(&self) -> usize {
         self.log_rows
@@ -112,6 +128,18 @@ mod tests {
         );
         // A row width outside the window, which would underflow the subtraction.
         assert_eq!(Shape::new(36, 0), Err(ShapeError::CommitmentSizeOutOfRange));
+    }
+
+    #[test]
+    fn the_reference_split_rounds_three_fifths_up() {
+        for (log_bits, log_rows) in [(22, 14), (24, 15), (28, 17), (30, 18), (35, 21)] {
+            let shape = Shape::for_log_bits(log_bits).unwrap();
+            assert_eq!((shape.log_rows(), shape.log_columns()), (log_rows, log_bits - log_rows));
+        }
+        assert_eq!(
+            Shape::for_log_bits(21),
+            Err(ShapeError::CommitmentSizeOutOfRange)
+        );
     }
 
     #[test]

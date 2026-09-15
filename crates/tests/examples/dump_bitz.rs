@@ -1,7 +1,7 @@
 //! Transcript-parity dump: one honest instance, proved and verified here,
 //! written out for the F2Z reference implementation to re-prove.
 //!
-//! Usage: `dump_bitz <t> <s> <seed> <out-dir>`
+//! Usage: `dump_bitz <log-bits> <seed> <out-dir>` (the reference split)
 use std::io::Write;
 
 use common::Shape;
@@ -14,13 +14,13 @@ fn hex(bytes: &[u8]) -> String {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let t: usize = args[1].parse().unwrap();
-    let s: usize = args[2].parse().unwrap();
-    let seed: u64 = args[3].parse().unwrap();
-    let out = std::path::PathBuf::from(&args[4]);
+    let log_bits: usize = args[1].parse().unwrap();
+    let seed: u64 = args[2].parse().unwrap();
+    let out = std::path::PathBuf::from(&args[3]);
     std::fs::create_dir_all(&out).unwrap();
 
-    let shape = Shape::new(t, s).expect("shape");
+    let shape = Shape::for_log_bits(log_bits).expect("shape");
+    let (t, s) = (shape.log_rows(), shape.log_columns());
     let instance = Instance::honest(shape, seed);
 
     let started = std::time::Instant::now();
