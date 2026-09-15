@@ -40,6 +40,7 @@ pub trait Reduction<const Q: u128> {
         input: &ReductionInput<'_, Q>,
         table: &BitTable<'_>,
         transcript: &mut ProverState,
+        // Don't think this is still necessary.
     ) -> Result<OpeningQuery, Self::Error>;
 }
 
@@ -59,11 +60,12 @@ impl<const Q: u128> Reduction<Q> for Reduce {
     ) -> Result<OpeningQuery, Self::Error> {
         let fold = input.fold;
 
-        gkr_reduce(transcript, fold, table);
+        let (_u1, _m, _claim) = gkr_reduce(transcript, fold, table);
 
-        // TODO(#8): turn the sumcheck's output claim into a discharged `OpeningQuery`.
-        // Alex / Sina
-        todo!("#8")
+        // turn the sumcheck's output claim into a discharged `OpeningQuery`.
+        todo!(
+            "u1, u2 and claim into a linear claim. Requires changing LinearClaim::new to take Vec<F128> instead of Vec<Fq<Q>>"
+        );
     }
 }
 
@@ -106,6 +108,7 @@ fn gkr_reduce(
         .collect();
 
     let u2 = eq_table(&alfa_c);
+    todo!("Move m_table into pcs::lin and return u2");
 
     // Inner product / eq_table approach to prevent blowup
     fn m_table(u2: Vec<F128>, table: &BitTable) -> Vec<F128> {
