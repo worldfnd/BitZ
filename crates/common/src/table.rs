@@ -113,23 +113,24 @@ impl Iterator for ColumnBits<'_> {
     type Item = bool;
 
     fn next(&mut self) -> Option<bool> {
-        loop {
-            if self.remaining > 0 {
-                let bit = self.word & 1 == 1;
-                self.word >>= 1;
-                self.remaining -= 1;
-                return Some(bit);
-            }
-            if let Some(hi) = self.hi_pending.take() {
+        match (self.remaining, self.hi_pending) {
+            (0, Some(hi)) => {
                 self.word = hi;
+                self.hi_pending = None;
                 self.remaining = HALF_BITS as u32;
-            } else {
+            }
+            (0, None) => {
                 let element = self.elements.next()?;
                 self.word = element.lo;
                 self.hi_pending = Some(element.hi);
                 self.remaining = HALF_BITS as u32;
             }
+            _ => {}
         }
+        let bit = self.word & 1 == 1;
+        self.word >>= 1;
+        self.remaining -= 1;
+        Some(bit)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
