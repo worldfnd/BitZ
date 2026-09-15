@@ -190,7 +190,7 @@ mod tests {
     use num_traits::{ConstOne, ConstZero};
 
     use super::*;
-    use crate::{F2ZParams, Shape};
+    use crate::{BitZParams, Shape};
 
     const Q114: u128 = (1 << 114) - 11;
     /// Comb window: `FixedBasePow` always covers the full 128-bit exponent
@@ -202,8 +202,8 @@ mod tests {
         Shape::new(7, 15).unwrap()
     }
 
-    fn params() -> F2ZParams<Q114> {
-        F2ZParams::new(shape(), smallest_generator()).unwrap()
+    fn params() -> BitZParams<Q114> {
+        BitZParams::new(shape(), smallest_generator()).unwrap()
     }
 
     fn comb() -> FixedBasePow {

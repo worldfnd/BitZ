@@ -2,7 +2,7 @@
 
 use common::{BitTable, Fold, FoldError, LinearClaim, column_images, fold_columns, row_images};
 
-use crate::F2ZProver;
+use crate::BitZProver;
 use transcript::ProverState;
 
 /// A fold the prover cannot produce.
@@ -14,7 +14,7 @@ pub enum SendError {
     Fold(FoldError),
 }
 
-impl<const Q: u128> F2ZProver<Q> {
+impl<const Q: u128> BitZProver<Q> {
     /// Runs the fold round.
     ///
     /// Only the folds `eta_j` are sent. Their images `g^{eta_j}` are what the

@@ -1,10 +1,11 @@
-//! `VerifyF2Z`.
+//! `VerifyBitZ`.
 
 use common::{LinearClaim, OpeningQuery, ReductionInput, Root};
+use field::Fq;
 use pcs::{CommitScheme, Pcs, StatementBinding, VerifyError as OpeningVerifyError};
 use transcript::VerifierState;
 
-use crate::{F2ZVerifier, ReceiveError};
+use crate::{BitZVerifier, ReceiveError};
 
 /// A proof the verifier rejects.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,14 +33,14 @@ pub trait Reduction<const Q: u128> {
     ) -> Result<OpeningQuery, Self::Error>;
 }
 
-impl<const Q: u128> F2ZVerifier<Q> {
+impl<const Q: u128> BitZVerifier<Q> {
     /// Replays the proof of the caller's linear claim about the committed bits.
     ///
     /// `pcs` must be the scheme the commitment was made under. The transcript
     /// arrives carrying the caller's events; this appends and consumes it.
     pub fn verify<R: Reduction<Q>>(
         &self,
-        claim: &LinearClaim<field::Fq<Q>>,
+        claim: &LinearClaim<Fq<Q>>,
         pcs: &Pcs,
         com: Root,
         reduction: &R,
@@ -47,7 +48,7 @@ impl<const Q: u128> F2ZVerifier<Q> {
     ) -> Result<(), VerifyError<R::Error>> {
         // Step 1: the admissibility and precondition checks have already run --
         // the shape gates in Shape::new, the modulus in Fq's own const assertions,
-        // the generator's order in F2ZConfig::new and the weight counts in
+        // the generator's order in BitZParams::new and the weight counts in
         // LinearClaim::new. What is left is binding, before any challenge.
         transcript.public_message(&com.0);
         transcript.public_message(self.params());
@@ -77,7 +78,7 @@ impl<const Q: u128> F2ZVerifier<Q> {
     /// vector the fold ran over, not always the one the oracle commits to.
     pub(crate) fn fold_and_reduce<R: Reduction<Q>>(
         &self,
-        claim: &LinearClaim<Q>,
+        claim: &LinearClaim<field::Fq<Q>>,
         com: Root,
         reduction: &R,
         transcript: &mut VerifierState<'_>,

@@ -24,12 +24,12 @@ pub enum ParamsError {
 /// `Q` is a const parameter, not a field: the weights are `Fq<Q>`, whose
 /// modulus lives in the type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct F2ZParams<const Q: u128> {
+pub struct BitZParams<const Q: u128> {
     shape: Shape,
     generator: F128,
 }
 
-impl<const Q: u128> F2ZParams<Q> {
+impl<const Q: u128> BitZParams<Q> {
     /// Runs the gates that need only the parameters.
     pub fn new(shape: Shape, generator: F128) -> Result<Self, ParamsError> {
         // `Fq<Q>` asserts Q is an odd prime below 2^126 on its own behalf, so
@@ -84,7 +84,7 @@ impl<const Q: u128> F2ZParams<Q> {
 }
 
 /// Every field is fixed width, so distinct parameter sets cannot encode alike.
-impl<const Q: u128> Encoding<[u8]> for F2ZParams<Q> {
+impl<const Q: u128> Encoding<[u8]> for BitZParams<Q> {
     fn encode(&self) -> impl AsRef<[u8]> {
         let mut frame = [0u8; 48];
         let mut at = 0;
@@ -117,12 +117,12 @@ pub enum VirtualParamsError {
 /// Parameters for a claim about `h` opened against a commitment to `f`.
 ///
 /// Two shapes, because the two vectors have different lengths. The inherited
-/// [`F2ZParams`] shapes `h`: it is what the fold walks, what bounds the
+/// [`BitZParams`] shapes `h`: it is what the fold walks, what bounds the
 /// exponent, and what the claim's weights are counted against. The committed
 /// shape belongs to `f` alone and reaches only the table and the opening.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VirtualParams<const Q: u128> {
-    claim: F2ZParams<Q>,
+    claim: BitZParams<Q>,
     committed: Shape,
 }
 
@@ -133,7 +133,7 @@ impl<const Q: u128> VirtualParams<Q> {
     /// vectors are padded up to their shape so that they have multilinear
     /// extensions, and padding contributes nothing.
     pub fn new(
-        claim: F2ZParams<Q>,
+        claim: BitZParams<Q>,
         committed: Shape,
         map: &impl VirtualMap,
     ) -> Result<Self, VirtualParamsError> {
@@ -152,7 +152,7 @@ impl<const Q: u128> VirtualParams<Q> {
     }
 
     /// The parameters the fold and the reduction read, shaped to `h`.
-    pub fn claim(&self) -> &F2ZParams<Q> {
+    pub fn claim(&self) -> &BitZParams<Q> {
         &self.claim
     }
 
@@ -168,7 +168,7 @@ impl<const Q: u128> VirtualParams<Q> {
     }
 }
 
-/// Distinct from a plain [`F2ZParams`] frame by length, so a proof of one
+/// Distinct from a plain [`BitZParams`] frame by length, so a proof of one
 /// cannot replay as a proof of the other.
 impl<const Q: u128> Encoding<[u8]> for VirtualParams<Q> {
     fn encode(&self) -> impl AsRef<[u8]> {
@@ -189,8 +189,8 @@ mod tests {
     /// The largest prime below `2^114`, the top of the sampling range.
     const Q114: u128 = (1 << 114) - 11;
 
-    fn params_at(shape: Shape) -> Result<F2ZParams<Q114>, ParamsError> {
-        F2ZParams::new(shape, smallest_generator())
+    fn params_at(shape: Shape) -> Result<BitZParams<Q114>, ParamsError> {
+        BitZParams::new(shape, smallest_generator())
     }
 
     /// `m = 22`: 128 rows per column, 32768 columns.
@@ -285,7 +285,7 @@ mod tests {
     #[test]
     fn the_table_is_shaped_by_the_committed_bits() {
         let claim =
-            F2ZParams::<Q114>::new(Shape::new(8, 15).unwrap(), smallest_generator()).unwrap();
+            BitZParams::<Q114>::new(Shape::new(8, 15).unwrap(), smallest_generator()).unwrap();
         let committed = shape();
         let params =
             VirtualParams::new(claim, committed, &Dimensions { h_len: 4, f_len: 4 }).unwrap();
@@ -309,7 +309,7 @@ mod tests {
     #[test]
     fn rejects_a_generator_of_partial_order() {
         assert_eq!(
-            F2ZParams::<Q114>::new(shape(), F128::ONE).err(),
+            BitZParams::<Q114>::new(shape(), F128::ONE).err(),
             Some(ParamsError::GeneratorOrderNotFull)
         );
     }

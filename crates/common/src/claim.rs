@@ -1,10 +1,10 @@
-//! The linear claim F2Z is asked to discharge.
+//! The linear claim BitZ is asked to discharge.
 
 use crypto_primitives::LiftElement;
 use field::Fq;
 use spongefish::Encoding;
 
-use crate::{F2ZParams, Shape};
+use crate::{BitZParams, Shape};
 
 /// A Merkle root over the committed codeword.
 ///
@@ -24,15 +24,15 @@ pub enum ClaimError {
 
 /// The caller's `x_core`: the weights and the value they are claimed to give.
 ///
-/// F2Z uses `LinearClaim<Fq<Q>>`; opening queries use `LinearClaim<field::F128>`.
-/// The following F2Z requirements apply to the `Fq<Q>` input claim.
-/// F2Z verifies nothing upstream of this. The caller runs its own PIOP, and
+/// BitZ uses `LinearClaim<Fq<Q>>`; opening queries use `LinearClaim<field::F128>`.
+/// The following BitZ requirements apply to the `Fq<Q>` input claim.
+/// BitZ verifies nothing upstream of this. The caller runs its own PIOP, and
 /// establishes that its claim holds, that `q` is prime, and that the
 /// coefficient factors as `v = v^(1) (x) v^(2)`. A claim whose coefficient
 /// does not split that way cannot use this profile: the fold exponentiates
 /// `v^(1)` and reconstructs over `v^(2)`, so it consumes the two separately.
 ///
-/// The parameters live in [`F2ZParams`]; this is only the claim against them.
+/// The parameters live in [`BitZParams`]; this is only the claim against them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinearClaim<F> {
     row_weights: Vec<F>,
@@ -61,7 +61,7 @@ impl<const Q: u128> LinearClaim<Fq<Q>> {
     /// `row_weights` is `v^(1)`, one element per row; `column_weights` is
     /// `v^(2)`, one per column; `target` is the claimed value `mu`.
     pub fn new(
-        params: &F2ZParams<Q>,
+        params: &BitZParams<Q>,
         row_weights: Vec<Fq<Q>>,
         column_weights: Vec<Fq<Q>>,
         target: Fq<Q>,
@@ -133,8 +133,8 @@ mod tests {
     const Q114: u128 = (1 << 114) - 11;
 
     /// `m = 22`: 128 rows per column, 32768 columns.
-    fn params() -> F2ZParams<Q114> {
-        F2ZParams::new(Shape::new(7, 15).unwrap(), smallest_generator()).unwrap()
+    fn params() -> BitZParams<Q114> {
+        BitZParams::new(Shape::new(7, 15).unwrap(), smallest_generator()).unwrap()
     }
 
     fn claim(row_weights: Vec<Fq<Q114>>) -> Result<LinearClaim<Fq<Q114>>, ClaimError> {

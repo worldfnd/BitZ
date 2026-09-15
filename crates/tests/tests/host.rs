@@ -2,7 +2,7 @@
 //!
 //! The point of these tests is that the verifier reaches acceptance with the
 //! proof arriving as nothing but bytes. The claim is not among them: both
-//! sides hold it already, and in full F2Z it is derived from the PIOP rather
+//! sides hold it already, and in full BitZ it is derived from the PIOP rather
 //! than shipped, so there is no encoding of it to round-trip.
 
 use host::wire_proof;

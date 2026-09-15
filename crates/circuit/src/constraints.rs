@@ -1,4 +1,4 @@
-//! Sparse constraint generation for the F2Z circuit language.
+//! Sparse constraint generation for the BitZ circuit language.
 //!
 //! The generated matrices follow Freigen's convention. `M` maps the Boolean
 //! witness, prefixed by a constant one, to the integer witness. Its first row
@@ -226,7 +226,7 @@ impl SparseBoolMatrix {
     }
 }
 
-/// The four sparse matrices generated for an F2Z circuit.
+/// The four sparse matrices generated for a BitZ circuit.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConstraintMatrices<C = BigInt> {
     /// Boolean-to-integer witness matrix.
@@ -756,7 +756,7 @@ impl Circuit for ConstraintGenerator {
         }))
     }
 
-    fn f2z<const LIMBS: usize>(&mut self, value: BoolLinearCombination) -> LinearCombination {
+    fn bitz<const LIMBS: usize>(&mut self, value: BoolLinearCombination) -> LinearCombination {
         let witness = self.m_rows.len();
         self.m_rows.push(value);
         LinearCombination::witness(witness)
@@ -793,9 +793,9 @@ mod tests {
         let mut generator = ConstraintGenerator::new(2);
         let [x, y] = generator.inputs();
         let sum = generator.xor(x.clone(), y.clone());
-        let z_sum = generator.f2z::<1>(sum);
-        let z_x = generator.f2z::<1>(x);
-        let z_y = generator.f2z::<1>(y);
+        let z_sum = generator.bitz::<1>(sum);
+        let z_x = generator.bitz::<1>(x);
+        let z_y = generator.bitz::<1>(y);
         generator.assert_r1c::<1>(
             z_x.clone() * BigInt::from(2),
             z_y.clone(),

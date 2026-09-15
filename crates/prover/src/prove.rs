@@ -1,11 +1,11 @@
-//! `ProveF2Z`.
+//! `ProveBitZ`.
 
 use common::{BitTable, LinearClaim, OpeningQuery, ReductionInput, Root, TableError};
-use field::F128;
+use field::{F128, Fq};
 use pcs::{CommitScheme, Pcs, ProveError as OpeningProveError, ProverData, StatementBinding};
 use transcript::ProverState;
 
-use crate::{F2ZProver, SendError};
+use crate::{BitZProver, SendError};
 
 /// A proof the prover cannot produce.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,7 +36,7 @@ pub trait Reduction<const Q: u128> {
     ) -> Result<OpeningQuery, Self::Error>;
 }
 
-impl<const Q: u128> F2ZProver<Q> {
+impl<const Q: u128> BitZProver<Q> {
     /// Proves the caller's linear claim about the committed bits.
     ///
     /// The caller commits first and passes what that produced: the `data` the
@@ -48,7 +48,7 @@ impl<const Q: u128> F2ZProver<Q> {
     /// arrives carrying the caller's events; this appends and hands it back.
     pub fn prove<R: Reduction<Q>>(
         &self,
-        claim: &LinearClaim<field::Fq<Q>>,
+        claim: &LinearClaim<Fq<Q>>,
         pcs: &Pcs,
         data: &ProverData,
         packed: Vec<F128>,
@@ -88,7 +88,7 @@ impl<const Q: u128> F2ZProver<Q> {
     /// which is a claim about whatever `table` holds.
     pub(crate) fn fold_and_reduce<R: Reduction<Q>>(
         &self,
-        claim: &LinearClaim<Q>,
+        claim: &LinearClaim<field::Fq<Q>>,
         com: Root,
         table: &BitTable<'_>,
         reduction: &R,

@@ -1,7 +1,7 @@
 //! The public map `h = M (1 ‖ f)`, where `f` is the committed bit witness and
 //! `h` is the vector the incoming claim is about.
 //!
-//! F2Z is handed a claim about `h`, but the oracle commits to `f`. The fold and
+//! BitZ is handed a claim about `h`, but the oracle commits to `f`. The fold and
 //! the grand product never read the oracle, so they run against `h` as it is.
 //! The opening does read it, so the claim is rewritten first:
 //!

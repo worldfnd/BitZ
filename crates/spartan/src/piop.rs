@@ -297,7 +297,7 @@ mod tests {
         }
 
         // The PIOP only consumes h and A/B/C. This identity M gives the fixture a
-        // valid F2Z layout as well: h = M(1 || f).
+        // valid BitZ layout as well: h = M(1 || f).
         let m = SparseBoolMatrix::try_from_rows(
             COLUMNS,
             (0..COLUMNS).map(|column| vec![column]).collect(),

@@ -38,7 +38,7 @@ pub struct BitTable<'a> {
 impl<'a> BitTable<'a> {
     /// Wraps `packed` in `shape`, least significant bit first inside `lo`.
     ///
-    /// Crate-private: [`crate::F2ZParams::table`] is the only way in, so a
+    /// Crate-private: [`crate::BitZParams::table`] is the only way in, so a
     /// table is always shaped by a checked parameter set.
     pub(crate) fn new(shape: Shape, packed: &'a [F128]) -> Result<Self, TableError> {
         // `m >= 22`, so the bit count is always a whole number of elements.

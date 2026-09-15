@@ -44,7 +44,7 @@ fn protocol_sized_reused_domain(bencher: Bencher, len: usize) {
     });
 }
 
-/// Synthetic scalability benchmark; F2Z's current round polynomials have
+/// Synthetic scalability benchmark; BitZ's current round polynomials have
 /// lengths 3, 4, or 6 rather than multilinear-table sizes.
 #[divan::bench(args = LOG_SIZES)]
 fn synthetic_large_reused_domain(bencher: Bencher, num_vars: usize) {

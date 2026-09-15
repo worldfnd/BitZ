@@ -3,7 +3,7 @@
 
 use common::{Fold, FoldError, LinearClaim, column_images, reconstruct, row_images};
 
-use crate::F2ZVerifier;
+use crate::BitZVerifier;
 use transcript::VerifierState;
 
 /// A fold the verifier rejects.
@@ -19,7 +19,7 @@ pub enum ReceiveError {
     Fold(FoldError),
 }
 
-impl<const Q: u128> F2ZVerifier<Q> {
+impl<const Q: u128> BitZVerifier<Q> {
     /// Reads the fold round and checks it.
     ///
     /// The proof carries only the folds; their images are derived here rather than
