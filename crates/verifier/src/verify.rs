@@ -107,24 +107,7 @@ impl<const Q: u128> BitZVerifier<Q> {
         transcript.public_message(self.params());
 
         // Steps 2 to 5, replayed.
-        let _query = self.fold_and_reduce(claim, com, reduction, &mut transcript)?;
-        // TODO: step 2, reducing the modulus, is absent, as on the prover.
-
-        // Step 3: read the folds, range-check them, reconstruct against mu.
-        let fold = self
-            .receive_fold(claim, &mut transcript)
-            .map_err(VerifyError::Fold)?;
-
-        // Step 4, replayed.
-        let input = ReductionInput {
-            params: self.params(),
-            claim,
-            commitment: com,
-            fold: &fold,
-        };
-        let query = reduction
-            .reduce(&input, &mut transcript)
-            .map_err(VerifyError::Reduction)?;
+        let query = self.fold_and_reduce(claim, com, reduction, &mut transcript)?;
 
         // Step 5 is conditional and a merged forest does not need it.
 
