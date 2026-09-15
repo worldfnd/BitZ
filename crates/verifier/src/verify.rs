@@ -1,6 +1,7 @@
 //! `VerifyBitZ`.
 
 use common::{LinearClaim, OpeningQuery, ReductionInput, Root};
+use field::Fq;
 use pcs::{CommitScheme, Pcs, StatementBinding, VerifyError as OpeningVerifyError};
 use transcript::VerifierState;
 
@@ -39,7 +40,7 @@ impl<const Q: u128> BitZVerifier<Q> {
     /// arrives carrying the caller's events; this appends and consumes it.
     pub fn verify<R: Reduction<Q>>(
         &self,
-        claim: &LinearClaim<field::Fq<Q>>,
+        claim: &LinearClaim<Fq<Q>>,
         pcs: &Pcs,
         com: Root,
         reduction: &R,

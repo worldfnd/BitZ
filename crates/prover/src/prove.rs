@@ -1,7 +1,7 @@
 //! `ProveBitZ`.
 
 use common::{BitTable, LinearClaim, OpeningQuery, ReductionInput, Root, TableError};
-use field::F128;
+use field::{F128, Fq};
 use pcs::{CommitScheme, Pcs, ProveError as OpeningProveError, ProverData, StatementBinding};
 use transcript::ProverState;
 
@@ -48,7 +48,7 @@ impl<const Q: u128> BitZProver<Q> {
     /// arrives carrying the caller's events; this appends and hands it back.
     pub fn prove<R: Reduction<Q>>(
         &self,
-        claim: &LinearClaim<field::Fq<Q>>,
+        claim: &LinearClaim<Fq<Q>>,
         pcs: &Pcs,
         data: &ProverData,
         packed: Vec<F128>,
