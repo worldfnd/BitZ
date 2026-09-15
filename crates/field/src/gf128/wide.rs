@@ -69,7 +69,7 @@ mod tests {
     use super::super::portable;
     use super::*;
     use num_traits::ConstZero;
-    use rand_core::{RngCore, SeedableRng};
+    use rand_core::{Rng, SeedableRng};
     use rand_pcg::Pcg64;
 
     fn f128(rng: &mut Pcg64) -> F128 {

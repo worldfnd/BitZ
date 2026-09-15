@@ -524,7 +524,7 @@ mod tests {
     use crypto_primitives::{BaseField, WithExtensionDegree};
     #[cfg(feature = "rand")]
     use rand::Rng;
-    use rand_core::{RngCore, SeedableRng};
+    use rand_core::SeedableRng;
     use rand_pcg::Pcg64;
 
     /// A prime small enough to check every pair of operands.

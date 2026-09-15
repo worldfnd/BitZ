@@ -17,7 +17,7 @@ use field::{F128, Fq, gf128::smallest_generator};
 use pcs::{HashKind, LigeritoProfile, Pcs, ProverData};
 use poly::eq_table;
 use rand_chacha::ChaCha8Rng;
-use rand_core::{RngCore, SeedableRng};
+use rand_core::{Rng, SeedableRng};
 use transcript::{Proof, ProverState, VerifierState, build_prover, build_verifier};
 
 /// The largest prime below `2^114`, the top of the paper's sampling range.

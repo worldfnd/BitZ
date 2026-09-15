@@ -354,7 +354,7 @@ impl WithExtensionDegree for F128 {
 mod tests {
     use super::*;
     use crypto_primitives::ConstField;
-    use rand_core::{RngCore, SeedableRng};
+    use rand_core::{Rng, SeedableRng};
     use rand_pcg::Pcg64;
 
     /// A random field element; the tests only need uniform 128-bit words.

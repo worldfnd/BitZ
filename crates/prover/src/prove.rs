@@ -126,7 +126,7 @@ pub fn gkr_reduce(
         .collect();
 
     let u2 = eq_table(&alfa_c);
-    todo!("Move m_table into pcs::lin and return u2");
+    // TODO: Move m_table into pcs::lin and return u2
 
     let m = m_table(u2, table);
 

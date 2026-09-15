@@ -10,7 +10,7 @@ use core::mem::offset_of;
 use field::F128;
 use flock_core::field::gf2_128::F128 as Flock;
 use num_traits::{ConstOne, ConstZero, Inv, Zero};
-use rand_core::{RngCore, SeedableRng};
+use rand_core::{Rng, SeedableRng};
 use rand_pcg::Pcg64;
 
 fn to_flock(a: F128) -> Flock {
