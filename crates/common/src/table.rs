@@ -84,6 +84,67 @@ impl<'a> BitTable<'a> {
         let elements = self.shape.rows() / PACKED_BITS;
         &self.packed[column * elements..(column + 1) * elements]
     }
+
+    /// The column's bits, in ascending row order.
+    pub fn column_bits(&self, column: usize) -> ColumnBits<'a> {
+        ColumnBits {
+            elements: self.column(column).iter(),
+            word: 0,
+            hi_pending: None,
+            remaining: 0,
+        }
+    }
+}
+
+/// Iterator over one column's bits, in ascending row order — see
+/// [`BitTable::column_bits`].
+pub struct ColumnBits<'a> {
+    elements: std::slice::Iter<'a, F128>,
+    /// Bits not yet emitted; the next one to emit is the LSB.
+    word: u64,
+    /// `hi` of the current element, once `lo` has been fully shifted out of
+    /// `word` but before it takes `word`'s place.
+    hi_pending: Option<u64>,
+    /// How many low bits of `word` are still valid, i.e. still unemitted.
+    remaining: u32,
+}
+
+impl Iterator for ColumnBits<'_> {
+    type Item = bool;
+
+    fn next(&mut self) -> Option<bool> {
+        match (self.remaining, self.hi_pending) {
+            (0, Some(hi)) => {
+                self.word = hi;
+                self.hi_pending = None;
+                self.remaining = HALF_BITS as u32;
+            }
+            (0, None) => {
+                let element = self.elements.next()?;
+                self.word = element.lo;
+                self.hi_pending = Some(element.hi);
+                self.remaining = HALF_BITS as u32;
+            }
+            _ => {}
+        }
+        let bit = self.word & 1 == 1;
+        self.word >>= 1;
+        self.remaining -= 1;
+        Some(bit)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = self.len();
+        (len, Some(len))
+    }
+}
+
+impl ExactSizeIterator for ColumnBits<'_> {
+    fn len(&self) -> usize {
+        self.remaining as usize
+            + self.hi_pending.map_or(0, |_| HALF_BITS)
+            + self.elements.len() * PACKED_BITS
+    }
 }
 
 #[cfg(test)]
@@ -176,6 +237,22 @@ mod tests {
         assert_eq!(table.column(3).len(), shape.rows() / PACKED_BITS);
         assert_eq!(table.column(3), [F128::new(0b101, 1)]);
         assert!(table.column(4).iter().all(|element| *element == F128::ZERO));
+    }
+
+    #[test]
+    fn column_bits_agrees_with_the_bit_accessor() {
+        let shape = small_shape();
+        let rows: Vec<(usize, usize)> = (0..shape.rows()).step_by(7).map(|row| (row, 2)).collect();
+        let packed = with_bits(&shape, &rows);
+        let table = BitTable::new(shape, &packed).unwrap();
+
+        let iter = table.column_bits(2);
+        assert_eq!(iter.len(), shape.rows());
+        let bits: Vec<bool> = iter.collect();
+        assert_eq!(bits.len(), shape.rows());
+        for (row, bit) in bits.into_iter().enumerate() {
+            assert_eq!(bit, table.bit(2, row), "row {row}");
+        }
     }
 
     #[test]

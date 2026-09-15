@@ -1,39 +1,23 @@
 //! `ProveBitZ`.
 
-use common::{BitTable, LinearClaim, OpeningQuery, ReductionInput, Root, TableError};
+use common::{BitTable, ClaimError, LinearClaim, OpeningQuery, TableError};
 use field::{F128, Fq};
 use pcs::{CommitScheme, Pcs, ProveError as OpeningProveError, ProverData, StatementBinding};
 use transcript::ProverState;
 
-use crate::{BitZProver, SendError};
+use crate::{BitZProver, SendError, reduce::gkr_reduce};
 
 /// A proof the prover cannot produce.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ProveError<E> {
+pub enum ProveError {
     /// The witness is not the length the shape calls for.
     Witness(TableError),
     /// The fold round failed.
     Fold(SendError),
-    /// The reduction failed.
-    Reduction(E),
+    /// The derived GKR weight counts do not match the table shape.
+    Reduction(ClaimError),
     /// The opening failed, so the reduction's claim was never discharged.
     Opening(OpeningProveError),
-}
-
-/// Step 4: the grand product, and the sumcheck that turns its affine leaf
-/// into a claim on the committed bits.
-///
-/// TODO: #8 implements this. Until then the round trip stubs it, so the
-/// transcript order below is exercised and the reduction's argument is not.
-pub trait Reduction<const Q: u128> {
-    type Error;
-
-    fn reduce(
-        &self,
-        input: &ReductionInput<'_, Q>,
-        table: &BitTable<'_>,
-        transcript: &mut ProverState,
-    ) -> Result<OpeningQuery, Self::Error>;
 }
 
 impl<const Q: u128> BitZProver<Q> {
@@ -46,15 +30,14 @@ impl<const Q: u128> BitZProver<Q> {
     ///
     /// The witness arrives owned because the opening consumes it. The transcript
     /// arrives carrying the caller's events; this appends and hands it back.
-    pub fn prove<R: Reduction<Q>>(
+    pub fn prove(
         &self,
         claim: &LinearClaim<Fq<Q>>,
         pcs: &Pcs,
         data: &ProverData,
         packed: Vec<F128>,
-        reduction: &R,
         transcript: &mut ProverState,
-    ) -> Result<(), ProveError<R::Error>> {
+    ) -> Result<(), ProveError> {
         let com = data.root();
         let table = self.params().table(&packed).map_err(ProveError::Witness)?;
 
@@ -68,58 +51,32 @@ impl<const Q: u128> BitZProver<Q> {
         transcript.public_message(&com.0);
         transcript.public_message(self.params());
 
-        // Steps 2 to 5: the modulus reduction, the column fold, the grand
-        // product, and the batching a merged forest does not need.
-        let query = self.fold_and_reduce(claim, com, &table, reduction, transcript)?;
+        // Steps 3 and 4: integer column folds, then GKR to a factored bit claim.
+        let query = self.fold_and_reduce(claim, &table, transcript)?;
 
-        // Step 6: the ring switch and the opening, which discharge the claim
-        // step 4 handed over. `Bind` rather than `AlreadyBound`: the opening's
-        // own parameters are not in the frame step 1 absorbed, and binding them
-        // here is what puts them in the sponge before the opener's first
-        // squeeze.
+        // Step 6: inner-product sumcheck, ring switching, and commitment opening.
+        // Bind the derived query and PCS parameters before the opening challenges.
         pcs.prove_lin(data, packed, &query, StatementBinding::Bind, transcript)
             .map_err(ProveError::Opening)
     }
 
-    /// Steps 2 to 5, which every entry point runs identically.
-    ///
-    /// Step 1 and step 6 stay with the caller: it absorbs its own statement
-    /// frame, shapes its own table, and decides what to do with the query,
-    /// which is a claim about whatever `table` holds.
-    pub(crate) fn fold_and_reduce<R: Reduction<Q>>(
+    /// Folds the columns and reduces their products to a claim about `table`.
+    /// The caller binds the statement before this call and opens the returned claim.
+    pub(crate) fn fold_and_reduce(
         &self,
         claim: &LinearClaim<field::Fq<Q>>,
-        com: Root,
         table: &BitTable<'_>,
-        reduction: &R,
         transcript: &mut ProverState,
-    ) -> Result<OpeningQuery, ProveError<R::Error>> {
-        // TODO: step 2, reducing the modulus, is absent. It runs when q is too
-        // large for the shape, and a const modulus parameter cannot express its
-        // `q <- q'`. Callers must supply an admissible q; LinearClaim::new
-        // rejects anything else.
+    ) -> Result<OpeningQuery, ProveError> {
+        // Step 2 is absent: Q is fixed, and BitZParams::new checks its fold bound.
 
         // Step 3: fold each column into an integer exponent.
         let fold = self
             .send_fold(claim, table, transcript)
             .map_err(ProveError::Fold)?;
 
-        // Step 4: the grand product over the folds, then the sumcheck that
-        // turns its affine leaf into a claim on the committed bits.
-        //
-        // TODO(#8): both live behind `Reduction`, which nothing implements yet.
-        let input = ReductionInput {
-            params: self.params(),
-            claim,
-            commitment: com,
-            fold: &fold,
-        };
-
-        // Step 5, batching the per-column claims, is conditional and a
-        // merged-forest grand product does not need it: it draws its challenge
-        // once across all columns, so the claims never separate.
-        reduction
-            .reduce(&input, table, transcript)
-            .map_err(ProveError::Reduction)
+        // Step 4: GKR reduces the batched column products to a factored bit claim.
+        // Step 5 needs no separate batching: fold.zeta already batches the columns.
+        gkr_reduce(transcript, &fold, table).map_err(ProveError::Reduction)
     }
 }

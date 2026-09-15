@@ -2,43 +2,36 @@ use std::collections::VecDeque;
 
 use field::{F128, Wide256};
 use num_traits::{ConstOne, ConstZero};
-use poly::DenseMultilinearExtension;
 use rayon::prelude::*;
 use transcript::{ProverState, VerifierState};
 
 pub type Field = F128;
 
-// TODO modify densemultilinearextension such that no point reversal nor collection is necessary
-pub fn mle(eval: Vec<Field>, rs: &Point) -> Field {
-    let num_vars = rs.len();
-    let mut point: Vec<Field> = rs.iter().cloned().collect();
-    point.reverse();
-
-    // TODO DenseMultilinearExtension::from_evaluations doesn't need a num_vars; it already checks based on evaluation size.
-    // Possibly we could even do zero padding, but that means memory allocation. Better to have a check beforehand for power of two.
-    // Direction should be a parameter
-    // TODO MLE should be able to handle empty point when given a single evaluation
-    DenseMultilinearExtension::from_evaluations(num_vars, eval)
-        .unwrap()
-        .evaluate(&point)
-        .unwrap()
-}
-
 type Point = VecDeque<Field>;
 
+/// Proves the layer-by-layer sumcheck reduction from a claim at `point`
+/// (an evaluation point on the output layer) down to a claim on the leaves.
+// TODO #[must_use], requires changing the test suite
 pub fn gpgkr_prove(
     ps: &mut ProverState,
-    mut point: Point,
+    point: &[F128],
     // All the intermediate witnesses + the input layer. Doesn't contain the output layer
     witnesses: LayerWitnesses,
-) -> (Point, Field) {
+) -> (Vec<F128>, Field) {
     // Edge cases
     // - empty witnesses -> single constant circuit -> one verifier message that permutes the proof state, but a single constant can't have an MLE
+    let mut point = point.to_owned();
+    point.reverse();
+
+    let mut point = VecDeque::from(point);
 
     let mut claim = Field::ZERO;
     for wnext in witnesses.into_iter() {
         (point, claim) = prove_layer(ps, point, wnext);
     }
+
+    let mut point = Vec::from(point);
+    point.reverse();
     (point, claim)
 }
 
@@ -65,7 +58,10 @@ fn prove_layer(ps: &mut ProverState, point: Point, mut wnext: Vec<Field>) -> (Po
         let (lo_l, hi_l) = mle_l.split_at_mut(h);
         let (lo_r, hi_r) = mle_r.split_at_mut(h);
 
-        let (sum_0, sum_inf) = lo_l
+        // At z = 0 the incoming claim determines the value at zero, so send
+        // the value at one. Otherwise send the value at zero as usual.
+        let send_one = z == Field::ZERO;
+        let (sum_endpoint, sum_inf) = lo_l
             .par_iter_mut()
             .zip(lo_r.par_iter_mut())
             .zip(hi_l.par_iter())
@@ -74,16 +70,21 @@ fn prove_layer(ps: &mut ProverState, point: Point, mut wnext: Vec<Field>) -> (Po
             .with_min_len(PARALLEL_MIN_LANES)
             .fold(
                 || (Wide256::zero(), Wide256::zero()),
-                |(mut sum_0, mut sum_inf), ((((l_lo, r_lo), &l_hi), &r_hi), &e)| {
+                |(mut sum_endpoint, mut sum_inf), ((((l_lo, r_lo), &l_hi), &r_hi), &e)| {
                     let (d_l, d_r) = (l_hi - *l_lo, r_hi - *r_lo);
+                    let (l_endpoint, r_endpoint) = if send_one {
+                        (l_hi, r_hi)
+                    } else {
+                        (*l_lo, *r_lo)
+                    };
 
-                    // `e * l0 * r0` and `e * (l_hi-l0) * (r_hi-r0)`: each is
+                    // The endpoint product and `e * (l_hi-l0) * (r_hi-r0)`: each is
                     // two multiplications in a row, deferred into the
                     // running wide sums by `mul3_wide`
-                    sum_0 += mul3_wide(e, *l_lo, *r_lo);
+                    sum_endpoint += mul3_wide(e, l_endpoint, r_endpoint);
                     sum_inf += mul3_wide(e, d_l, d_r);
 
-                    (sum_0, sum_inf)
+                    (sum_endpoint, sum_inf)
                 },
             )
             .reduce(
@@ -91,7 +92,7 @@ fn prove_layer(ps: &mut ProverState, point: Point, mut wnext: Vec<Field>) -> (Po
                 |(a0, ainf), (b0, binf)| (a0 + b0, ainf + binf),
             );
 
-        ps.prover_message(&[factor * sum_0.reduce(), factor * sum_inf.reduce()]);
+        ps.prover_message(&[factor * sum_endpoint.reduce(), factor * sum_inf.reduce()]);
 
         let r = ps.verifier_message();
         next_point.push_back(r);
@@ -186,12 +187,13 @@ impl SuffixTable {
 /// MLE-fold shape.
 const PARALLEL_MIN_LANES: usize = 1 << 12;
 
+#[must_use]
 pub fn gpgkr_verify(
     vs: &mut VerifierState,
     mut claim: Field,
-    mut point: Point,
+    point: &[F128],
     rounds: u32,
-) -> Option<(Point, Field)> {
+) -> Option<(Vec<F128>, Field)> {
     // Edge cases around input lenghts, 0 meaning empty
     // | circuit | last value |
     //    0 0 -> valid, no circuit has no output
@@ -201,24 +203,37 @@ pub fn gpgkr_verify(
     //    direct comparison of the two
     // last value being larger than circuit
     //    -> false
+    //
+    let mut point = point.to_owned();
+    point.reverse();
+    let mut point = VecDeque::from(point);
 
     for _i in 0..rounds {
         (point, claim) = verify_layer(vs, claim, point)?
     }
 
+    let mut point = Vec::from(point);
+    point.reverse();
+
     Some((point, claim))
 }
 
+/// Point's orientation is the reverse of gpgkr_verify
 fn verify_layer(vs: &mut VerifierState, mut claim: Field, point: Point) -> Option<(Point, Field)> {
     let mut prefix = Field::ONE;
 
     let mut next_point: Point = VecDeque::new();
 
     for z in point {
-        let [sum0, suminf]: [Field; 2] = vs.prover_message().unwrap();
-        let eqjsum0 = (Field::ONE - z) * sum0;
-        let eqjsum1 = claim - eqjsum0;
-        let sum1 = eqjsum1 / z;
+        let [sum_endpoint, suminf]: [Field; 2] = vs.prover_message().ok()?;
+        // claim = (1 - z) * sum0 + z * sum1. At z = 0, sum0 is known
+        // and the prover supplies sum1; otherwise recover sum1 by division.
+        let (sum0, sum1) = if z == Field::ZERO {
+            (claim, sum_endpoint)
+        } else {
+            let eqjsum0 = (Field::ONE - z) * sum_endpoint;
+            (sum_endpoint, (claim - eqjsum0) / z)
+        };
 
         let r = vs.verifier_message();
         next_point.push_back(r);
@@ -231,7 +246,7 @@ fn verify_layer(vs: &mut VerifierState, mut claim: Field, point: Point) -> Optio
         prefix *= factor;
     }
 
-    let elem_lr: [Field; 2] = vs.prover_message().unwrap();
+    let elem_lr: [Field; 2] = vs.prover_message().ok()?;
     // Check if line polynomial hits same spot as sumcheck check
     if (prefix * elem_lr[0] * elem_lr[1]) != claim {
         None
@@ -416,6 +431,57 @@ mod tests {
         }
     }
 
+    #[test]
+    fn gpgkr_round_trip_with_zero_coordinates() {
+        let leaves: Vec<Field> = (1u128..=16).map(Field::from).collect();
+        let nonzero = Field::from(5u128);
+        for point in [
+            [Field::ZERO, Field::ZERO],
+            [Field::ZERO, nonzero],
+            [nonzero, Field::ZERO],
+            [Field::ZERO, Field::ONE],
+            [Field::ONE, Field::ZERO],
+        ] {
+            let circuit = GrandProductCircuit::new(leaves.clone());
+            let (output, witnesses) = circuit.batched_eval(4);
+            let claim = mle(output, &point);
+            let instance = (leaves.clone(), point.to_vec());
+            let mut prover = transcript::build_prover("gkr-zero", &instance);
+            let terminal = gpgkr_prove(&mut prover, &point, witnesses);
+            assert_eq!(terminal.1, mle(leaves.clone(), &terminal.0));
+            let proof = prover.finish();
+
+            let mut verifier = transcript::build_verifier("gkr-zero", &instance, &proof);
+            assert_eq!(
+                gpgkr_verify(&mut verifier, claim, &point, 2),
+                Some(terminal)
+            );
+            verifier.check_eof().unwrap();
+
+            let mut verifier = transcript::build_verifier("gkr-zero", &instance, &proof);
+            assert!(gpgkr_verify(&mut verifier, claim + Field::ONE, &point, 2).is_none());
+        }
+    }
+
+    #[test]
+    fn gpgkr_verify_rejects_every_truncated_prefix() {
+        let leaves: Vec<Field> = (1u128..=8).map(Field::from).collect();
+        for log_groups in [0, 1] {
+            let (output, proof) = prove(leaves.clone(), log_groups);
+            assert!(verify(leaves.clone(), output.clone(), proof.clone()));
+
+            // Cover partial field elements and missing messages in every layer.
+            for len in 0..proof.narg_string.len() {
+                let mut truncated = proof.clone();
+                truncated.narg_string.truncate(len);
+                assert!(
+                    !verify(leaves.clone(), output.clone(), truncated),
+                    "accepted {len} bytes with log_groups = {log_groups}",
+                );
+            }
+        }
+    }
+
     pub fn prove(input: Vec<Field>, log_groups: usize) -> (Vec<Field>, transcript::Proof) {
         let circuit = GrandProductCircuit::new(input);
         let groups = 1usize << log_groups;
@@ -430,9 +496,9 @@ mod tests {
         // Mirrors `verify`'s `output.len().max(1).ilog2()` exactly, since both
         // sides must draw the same number of challenges here.
         let log_groups = last_value.len().max(1).ilog2();
-        let point: Point = (0..log_groups).map(|_| prover.verifier_message()).collect();
+        let point: Vec<Field> = (0..log_groups).map(|_| prover.verifier_message()).collect();
 
-        gpgkr_prove(&mut prover, point, witnesses);
+        gpgkr_prove(&mut prover, &point, witnesses);
         (last_value, prover.finish())
     }
 
@@ -442,7 +508,7 @@ mod tests {
         let mut verifier = transcript::build_verifier("gkr", &instance, &proof);
 
         let log_groups = output.len().max(1).ilog2();
-        let point: Point = (0..log_groups)
+        let point: Vec<Field> = (0..log_groups)
             .map(|_| verifier.verifier_message())
             .collect();
         let claim = mle(output, &point);
@@ -450,7 +516,7 @@ mod tests {
         let log_leafs = circuit.leafs.len().max(1).ilog2();
         let rounds = log_leafs.saturating_sub(log_groups);
 
-        match gpgkr_verify(&mut verifier, claim, point, rounds) {
+        match gpgkr_verify(&mut verifier, claim, &point, rounds) {
             Some((point, claim)) => {
                 let leaf_check = mle(circuit.leafs, &point);
 
@@ -460,5 +526,17 @@ mod tests {
             }
             None => false,
         }
+    }
+
+    use poly::DenseMultilinearExtension;
+    fn mle(eval: Vec<Field>, point: &[Field]) -> Field {
+        let num_vars = point.len();
+
+        // TODO DenseMultilinearExtension::from_evaluations doesn't need a num_vars; it already checks based on evaluation size.
+        // TODO MLE should be able to handle empty point when given a single evaluation
+        DenseMultilinearExtension::from_evaluations(num_vars, eval)
+            .unwrap()
+            .evaluate(point)
+            .unwrap()
     }
 }

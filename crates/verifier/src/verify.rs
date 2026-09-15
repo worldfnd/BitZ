@@ -1,36 +1,23 @@
 //! `VerifyBitZ`.
 
-use common::{LinearClaim, OpeningQuery, ReductionInput, Root};
+use common::{LinearClaim, OpeningQuery, Root};
 use field::Fq;
 use pcs::{CommitScheme, Pcs, StatementBinding, VerifyError as OpeningVerifyError};
 use transcript::VerifierState;
 
-use crate::{BitZVerifier, ReceiveError};
+use crate::{BitZVerifier, ReceiveError, ReduceError, reduce::gkr_reduce};
 
 /// A proof the verifier rejects.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum VerifyError<E> {
+pub enum VerifyError {
     /// The fold round failed its own checks.
     Fold(ReceiveError),
     /// The reduction failed.
-    Reduction(E),
+    Reduction(ReduceError),
     /// The opening did not discharge the reduction's claim.
     Opening(OpeningVerifyError),
     /// A stream held bytes the protocol never read.
     TrailingData,
-}
-
-/// Step 4, replayed.
-///
-/// TODO: #8 implements this.
-pub trait Reduction<const Q: u128> {
-    type Error;
-
-    fn reduce(
-        &self,
-        input: &ReductionInput<'_, Q>,
-        transcript: &mut VerifierState<'_>,
-    ) -> Result<OpeningQuery, Self::Error>;
 }
 
 impl<const Q: u128> BitZVerifier<Q> {
@@ -38,14 +25,13 @@ impl<const Q: u128> BitZVerifier<Q> {
     ///
     /// `pcs` must be the scheme the commitment was made under. The transcript
     /// arrives carrying the caller's events; this appends and consumes it.
-    pub fn verify<R: Reduction<Q>>(
+    pub fn verify(
         &self,
         claim: &LinearClaim<Fq<Q>>,
         pcs: &Pcs,
         com: Root,
-        reduction: &R,
         mut transcript: VerifierState<'_>,
-    ) -> Result<(), VerifyError<R::Error>> {
+    ) -> Result<(), VerifyError> {
         // Step 1: the admissibility and precondition checks have already run --
         // the shape gates in Shape::new, the modulus in Fq's own const assertions,
         // the generator's order in BitZParams::new and the weight counts in
@@ -53,12 +39,11 @@ impl<const Q: u128> BitZVerifier<Q> {
         transcript.public_message(&com.0);
         transcript.public_message(self.params());
 
-        // Steps 2 to 5, replayed.
-        let query = self.fold_and_reduce(claim, com, reduction, &mut transcript)?;
+        // Steps 3 and 4: check integer folds and replay GKR to obtain a bit claim.
+        let query = self.fold_and_reduce(claim, &mut transcript)?;
 
-        // Step 6, replayed. This is what makes the return an acceptance rather
-        // than a claim handed back undischarged, so it belongs above the
-        // exhaustion check and not after it.
+        // Step 6: verify the inner-product sumcheck, ring switch, and opening.
+        // Acceptance requires authenticating GKR's terminal claim against com.
         pcs.verify_lin(&com, &query, StatementBinding::Bind, &mut transcript)
             .map_err(VerifyError::Opening)?;
 
@@ -71,38 +56,22 @@ impl<const Q: u128> BitZVerifier<Q> {
         Ok(())
     }
 
-    /// Steps 2 to 5, which every entry point replays identically.
-    ///
-    /// Step 1 and step 6 stay with the caller: it absorbs its own statement
-    /// frame and decides what to do with the query, which is a claim about the
-    /// vector the fold ran over, not always the one the oracle commits to.
-    pub(crate) fn fold_and_reduce<R: Reduction<Q>>(
+    /// Checks the column folds and derives GKR's factored bit claim.
+    /// The caller binds the statement before this call and verifies the opening afterward.
+    pub(crate) fn fold_and_reduce(
         &self,
         claim: &LinearClaim<field::Fq<Q>>,
-        com: Root,
-        reduction: &R,
         transcript: &mut VerifierState<'_>,
-    ) -> Result<OpeningQuery, VerifyError<R::Error>> {
-        // TODO: step 2, reducing the modulus, is absent, as on the prover.
+    ) -> Result<OpeningQuery, VerifyError> {
+        // Step 2 is absent: Q is fixed, and BitZParams::new checks its fold bound.
 
         // Step 3: read the folds, range-check them, reconstruct against mu.
         let fold = self
             .receive_fold(claim, transcript)
             .map_err(VerifyError::Fold)?;
 
-        // Step 4, replayed.
-        //
-        // TODO(#8): both live behind `Reduction`, which nothing implements yet.
-        let input = ReductionInput {
-            params: self.params(),
-            claim,
-            commitment: com,
-            fold: &fold,
-        };
-
-        // Step 5 is conditional and a merged forest does not need it.
-        reduction
-            .reduce(&input, transcript)
-            .map_err(VerifyError::Reduction)
+        // Step 4: replay GKR from fold.e0 at fold.zeta to obtain the bit claim.
+        // Step 5 needs no separate batching: fold.zeta already batches the columns.
+        gkr_reduce(transcript, &fold, self.params().shape()).map_err(VerifyError::Reduction)
     }
 }
