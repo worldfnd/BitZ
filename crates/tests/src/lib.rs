@@ -136,7 +136,7 @@ pub fn large_shape() -> Shape {
     Shape::new(13, 15).unwrap()
 }
 
-const SESSION: &str = "BitZ-tests";
+const SESSION: &str = "bitz-tests";
 const INSTANCE: &str = "fold-round-trip";
 
 pub fn prover_transcript() -> ProverState {

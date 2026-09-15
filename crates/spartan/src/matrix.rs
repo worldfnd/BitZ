@@ -424,7 +424,7 @@ where
         .map_err(|_| SpartanMatrixError::InvalidR1csShape)?;
 
     let mut hash = Sha256::new();
-    hash.update(b"BitZ/spartan/constraint-matrices/v1");
+    hash.update(b"bitz/spartan/constraint-matrices/v1");
 
     hash.update(b"M");
     hash_usize(&mut hash, matrices.m.row_count())?;

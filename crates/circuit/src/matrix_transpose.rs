@@ -367,7 +367,7 @@ impl MaterializedMTranspose {
 }
 
 /// Domain separation for the digest.
-const DIGEST_DOMAIN: &[u8] = b"BitZ/virtual-map/csc/v1";
+const DIGEST_DOMAIN: &[u8] = b"bitz/virtual-map/csc/v1";
 
 const DIGEST_CHUNK: usize = 1 << 12;
 

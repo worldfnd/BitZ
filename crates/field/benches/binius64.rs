@@ -39,7 +39,7 @@ const PASSES: usize = if cfg!(all(target_arch = "aarch64", target_feature = "aes
 const SLOW_PASSES: usize = 16;
 
 fn reps() -> usize {
-    std::env::var("BitZ_BENCH_REPS")
+    std::env::var("BITZ_BENCH_REPS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(15)

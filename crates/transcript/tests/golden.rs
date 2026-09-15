@@ -13,8 +13,8 @@ const HINT: [u8; 5] = [0xAA; 5];
 
 const NARG: &str = "efcdab89674523011032547698badcfe39300000000000000000000000000000";
 const HINTS: &str = "aaaaaaaaaa";
-const C1: &str = "297cf47df78d20092de9bbfcfe4ce2e6";
-const C2: &str = "15060b5dcffa61ca896503638f659b48";
+const C1: &str = "1d1bcda36aa1541c3752f7b23fedef81";
+const C2: &str = "e80729d4aa76e8e4d28dd085143eb3d5";
 
 fn prove() -> (Proof, F128, F128) {
     let mut prover = build_prover(SESSION, INSTANCE);

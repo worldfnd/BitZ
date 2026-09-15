@@ -3,7 +3,7 @@ use spongefish::{DomainSeparator, Encoding, protocol_id};
 use crate::{Proof, ProverState, VerifierState};
 
 /// What this protocol is. Changing it invalidates every existing proof.
-pub const PROTOCOL_LABEL: &str = "BitZ/v1";
+pub const PROTOCOL_LABEL: &str = "bitz/v1";
 
 /// Starts a prover transcript.
 ///

@@ -10,11 +10,11 @@ use crate::bridge::{as_flock_f128, as_flock_f128s, from_flock_f128};
 use crate::ligerito::{self, ReducedProver};
 use crate::{OpeningQuery, Pcs, ProverData, Root, StatementBinding, mle, sumcheck};
 
-const MLE_STATEMENT_LABEL: &[u8] = b"BitZ/pcs/mle-opening/v1";
-const INNER_PRODUCT_STATEMENT_LABEL: &[u8] = b"BitZ/pcs/bit-inner-product/v2";
-const SUMCHECK_LABEL: &[u8] = b"BitZ/pcs/inner-product-sumcheck/v1";
-const MLE_CLAIMS_LABEL: &[u8] = b"BitZ/pcs/mle-claims/v1";
-const CHALLENGES_LABEL: &[u8] = b"BitZ/pcs/ring-switch-challenges/v1";
+const MLE_STATEMENT_LABEL: &[u8] = b"bitz/pcs/mle-opening/v1";
+const INNER_PRODUCT_STATEMENT_LABEL: &[u8] = b"bitz/pcs/bit-inner-product/v2";
+const SUMCHECK_LABEL: &[u8] = b"bitz/pcs/inner-product-sumcheck/v1";
+const MLE_CLAIMS_LABEL: &[u8] = b"bitz/pcs/mle-claims/v1";
+const CHALLENGES_LABEL: &[u8] = b"bitz/pcs/ring-switch-challenges/v1";
 
 /// Errors from opening proof creation.
 #[derive(Clone, Debug, PartialEq, Eq)]
