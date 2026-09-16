@@ -6,7 +6,10 @@ use circuit::{
     matrix_transpose::{MTransposeGenerator, MaterializedMTranspose},
     witgen::{PackedWitness, ProductWitgen},
 };
-use common::{BitZParams, LinearClaim, OpeningQuery, Root, Shape, VirtualMap, VirtualStatement};
+use common::{
+    BitZParams, LinearClaim, OpeningQuery, Root, Shape, VirtualMap, VirtualStatement,
+    shape::{MIN_LOG_BITS, PACK_BITS},
+};
 use field::{F128, FqDefault, Q100, gf128::smallest_generator};
 use num_traits::{ConstOne, ConstZero};
 use pcs::{CommitScheme, HashKind, LigeritoProfile, Pcs, ProverData, StatementBinding};
@@ -119,6 +122,9 @@ impl<S: CircuitStatement> CircuitProofSystem<S> {
         let map = generator.finish();
         if map.h_len() != matrices.matrices().a.column_count() {
             return Err(Error::Configuration("map and assignment dimensions differ"));
+        }
+        if map.f_len() != matrices.matrices().m.column_count() {
+            return Err(Error::Configuration("map and witness dimensions differ"));
         }
         let claim_shape = shape_for(map.h_len())?;
         let opening_path = if is_identity(&matrices.matrices().m) {
@@ -316,8 +322,9 @@ fn shape_for(bits: usize) -> Result<Shape, Error> {
     let padded = bits
         .checked_next_power_of_two()
         .ok_or(Error::Configuration("witness too large"))?;
-    let log_bits = (padded.ilog2() as usize).max(common::shape::MIN_LOG_BITS);
-    Shape::new(7, log_bits - 7)
+    let log_bits = (padded.ilog2() as usize).max(MIN_LOG_BITS);
+    let log_rows = PACK_BITS as usize;
+    Shape::new(log_rows, log_bits - log_rows)
         .map_err(|_| Error::Configuration("witness shape outside supported range"))
 }
 

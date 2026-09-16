@@ -16,6 +16,7 @@ host = { path = "crates/host" }
 pcs = { path = "crates/pcs" }
 poly = { path = "crates/poly" }
 prover = { path = "crates/prover" }
+spartan = { path = "crates/spartan" }
 transcript = { path = "crates/transcript" }
 verifier = { path = "crates/verifier" }
 gkr = { path = "crates/gkr"}
