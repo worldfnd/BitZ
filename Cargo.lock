@@ -170,6 +170,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
 
 [[package]]
+name = "bitz-cli"
+version = "0.1.0"
+dependencies = [
+ "circuit",
+ "common",
+ "field",
+ "num-traits",
+ "pcs",
+ "poly",
+ "prover",
+ "rayon",
+ "sha2 0.10.9",
+ "spartan",
+ "thiserror",
+ "transcript",
+ "verifier",
+]
+
+[[package]]
 name = "blake3"
 version = "1.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
