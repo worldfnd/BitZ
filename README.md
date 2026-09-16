@@ -1,21 +1,10 @@
 # BitZ
 
-**BitZ** is a hash-based polynomial commitment scheme (PCS) for commiting to polynomials with coeffients in a ring S (e.g a finite field F, integers Z) and proves evaluation claims over another arbitrary ring R. This repo provides an implementation of a concrete instantiation of this protocol where S is the integers Z and R is a Finite Field Fq.
+**BitZ** is a hash-based polynomial commitment scheme (PCS) for commiting to polynomials with coeffients in a ring S (e.g a finite field F, integers Z) and proves evaluation claims over another arbitrary ring R. This repo provides a modular implementation of a concrete instantiation of this protocol where S is the integers Z and R is a Finite Field Fq. 
 
-The repository also implements a **Spartan polynomial interactive oracle proof
-(PIOP)** for end-to-end circuit proving. Spartan reduces circuit constraints to
-a witness evaluation claim. BitZ proves that claim against the committed
-witness. **SHA-256** is the current workload for end-to-end proving and
-benchmarking.
+# BitZ-SNARK
 
-BitZ folds integer values, then uses GKR over `GF(2^128)`.
-Ring-switching and recursive Ligerito complete the opening.
-The binary commitment backend uses
-[Flock](https://github.com/succinctlabs/flock).
-Virtualization lets circuits derive a larger witness `h = M(1 || f)` over `F_2`
-from committed bits `f`.
-
-This is a research implementation. Current proofs do not provide zero knowledge.
+This repo also implements a Spartan like PIOP using BitZ as its PCS which is then used to implement among others end to end SHA-256 proving and verifying.
 
 ## Build
 
@@ -28,6 +17,8 @@ cargo test --release --workspace
 cargo fmt --all --check
 cargo clippy --workspace --all-targets
 ```
+
+
 
 ## SHA-256 end-to-end proving
 
@@ -56,12 +47,14 @@ witness. The SHA-256 adapters expose input bits and outputs as public values.
 
 `--circuit` selects one of four adapters:
 
+
 | Adapter                | Workload                                                                          |
 | ---------------------- | --------------------------------------------------------------------------------- |
 | `sha256-compression`   | One raw compression block, with an optional initial state.                        |
 | `sha256-chain`         | A positive number of raw blocks from the standard initial state, without padding. |
 | `sha256-block-aligned` | A block-aligned message, including an empty message, with SHA-256 padding.        |
 | `sha256-2kb`           | A 2 KiB message with SHA-256 padding.                                             |
+
 
 Variable-length adapters default to one input block. The 2 KiB adapter uses
 32 input blocks. Use `--num-blocks` to set the length of a chain or block-aligned
@@ -120,6 +113,7 @@ uses different compiler settings.
 
 ## Layout
 
+
 | Crate                     | Role                                                                               |
 | ------------------------- | ---------------------------------------------------------------------------------- |
 | `circuit`                 | Circuit definitions, witness generation, and matrix operations.                    |
@@ -131,6 +125,9 @@ uses different compiler settings.
 | `transcript`, `host`      | Fiat-Shamir transcripts and proof serialization.                                   |
 | `tests`                   | Integration tests and proof comparison examples.                                   |
 | `bitz-cli`                | Circuit proving tools and benchmarks in PR #68, under `tooling/cli`.               |
+
+
+
 
 ## Related work
 
