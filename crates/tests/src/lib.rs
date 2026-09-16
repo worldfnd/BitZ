@@ -26,6 +26,13 @@ pub const Q: u128 = field::Q100;
 /// this only trades table size against multiplies per call.
 pub const WINDOW: u32 = 8;
 
+/// Builds a packed witness and advances the RNG past its words.
+pub fn packed_witness(shape: Shape, rng: &mut impl RngCore) -> Vec<F128> {
+    (0..1usize << shape.log_packed_len())
+        .map(|_| F128::new(rng.next_u64(), rng.next_u64()))
+        .collect()
+}
+
 /// An instance whose claim actually holds, committed under a real scheme.
 pub struct Instance {
     pub params: BitZParams<Q>,
@@ -50,9 +57,7 @@ impl Instance {
         let mut rng = ChaCha8Rng::seed_from_u64(seed);
         let params = BitZParams::<Q>::new(shape, smallest_generator()).unwrap();
 
-        let packed: Vec<F128> = (0..(1 << shape.log_bits()) / 128)
-            .map(|_| F128::new(rng.next_u64(), rng.next_u64()))
-            .collect();
+        let packed = packed_witness(shape, &mut rng);
         let row_weights: Vec<Fq<Q>> = (0..shape.rows())
             .map(|_| Fq::from(sample_below_q(&mut rng)))
             .collect();

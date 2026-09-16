@@ -8,10 +8,9 @@ use field::F128;
 use flock_core::field::F128 as FlockF128;
 use flock_core::pcs::LOG_PACKING;
 use flock_core::pcs::PcsParams;
-use flock_core::hash::HashKind;
 use flock_core::pcs::ligerito::{
-    LigeritoProfile, LigeritoProof, LigeritoSecurityConfig, ProverConfig, VerifierConfig,
-    embedded_security_config, recursive_prover_with_basis, recursive_verifier_with_basis_succinct,
+    LigeritoProof, LigeritoSecurityConfig, ProverConfig, VerifierConfig,
+    recursive_prover_with_basis, recursive_verifier_with_basis_succinct,
 };
 use transcript::{ProverState, VerifierState};
 
@@ -27,53 +26,6 @@ pub(crate) struct CheckedLigerito {
     verifier_config: VerifierConfig,
     log_n_u32: u32,
     final_log_n: usize,
-}
-
-/// The `Fast` ladders at `initial_k = 4`: 16-lane L0 rows instead of the
-/// 64-lane rows of flock's embedded generation, so an L0 query opens a
-/// quarter of the bytes at the same rate, regime and 100-bit target
-/// (183 queries under 16-bit query grinding). Derived by flock's own
-/// `LigeritoSecurityConfig::derive_profile` with `initial_k = 4`
-/// (albert-garreta/flock-mod 1168cbd), and the ladder the F2Z reference
-/// prover opens with, so the two openings can be compared byte for byte.
-macro_rules! fast_k4_configs {
-    ($($m:literal),+ $(,)?) => {
-        fn fast_k4_security_toml(m: usize) -> Option<&'static str> {
-            match m {
-                $($m => Some(include_str!(concat!("../configs/ligerito-k4/m", $m, "_fast.toml"))),)+
-                _ => None,
-            }
-        }
-    };
-}
-fast_k4_configs!(22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35);
-
-/// The security ladder for `(m, profile)`, stamped with the commitment's
-/// Merkle hash: the embedded TOML carries its own `hash`, but the L0 tree
-/// and every recursive level must sit on the hash the commitment was built
-/// under. `Fast` takes the k = 4 ladder above; the other profiles keep
-/// flock's embedded generation.
-pub(crate) fn security_config(
-    m: usize,
-    profile: LigeritoProfile,
-    merkle_hash: HashKind,
-) -> Result<LigeritoSecurityConfig, ConfigError> {
-    let toml = match profile {
-        LigeritoProfile::Fast => fast_k4_security_toml(m),
-        LigeritoProfile::Slim | LigeritoProfile::Secure => embedded_security_config(m, profile),
-    }
-    .ok_or(ConfigError::Invalid("no security config for this size and profile"))?;
-    let mut security = LigeritoSecurityConfig::from_toml_str(toml)
-        .map_err(|_| ConfigError::Invalid("security config"))?;
-    security.hash = match merkle_hash {
-        HashKind::Sha256 => "sha256",
-        HashKind::Blake3 => "blake3",
-    }
-    .to_owned();
-    security
-        .validate()
-        .map_err(|_| ConfigError::Invalid("security config"))?;
-    Ok(security)
 }
 
 impl CheckedLigerito {

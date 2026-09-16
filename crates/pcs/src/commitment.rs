@@ -18,7 +18,6 @@ use flock_core::pcs::ligerito::LigeritoProfile;
 use flock_core::pcs::{PcsParams, ProverData as FlockProverData};
 use transcript::Encoding;
 
-
 /// Errors from PCS configuration.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -62,7 +61,7 @@ impl Pcs {
         // The ladder fixes the L0 interleaving: the commit must use the same
         // `log_batch_size` as the opening's `initial_k`, or the L0 tree is not
         // reusable as Ligerito's first oracle.
-        let security = crate::ligerito::security_config(m, security_profile, merkle_hash)?;
+        let security = crate::profiles::security_config(m, security_profile, merkle_hash)?;
         let params = PcsParams {
             m,
             log_inv_rate: security_profile.log_inv_rate(),

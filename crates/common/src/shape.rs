@@ -52,19 +52,13 @@ impl Shape {
         })
     }
 
-    /// The reference split for `log_bits` committed bits, the one the F2Z
-    /// reference implementation uses for its measurements: `t = ⌈0.6·n⌉`,
-    /// no narrower than the packing width and leaving at least one column
-    /// bit, `s = n − t`. Both sides must pick the same shape for the same
-    /// `n`, so this is the rule and not a heuristic to re-derive.
+    /// The reference benchmark split: `t = ⌈3·log_bits/5⌉` row bits and
+    /// `s = log_bits − t` column bits.
     pub fn for_log_bits(log_bits: usize) -> Result<Self, ShapeError> {
-        if log_bits == 0 {
+        if !(MIN_LOG_BITS..=MAX_LOG_BITS).contains(&log_bits) {
             return Err(ShapeError::CommitmentSizeOutOfRange);
         }
-        let log_rows = (3 * log_bits)
-            .div_ceil(5)
-            .max(PACK_BITS as usize)
-            .min(log_bits - 1);
+        let log_rows = (3 * log_bits).div_ceil(5);
         Self::new(log_rows, log_bits - log_rows)
     }
 
@@ -134,12 +128,27 @@ mod tests {
     fn the_reference_split_rounds_three_fifths_up() {
         for (log_bits, log_rows) in [(22, 14), (24, 15), (28, 17), (30, 18), (35, 21)] {
             let shape = Shape::for_log_bits(log_bits).unwrap();
-            assert_eq!((shape.log_rows(), shape.log_columns()), (log_rows, log_bits - log_rows));
+            assert_eq!(
+                (shape.log_rows(), shape.log_columns()),
+                (log_rows, log_bits - log_rows)
+            );
         }
-        assert_eq!(
-            Shape::for_log_bits(21),
-            Err(ShapeError::CommitmentSizeOutOfRange)
-        );
+    }
+
+    #[test]
+    fn reference_split_rejects_invalid_sizes_before_arithmetic() {
+        for log_bits in [
+            0,
+            MIN_LOG_BITS - 1,
+            MAX_LOG_BITS + 1,
+            usize::MAX / 3 + 1,
+            usize::MAX,
+        ] {
+            assert_eq!(
+                Shape::for_log_bits(log_bits),
+                Err(ShapeError::CommitmentSizeOutOfRange)
+            );
+        }
     }
 
     #[test]
