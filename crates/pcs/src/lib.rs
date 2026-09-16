@@ -94,6 +94,11 @@ mod ligerito;
 mod mle;
 mod opening;
 mod sumcheck;
+mod transpose;
+
+#[cfg(test)]
+#[path = "transpose/tests.rs"]
+mod transpose_tests;
 
 use field::F128;
 use transcript::{ProverState, VerifierState};

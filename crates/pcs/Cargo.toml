@@ -14,4 +14,9 @@ flock-core = { workspace = true }
 transcript = { workspace = true }
 
 [dev-dependencies]
+divan = { workspace = true }
 proptest = { workspace = true }
+
+[[bench]]
+name = "tensor_algebra_transpose"
+harness = false
