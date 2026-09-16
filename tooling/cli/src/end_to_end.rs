@@ -208,12 +208,18 @@ impl<S: CircuitStatement> Prepared<S> {
     }
 }
 
+/// The shape of a bit vector of `bits` entries: padded to a power of two, no
+/// smaller than the protocol's minimum, split by [`Shape::for_log_bits`] —
+/// the reference split (`t = ⌈0.6·n⌉` rows) that the BitZ measurements and
+/// the f2z-pcs parity prover use, so an end-to-end proof exercises the same
+/// PCS shapes as a direct one. Both the claim shape (over `h`) and the
+/// committed shape (over `f`) come from here, each from its own length.
 fn shape_for(bits: usize) -> Result<Shape, Error> {
     let padded = bits
         .checked_next_power_of_two()
         .ok_or(Error::Configuration("witness too large"))?;
     let log_bits = (padded.ilog2() as usize).max(common::shape::MIN_LOG_BITS);
-    Shape::new(7, log_bits - 7)
+    Shape::for_log_bits(log_bits)
         .map_err(|_| Error::Configuration("witness shape outside supported range"))
 }
 
@@ -251,6 +257,18 @@ fn opening_claim(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shapes_follow_the_reference_split() {
+        // Below the minimum everything lands on the smallest shape, (14, 8).
+        assert_eq!(shape_for(1).unwrap(), Shape::new(14, 8).unwrap());
+        assert_eq!(shape_for(20_457).unwrap(), Shape::new(14, 8).unwrap());
+        assert_eq!(shape_for(1 << 22).unwrap(), Shape::new(14, 8).unwrap());
+        // Above it the split follows the bit count: 2^22 + 1 pads to 2^23.
+        assert_eq!(shape_for((1 << 22) + 1).unwrap(), Shape::for_log_bits(23).unwrap());
+        assert_eq!(shape_for(12_000_000).unwrap(), Shape::for_log_bits(24).unwrap());
+        assert_eq!(Shape::for_log_bits(24).unwrap(), Shape::new(15, 9).unwrap());
+    }
 
     #[test]
     fn scaled_claim_conversion_preserves_values_and_zero_scale() {
