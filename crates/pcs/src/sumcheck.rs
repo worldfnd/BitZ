@@ -15,6 +15,7 @@
 
 use common::LinearClaim;
 use field::F128;
+use num_traits::ConstZero;
 use transcript::{ProverState, VerifierState};
 
 use crate::{ProveError, VerifyError};
@@ -121,9 +122,9 @@ pub(super) fn verify(
 
 /// Returns the coefficients of the next degree-two round polynomial.
 fn round_polynomial(witness: &[F128], rows: &[F128], columns: &[F128]) -> [F128; 3] {
-    let mut at_zero = F128::default();
-    let mut at_one = F128::default();
-    let mut quadratic = F128::default();
+    let mut at_zero = F128::ZERO;
+    let mut at_one = F128::ZERO;
+    let mut quadratic = F128::ZERO;
     for (pair_index, pair) in witness.chunks_exact(2).enumerate() {
         let index = 2 * pair_index;
         let weight_zero = rows[index % rows.len()] * columns[index / rows.len()];

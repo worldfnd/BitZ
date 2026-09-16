@@ -6,9 +6,7 @@
 //! than shipped, so there is no encoding of it to round-trip.
 
 use host::wire_proof;
-use tests::{
-    HonestStub, Instance, narrow_shape, prover_transcript, verifier_transcript, wide_shape,
-};
+use tests::{Instance, narrow_shape, prover_transcript, verifier_transcript, wide_shape};
 
 /// Runs an honest prover and hands back what a caller would ship.
 fn shipped(instance: &Instance) -> Vec<u8> {
@@ -20,7 +18,6 @@ fn shipped(instance: &Instance) -> Vec<u8> {
             &instance.pcs,
             &instance.data,
             instance.packed.clone(),
-            &HonestStub,
             &mut transcript,
         )
         .expect("honest instance");
@@ -36,7 +33,7 @@ fn a_proof_survives_the_round_trip_through_bytes() {
 
         let proof = wire_proof::decode(&proof_bytes).expect("its own encoding");
 
-        // narg string: folds, the reduction target, the opening's records
+        // narg string: folds, GKR messages, the opening's records
         // hint stream: the opening proof
         let wire_proof = wire_proof::WireProof::new(&proof);
         assert!(wire_proof.narg_string.len() > 16 * shape.columns());
@@ -50,7 +47,6 @@ fn a_proof_survives_the_round_trip_through_bytes() {
                 &instance.claim,
                 &instance.pcs,
                 instance.com,
-                &HonestStub,
                 verifier_transcript(&proof),
             )
             .expect("honest proof");
@@ -76,13 +72,7 @@ fn a_tampered_fold_is_left_for_the_verifier_to_catch() {
     assert!(
         instance
             .verifier
-            .verify(
-                &instance.claim,
-                &instance.pcs,
-                instance.com,
-                &HonestStub,
-                transcript
-            )
+            .verify(&instance.claim, &instance.pcs, instance.com, transcript)
             .is_err(),
         "a tampered fold must not verify"
     );

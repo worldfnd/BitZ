@@ -10,7 +10,7 @@ use field::F128;
 use flock_core::field::F128 as FlockF128;
 use flock_core::pcs::ring_switch::{
     build_eq_split, claim_check, eval_rs_eq_finish_from_prefix_binary_q, eval_rs_eq_prefix,
-    fold_1b_rows_naive, fold_b128_elems, inner_product, tensor_algebra_transpose,
+    fold_1b_rows_naive, fold_b128_elems, inner_product,
 };
 use flock_core::pcs::{LOG_PACKING, pack::PACKING_WIDTH as CLAIM_COUNT};
 use flock_core::zerocheck::univariate_skip::build_eq;
@@ -19,6 +19,7 @@ use crate::ProveError;
 use crate::bridge::{as_flock_f128, as_flock_f128s};
 use crate::ligerito::ReducedClaim;
 use crate::opening::QueryError;
+use crate::transpose::tensor_algebra_transpose;
 pub(super) type BatchingPoint = [FlockF128; LOG_PACKING];
 
 /// A validated MLE point split into packed and unpacked coordinates.
@@ -161,6 +162,8 @@ fn claims_from_prover(values: Vec<FlockF128>) -> Result<[FlockF128; CLAIM_COUNT]
 
 #[cfg(test)]
 mod tests {
+    use num_traits::ConstZero;
+
     use super::*;
 
     #[test]
@@ -194,7 +197,7 @@ mod tests {
                 )
             })
             .sum::<F128>();
-        assert_ne!(target, F128::default());
+        assert_ne!(target, F128::ZERO);
         let ring_switch = RingSwitch::new(&point, point.len()).unwrap();
         let prepared_claims = ring_switch.prepare_claims(&packed_witness, target).unwrap();
         let claims = prepared_claims.claims;

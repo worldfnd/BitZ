@@ -1013,8 +1013,10 @@ dependencies = [
  "bincode",
  "blake3",
  "common",
+ "divan",
  "field",
  "flock-core",
+ "num-traits",
  "proptest",
  "transcript",
 ]
@@ -1511,13 +1513,13 @@ dependencies = [
 name = "tests"
 version = "0.1.0"
 dependencies = [
+ "circuit",
  "common",
  "crypto-primitives",
  "field",
  "host",
  "num-traits",
  "pcs",
- "poly",
  "prover",
  "rand_chacha 0.10.0",
  "rand_core 0.10.1",

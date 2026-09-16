@@ -9,13 +9,10 @@
 //! The fixtures live here rather than under `tests/` so they compile once
 //! rather than once per test binary.
 
-use common::{
-    BitTable, BitZParams, LinearClaim, OpeningQuery, ReductionInput, Root, Shape, shape::PACK_BITS,
-};
+use common::{BitTable, BitZParams, LinearClaim, Root, Shape};
 use crypto_primitives::LiftElement;
 use field::{F128, Fq, gf128::smallest_generator};
 use pcs::{HashKind, LigeritoProfile, Pcs, ProverData};
-use poly::eq_table;
 use rand_chacha::ChaCha8Rng;
 use rand_core::{Rng, SeedableRng};
 use transcript::{Proof, ProverState, VerifierState, build_prover, build_verifier};
@@ -145,90 +142,4 @@ pub fn prover_transcript() -> ProverState {
 
 pub fn verifier_transcript(proof: &Proof) -> VerifierState<'_> {
     build_verifier(SESSION, INSTANCE, proof)
-}
-
-/// Stands in for #8.
-///
-/// Squeezes the point the opening expects and hands over an evaluation that is
-/// actually true, so step 6 runs against the real witness rather than against a
-/// claim it would reject out of hand.
-///
-/// The target crosses on the transcript because the verifier has no witness to
-/// derive it from. That is exactly what #8 replaces: the real reduction leaves
-/// the verifier computing `mu'` from the sumcheck, so nothing has to be
-/// trusted. Sending it makes the round trip exercise the wiring, not the
-/// argument -- a prover that lies here is caught by its own opening, not by the
-/// verifier.
-#[derive(Debug)]
-pub struct HonestStub;
-
-impl prover::Reduction<Q> for HonestStub {
-    type Error = ();
-
-    fn reduce(
-        &self,
-        input: &ReductionInput<'_, Q>,
-        table: &BitTable<'_>,
-        transcript: &mut ProverState,
-    ) -> Result<OpeningQuery, Self::Error> {
-        let point: Vec<F128> = (0..input.params.shape().log_bits())
-            .map(|_| transcript.verifier_message())
-            .collect();
-        let target = evaluate(table, &point);
-        transcript.prover_message(&target);
-
-        Ok(OpeningQuery::Mle { point, target })
-    }
-}
-
-impl verifier::Reduction<Q> for HonestStub {
-    type Error = ();
-
-    fn reduce(
-        &self,
-        input: &ReductionInput<'_, Q>,
-        transcript: &mut VerifierState<'_>,
-    ) -> Result<OpeningQuery, Self::Error> {
-        let point = (0..input.params.shape().log_bits())
-            .map(|_| transcript.verifier_message())
-            .collect();
-        let target = transcript.prover_message::<F128>().map_err(|_| ())?;
-
-        Ok(OpeningQuery::Mle { point, target })
-    }
-}
-
-/// The multilinear extension of the committed bits at `point`.
-///
-/// Splitting `point` at the pack width is what keeps this affordable: the
-/// equality table over the high coordinates has one entry per packed element
-/// rather than one per bit, and each set bit adds its element's weight to the
-/// low coordinate it sits at. Materialising `eq` over all `m` coordinates would
-/// be `2^m` field elements.
-fn evaluate(table: &BitTable<'_>, point: &[F128]) -> F128 {
-    let shape = table.shape();
-    let (low, high) = point.split_at(PACK_BITS as usize);
-    let eq_low = eq_table(low);
-    let eq_high = eq_table(high);
-    let per_column = shape.rows() >> PACK_BITS;
-
-    let mut sums = vec![F128::default(); 1usize << PACK_BITS];
-    for column in 0..shape.columns() {
-        for (index, element) in table.column(column).iter().enumerate() {
-            let weight = eq_high[column * per_column + index];
-            for (base, mut remaining) in [(0u32, element.lo), (64, element.hi)] {
-                while remaining != 0 {
-                    sums[(base + remaining.trailing_zeros()) as usize] += weight;
-                    remaining &= remaining - 1;
-                }
-            }
-        }
-    }
-
-    eq_low
-        .iter()
-        .zip(&sums)
-        .fold(F128::default(), |total, (&weight, &sum)| {
-            total + weight * sum
-        })
 }

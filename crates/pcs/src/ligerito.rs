@@ -464,6 +464,7 @@ mod tests {
     use crate::{CommitScheme, HashKind, LigeritoProfile, OpeningQuery, StatementBinding};
     use common::Shape;
     use flock_core::pcs::LOG_PACKING;
+    use num_traits::ConstZero;
     use transcript::{NargSerialize, Proof, build_prover, build_verifier};
 
     #[test]
@@ -585,11 +586,11 @@ mod tests {
         const INSTANCE: &[u8] = b"zero-polynomial";
         let shape = Shape::new(7, 15).unwrap();
         let pcs = Pcs::new(&shape, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
-        let packed_witness = vec![F128::default(); pcs.packed_len()];
+        let packed_witness = vec![F128::ZERO; pcs.packed_len()];
         let (commitment, data) = pcs.commit(&packed_witness).unwrap();
         let query = OpeningQuery::Mle {
             point: vec![F128::from(2u64); 22],
-            target: F128::default(),
+            target: F128::ZERO,
         };
         let mut prover = build_prover(SESSION, INSTANCE);
         pcs.prove_lin(

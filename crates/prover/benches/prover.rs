@@ -54,10 +54,9 @@ fn gkr(bencher: Bencher) {
     bencher
         .with_inputs(|| transcript::build_prover("gkr", instance))
         .bench_values(|mut transcript| {
-            black_box(prover::prove::gkr_reduce(
-                &mut transcript,
-                black_box(&fold),
-                black_box(&table),
-            ))
+            black_box(
+                prover::gkr_reduce(&mut transcript, black_box(&fold), black_box(&table))
+                    .expect("benchmark fold matches the table shape"),
+            )
         });
 }

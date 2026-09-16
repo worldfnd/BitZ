@@ -47,6 +47,7 @@
 //! ```
 //! use common::Shape;
 //! use field::F128;
+//! use num_traits::ConstZero;
 //! use pcs::{
 //!     CommitScheme, HashKind, LigeritoProfile, OpeningQuery, Pcs, StatementBinding,
 //! };
@@ -55,7 +56,7 @@
 //! const M: usize = 22;
 //! let shape = Shape::new(7, 15).unwrap();
 //! let pcs = Pcs::new(&shape, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
-//! let packed_witness = vec![F128::default(); pcs.packed_len()];
+//! let packed_witness = vec![F128::ZERO; pcs.packed_len()];
 //! let point = (0..M)
 //!     .map(|coordinate| F128::from(coordinate as u64 + 2))
 //!     .collect();
@@ -94,6 +95,11 @@ mod ligerito;
 mod mle;
 mod opening;
 mod sumcheck;
+mod transpose;
+
+#[cfg(test)]
+#[path = "transpose/tests.rs"]
+mod transpose_tests;
 
 use field::F128;
 use transcript::{ProverState, VerifierState};

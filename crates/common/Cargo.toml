@@ -15,6 +15,4 @@ field = { workspace = true, features = ["spongefish"] }
 spongefish = { workspace = true }
 poly = { workspace = true }
 rayon = { workspace = true, optional = true }
-
-[dev-dependencies]
 num-traits = { workspace = true }

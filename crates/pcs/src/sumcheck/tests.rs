@@ -2,6 +2,7 @@ use std::sync::OnceLock;
 
 use common::{LinearClaim, Shape};
 use field::F128;
+use num_traits::ConstZero;
 use transcript::{Proof, PublicTranscript, VerifierState, build_prover, build_verifier};
 
 use super::{prove, verify};
@@ -29,7 +30,7 @@ fn factor_weight(index: usize) -> F128 {
 }
 
 fn sparse_witness(packed_len: usize) -> Vec<F128> {
-    let mut witness = vec![F128::default(); packed_len];
+    let mut witness = vec![F128::ZERO; packed_len];
     for index in SET_BITS {
         if index % 128 < 64 {
             witness[index / 128].lo |= 1 << (index % 128);
@@ -177,12 +178,12 @@ fn zero_weight_factor_still_requires_the_correct_pcs_witness_evaluation() {
             .map(|column| factor_weight(column + shape.rows()))
             .collect::<Vec<_>>();
         if zero_rows {
-            row_weights.fill(F128::default());
+            row_weights.fill(F128::ZERO);
         } else {
-            column_weights.fill(F128::default());
+            column_weights.fill(F128::ZERO);
         }
         let query = OpeningQuery::InnerProduct {
-            claim: LinearClaim::from_shape(&shape, row_weights, column_weights, F128::default())
+            claim: LinearClaim::from_shape(&shape, row_weights, column_weights, F128::ZERO)
                 .unwrap(),
         };
         let mut prover = build_prover(SESSION, b"zero-inner-product-factor");

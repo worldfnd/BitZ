@@ -128,6 +128,7 @@ mod tests {
     use super::*;
     use crate::Shape;
     use field::gf128::smallest_generator;
+    use num_traits::ConstOne;
 
     /// The largest prime below `2^114`, the top of the sampling range.
     const Q114: u128 = (1 << 114) - 11;
@@ -142,7 +143,7 @@ mod tests {
         LinearClaim::new(
             &params,
             row_weights,
-            vec![Fq::from(1u128); params.shape().columns()],
+            vec![Fq::ONE; params.shape().columns()],
             Fq::from(0u128),
         )
     }
@@ -208,13 +209,13 @@ mod tests {
     #[test]
     fn rejects_weight_vectors_that_do_not_fit_the_shape() {
         assert_eq!(
-            claim(vec![Fq::from(1u128)]).err(),
+            claim(vec![Fq::ONE]).err(),
             Some(ClaimError::RowWeightCountMismatch)
         );
 
         let params = params();
         assert_eq!(
-            LinearClaim::new(&params, weights(), vec![Fq::from(1u128)], Fq::from(0u128)).err(),
+            LinearClaim::new(&params, weights(), vec![Fq::ONE], Fq::from(0u128)).err(),
             Some(ClaimError::ColumnWeightCountMismatch)
         );
     }
