@@ -156,20 +156,17 @@ impl<'a, const Q: u128, M: VirtualMap> VirtualStatement<'a, Q, M> {
     /// target and zero-pads the remaining weights to the commitment size. A
     /// single-column `InnerProduct` holds the dense weights with column weight one.
     pub fn transpose_query(&self, query: OpeningQuery) -> Result<OpeningQuery, VirtualMapError> {
-        let log_bits = self.params.claim().shape().log_bits();
+        let shape = self.params.claim().shape();
         let (weights, target) = match query {
             OpeningQuery::Mle { point, target } => {
-                if point.len() != log_bits {
+                if point.len() != shape.log_bits() {
                     return Err(VirtualMapError::PointLengthMismatch);
                 }
                 (poly::eq_table(&point), target)
             }
             OpeningQuery::InnerProduct { claim } => {
-                if claim
-                    .row_weights()
-                    .len()
-                    .checked_mul(claim.column_weights().len())
-                    != Some(1 << log_bits)
+                if claim.row_weights().len() != shape.rows()
+                    || claim.column_weights().len() != shape.columns()
                 {
                     return Err(VirtualMapError::ClaimWeightCountMismatch);
                 }
@@ -383,18 +380,20 @@ mod tests {
             }),
             Err(VirtualMapError::PointLengthMismatch),
         );
-        let shape = Shape::new(8, 15).unwrap();
-        let claim = LinearClaim::from_shape(
-            &shape,
-            vec![F128::ONE; shape.rows()],
-            vec![F128::ONE; shape.columns()],
-            F128::ZERO,
-        )
-        .unwrap();
-        assert_eq!(
-            statement.transpose_query(OpeningQuery::InnerProduct { claim }),
-            Err(VirtualMapError::ClaimWeightCountMismatch),
-        );
+        for (log_rows, log_columns) in [(8, 15), (7, 16), (8, 14)] {
+            let shape = Shape::new(log_rows, log_columns).unwrap();
+            let claim = LinearClaim::from_shape(
+                &shape,
+                vec![F128::ONE; shape.rows()],
+                vec![F128::ONE; shape.columns()],
+                F128::ZERO,
+            )
+            .unwrap();
+            assert!(matches!(
+                statement.transpose_query(OpeningQuery::InnerProduct { claim }),
+                Err(VirtualMapError::ClaimWeightCountMismatch),
+            ));
+        }
     }
 
     #[test]
