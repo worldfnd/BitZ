@@ -22,6 +22,7 @@ use crate::{
 ///
 /// Both roles bind the virtual domain, commitment root, shapes, modulus,
 /// generator, map digest, and input claim to the transcript before folding.
+#[derive(Debug)]
 pub struct VirtualStatement<'a, const Q: u128, M: VirtualMap> {
     params: VirtualParams<Q>,
     map: &'a M,
