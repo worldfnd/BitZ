@@ -23,3 +23,6 @@ verifier = { workspace = true }
 
 [dev-dependencies]
 num-traits = { workspace = true }
+
+f2z-compat = { path = "../compat" }
+serde_json.workspace = true

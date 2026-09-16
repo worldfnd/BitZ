@@ -83,6 +83,18 @@ impl Pcs {
         })
     }
 
+    /// Explicit public configuration for compatibility runs. Normal defaults are unchanged.
+    pub fn from_security_config(shape: &Shape, profile: LigeritoProfile,
+        security: &flock_core::pcs::ligerito::LigeritoSecurityConfig) -> Result<Self, ConfigError> {
+        security.validate().map_err(|_| ConfigError::Invalid("security config"))?;
+        if security.m != shape.log_bits() { return Err(ConfigError::Invalid("security geometry")); }
+        let params = PcsParams { m: security.m, log_inv_rate: security.levels[0].log_inv_rate,
+            log_batch_size: security.initial_k, profile, merkle_hash: security.merkle_hash().map_err(|_| ConfigError::Invalid("hash"))? };
+        let checked_ligerito = CheckedLigerito::new(&params, security)?;
+        let packed_len = 1usize.checked_shl(checked_ligerito.log_n_u32()).ok_or(ConfigError::Invalid("packed length"))?;
+        Ok(Self { params, checked_ligerito, bit_len: packed_len * 128, packed_len })
+    }
+
     /// Commits to the exact configured number of packed field elements.
     pub fn commit(&self, packed_witness: &[F128]) -> Result<(Root, ProverData), CommitError> {
         // 1. Input Validation

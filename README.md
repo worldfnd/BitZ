@@ -10,3 +10,8 @@ opened through a ring-switch + recursive Ligerito pipeline.
 cargo test --workspace
 cargo clippy --workspace --all-targets
 ```
+
+## Ordinary Spartan transcript parity
+
+The independent F2Z compatibility path and reproducible comparison commands are
+documented in [Spartan transcript parity](docs/spartan-transcript-parity.md).

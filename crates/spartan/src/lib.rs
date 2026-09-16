@@ -20,3 +20,8 @@ pub use sumcheck::{
     R1csProductMles, SumcheckError, SumcheckProof, SumcheckProverOutput, prove_inner_sumcheck,
     prove_outer_sumcheck,
 };
+
+/// Ordinary U32 protocol with a transcript-selected modulus.
+pub mod reference;
+
+pub mod reference_messages;

@@ -6,6 +6,12 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+crypto-primes = "0.7.2"
+crypto-bigint = { workspace = true }
+blake3 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
 crypto-primitives = { workspace = true }
 circuit = { path = "../circuit" }
 field = { path = "../field", features = ["spongefish"] }

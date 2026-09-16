@@ -1,0 +1,73 @@
+{
+  "assignment_binding_hex": "e972b0a93222d589d21da269f5449dc28d08fbed715e017a7a41f136e2ef626c",
+  "boundary": "end-spartan",
+  "complete": true,
+  "events_per_role": 88,
+  "fiat_shamir_transcript_logs": true,
+  "final_transcript_digests": {
+    "prover": "4326c89b39e22a869303385e90e6c525732b199971dcdae741a3f087b649c489",
+    "verifier": "4326c89b39e22a869303385e90e6c525732b199971dcdae741a3f087b649c489"
+  },
+  "fixture": "canonical",
+  "matrix_digest_hex": "5f3ec768a7535657cb8c18b7ccb12a571aa76bed999af0e7d34dafcb43c7c49e",
+  "policy_digest_hex": "5fc992a9633e000e0cb56692e18983fe68480cc52421d6f202ea4fb3b9750e57",
+  "prime_hex": "0x00007e491c075b45202661dd17daefef",
+  "root_hex": "0f495e626c92fad3c1100f9b6e09870e979dd54bfbfaef08f5bb5c84950e4a9e",
+  "schema": "f2z.spartan-prefix-run/v1",
+  "source": {
+    "dirty": true,
+    "revision": "5aac69a5e21dddbc60ef95bdec957485b88568dd"
+  },
+  "terminal_claims": {
+    "prover": {
+      "point": [
+        "0x000077525676f97b5244acc208a654da",
+        "0x00004de70beeacc2fa1732d2ee9b5a7f",
+        "0x00002a9e090a38700e22298d75b67110",
+        "0x00007dc00df9430a85c306d343e1bf12",
+        "0x00000069f8e0f66bb3b5a6a0170f551b",
+        "0x00002fefde69119383fc76b014985685",
+        "0x00006e0f65b85edb680cc95c6325745e",
+        "0x00000843b71f2f91c71a8579f08a47d8",
+        "0x00004745d67589aed8f2de1066d06754",
+        "0x00005dfde25b579ed8a0c5708dee7d57",
+        "0x000061e95bc4b65708f7c66f90286bce",
+        "0x0000637a4619dc0dc89fd3e446f661d7",
+        "0x0000271befa1ab16248555055aea6f40",
+        "0x0000685cf6631e2ba9d6033ab4f87c14",
+        "0x00006ef5fe1ba451bcf03bb40533c63c",
+        "0x000071b408a5373af9f42c65a43c2bca",
+        "0x0000726f7a88507d30b741ca37c0d3f3"
+      ],
+      "scale": "0x00003b64c4017a7a82f428b745b27f9d",
+      "value": "0x00003c44a047d839706fc125230113d7"
+    },
+    "verifier": {
+      "point": [
+        "0x000077525676f97b5244acc208a654da",
+        "0x00004de70beeacc2fa1732d2ee9b5a7f",
+        "0x00002a9e090a38700e22298d75b67110",
+        "0x00007dc00df9430a85c306d343e1bf12",
+        "0x00000069f8e0f66bb3b5a6a0170f551b",
+        "0x00002fefde69119383fc76b014985685",
+        "0x00006e0f65b85edb680cc95c6325745e",
+        "0x00000843b71f2f91c71a8579f08a47d8",
+        "0x00004745d67589aed8f2de1066d06754",
+        "0x00005dfde25b579ed8a0c5708dee7d57",
+        "0x000061e95bc4b65708f7c66f90286bce",
+        "0x0000637a4619dc0dc89fd3e446f661d7",
+        "0x0000271befa1ab16248555055aea6f40",
+        "0x0000685cf6631e2ba9d6033ab4f87c14",
+        "0x00006ef5fe1ba451bcf03bb40533c63c",
+        "0x000071b408a5373af9f42c65a43c2bca",
+        "0x0000726f7a88507d30b741ca37c0d3f3"
+      ],
+      "scale": "0x00003b64c4017a7a82f428b745b27f9d",
+      "value": "0x00003c44a047d839706fc125230113d7"
+    }
+  },
+  "verification": {
+    "opening": false,
+    "prefix": true
+  }
+}

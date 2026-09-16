@@ -1,0 +1,90 @@
+{
+  "scope": "through end of ordinary Spartan",
+  "equivalent": true,
+  "fixtures": [
+    {
+      "fixture": "canonical",
+      "parity": {
+        "boundary": "end-spartan",
+        "equivalent": true,
+        "opening_verified": false,
+        "roles": {
+          "prover": {
+            "events": 88,
+            "raw_draws": 169,
+            "replayed_digest": "4326c89b39e22a869303385e90e6c525732b199971dcdae741a3f087b649c489"
+          },
+          "verifier": {
+            "events": 88,
+            "raw_draws": 169,
+            "replayed_digest": "4326c89b39e22a869303385e90e6c525732b199971dcdae741a3f087b649c489"
+          }
+        },
+        "schema": "f2z.spartan-parity/v1",
+        "terminal_assignment_checked": true
+      },
+      "root_hex": "0f495e626c92fad3c1100f9b6e09870e979dd54bfbfaef08f5bb5c84950e4a9e",
+      "prime_hex": "0x00007e491c075b45202661dd17daefef"
+    },
+    {
+      "fixture": "edges",
+      "parity": {
+        "boundary": "end-spartan",
+        "equivalent": true,
+        "opening_verified": false,
+        "roles": {
+          "prover": {
+            "events": 88,
+            "raw_draws": 289,
+            "replayed_digest": "e9017d8abc1aa1e6109613833f721786ae88749a4b47dd52c3fe6cd64ceb7cd7"
+          },
+          "verifier": {
+            "events": 88,
+            "raw_draws": 289,
+            "replayed_digest": "e9017d8abc1aa1e6109613833f721786ae88749a4b47dd52c3fe6cd64ceb7cd7"
+          }
+        },
+        "schema": "f2z.spartan-parity/v1",
+        "terminal_assignment_checked": true
+      },
+      "root_hex": "cf5dfb51831e78218be0ecf8e77afe5f68cea16bf634bc6a3613b15064aa9ff0",
+      "prime_hex": "0x00006b9183b054ddc8b4ef406c4cd789"
+    },
+    {
+      "fixture": "42",
+      "parity": {
+        "boundary": "end-spartan",
+        "equivalent": true,
+        "opening_verified": false,
+        "roles": {
+          "prover": {
+            "events": 88,
+            "raw_draws": 162,
+            "replayed_digest": "80546efb991efef4a6c9dda6b093fce3614c52015bb2a5b0833c51680779639c"
+          },
+          "verifier": {
+            "events": 88,
+            "raw_draws": 162,
+            "replayed_digest": "80546efb991efef4a6c9dda6b093fce3614c52015bb2a5b0833c51680779639c"
+          }
+        },
+        "schema": "f2z.spartan-parity/v1",
+        "terminal_assignment_checked": true
+      },
+      "root_hex": "10fda05497e95d88c62fcf3a88585214c8eb574f5b43ab9e918f9ff59bf584d7",
+      "prime_hex": "0x00006936a9e2d1c40e5529be4dda5a23"
+    }
+  ],
+  "logging_enabled_disabled_identical": true,
+  "tests_passed": {
+    "benchmark-tests": 107,
+    "reference-tests": 9,
+    "workspace-check": 0
+  },
+  "benchmark_branch": "codex/spartan-transcript-parity",
+  "benchmark_base": "344903cbf7fa77d6a226a80fdd91543a20d60488",
+  "reference_branch": "bitz-parity-logging-transcript-wrapper",
+  "reference_base": "5aac69a5e21dddbc60ef95bdec957485b88568dd",
+  "source_state": "uncommitted working changes",
+  "opening_verified": false
+}

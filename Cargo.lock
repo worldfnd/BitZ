@@ -423,6 +423,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "crypto-primes"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3633a51a39c69ebbaa4feaa694bd83d241e4093901c84a0963b19d9bb3f0cf8f"
+dependencies = [
+ "crypto-bigint",
+ "rand_core 0.10.1",
+]
+
+[[package]]
 name = "crypto-primitives"
 version = "0.1.0"
 source = "git+https://github.com/NethermindEth/crypto-primitives.git?rev=3c4232b#3c4232bf362339041414a73254a3af303538ac81"
@@ -579,6 +589,24 @@ checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
  "windows-sys",
+]
+
+[[package]]
+name = "f2z-compat"
+version = "0.1.0"
+dependencies = [
+ "bincode",
+ "blake3",
+ "common",
+ "field",
+ "flock-core",
+ "num-traits",
+ "pcs",
+ "rayon",
+ "serde",
+ "serde_json",
+ "spartan",
+ "transcript",
 ]
 
 [[package]]
@@ -1021,6 +1049,7 @@ dependencies = [
  "field",
  "flock-core",
  "proptest",
+ "serde_json",
  "transcript",
 ]
 
@@ -1411,7 +1440,10 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 name = "spartan"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "circuit",
+ "crypto-bigint",
+ "crypto-primes",
  "crypto-primitives",
  "divan",
  "field",
@@ -1421,6 +1453,8 @@ dependencies = [
  "rand 0.9.5",
  "rand_pcg",
  "rayon",
+ "serde",
+ "serde_json",
  "sha2 0.10.9",
  "transcript",
 ]
@@ -1510,6 +1544,7 @@ version = "0.1.0"
 dependencies = [
  "common",
  "crypto-primitives",
+ "f2z-compat",
  "field",
  "host",
  "num-traits",
@@ -1517,6 +1552,7 @@ dependencies = [
  "prover",
  "rand_chacha 0.9.0",
  "rand_core 0.9.5",
+ "serde_json",
  "transcript",
  "verifier",
 ]
@@ -1762,6 +1798,7 @@ dependencies = [
  "quote",
  "syn 2.0.119",
 ]
+
 [[package]]
 name = "zmij"
 version = "1.0.23"

@@ -18,3 +18,4 @@ target
 
 # RustRover
 .idea/
+/artifacts/spartan-parity/

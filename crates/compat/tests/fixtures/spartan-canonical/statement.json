@@ -1,0 +1,258 @@
+{
+  "assignment_binding_hex": "e972b0a93222d589d21da269f5449dc28d08fbed715e017a7a41f136e2ef626c",
+  "configuration": {
+    "generator_words": [
+      2,
+      0
+    ],
+    "initial_transcript": "fresh, empty",
+    "ligerito": {
+      "configuration": {
+        "analysis_version": "udr_maximal_radius_with_fold_grinding",
+        "field": "f128",
+        "final_block": {
+          "yr_log_n": 5
+        },
+        "grinding_step": "post_commit_pre_queries",
+        "hash": "blake3",
+        "initial_k": 4,
+        "levels": [
+          {
+            "eta": null,
+            "expected_eps_ood_bits": null,
+            "expected_eps_pg_bits": 118.00706166383418,
+            "expected_eps_query_bits": 100.1700635322449,
+            "fold_grinding_bits": 0,
+            "grinding_bits": 0,
+            "k_recursive": 4,
+            "log_inv_rate": 1,
+            "log_msg_cols": 11,
+            "log_num_interleaved": 4,
+            "ood_samples": 0,
+            "proximity_loss": 0.0,
+            "queries": 243,
+            "regime": "udr",
+            "target_security_bits": 100
+          },
+          {
+            "eta": null,
+            "expected_eps_ood_bits": null,
+            "expected_eps_pg_bits": 119.42635281250668,
+            "expected_eps_query_bits": 100.36246828280743,
+            "fold_grinding_bits": 0,
+            "grinding_bits": 0,
+            "k_recursive": 3,
+            "log_inv_rate": 2,
+            "log_msg_cols": 8,
+            "log_num_interleaved": 3,
+            "ood_samples": 0,
+            "proximity_loss": 0.0,
+            "queries": 150,
+            "regime": "udr",
+            "target_security_bits": 100
+          },
+          {
+            "eta": null,
+            "expected_eps_ood_bits": null,
+            "expected_eps_pg_bits": 121.22427215455467,
+            "expected_eps_query_bits": 100.31208599592807,
+            "fold_grinding_bits": 0,
+            "grinding_bits": 0,
+            "k_recursive": 3,
+            "log_inv_rate": 3,
+            "log_msg_cols": 5,
+            "log_num_interleaved": 3,
+            "ood_samples": 0,
+            "proximity_loss": 0.0,
+            "queries": 126,
+            "regime": "udr",
+            "target_security_bits": 100
+          }
+        ],
+        "log_n": 15,
+        "m": 22,
+        "target_security_bits": 100
+      },
+      "configuration_fingerprint": "5fc992a9633e000e0cb56692e18983fe68480cc52421d6f202ea4fb3b9750e57",
+      "outer_ood": false,
+      "outer_ood_grinding_bits": null,
+      "outer_ood_raw_bits": null,
+      "protocol_version": "f2z/ligerito-policy/early-ood/v1",
+      "recursive_ood": [
+        0,
+        0,
+        0
+      ],
+      "regime": "udr",
+      "requested_profile": "udrg:1:4",
+      "resolved_profile": "udrg:1:4",
+      "target_bits": 100
+    },
+    "packing": "W1",
+    "piop_degree_bound": 3,
+    "piop_skip_degree": 0,
+    "piop_skip_vars": 0,
+    "resolved_ligerito_parameters": {
+      "fold_grinding_bits": [
+        0,
+        0,
+        0
+      ],
+      "grinding_bits": [
+        0,
+        0,
+        0
+      ],
+      "initial_k": 4,
+      "initial_log_msg_cols": 11,
+      "initial_log_num_interleaved": 4,
+      "log_inv_rates": [
+        1,
+        2,
+        3
+      ],
+      "merkle_hash": "blake3",
+      "ood_samples": [
+        0,
+        0,
+        0
+      ],
+      "queries": [
+        243,
+        150,
+        126
+      ],
+      "recursive_ks": [
+        3,
+        3
+      ],
+      "recursive_log_msg_cols": [
+        8,
+        5
+      ],
+      "recursive_steps": 2
+    },
+    "security": {
+      "accounting": {
+        "target": 100,
+        "terms": [
+          {
+            "bits": 106.09310940439148,
+            "floor": false,
+            "grinding_bits": 0,
+            "name": "step3:tau-draw"
+          },
+          {
+            "bits": 108.41503749927884,
+            "floor": false,
+            "grinding_bits": 0,
+            "name": "step3:piop-round"
+          },
+          {
+            "bits": 108.41503749927884,
+            "floor": false,
+            "grinding_bits": 0,
+            "name": "step4:terminal-draw"
+          },
+          {
+            "bits": 126.41503749927884,
+            "floor": false,
+            "grinding_bits": 0,
+            "name": "step5_2:gkr-round"
+          },
+          {
+            "bits": 128.0,
+            "floor": false,
+            "grinding_bits": 0,
+            "name": "step5_3:ring-switch"
+          },
+          {
+            "bits": 100.0,
+            "floor": false,
+            "grinding_bits": 0,
+            "name": "step5_3:ligerito-tracked"
+          },
+          {
+            "bits": 126.41503749927884,
+            "floor": true,
+            "grinding_bits": 0,
+            "name": "step5_3:gf128-floor-untracked"
+          }
+        ]
+      },
+      "forest_round_grinding_bits": 0,
+      "initial_grinding_bits": 0,
+      "lambda": 100,
+      "ligerito_target_bits": 100,
+      "ood": null,
+      "piop_round_grinding_bits": 0,
+      "profile_name": "lambda100",
+      "projection_full_width": false,
+      "projection_max": "2596148429267413814265248164610047",
+      "projection_min": "1298074214633706907132624082305024",
+      "reduction": null,
+      "ring_switch_grinding_bits": 0,
+      "terminal_grinding_bits": 0
+    },
+    "transcript": "BLAKE3",
+    "variant": "plain-udr"
+  },
+  "derived_protocol_values": [
+    "prime",
+    "challenges",
+    "evaluation points"
+  ],
+  "diagnostic_metadata_is_absorbed": false,
+  "dimensions": {
+    "assignment_len": 131072,
+    "bits_per_multiplication": 128,
+    "capacity": 32768,
+    "col_vars": 7,
+    "committed_bits": 4194304,
+    "gate_vars": 15,
+    "layout": "128 little-endian bit slots per row: x32 | y32 | product64 (z32 | w32)",
+    "padded_rows": 0,
+    "row_vars": 15,
+    "word_bits": 1
+  },
+  "public_instance": {
+    "commitment_parameters": {
+      "log_batch_size": 4,
+      "log_inv_rate": 1,
+      "m": 22,
+      "merkle_hash": "blake3",
+      "profile": "fast"
+    },
+    "root_hex": "0f495e626c92fad3c1100f9b6e09870e979dd54bfbfaef08f5bb5c84950e4a9e"
+  },
+  "relation": {
+    "N": 32768,
+    "equation": "forall i in [0, N): x_i * y_i = z_i + 2^32 * w_i",
+    "range": {
+      "max_exclusive": "4294967296",
+      "min_inclusive": 0,
+      "variables": [
+        "x",
+        "y",
+        "z",
+        "w"
+      ]
+    }
+  },
+  "schema": "f2z.u32-mul-statement/v1",
+  "verifier_inputs": [
+    "prepared relation",
+    "commitment root and parameters",
+    "U32MulProof"
+  ],
+  "witness": {
+    "public_operand_arrays": false,
+    "variables": [
+      "x",
+      "y",
+      "z",
+      "w"
+    ],
+    "visibility": "private"
+  }
+}
