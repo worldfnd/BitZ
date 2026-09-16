@@ -597,6 +597,7 @@ dependencies = [
  "crypto-primitives-proc-macros",
  "divan",
  "flock-core",
+ "num-bigint 0.4.8",
  "num-traits",
  "rand 0.9.5",
  "rand_core 0.9.5",
