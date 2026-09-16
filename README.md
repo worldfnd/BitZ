@@ -8,8 +8,7 @@ This repo also implements a Spartan like PIOP using BitZ as its PCS which is the
 
 ## Build
 
-The workspace uses Rust **1.97.1**, pinned in `rust-toolchain.toml`.
-Run these commands from the repository root:
+The workspace uses Rust **1.97.1**, pinned in `rust-toolchain.toml`. Run these commands from the repository root:
 
 ```sh
 cargo build --release --workspace
@@ -38,7 +37,7 @@ Select the workload with `--circuit`:
 | `sha256-block-aligned` | A block-aligned message with SHA-256 padding; empty messages are allowed. |
 | `sha256-2kb`           | A 2 KiB message with SHA-256 padding.                                     |
 
-Use `--num-blocks` to set the chain or block-aligned message length in 64-byte blocks.
+`--num-blocks` to set the chain or block-aligned message length in 64-byte blocks.
 Use `--threads` to set the number of worker threads.
 
 ## Benchmarks
@@ -73,6 +72,20 @@ The workspace contains library crates under `crates/` and the `bitz-cli` package
 | `crates/tests`      | `tests`      | Integration tests and proof comparison examples.                                   |
 | `tooling/cli`       | `bitz-cli`   | SHA-256 proving CLI, circuit adapters, proof library, and circuit benchmarks.      |
 
-## Related work
+## Optimizations
 
-[todo]: related work
+[link to optimizations used]
+
+## Acknowledgments
+
+We thank the authors and maintainers of the projects that support this implementation:
+
+- **[Flock](https://github.com/succinctlabs/flock) and Ligerito.** We use Ligerito through Flock's `flock-core` for our internal binary-field PCS.
+- **[Spongefish](https://github.com/arkworks-rs/spongefish).** We use Spongefish for Fiat–Shamir transcripts, challenge generation, and message encoding.
+- **[Nethermind's crypto-primitives](https://github.com/NethermindEth/crypto-primitives).** We use its field traits and procedural macros throughout our arithmetic and polynomial code.
+- **[Freigen](https://github.com/reilabs/freigen).** Our SHA-256 circuit follows Freigen's design.
+  Our P-256 circuit ports its Lean implementation.
+- **[Binius64](https://github.com/binius-zk/binius64).** We adapt field reduction and interpolation routines from Binius64.
+  We also use `binius-field` for benchmark comparisons.
+- **[WHIR](https://github.com/worldfnd/whir) and [Zinc+](https://github.com/NethermindEth/zinc-plus).** We adapt multilinear evaluation and workload sizing from WHIR.  
+  Our dense multilinear representation derives from Zinc+.
