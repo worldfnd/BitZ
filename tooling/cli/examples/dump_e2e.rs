@@ -5,7 +5,11 @@
 //! `BitZProver::prove_virtual`) so the terminal claim and the claim on `h`
 //! can be written out too. The two flows must agree on root, narg, hints.
 //!
-//! `dump_e2e <sha256-compression|sha256-chain> <blocks> <seed> <dir> [--sampled]`
+//! `dump_e2e <circuit> <blocks> <seed> <dir> [--sampled]` with `<circuit>` one of
+//! `sha256-compression`, `sha256-chain`, `mul-u32`, `mul-u64`, `mul-u128`,
+//! `sha256-ecdsa` or `mod-r1cs:<instance file>` (for the multiplications
+//! `<blocks>` is the gate count; for SHA-256 + ECDSA the compression
+//! exponent; for a Mod-R1CS instance it is ignored)
 //! (`--sampled`: the sampled-prime scheme, `PreparedSampled`, 100-bit prime)
 //!
 //! Files: `meta.txt`, `public.bin`, `inputs.bin` (LSB-first bits), `f.bin`,
@@ -38,6 +42,15 @@ use verifier::BitZVerifier;
 #[path = "common/sha256.rs"]
 mod sha256;
 use sha256::{Sha256Circuit, Sha256Statement};
+#[path = "common/mul.rs"]
+mod mul;
+use mul::{MulStatement, MulWidth};
+#[path = "common/ecdsa.rs"]
+mod ecdsa;
+use ecdsa::EcdsaStatement;
+#[path = "common/modr1cs.rs"]
+mod modr1cs;
+use modr1cs::{Instance, ModR1csStatement};
 
 const E2E_SESSION: &[u8] = b"bitz/circuit-e2e/v1";
 const WINDOW: u32 = 8;
@@ -168,16 +181,15 @@ fn claim_bytes<const Q: u128>(claim: &LinearClaim<Fq<Q>>) -> Vec<u8> {
 /// end (its proof carries the terminal claim and the prime), the same files
 /// with `kind=e2e-sampled`, `prime_bits`, `prime`, the integer digest as
 /// `constraint_digest`, and `q` the prime.
-fn dump_sampled(
-    circuit: Sha256Circuit,
+fn dump_sampled<S: CircuitStatement + Clone>(
+    statement: S,
+    inputs: Vec<bool>,
     blocks: usize,
     seed: u64,
     out: &std::path::Path,
     args0: &str,
 ) {
     const PRIME_BITS: u32 = 100;
-    let statement = seeded_statement(circuit, blocks, seed);
-    let inputs = statement.input();
     let started = std::time::Instant::now();
     let prepared = PreparedSampled::new(statement.clone(), PRIME_BITS).expect("prepared");
     let t_setup = started.elapsed();
@@ -303,23 +315,72 @@ fn ms(d: std::time::Duration) -> f64 {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let circuit = match args[0].as_str() {
-        "sha256-compression" => Sha256Circuit::Compression,
-        "sha256-chain" => Sha256Circuit::Chain,
-        other => panic!("unknown circuit {other}"),
-    };
     let blocks: usize = args[1].parse().expect("blocks");
     let seed: u64 = args[2].parse().expect("seed");
     let out = std::path::PathBuf::from(&args[3]);
     let _ = rayon::ThreadPoolBuilder::new().build_global();
     rayon::broadcast(|_| {});
-    if args.iter().any(|a| a == "--sampled") {
-        dump_sampled(circuit, blocks, seed, &out, &args[0]);
-        return;
+    let sampled = args.iter().any(|a| a == "--sampled");
+    match args[0].as_str() {
+        "sha256-compression" | "sha256-chain" => {
+            let circuit = if args[0] == "sha256-compression" {
+                Sha256Circuit::Compression
+            } else {
+                Sha256Circuit::Chain
+            };
+            let statement = seeded_statement(circuit, blocks, seed);
+            let inputs = statement.input();
+            if sampled {
+                dump_sampled(statement, inputs, blocks, seed, &out, &args[0]);
+            } else {
+                dump_fixed(statement, inputs, blocks, seed, &out, &args[0]);
+            }
+        }
+        "sha256-ecdsa" => {
+            let statement =
+                EcdsaStatement::seeded(u8::try_from(blocks).expect("exponent"), seed).expect("statement");
+            let inputs = statement.input();
+            if sampled {
+                dump_sampled(statement, inputs, blocks, seed, &out, &args[0]);
+            } else {
+                dump_fixed(statement, inputs, blocks, seed, &out, &args[0]);
+            }
+        }
+        name if name.starts_with("mod-r1cs:") => {
+            let bytes = std::fs::read(&name["mod-r1cs:".len()..]).expect("the instance file");
+            let statement = ModR1csStatement::new(Instance::from_bytes(&bytes).expect("an instance file"));
+            let blocks = statement.instance().rows.len();
+            let inputs = statement.input();
+            if sampled {
+                dump_sampled(statement, inputs, blocks, seed, &out, &args[0]);
+            } else {
+                dump_fixed(statement, inputs, blocks, seed, &out, &args[0]);
+            }
+        }
+        name => {
+            let width = MulWidth::parse(name).unwrap_or_else(|| panic!("unknown circuit {name}"));
+            let statement = MulStatement::new(width, blocks, seed);
+            let inputs = statement.input();
+            if sampled {
+                dump_sampled(statement, inputs, blocks, seed, &out, &args[0]);
+            } else {
+                dump_fixed(statement, inputs, blocks, seed, &out, &args[0]);
+            }
+        }
     }
+}
 
-    let statement = seeded_statement(circuit, blocks, seed);
-    let inputs = statement.input();
+/// The fixed-prime scheme: the canonical flow for the timings and as the
+/// reference proof, then the same flow by hand for the terminal claim and
+/// the claim on `h`, everything to files.
+fn dump_fixed<S: CircuitStatement + Clone>(
+    statement: S,
+    inputs: Vec<bool>,
+    blocks: usize,
+    seed: u64,
+    out: &std::path::Path,
+    args0: &str,
+) {
 
     // The canonical flow, for the timings and as the reference proof.
     let started = std::time::Instant::now();
@@ -408,7 +469,7 @@ fn main() {
     }
     claim_bytes.extend_from_slice(&fq_bytes(&claim.target()));
 
-    std::fs::create_dir_all(&out).unwrap();
+    std::fs::create_dir_all(out).unwrap();
     let mut files: Vec<(&str, Vec<u8>)> = vec![
         ("public.bin", public.clone()),
         ("inputs.bin", bools_to_bytes(&inputs)),
@@ -427,7 +488,7 @@ fn main() {
     }
     let meta = [
         ("kind", "e2e-full".to_string()),
-        ("circuit", args[0].clone()),
+        ("circuit", args0.to_string()),
         ("blocks", blocks.to_string()),
         ("seed", seed.to_string()),
         ("session", String::from_utf8_lossy(E2E_SESSION).into()),

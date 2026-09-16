@@ -176,6 +176,7 @@ dependencies = [
  "circuit",
  "common",
  "field",
+ "num-bigint 0.4.8",
  "num-traits",
  "pcs",
  "poly",

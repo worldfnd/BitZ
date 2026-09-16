@@ -13,6 +13,15 @@ use spartan::{OuterSumcheckProof, SpartanPiopProof, SumcheckProof};
 #[path = "common/sha256.rs"]
 mod sha256;
 use sha256::{Sha256Circuit, Sha256Statement};
+#[path = "common/mul.rs"]
+mod mul;
+use mul::{MulStatement, MulWidth};
+#[path = "common/ecdsa.rs"]
+mod ecdsa;
+use ecdsa::EcdsaStatement;
+#[path = "common/modr1cs.rs"]
+mod modr1cs;
+use modr1cs::{Instance, ModR1csStatement};
 
 fn unhex(s: &str) -> Vec<u8> {
     (0..s.len() / 2)
@@ -36,24 +45,57 @@ fn main() {
         .collect();
     let read = |name: String| std::fs::read(dir.join(&name)).unwrap_or_else(|e| panic!("{name}: {e}"));
 
-    // The statement from its public bytes: u64 block count, the initial
-    // state, the blocks, the digest, all u32 LE.
+    // The statement from its public bytes.
     let public = read("public.bin".into());
-    let count = u64::from_le_bytes(public[..8].try_into().unwrap()) as usize;
-    let words: Vec<u32> = public[8..].chunks_exact(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect();
-    assert_eq!(words.len(), 8 + 16 * count + 8);
-    let statement = Sha256Statement {
-        circuit: match meta["circuit"].as_str() {
-            "sha256-compression" => Sha256Circuit::Compression,
-            "sha256-chain" => Sha256Circuit::Chain,
-            other => panic!("unknown circuit {other}"),
-        },
-        blocks: (0..count).map(|b| words[8 + 16 * b..8 + 16 * (b + 1)].try_into().unwrap()).collect(),
-        initial_state: words[..8].try_into().unwrap(),
-        digest: words[8 + 16 * count..].try_into().unwrap(),
-    };
+    match meta["circuit"].as_str() {
+        name @ ("sha256-compression" | "sha256-chain") => {
+            // u64 block count, the initial state, the blocks, the digest,
+            // all u32 LE.
+            let count = u64::from_le_bytes(public[..8].try_into().unwrap()) as usize;
+            let words: Vec<u32> =
+                public[8..].chunks_exact(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect();
+            assert_eq!(words.len(), 8 + 16 * count + 8);
+            let statement = Sha256Statement {
+                circuit: if name == "sha256-compression" {
+                    Sha256Circuit::Compression
+                } else {
+                    Sha256Circuit::Chain
+                },
+                blocks: (0..count).map(|b| words[8 + 16 * b..8 + 16 * (b + 1)].try_into().unwrap()).collect(),
+                initial_state: words[..8].try_into().unwrap(),
+                digest: words[8 + 16 * count..].try_into().unwrap(),
+            };
+            verify(statement, sampled, &meta, &dir, &prefix);
+        }
+        "sha256-ecdsa" => {
+            let seed: u64 = meta["seed"].parse().expect("seed");
+            let statement = EcdsaStatement::from_public_bytes(&public, seed).expect("public.bin");
+            verify(statement, sampled, &meta, &dir, &prefix);
+        }
+        name if name.starts_with("mod-r1cs:") => {
+            let bytes = std::fs::read(&name["mod-r1cs:".len()..]).expect("the instance file");
+            let statement = ModR1csStatement::new(Instance::from_bytes(&bytes).expect("an instance file"));
+            assert!(statement.matches_public_bytes(&public), "public.bin is not this instance's");
+            verify(statement, sampled, &meta, &dir, &prefix);
+        }
+        name => {
+            MulWidth::parse(name).unwrap_or_else(|| panic!("unknown circuit {name}"));
+            let seed: u64 = meta["seed"].parse().expect("seed");
+            let statement = MulStatement::from_public_bytes(&public, seed).expect("public.bin");
+            verify(statement, sampled, &meta, &dir, &prefix);
+        }
+    }
+}
 
-    // The proof from the three files.
+/// The proof from the three files, through the scheme's verifier.
+fn verify<S: bitz_cli::end_to_end::CircuitStatement>(
+    statement: S,
+    sampled: bool,
+    meta: &std::collections::HashMap<String, String>,
+    dir: &std::path::Path,
+    prefix: &str,
+) {
+    let read = |name: String| std::fs::read(dir.join(&name)).unwrap_or_else(|e| panic!("{name}: {e}"));
     let nr: usize = meta["num_row_vars"].parse().unwrap();
     let nc: usize = meta["num_column_vars"].parse().unwrap();
     let spartan = read(format!("{prefix}spartan.bin"));

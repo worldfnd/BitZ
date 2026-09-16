@@ -26,3 +26,4 @@ verifier.workspace = true
 [dev-dependencies]
 sha2 = { version = "0.10", features = ["compress"] }
 rayon.workspace = true
+num-bigint.workspace = true
