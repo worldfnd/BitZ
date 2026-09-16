@@ -182,6 +182,7 @@ impl<'a, const Q: u128, M: VirtualMap> VirtualStatement<'a, Q, M> {
             }
         };
         let transposed = self.map.transpose(&weights)?;
+        drop(weights);
         if Some(transposed.weights().len()) != self.map.f_len().checked_sub(1) {
             return Err(VirtualMapError::WeightCountMismatch);
         }
