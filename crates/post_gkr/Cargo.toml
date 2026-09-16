@@ -1,24 +1,27 @@
 [package]
-name = "pcs"
+name = "post_gkr"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+default = ["parallel"]
+parallel = ["dep:rayon"]
+
 [dependencies]
-bincode = { workspace = true }
-blake3 = { workspace = true, features = ["rayon"] }
 common = { workspace = true }
 field = { workspace = true, features = ["spongefish"] }
-flock-core = { workspace = true }
-post_gkr = { workspace = true }
-transcript = { workspace = true }
 num-traits = { workspace = true }
+poly = { workspace = true }
+rayon = { workspace = true, optional = true }
+transcript = { workspace = true }
 
 [dev-dependencies]
 divan = { workspace = true }
-proptest = { workspace = true }
+rand_core = { workspace = true }
+rand_pcg = { workspace = true }
 
 [[bench]]
-name = "tensor_algebra_transpose"
+name = "reduce"
 harness = false

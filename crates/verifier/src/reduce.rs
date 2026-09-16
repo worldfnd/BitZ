@@ -9,22 +9,28 @@
 
 use common::{ClaimError, Fold, LinearClaim, OpeningQuery, Shape};
 use field::F128;
-use num_traits::ConstOne;
+use num_traits::{ConstOne, ConstZero};
 use transcript::VerifierState;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReduceError {
     /// The GKR transcript does not satisfy a sumcheck or child-product relation.
     GKR,
+    /// The fold's batch point has a zero coordinate, which the GKR rounds
+    /// divide by.
+    DegenerateChallenge,
     /// The derived weight counts do not match the configured shape.
     Claim(ClaimError),
 }
 
-pub(crate) fn gkr_reduce(
+pub fn gkr_reduce(
     transcript: &mut VerifierState,
     fold: &Fold,
     shape: &Shape,
 ) -> Result<OpeningQuery, ReduceError> {
+    if fold.zeta.contains(&F128::ZERO) {
+        return Err(ReduceError::DegenerateChallenge);
+    }
     // Each layer halves the row count, leaving one product per column.
     let r1 = fold.row_images.len().max(1).ilog2();
 

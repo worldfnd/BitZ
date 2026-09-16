@@ -8,11 +8,14 @@ use transcript::{ProverState, PublicTranscript, VerifierState};
 
 use crate::bridge::{as_flock_f128, as_flock_f128s, from_flock_f128};
 use crate::ligerito::{self, ReducedProver};
-use crate::{OpeningQuery, Pcs, ProverData, Root, StatementBinding, mle, sumcheck};
+use crate::{OpeningQuery, Pcs, ProverData, Root, StatementBinding, mle};
 
 const MLE_STATEMENT_LABEL: &[u8] = b"bitz/pcs/mle-opening/v1";
-const INNER_PRODUCT_STATEMENT_LABEL: &[u8] = b"bitz/pcs/bit-inner-product/v2";
-const SUMCHECK_LABEL: &[u8] = b"bitz/pcs/inner-product-sumcheck/v1";
+const INNER_PRODUCT_STATEMENT_LABEL: &[u8] = b"bitz/pcs/bit-inner-product/v3";
+const INNER_PRODUCT_DIGEST_CONTEXT: &str = "bitz/pcs/bit-inner-product-weights/v1";
+/// Weights per digest update: `2^16` elements, one megabyte.
+const INNER_PRODUCT_DIGEST_CHUNK: usize = 1 << 16;
+const SUMCHECK_LABEL: &[u8] = b"bitz/pcs/inner-product-sumcheck/v2";
 const MLE_CLAIMS_LABEL: &[u8] = b"bitz/pcs/mle-claims/v1";
 const CHALLENGES_LABEL: &[u8] = b"bitz/pcs/ring-switch-challenges/v1";
 
@@ -82,6 +85,24 @@ impl From<QueryError> for VerifyError {
     }
 }
 
+impl From<post_gkr::ProveError> for ProveError {
+    fn from(error: post_gkr::ProveError) -> Self {
+        match error {
+            post_gkr::ProveError::WitnessLengthMismatch => Self::PackedWitnessLengthMismatch,
+            post_gkr::ProveError::ClaimDoesNotHold => Self::InvalidClaim,
+        }
+    }
+}
+
+impl From<post_gkr::VerifyError> for VerifyError {
+    fn from(error: post_gkr::VerifyError) -> Self {
+        match error {
+            post_gkr::VerifyError::MalformedProof => Self::MalformedProof,
+            post_gkr::VerifyError::EvaluationMismatch => Self::VerificationFailed,
+        }
+    }
+}
+
 pub(crate) fn prove(
     pcs: &Pcs,
     data: &ProverData,
@@ -106,7 +127,7 @@ pub(crate) fn prove(
                 bind_inner_product_statement(pcs, &data.commitment().root, claim, transcript);
             }
             transcript.public_message(SUMCHECK_LABEL);
-            let reduced = sumcheck::prove(claim, prover.witness(), transcript)?;
+            let reduced = post_gkr::prove(claim, prover.witness(), transcript)?;
             let ring_switch = mle::RingSwitch::new(&reduced.point, pcs.params().m)?;
             // AlreadyBound covers the original claim, before the reduction produces this MLE claim.
             bind_mle_statement(
@@ -142,7 +163,7 @@ pub(crate) fn verify(
                 bind_inner_product_statement(pcs, &commitment.0, claim, transcript);
             }
             transcript.public_message(SUMCHECK_LABEL);
-            let reduced = sumcheck::verify(claim, transcript)?;
+            let reduced = post_gkr::verify(claim, transcript)?;
             let ring_switch = mle::RingSwitch::new(&reduced.point, pcs.params().m)?;
             bind_mle_statement(
                 pcs,
@@ -251,17 +272,37 @@ fn bind_mle_statement(
     transcript.public_message(&target);
 }
 
-/// Binds both tensor factors before the first sumcheck challenge.
+/// Binds both tensor factors before the first sumcheck challenge: their
+/// lengths, a digest of their weights, and the target. A factor can be one
+/// weight per committed bit, and absorbing it whole would cost the sponge
+/// as much as the sumcheck costs the prover.
 fn bind_inner_product_statement(
     pcs: &Pcs,
     root: &[u8; 32],
     claim: &LinearClaim<F128>,
     transcript: &mut impl PublicTranscript,
 ) {
+    // Little-endian words, a megabyte at a time, hashed on the pool; the
+    // digest does not depend on the chunking.
+    let mut hasher = blake3::Hasher::new_derive_key(INNER_PRODUCT_DIGEST_CONTEXT);
+    let mut buffer = Vec::with_capacity(INNER_PRODUCT_DIGEST_CHUNK * 16);
+    for factor in [claim.row_weights(), claim.column_weights()] {
+        for chunk in factor.chunks(INNER_PRODUCT_DIGEST_CHUNK) {
+            buffer.clear();
+            for weight in chunk {
+                buffer.extend_from_slice(&weight.lo.to_le_bytes());
+                buffer.extend_from_slice(&weight.hi.to_le_bytes());
+            }
+            hasher.update_rayon(&buffer);
+        }
+    }
     transcript.public_message(INNER_PRODUCT_STATEMENT_LABEL);
     transcript.public_message(root);
     transcript.public_message(pcs);
-    transcript.public_message(claim);
+    transcript.public_message(&(claim.row_weights().len() as u64));
+    transcript.public_message(&(claim.column_weights().len() as u64));
+    transcript.public_message(hasher.finalize().as_bytes());
+    transcript.public_message(&claim.target());
 }
 
 #[cfg(test)]

@@ -1,14 +1,13 @@
 //! `ProveBitZ`.
 
 use common::{
-    BitTable, ClaimError, LinearClaim, OpeningQuery, TableError, VirtualMap, VirtualMapError,
-    VirtualStatement,
+    BitTable, LinearClaim, OpeningQuery, TableError, VirtualMap, VirtualMapError, VirtualStatement,
 };
 use field::{F128, Fq};
 use pcs::{CommitScheme, Pcs, ProveError as OpeningProveError, ProverData, StatementBinding};
 use transcript::ProverState;
 
-use crate::{BitZProver, SendError, reduce::gkr_reduce};
+use crate::{BitZProver, SendError, reduce::ReduceError, reduce::gkr_reduce};
 
 /// A proof the prover cannot produce.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,8 +20,8 @@ pub enum ProveError {
     Witness(TableError),
     /// The fold round failed.
     Fold(SendError),
-    /// The derived GKR weight counts do not match the table shape.
-    Reduction(ClaimError),
+    /// The grand product left no claim.
+    Reduction(ReduceError),
     /// The opening failed, so the reduction's claim was never discharged.
     Opening(OpeningProveError),
 }

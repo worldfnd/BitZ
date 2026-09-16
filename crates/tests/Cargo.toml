@@ -10,17 +10,31 @@ publish = false
 doctest = false
 
 [dependencies]
+blake3 = { workspace = true }
+circuit = { workspace = true }
 common = { workspace = true }
 crypto-primitives = { workspace = true }
 field = { workspace = true, features = ["spongefish"] }
 host = { workspace = true }
+num-traits = { workspace = true }
 pcs = { workspace = true }
+poly = { workspace = true }
 prover = { workspace = true }
 rand_chacha = { workspace = true }
 rand_core = { workspace = true }
+rayon = { workspace = true }
 transcript = { workspace = true }
 verifier = { workspace = true }
 
 [dev-dependencies]
-circuit = { workspace = true }
-num-traits = { workspace = true }
+divan = { workspace = true }
+flock-core = { workspace = true }
+post_gkr = { workspace = true }
+
+[[bench]]
+name = "sha256"
+harness = false
+
+[[bench]]
+name = "sha256_steps"
+harness = false
