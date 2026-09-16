@@ -31,6 +31,7 @@ pub enum ProveError {
 ///
 /// The caller zero-pads each vector to its shape in [`common::VirtualParams`]. Bit `i` is bit
 /// `i % 128` of element `i / 128`, with the low 64 bits in `lo` and the rest in `hi`.
+#[derive(Debug)]
 pub struct VirtualWitness<'a> {
     /// The commitment opening consumes the committed witness.
     pub committed_bits: Vec<F128>,
