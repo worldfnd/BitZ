@@ -16,7 +16,7 @@ num-traits.workspace = true
 pcs.workspace = true
 poly.workspace = true
 prover.workspace = true
-spartan = { path = "../../crates/spartan" }
+spartan.workspace = true
 thiserror.workspace = true
 transcript.workspace = true
 verifier.workspace = true
