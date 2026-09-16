@@ -4,7 +4,7 @@ use circuit::constraints::{ConstraintMatrices, SparseMatrix};
 use circuit::matrix_products::{IntegerProducts, ModularVector, RuntimeModulus};
 use circuit::witgen::PackedWitness;
 use crypto_primitives::ConstField;
-use field::{FqDefault, Q100};
+use field::{Fq, FqDefault};
 use num_bigint::{BigInt, BigUint};
 use num_traits::{Signed, ToPrimitive};
 use poly::DenseMultilinearExtension;
@@ -118,6 +118,27 @@ where
         })
     }
 
+    /// [`Self::new`] with a digest computed elsewhere (the integer digest of
+    /// [`PreparedIntegerMatrices`], which the prime must not enter).
+    pub(crate) fn with_digest(
+        matrices: ConstraintMatrices<F>,
+        digest: [u8; 32],
+    ) -> Result<Self, SpartanMatrixError> {
+        let (num_row_vars, num_column_vars) = r1cs_num_vars(&matrices)?;
+        let num_columns = 1_usize << num_column_vars;
+        let chunk_len = num_columns.min(1_usize << BIND_CHUNK_COLUMN_VARS);
+        let chunk_count = num_columns / chunk_len;
+        let column_chunks = [&matrices.a, &matrices.b, &matrices.c]
+            .map(|matrix| ColumnChunkIndex::new(matrix, chunk_len, chunk_count));
+        Ok(Self {
+            matrices,
+            column_chunks,
+            digest,
+            num_row_vars,
+            num_column_vars,
+        })
+    }
+
     /// Returns human-readable info about R1CS matrices and their nonzero entries.
     pub fn short_debug_info(&self) -> String {
         let nonzeros: usize = [&self.matrices.a, &self.matrices.b, &self.matrices.c]
@@ -153,16 +174,167 @@ where
 
 /// Reduces a signed integer canonically modulo Q100.
 pub fn bigint_to_fq(value: &BigInt) -> FqDefault {
-    let modulus = BigInt::from(Q100);
+    bigint_to_fq_in(value)
+}
+
+/// Reduces a signed integer canonically modulo `Fq<Q>`'s modulus — for
+/// `Fq<RUNTIME>`, the installed one.
+pub fn bigint_to_fq_in<const Q: u128>(value: &BigInt) -> Fq<Q> {
+    let modulus = BigInt::from(Fq::<Q>::modulus());
     let mut reduced = value % &modulus;
     if reduced.is_negative() {
         reduced += modulus;
     }
-    FqDefault::from(
+    Fq::from(
         reduced
             .to_u128()
-            .expect("a canonical Q100 residue always fits a u128"),
+            .expect("a canonical residue always fits a u128"),
     )
+}
+
+/// An R1CS coefficient kept as the integer the generator produced, so the
+/// matrices can be lowered under a prime chosen after they were prepared.
+/// Signed powers of two — the bit lifts — are kept as their shift, so
+/// lowering them is a table lookup.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum IntegerCoefficient {
+    PowerOfTwo { shift: u16, negative: bool },
+    Small(i64),
+    Big(Box<BigInt>),
+}
+
+impl IntegerCoefficient {
+    pub fn new(value: &BigInt) -> Self {
+        let magnitude = value.magnitude();
+        if magnitude.count_ones() == 1 {
+            if let Some(shift) = magnitude.trailing_zeros().and_then(|s| u16::try_from(s).ok()) {
+                return Self::PowerOfTwo {
+                    shift,
+                    negative: value.is_negative(),
+                };
+            }
+        }
+        match value.to_i64() {
+            Some(small) => Self::Small(small),
+            None => Self::Big(Box::new(value.clone())),
+        }
+    }
+
+    /// The integer back.
+    pub fn to_bigint(&self) -> BigInt {
+        match self {
+            Self::PowerOfTwo { shift, negative } => {
+                let magnitude = BigInt::from(1) << usize::from(*shift);
+                if *negative { -magnitude } else { magnitude }
+            }
+            Self::Small(small) => BigInt::from(*small),
+            Self::Big(big) => (**big).clone(),
+        }
+    }
+
+    /// The largest shift among the powers of two.
+    fn max_shift(&self) -> u16 {
+        match self {
+            Self::PowerOfTwo { shift, .. } => *shift,
+            _ => 0,
+        }
+    }
+
+    /// The residue under `Fq<Q>`'s modulus; `pow2[i] = 2^i` there.
+    fn lower<const Q: u128>(&self, pow2: &[Fq<Q>]) -> Fq<Q> {
+        match self {
+            Self::PowerOfTwo { shift, negative } => {
+                let value = pow2[usize::from(*shift)];
+                if *negative { -value } else { value }
+            }
+            Self::Small(small) => {
+                let modulus = Fq::<Q>::modulus() as i128;
+                Fq::from(i128::from(*small).rem_euclid(modulus) as u128)
+            }
+            Self::Big(big) => bigint_to_fq_in(big),
+        }
+    }
+}
+
+/// The constraint matrices over the integers, with a digest that does not
+/// depend on any prime, so a protocol can bind the statement, then sample
+/// its prime, then lower.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreparedIntegerMatrices {
+    matrices: ConstraintMatrices<IntegerCoefficient>,
+    digest: [u8; 32],
+    num_row_vars: usize,
+    num_column_vars: usize,
+}
+
+impl PreparedIntegerMatrices {
+    pub fn new(matrices: ConstraintMatrices<BigInt>) -> Result<Self, SpartanMatrixError> {
+        let (num_row_vars, num_column_vars) = r1cs_num_vars(&matrices)?;
+        let digest = integer_matrix_digest(&matrices)?;
+        let matrices = matrices.map_coefficients(|coefficient| IntegerCoefficient::new(&coefficient));
+        Ok(Self {
+            matrices,
+            digest,
+            num_row_vars,
+            num_column_vars,
+        })
+    }
+
+    pub const fn digest(&self) -> &[u8; 32] {
+        &self.digest
+    }
+
+    pub const fn num_row_vars(&self) -> usize {
+        self.num_row_vars
+    }
+
+    pub const fn num_column_vars(&self) -> usize {
+        self.num_column_vars
+    }
+
+    pub fn matrices(&self) -> &ConstraintMatrices<IntegerCoefficient> {
+        &self.matrices
+    }
+
+    /// The matrices under `Fq<Q>`'s modulus (the installed one for
+    /// `Fq<RUNTIME>`), prepared as [`PreparedConstraintMatrices::new`] would
+    /// prepare them but carrying this integer digest.
+    pub fn lower<const Q: u128>(&self) -> Result<PreparedConstraintMatrices<Fq<Q>>, SpartanMatrixError> {
+        let max_shift = [&self.matrices.a, &self.matrices.b, &self.matrices.c]
+            .iter()
+            .flat_map(|matrix| matrix.rows())
+            .flat_map(|row| row.entries())
+            .map(|(_, coefficient)| coefficient.max_shift())
+            .max()
+            .unwrap_or(0);
+        let mut pow2 = Vec::with_capacity(usize::from(max_shift) + 1);
+        let mut power = Fq::<Q>::from(1u64);
+        for _ in 0..=max_shift {
+            pow2.push(power);
+            power = power + power;
+        }
+        let lower = |matrix: &SparseMatrix<IntegerCoefficient>| {
+            let rows: Vec<Vec<(usize, Fq<Q>)>> = matrix
+                .rows()
+                .par_iter()
+                .map(|row| {
+                    row.entries()
+                        .iter()
+                        .map(|(column, coefficient)| (*column, coefficient.lower(&pow2)))
+                        .collect()
+                })
+                .collect();
+            SparseMatrix::try_from_rows(matrix.column_count(), rows)
+                .map_err(|_| SpartanMatrixError::InvalidR1csShape)
+        };
+        let matrices = ConstraintMatrices {
+            m: self.matrices.m.clone(),
+            a: lower(&self.matrices.a)?,
+            b: lower(&self.matrices.b)?,
+            c: lower(&self.matrices.c)?,
+        };
+        PreparedConstraintMatrices::with_digest(matrices, self.digest)
+    }
 }
 
 /// Reduces exact `Ah`, `Bh`, and `Ch` values modulo Q100 and pads their row
@@ -171,6 +343,15 @@ pub fn build_product_mles(
     products: &IntegerProducts,
     expected_rows: usize,
 ) -> Result<R1csProductMles<FqDefault>, SpartanMatrixError> {
+    build_product_mles_in(products, expected_rows)
+}
+
+/// [`build_product_mles`] under `Fq<Q>`'s modulus — for `Fq<RUNTIME>`, the
+/// installed one.
+pub fn build_product_mles_in<const Q: u128>(
+    products: &IntegerProducts,
+    expected_rows: usize,
+) -> Result<R1csProductMles<Fq<Q>>, SpartanMatrixError> {
     for actual in [
         products.a_mw.len(),
         products.b_mw.len(),
@@ -184,7 +365,7 @@ pub fn build_product_mles(
         }
     }
 
-    let modulus = RuntimeModulus::<2>::new(BigUint::from(Q100))
+    let modulus = RuntimeModulus::<2>::new(BigUint::from(Fq::<Q>::modulus()))
         .map_err(|_| SpartanMatrixError::InvalidModulus)?;
     let reduced = products.reduce_parallel(&modulus);
     let num_vars = padded_num_vars(expected_rows)?;
@@ -448,6 +629,54 @@ where
     Ok(hash.finalize().into())
 }
 
+/// The statement digest over the integer coefficients, which no prime
+/// enters: `bitz/spartan/integer-constraint-matrices/v1`, `M` as in
+/// [`constraint_matrix_digest`], then each of `A`, `B`, `C` with every entry
+/// as its column, a sign byte, and the magnitude's little-endian bytes with
+/// their length.
+pub(crate) fn integer_matrix_digest(
+    matrices: &ConstraintMatrices<BigInt>,
+) -> Result<[u8; 32], SpartanMatrixError> {
+    matrices
+        .validate_shape()
+        .map_err(|_| SpartanMatrixError::InvalidR1csShape)?;
+
+    let mut hash = Sha256::new();
+    hash.update(b"bitz/spartan/integer-constraint-matrices/v1");
+
+    hash.update(b"M");
+    hash_usize(&mut hash, matrices.m.row_count())?;
+    hash_usize(&mut hash, matrices.m.column_count())?;
+    for row in matrices.m.rows() {
+        hash_usize(&mut hash, row.positions().len())?;
+        for &column in row.positions() {
+            hash_usize(&mut hash, column)?;
+        }
+    }
+
+    for (label, matrix) in [
+        (b"A", &matrices.a),
+        (b"B", &matrices.b),
+        (b"C", &matrices.c),
+    ] {
+        hash.update(label);
+        hash_usize(&mut hash, matrix.row_count())?;
+        hash_usize(&mut hash, matrix.column_count())?;
+        for row in matrix.rows() {
+            hash_usize(&mut hash, row.entries().len())?;
+            for (column, coefficient) in row.entries() {
+                hash_usize(&mut hash, *column)?;
+                hash.update([u8::from(coefficient.is_negative())]);
+                let magnitude = coefficient.magnitude().to_bytes_le();
+                hash_usize(&mut hash, magnitude.len())?;
+                hash.update(&magnitude);
+            }
+        }
+    }
+
+    Ok(hash.finalize().into())
+}
+
 fn hash_sparse_matrix<F>(
     hash: &mut Sha256,
     matrix: &SparseMatrix<F>,
@@ -484,16 +713,16 @@ pub(crate) fn padded_num_vars(logical_len: usize) -> Result<usize, SpartanMatrix
         .ok_or(SpartanMatrixError::DomainTooLarge)
 }
 
-fn modular_vector_mle(
+fn modular_vector_mle<const Q: u128>(
     values: &ModularVector<2>,
     num_vars: usize,
-) -> Result<DenseMultilinearExtension<FqDefault>, SpartanMatrixError> {
-    let zero = FqDefault::from(0u128);
+) -> Result<DenseMultilinearExtension<Fq<Q>>, SpartanMatrixError> {
+    let zero = Fq::<Q>::from(0u128);
     let padded_len = 1usize << num_vars;
     let mut evaluations: Vec<_> = values
         .values()
         .iter()
-        .map(|&[low, high]| FqDefault::from_limbs(low, high))
+        .map(|&[low, high]| Fq::<Q>::from_limbs(low, high))
         .collect();
     evaluations.resize(padded_len, zero);
 
@@ -508,7 +737,10 @@ mod tests {
     use rand::{Rng, SeedableRng};
     use rand_pcg::Pcg64;
 
-    use super::{BIND_CHUNK_COLUMN_VARS, PreparedConstraintMatrices};
+    use super::{
+        BIND_CHUNK_COLUMN_VARS, PreparedConstraintMatrices, PreparedIntegerMatrices, bigint_to_fq,
+    };
+    use num_bigint::BigInt;
 
     /// Three chunks of columns plus one chunk of padding, so rows straddle
     /// chunk boundaries and the last chunk holds no nonzeros.
@@ -604,6 +836,55 @@ mod tests {
                 assert_eq!(next_start, entries.entries().len());
             }
             assert!(spans.next().is_none());
+        }
+    }
+
+    /// Lowering the integer matrices under Q100 gives what `bigint_to_fq`
+    /// gives, entry for entry; the integer digest is one digest whatever
+    /// the prime.
+    #[test]
+    fn integer_matrices_lower_to_the_direct_lowering() {
+        let m = SparseBoolMatrix::try_from_rows(4, vec![vec![0], vec![1], vec![2], vec![1, 3]]).unwrap();
+        let entries = |scale: i128| -> SparseMatrix<BigInt> {
+            SparseMatrix::try_from_rows(
+                4,
+                vec![
+                    vec![(0, BigInt::from(scale)), (1, BigInt::from(1u128 << 100) * scale)],
+                    vec![(2, -BigInt::from(1u128 << 33)), (3, BigInt::from(-7 * scale))],
+                    vec![(1, (BigInt::from(1u128 << 100) * BigInt::from(1u128 << 100)) + 5)],
+                ],
+            )
+            .unwrap()
+        };
+        let integer = ConstraintMatrices {
+            m,
+            a: entries(1),
+            b: entries(3),
+            c: entries(-2),
+        };
+        let direct = PreparedConstraintMatrices::new(
+            integer.clone().map_coefficients(|c| bigint_to_fq(&c)),
+        )
+        .unwrap();
+        let prepared = PreparedIntegerMatrices::new(integer).unwrap();
+        let lowered = prepared.lower::<{ field::Q100 }>().unwrap();
+        assert_eq!(lowered.matrices(), direct.matrices());
+        assert_eq!(lowered.digest(), prepared.digest());
+        assert_ne!(lowered.digest(), direct.digest(), "the integer digest is its own domain");
+        assert_eq!(lowered.num_row_vars(), direct.num_row_vars());
+        assert_eq!(lowered.num_column_vars(), direct.num_column_vars());
+        for (matrix, original) in [
+            (&prepared.matrices().a, &direct.matrices().a),
+            (&prepared.matrices().c, &direct.matrices().c),
+        ] {
+            for (row, original_row) in matrix.rows().iter().zip(original.rows()) {
+                for ((column, coefficient), (original_column, original_value)) in
+                    row.entries().iter().zip(original_row.entries())
+                {
+                    assert_eq!(column, original_column);
+                    assert_eq!(bigint_to_fq(&coefficient.to_bigint()), *original_value);
+                }
+            }
         }
     }
 

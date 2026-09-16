@@ -43,6 +43,63 @@ fn an_honest_proof_verifies_on_every_shape_the_profile_admits() {
     }
 }
 
+/// The direct claim under a prime sampled from a transcript: the modulus is
+/// installed, the parameters, weights and target are built in
+/// `Fq<RUNTIME>`, and prove and verify agree — the parameter frame carries
+/// the sampled prime, so a proof under one prime is a proof under it alone.
+#[test]
+fn an_honest_proof_verifies_under_a_sampled_prime() {
+    use common::{BitZParams, LinearClaim};
+    use crypto_primitives::LiftElement;
+    use field::{FqRuntime, RUNTIME, gf128::smallest_generator};
+    use rand_chacha::ChaCha8Rng;
+    use rand_core::{RngCore, SeedableRng};
+
+    let mut sampler = prover_transcript();
+    let prime = sampler.squeeze_prime(100);
+    assert_ne!(prime, field::Q100);
+    field::set_modulus(prime).unwrap();
+
+    let shape = narrow_shape();
+    let params = BitZParams::<RUNTIME>::new(shape, smallest_generator()).unwrap();
+    assert_eq!(params.fold_bound(), 128 * (prime - 1));
+    let mut rng = ChaCha8Rng::seed_from_u64(35);
+    let packed: Vec<F128> = (0..(1 << shape.log_bits()) / 128)
+        .map(|_| F128::new(rng.next_u64(), rng.next_u64()))
+        .collect();
+    let mut residue = || {
+        FqRuntime::from(u128::from(rng.next_u64()) << 64 | u128::from(rng.next_u64()))
+    };
+    let row_weights: Vec<FqRuntime> = (0..shape.rows()).map(|_| residue()).collect();
+    let column_weights: Vec<FqRuntime> = (0..shape.columns()).map(|_| residue()).collect();
+    let table = params.table(&packed).unwrap();
+    let exponents: Vec<u128> = row_weights.iter().map(|weight| weight.lift()).collect();
+    assert!(exponents.iter().all(|&exponent| exponent < prime));
+    let target: FqRuntime = (0..shape.columns())
+        .map(|column| {
+            let fold: u128 = (0..shape.rows())
+                .filter(|&row| table.bit(column, row))
+                .map(|row| exponents[row])
+                .sum();
+            column_weights[column] * FqRuntime::from(fold)
+        })
+        .sum();
+    let claim = LinearClaim::new(&params, row_weights, column_weights, target).unwrap();
+    let pcs = Pcs::new(&shape, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
+    let (com, data) = pcs.commit(&packed).unwrap();
+
+    let mut transcript = prover_transcript();
+    prover::BitZProver::new(params, tests::WINDOW)
+        .prove(&claim, &pcs, &data, packed.clone(), &mut transcript)
+        .expect("honest instance under the sampled prime");
+    let proof = transcript.finish();
+    verifier::BitZVerifier::new(params, tests::WINDOW)
+        .verify(&claim, &pcs, com, verifier_transcript(&proof))
+        .expect("the verifier under the same prime accepts");
+
+    field::set_modulus(field::Q100).unwrap();
+}
+
 #[test]
 fn a_proof_replayed_under_a_different_commitment_is_refused() {
     let instance = Instance::honest(narrow_shape(), 32);

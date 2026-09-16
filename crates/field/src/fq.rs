@@ -21,6 +21,99 @@ pub const Q100: u128 = (1u128 << 100) - 15;
 /// The modulus used unless a caller picks another.
 pub type FqDefault = Fq<Q100>;
 
+/// The const parameter that selects the runtime modulus: `Fq<RUNTIME>`
+/// reduces modulo whatever [`set_modulus`] last installed (a prime the
+/// protocol sampled from its transcript), read on every operation; `Fq<Q>`
+/// for any other `Q` is unchanged and pays nothing for it.
+pub const RUNTIME: u128 = 0;
+
+/// `Fq<RUNTIME>`, the field of the sampled prime.
+pub type FqRuntime = Fq<RUNTIME>;
+
+/// A modulus [`set_modulus`] rejects.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModulusError {
+    /// Below 3, even, or at or above `2^126` (the Barrett bound).
+    OutOfRange,
+    /// Fails the probable-prime test.
+    NotPrime,
+}
+
+/// The installed runtime modulus and its Barrett constants.
+///
+/// Written only by [`set_modulus`], read by every `Fq<RUNTIME>` operation.
+/// The words are separate atomics: the writer must not run concurrently with
+/// readers, so a proof installs its prime before any `Fq<RUNTIME>` value
+/// exists and no other proof shares the process meanwhile. `Q100` until told
+/// otherwise.
+mod runtime {
+    use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+
+    use super::{Q100, barrett_mu};
+
+    const BITS100: u32 = 128 - Q100.leading_zeros();
+    const MU100: u128 = barrett_mu(Q100, BITS100);
+
+    static Q_LO: AtomicU64 = AtomicU64::new(Q100 as u64);
+    static Q_HI: AtomicU64 = AtomicU64::new((Q100 >> 64) as u64);
+    static MU_LO: AtomicU64 = AtomicU64::new(MU100 as u64);
+    static MU_HI: AtomicU64 = AtomicU64::new((MU100 >> 64) as u64);
+    static BITS: AtomicU32 = AtomicU32::new(BITS100);
+
+    #[inline]
+    pub(super) fn q() -> u128 {
+        u128::from(Q_LO.load(Ordering::Relaxed)) | (u128::from(Q_HI.load(Ordering::Relaxed)) << 64)
+    }
+
+    #[inline]
+    pub(super) fn mu() -> u128 {
+        u128::from(MU_LO.load(Ordering::Relaxed))
+            | (u128::from(MU_HI.load(Ordering::Relaxed)) << 64)
+    }
+
+    #[inline]
+    pub(super) fn bits() -> u32 {
+        BITS.load(Ordering::Relaxed)
+    }
+
+    pub(super) fn install(q: u128, mu: u128, bits: u32) {
+        Q_LO.store(q as u64, Ordering::Relaxed);
+        Q_HI.store((q >> 64) as u64, Ordering::Relaxed);
+        MU_LO.store(mu as u64, Ordering::Relaxed);
+        MU_HI.store((mu >> 64) as u64, Ordering::Relaxed);
+        BITS.store(bits, Ordering::Relaxed);
+    }
+}
+
+/// Installs `q` as the modulus of `Fq<RUNTIME>`: an odd probable prime below
+/// `2^126`. Call it once a proof has sampled its prime and before any
+/// `Fq<RUNTIME>` value is made; values made under an earlier modulus are
+/// meaningless afterwards.
+pub fn set_modulus(q: u128) -> Result<(), ModulusError> {
+    if q < 3 || q % 2 == 0 || q >= 1u128 << 126 {
+        return Err(ModulusError::OutOfRange);
+    }
+    if !is_prime(q) {
+        return Err(ModulusError::NotPrime);
+    }
+    let bits = 128 - q.leading_zeros();
+    runtime::install(q, barrett_mu(q, bits), bits);
+    Ok(())
+}
+
+/// The modulus `Fq<RUNTIME>` currently reduces by.
+pub fn modulus() -> u128 {
+    runtime::q()
+}
+
+/// Whether `candidate` passes the strong probable-prime test [`Fq`] asserts
+/// on its own modulus: deterministic below `2^81.4`, and above that a
+/// thirteen-base Miller-Rabin test, which a transcript-derived candidate
+/// cannot be chosen to defeat.
+pub fn is_probable_prime(candidate: u128) -> bool {
+    is_prime(candidate)
+}
+
 /// An element of `Z/QZ`, held reduced.
 ///
 /// `Q` must be an odd prime below `2^126`. The upper bound is what lets the
@@ -184,7 +277,12 @@ impl<const Q: u128> Fq<Q> {
     /// Its asserts are the only check on `Q`, and an associated constant is
     /// evaluated where it is used, so an operation that does not need the
     /// value reads it anyway rather than accept a modulus out of range.
-    pub const BITS: u32 = {
+    ///
+    /// Zero for `Fq<RUNTIME>`, whose modulus [`set_modulus`] checks instead;
+    /// [`Self::bits`] is the width in both cases.
+    pub const BITS: u32 = if Q == RUNTIME {
+        0
+    } else {
         assert!(Q >= 3, "modulus must be at least 3");
         assert!(Q % 2 == 1, "modulus must be odd");
         assert!(Q < 1u128 << 126, "modulus must be below 2^126");
@@ -194,13 +292,31 @@ impl<const Q: u128> Fq<Q> {
         128 - Q.leading_zeros()
     };
 
+    /// The modulus: `Q`, or for `Fq<RUNTIME>` the installed one.
+    #[inline]
+    pub fn modulus() -> u128 {
+        if Q == RUNTIME { runtime::q() } else { Q }
+    }
+
+    /// The modulus' bit length.
+    #[inline]
+    fn bits() -> u32 {
+        if Q == RUNTIME { runtime::bits() } else { Self::BITS }
+    }
+
+    /// Barrett's reciprocal for the modulus.
+    #[inline]
+    fn mu() -> u128 {
+        if Q == RUNTIME { runtime::mu() } else { Self::MU }
+    }
+
     /// Constructs an element from two little-endian `u64` limbs and reduces it
     /// modulo `Q`.
     pub fn from_limbs(low: u64, high: u64) -> Self {
         Self::from(u128::from(low) | (u128::from(high) << 64))
     }
 
-    const MU: u128 = barrett_mu(Q, Self::BITS);
+    const MU: u128 = if Q == RUNTIME { 0 } else { barrett_mu(Q, Self::BITS) };
 
     /// Barrett reduction, Handbook of Applied Cryptography Algorithm 14.42,
     /// after Barrett, CRYPTO '86, LNCS 263:311-323: estimate the quotient
@@ -212,18 +328,20 @@ impl<const Q: u128> Fq<Q> {
     /// modulo `b^(k+1)`, which is wide enough to hold `3Q`. Here the radix is
     /// 2, where it is not, so the difference is taken modulo `2^128` instead.
     /// Hence the bound on `Q`.
-    const fn reduce_wide(lo: u128, hi: u128) -> Self {
-        let k = Self::BITS;
+    #[inline]
+    fn reduce_wide(lo: u128, hi: u128) -> Self {
+        let q = Self::modulus();
+        let k = Self::bits();
         let q1 = shr_wide(lo, hi, k - 1);
-        let (q2_lo, q2_hi) = mul_wide(q1, Self::MU);
+        let (q2_lo, q2_hi) = mul_wide(q1, Self::mu());
         let q3 = shr_wide(q2_lo, q2_hi, k + 1);
 
-        let mut r = lo.wrapping_sub(mul_wide(q3, Q).0);
-        if r >= Q {
-            r -= Q;
+        let mut r = lo.wrapping_sub(mul_wide(q3, q).0);
+        if r >= q {
+            r -= q;
         }
-        if r >= Q {
-            r -= Q;
+        if r >= q {
+            r -= q;
         }
         Self(r)
     }
@@ -231,7 +349,7 @@ impl<const Q: u128> Fq<Q> {
 
 impl<const Q: u128> Display for Fq<Q> {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        write!(f, "{} (mod {})", self.0, Q)
+        write!(f, "{} (mod {})", self.0, Self::modulus())
     }
 }
 
@@ -244,7 +362,8 @@ impl<const Q: u128> Distribution<Fq<Q>> for StandardUniform {
         // A u128 range is not generally an exact multiple of Q. Reject its
         // incomplete final interval before reducing so every residue has the
         // same number of preimages.
-        let rejection_remainder = (u128::MAX % Q + 1) % Q;
+        let q = Fq::<Q>::modulus();
+        let rejection_remainder = (u128::MAX % q + 1) % q;
         let max_accepted = u128::MAX - rejection_remainder;
 
         loop {
@@ -284,7 +403,7 @@ impl<const Q: u128> ConstOne for Fq<Q> {
 impl<const Q: u128> From<u128> for Fq<Q> {
     fn from(value: u128) -> Self {
         let _ = Self::BITS;
-        Self(value % Q)
+        Self(value % Self::modulus())
     }
 }
 
@@ -311,7 +430,7 @@ impl<const Q: u128> Neg for Fq<Q> {
     type Output = Self;
     fn neg(self) -> Self {
         let _ = Self::BITS;
-        Self(if self.0 == 0 { 0 } else { Q - self.0 })
+        Self(if self.0 == 0 { 0 } else { Self::modulus() - self.0 })
     }
 }
 
@@ -320,8 +439,9 @@ impl<const Q: u128> Add for Fq<Q> {
     fn add(self, rhs: Self) -> Self {
         let _ = Self::BITS;
         // Both operands are below `Q < 2^126`, so the sum cannot wrap.
+        let q = Self::modulus();
         let s = self.0 + rhs.0;
-        Self(if s >= Q { s - Q } else { s })
+        Self(if s >= q { s - q } else { s })
     }
 }
 
@@ -332,7 +452,7 @@ impl<const Q: u128> Sub for Fq<Q> {
         Self(if self.0 >= rhs.0 {
             self.0 - rhs.0
         } else {
-            self.0 + Q - rhs.0
+            self.0 + Self::modulus() - rhs.0
         })
     }
 }
@@ -506,16 +626,19 @@ impl<const Q: u128> Bounded for Fq<Q> {
     /// The largest residue, `Q - 1`.
     fn max_value() -> Self {
         let _ = Self::BITS;
-        Self(Q - 1)
+        Self(Self::modulus() - 1)
     }
 }
 
+/// For `Fq<RUNTIME>` both constants are zero — the modulus is not known at
+/// compile time; [`Fq::modulus`] is the value to read. Nothing in this
+/// workspace reads the constants.
 impl<const Q: u128> ConstBaseField for Fq<Q> {
     const MODULUS: Self::Integer = {
         let _ = Self::BITS;
         Q
     };
-    const MODULUS_MINUS_ONE_DIV_TWO: Self::Integer = (Q - 1) / 2;
+    const MODULUS_MINUS_ONE_DIV_TWO: Self::Integer = if Q == RUNTIME { 0 } else { (Q - 1) / 2 };
 }
 
 #[cfg(test)]
@@ -572,6 +695,7 @@ mod tests {
     fn base_field_metadata() {
         assert_eq!(FqDefault::MODULUS, Q100);
         assert_eq!(FqDefault::MODULUS_MINUS_ONE_DIV_TWO, (Q100 - 1) / 2);
+        assert_eq!(<FqDefault as BaseField>::modulus(), Q100);
         assert_eq!(FqDefault::modulus(), Q100);
         assert_eq!(FqDefault::min_value(), FqDefault::ZERO);
         assert_eq!(FqDefault::max_value().lift(), Q100 - 1);
@@ -675,6 +799,43 @@ mod tests {
             let sample: FqDefault = rng.random();
             assert!(sample.lift() < Q100);
         }
+    }
+
+    /// The runtime variant computes what the const one computes under the
+    /// same modulus, and the installer applies the const gates. One test,
+    /// because the installed modulus is process-wide.
+    #[test]
+    fn the_runtime_modulus_matches_the_const_field() {
+        assert_eq!(modulus(), Q100);
+        assert_eq!(FqRuntime::modulus(), Q100);
+        assert_eq!(set_modulus(4), Err(ModulusError::OutOfRange));
+        assert_eq!(set_modulus(1u128 << 126), Err(ModulusError::OutOfRange));
+        assert_eq!(set_modulus(561), Err(ModulusError::NotPrime));
+        assert_eq!(set_modulus((1 << 114) - 11), Ok(()));
+        assert_eq!(FqRuntime::modulus(), (1 << 114) - 11);
+        let mut rng = Pcg64::seed_from_u64(405);
+        for _ in 0..2048 {
+            let (a, b) = (u128_of(&mut rng), u128_of(&mut rng));
+            let (x, y) = (Fq::<{ (1 << 114) - 11 }>::from(a), Fq::<{ (1 << 114) - 11 }>::from(b));
+            let (u, v) = (FqRuntime::from(a), FqRuntime::from(b));
+            assert_eq!((u * v).lift(), (x * y).lift());
+            assert_eq!((u + v).lift(), (x + y).lift());
+            assert_eq!((u - v).lift(), (x - y).lift());
+            assert_eq!((-u).lift(), (-x).lift());
+        }
+        assert_eq!(set_modulus(SMALL), Ok(()));
+        for a in 0..SMALL {
+            for b in 0..SMALL {
+                let (x, y) = (FqRuntime::from(a), FqRuntime::from(b));
+                assert_eq!((x * y).lift(), a * b % SMALL, "{a} * {b}");
+                assert_eq!((x + y).lift(), (a + b) % SMALL, "{a} + {b}");
+            }
+        }
+        assert_eq!(FqRuntime::max_value().lift(), SMALL - 1);
+        assert_eq!(set_modulus(Q100), Ok(()));
+        assert_eq!(FqRuntime::from(Q100 + 7).lift(), 7);
+        assert!(is_probable_prime((1 << 108) - 59));
+        assert!(!is_probable_prime(((1u128 << 54) - 33) * ((1u128 << 53) - 111)));
     }
 
     #[test]

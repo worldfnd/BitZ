@@ -7,12 +7,14 @@ pub mod piop;
 pub mod sumcheck;
 
 pub use matrix::{
-    PreparedConstraintMatrices, SpartanMatrixError, bigint_to_fq, build_assignment_mle,
-    build_product_mles,
+    IntegerCoefficient, PreparedConstraintMatrices, PreparedIntegerMatrices, SpartanMatrixError,
+    bigint_to_fq, bigint_to_fq_in, build_assignment_mle, build_product_mles,
+    build_product_mles_in,
 };
 pub use piop::{
-    SpartanError, SpartanPiopProof, prove_spartan_piop, verify_spartan_proof,
-    verify_spartan_with_mle_claim,
+    SpartanError, SpartanPiopProof, prove_spartan_piop, prove_spartan_piop_absorbed,
+    prove_spartan_piop_sampled, verify_spartan_proof, verify_spartan_proof_absorbed,
+    verify_spartan_proof_sampled, verify_spartan_with_mle_claim,
 };
 
 pub use sumcheck::{
