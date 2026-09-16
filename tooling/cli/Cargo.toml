@@ -1,0 +1,22 @@
+[package]
+name = "bitz-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+argh.workspace = true
+circuit.workspace = true
+common.workspace = true
+field = { workspace = true, features = ["spongefish"] }
+num-traits.workspace = true
+pcs.workspace = true
+poly.workspace = true
+prover.workspace = true
+spartan = { path = "../../crates/spartan" }
+thiserror.workspace = true
+transcript.workspace = true
+verifier.workspace = true
