@@ -1,4 +1,4 @@
-//! Circuit proof composition and adapters used by the BitZ CLI.
+//! Circuit proof composition and benchmark execution for the BitZ CLI.
 
+pub mod benchmark;
 pub mod end_to_end;
-pub mod sha256;
