@@ -18,9 +18,6 @@ num-traits.workspace = true
 pcs.workspace = true
 poly.workspace = true
 prover.workspace = true
-rand.workspace = true
-rayon.workspace = true
-sha2 = { version = "0.10", features = ["compress"] }
 spartan = { path = "../../crates/spartan" }
 thiserror.workspace = true
 transcript.workspace = true
