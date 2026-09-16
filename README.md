@@ -18,7 +18,40 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets
 ```
 
-[todo]: end to end prove command and benchmarks
+## Prove and verify
+
+Prove eight SHA-256 compression steps and verify the proof:
+
+```sh
+cargo run --release -p bitz-cli -- circuit-e2e \
+  --circuit sha256-chain --num-blocks 8 --threads 1
+```
+
+The command generates random inputs and reports timings for each proof stage.
+All input and output bits are public.
+Select the workload with `--circuit`:
+
+| Circuit                | Workload                                                                  |
+| ---------------------- | ------------------------------------------------------------------------- |
+| `sha256-compression`   | One raw block without padding.                                            |
+| `sha256-chain`         | One or more raw blocks without padding.                                   |
+| `sha256-block-aligned` | A block-aligned message with SHA-256 padding; empty messages are allowed. |
+| `sha256-2kb`           | A 2 KiB message with SHA-256 padding.                                     |
+
+Use `--num-blocks` to set the chain or block-aligned message length in 64-byte blocks.
+Use `--threads` to set the number of worker threads.
+
+## Benchmarks
+
+Run all SHA-256 circuit benchmarks with one Rayon worker:
+
+```sh
+RAYON_NUM_THREADS=1 cargo bench -p bitz-cli --bench circuits
+```
+
+The suite measures all four workloads through the complete proof process. It also measures setup, witness generation, commitment, proving, and verification separately. Chain and block-aligned benchmarks use one input block.
+
+Set `RAYON_NUM_THREADS` to change the number of worker threads.
 
 ## Layout
 
