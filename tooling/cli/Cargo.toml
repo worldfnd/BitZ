@@ -1,0 +1,28 @@
+[package]
+name = "bitz-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "circuit-e2e"
+path = "src/main.rs"
+
+[dependencies]
+circuit.workspace = true
+common.workspace = true
+field = { workspace = true, features = ["spongefish"] }
+num-traits.workspace = true
+pcs.workspace = true
+poly.workspace = true
+prover.workspace = true
+rayon.workspace = true
+spartan = { path = "../../crates/spartan" }
+thiserror.workspace = true
+transcript.workspace = true
+verifier.workspace = true
+
+[dev-dependencies]
+sha2 = "0.10"
