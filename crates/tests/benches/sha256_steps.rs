@@ -270,7 +270,8 @@ fn run(instance: &Sha256Instance<Q>, batch: &Sha256Batch) -> (Run, Proof) {
     (Run { prove, verify }, proof)
 }
 
-/// The post-GKR sumcheck for whichever form the transposition left.
+/// The post-GKR sumcheck on the claim the transposition left, on its own
+/// transcript.
 fn sumcheck_prover(query: &OpeningQuery, packed: &[F128], transcript: &mut ProverState) {
     let OpeningQuery::InnerProduct { claim } = query else {
         unreachable!("the transposition leaves an inner-product claim");

@@ -117,8 +117,9 @@ pub enum StatementBinding {
     /// Uses a statement that the caller already bound.
     ///
     /// The caller must bind the same PCS parameters, commitment, query variant, fields, and target.
-    /// For inner products, this covers both factor lengths, both factors, and the original target.
-    /// The opening code still binds the MLE claim that sumcheck returns.
+    /// For inner products, this covers both factor lengths, both factors (`Bind` absorbs a digest
+    /// of them), and the original target. The opening code still binds the MLE claim the sumcheck
+    /// returns.
     AlreadyBound,
 }
 

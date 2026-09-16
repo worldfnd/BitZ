@@ -169,8 +169,8 @@ pub fn verifier_transcript(proof: &Proof) -> VerifierState<'_> {
 }
 
 /// A batch of independent SHA-256 compressions as the two tables the virtual
-/// pipeline works on (2.2. "Virtual F_2-linear transforms in F2Z and
-/// NP-complete dually linear relations").
+/// pipeline works on (2.4. "Virtual F_2-linear transforms, NP-complete
+/// multi-domain linear relations, and hybrid proof systems").
 ///
 /// Compression `j` is column `j` of both tables. Its 20456 assignment cells
 /// `h_j = M_0 (1, f_j)` fill the assignment column's first rows, with the
@@ -280,10 +280,10 @@ pub fn compression_map(log_compressions: usize) -> CompressionMap {
 /// The batch's map: `Id (x) M_0`, one compression per column.
 ///
 /// The transposition goes column by column: compression `c`'s cells are
-/// rows `c 2^15 ..` of `h` and its bits rows `c 2^13 ..` of `f`, so `M_0^T`
-/// moves the weights on the one onto the other. The constant cell is not in
-/// the table, so its row weighs nothing; the constant column's weights add
-/// up across the compressions and leave the target.
+/// entries `c 2^15 ..` of `h` and its bits entries `c 2^13 ..` of `f`, so
+/// `M_0^T` moves the weights on the one onto the other. The constant cell is
+/// not in the table, so its row weighs nothing; the constant column's
+/// weights add up across the compressions and leave the target.
 #[derive(Debug)]
 pub struct CompressionMap {
     pub compression: MaterializedMTranspose,
@@ -337,7 +337,8 @@ impl VirtualMap for CompressionMap {
     }
 }
 
-/// Stands in for the PIOP (step 3 of 2.1. "A simple version of BitZ").
+/// Stands in for the PIOP (Step 3 of 5. "An end-to-end F2Z-based SNARK over
+/// any finitely generated ring").
 ///
 /// A PIOP ends on an evaluation claim `MLE[h](r) = y` on the assignment. The
 /// mock squeezes `r` and has the prover compute `y` from `h` and send it,

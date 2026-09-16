@@ -18,10 +18,5 @@ rayon = { workspace = true, optional = true }
 transcript = { workspace = true }
 
 [dev-dependencies]
-divan = { workspace = true }
 rand_core = { workspace = true }
 rand_pcg = { workspace = true }
-
-[[bench]]
-name = "reduce"
-harness = false

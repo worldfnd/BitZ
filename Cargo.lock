@@ -1046,7 +1046,6 @@ name = "post_gkr"
 version = "0.1.0"
 dependencies = [
  "common",
- "divan",
  "field",
  "num-traits",
  "poly",

@@ -73,10 +73,7 @@ fn inner_product_proof_composes_sumcheck_with_a_bound_mle_opening() {
     verify(
         &fixture.pcs,
         &fixture.root,
-        &OpeningQuery::Mle {
-            point: reduced.point,
-            target: reduced.target,
-        },
+        &reduced,
         StatementBinding::Bind,
         &mut verifier,
     )

@@ -1,29 +1,27 @@
-//! Step 5.3 of 2.1. "A simple version of BitZ": from the grand product's linear
-//! claim on the committed bits to the evaluation claim the opening takes.
+//! Step 6 of 2.1. "The prime field case": from the GKR's inner product
+//! claim on the committed bits to the MLE evaluation claim the opening takes.
 //!
-//! The grand product (6. "A GKR protocol for low entropy batched grand
-//! products via lookup tables") ends on `<omega (x) eq(., r_c), f> = C - 1`
+//! The GKR protocol ends on `<omega (x) eq(., r_c), f> = C - 1`
 //! over the `2^t x 2^s` committed bits `f`, a `LinearClaim<F128>` with row
 //! factor `omega` and column factor `eq(., r_c)`. A virtualization `h = M f`
-//! (2.2. "Virtual F_2-linear transforms in F2Z and NP-complete dually linear
-//! relations") moves it onto `f` as `<M^T w, f>`, one weight per bit: the
-//! same type with a single column of weight one.
+//! (2.4. "Virtual F_2-linear transforms, NP-complete multi-domain linear
+//! relations, and hybrid proof systems") moves it onto `f` as `<M^T w, f>`,
+//! one weight per bit: the same type with a single column of weight one.
 //!
 //! The opening scheme (`pcs`) proves evaluation claims `MLE[f](r) = v` and
-//! does the ring switch from the bits to the packed vector itself (Appendix
-//! B. "Ring switching via Galois orbits"). This crate's sumcheck turns the
-//! linear claim into such an evaluation claim: all `m = t + s` variables
-//! are bound against the bits, the row ones first as the bits are indexed.
-//! The verifier's closing weight `MLE[omega](rho_b) MLE[eq](rho_c)` costs
-//! `2^t + 2^s` multiplications, so it is linear in the bits only when a
-//! factor is.
+//! does the ring switch from the bits to the packed vector itself (Binius's,
+//! as Step 6 cites it). This crate's sumcheck turns the linear claim into
+//! such an evaluation claim: all `m = t + s` variables are bound against the
+//! bits, the row ones first as the bits are indexed. The verifier's closing
+//! weight `MLE[rows](rho_b) MLE[columns](rho_c)` costs `2^t + 2^s`
+//! multiplications, so it is linear in the bits only when a factor is.
 //!
 //! The first round is taken off the packed bits: a bit is zero or one, so
 //! the round's coefficients are sums of weights with no multiplication, and
-//! the table the prover folds to has one entry per two bits. The weights
-//! are never written out in full: the folded table is the folded row factor
-//! tensored with the column factor. Proof: `2m + 1` elements, `rho` low
-//! coordinate first ([`MleClaim`]).
+//! the tables the prover folds to have one entry per two bits. The weights
+//! are never written out in full: their folded table is the folded row
+//! factor tensored with the column factor. Proof: `2m + 1` elements, `rho`
+//! low coordinate first ([`OpeningQuery::Mle`]).
 //!
 //! # Transcript
 //!
@@ -37,8 +35,9 @@ mod sumcheck;
 #[cfg(test)]
 mod test_util;
 
-use common::LinearClaim;
+use crate::sumcheck::{Pair, RoundMessage};
 use common::shape::PACK_BITS;
+use common::{LinearClaim, OpeningQuery};
 use field::F128;
 use num_traits::{ConstOne, ConstZero};
 #[cfg(feature = "parallel")]
@@ -46,22 +45,6 @@ use poly::parallel::workload_size;
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 use transcript::{ProverState, VerifierState};
-
-use crate::sumcheck::{
-    Pair, RoundMessage, advance, evaluate, folded, prove_evaluation, prove_rounds,
-    verify_evaluation, verify_rounds,
-};
-
-/// The evaluation claim the sumcheck leaves: `MLE[f](point) = target` over
-/// the committed bits.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MleClaim {
-    /// The challenges, low coordinate first: the `t` row coordinates then
-    /// the `s` column ones.
-    pub point: Vec<F128>,
-    /// `v`, the prover's closing evaluation.
-    pub target: F128,
-}
 
 /// A reduction the prover cannot run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,21 +67,22 @@ pub enum VerifyError {
 /// The bits one packed element carries.
 const ELEMENT_BITS: usize = 1 << PACK_BITS;
 
-/// The even bit positions of a packed element.
-const EVEN: u128 = 0x5555_5555_5555_5555_5555_5555_5555_5555;
+/// The even bit positions of a packed element, `0b01010101...`
+const EVEN: u128 = 0x55555555555555555555555555555555;
 
-/// Packed elements per parallel task: the weights they carry fill the cache
-/// budget.
+/// Packed elements per parallel task, enough to fill the cache.
 #[cfg(feature = "parallel")]
 const ELEMENTS_PER_TASK: usize = workload_size::<F128>() / ELEMENT_BITS;
 
 /// Runs the sumcheck for `claim` on `packed`, the committed `f` column
-/// major, and returns the evaluation claim it leaves.
+/// major, and returns the evaluation claim it leaves: `MLE[f](rho) = v` as
+/// an [`OpeningQuery::Mle`], `rho` the challenges low coordinate first and
+/// `v` the prover's closing evaluation.
 pub fn prove(
     claim: &LinearClaim<F128>,
     packed: &[F128],
     transcript: &mut ProverState,
-) -> Result<MleClaim, ProveError> {
+) -> Result<OpeningQuery, ProveError> {
     prove_factors(
         claim.row_weights(),
         claim.column_weights(),
@@ -114,7 +98,7 @@ pub fn prove(
 pub fn verify(
     claim: &LinearClaim<F128>,
     transcript: &mut VerifierState<'_>,
-) -> Result<MleClaim, VerifyError> {
+) -> Result<OpeningQuery, VerifyError> {
     verify_factors(
         claim.row_weights(),
         claim.column_weights(),
@@ -131,7 +115,7 @@ fn prove_factors(
     target: F128,
     packed: &[F128],
     transcript: &mut ProverState,
-) -> Result<MleClaim, ProveError> {
+) -> Result<OpeningQuery, ProveError> {
     let factors = Factors { rows, columns };
     if packed.len() != factors.packed_len() {
         return Err(ProveError::WitnessLengthMismatch);
@@ -145,13 +129,10 @@ fn prove_factors(
     let challenge: F128 = transcript.verifier_message();
     let running = advance(target, message, challenge);
     let mut pair = Pair::new(factors.folded(challenge), bind_first(packed, challenge));
-
-    let rounds = factors.log_bits() - 1;
-    let (rest, running) = prove_rounds(&mut pair, rounds, running, transcript);
-    let target = prove_evaluation(&pair, running, transcript);
+    let (rest, target) = sumcheck::prove(&mut pair, running, transcript);
     let mut point = vec![challenge];
     point.extend(rest);
-    Ok(MleClaim { point, target })
+    Ok(OpeningQuery::Mle { point, target })
 }
 
 /// [`verify`] on the claim's parts.
@@ -160,14 +141,16 @@ fn verify_factors(
     columns: &[F128],
     target: F128,
     transcript: &mut VerifierState<'_>,
-) -> Result<MleClaim, VerifyError> {
+) -> Result<OpeningQuery, VerifyError> {
     let log_rows = rows.len().trailing_zeros() as usize;
     let rounds = log_rows + columns.len().trailing_zeros() as usize;
-    let (point, running) = verify_rounds(rounds, target, transcript)?;
     // `MLE[rows (x) columns](rho) = MLE[rows](rho_b) MLE[columns](rho_c)`.
-    let weight = evaluate(rows, &point[..log_rows]) * evaluate(columns, &point[log_rows..]);
-    let target = verify_evaluation(weight, running, transcript)?;
-    Ok(MleClaim { point, target })
+    let weight = |point: &[F128]| {
+        sumcheck::evaluate(rows, &point[..log_rows])
+            * sumcheck::evaluate(columns, &point[log_rows..])
+    };
+    let (point, target) = sumcheck::verify(rounds, target, weight, transcript)?;
+    Ok(OpeningQuery::Mle { point, target })
 }
 
 /// The weights `rows (x) columns` over the bits, read without being written
@@ -179,10 +162,6 @@ struct Factors<'a> {
 }
 
 impl Factors<'_> {
-    fn log_bits(&self) -> usize {
-        (self.rows.len() * self.columns.len()).trailing_zeros() as usize
-    }
-
     fn packed_len(&self) -> usize {
         (self.rows.len() >> PACK_BITS) * self.columns.len()
     }
@@ -198,7 +177,10 @@ impl Factors<'_> {
     fn weighted_sum(&self, packed: &[F128]) -> F128 {
         let element = |(index, &element): (usize, &F128)| -> F128 {
             let (rows, column) = self.element(index);
-            column * set_bits(bits(element)).map(|v| rows[v]).sum::<F128>()
+            column
+                * iter_over_set_bits(element.to_u128())
+                    .map(|v| rows[v])
+                    .sum::<F128>()
         };
         #[cfg(feature = "parallel")]
         return packed
@@ -218,9 +200,9 @@ impl Factors<'_> {
     fn first_message(&self, packed: &[F128]) -> RoundMessage {
         let element = |(index, &element): (usize, &F128)| -> (F128, F128) {
             let (rows, column) = self.element(index);
-            let bits = bits(element);
-            let a0: F128 = set_bits(bits & EVEN).map(|v| rows[v]).sum();
-            let a2: F128 = set_bits((bits ^ (bits >> 1)) & EVEN)
+            let bits = element.to_u128();
+            let a0: F128 = iter_over_set_bits(bits & EVEN).map(|v| rows[v]).sum();
+            let a2: F128 = iter_over_set_bits((bits ^ (bits >> 1)) & EVEN)
                 .map(|v| rows[v] + rows[v + 1])
                 .sum();
             (column * a0, column * a2)
@@ -245,7 +227,7 @@ impl Factors<'_> {
     /// The weights with their first variable bound: the folded row factor
     /// tensored with the column factor, one entry per two bits.
     fn folded(&self, challenge: F128) -> Vec<F128> {
-        let rows = folded(self.rows, challenge);
+        let rows = sumcheck::folded(self.rows, challenge);
         let mut table = Vec::with_capacity(rows.len() * self.columns.len());
         for &column in self.columns {
             table.extend(rows.iter().map(|&row| column * row));
@@ -254,14 +236,8 @@ impl Factors<'_> {
     }
 }
 
-/// `lo || hi` as one word, bit `v` the row at offset `v` of the 128 the
-/// element covers (`common::BitTable`).
-fn bits(element: F128) -> u128 {
-    u128::from(element.lo) | (u128::from(element.hi) << 64)
-}
-
 /// The positions of the set bits of `word`, ascending.
-fn set_bits(mut word: u128) -> impl Iterator<Item = usize> {
+fn iter_over_set_bits(mut word: u128) -> impl Iterator<Item = usize> {
     std::iter::from_fn(move || {
         (word != 0).then(|| {
             let position = word.trailing_zeros() as usize;
@@ -275,10 +251,10 @@ fn set_bits(mut word: u128) -> impl Iterator<Item = usize> {
 /// `(f_0, f_1)`, `f_0 + rho (f_0 + f_1)`, one of `0`, `1`, `rho` and
 /// `1 + rho`.
 fn bind_first(packed: &[F128], challenge: F128) -> Vec<F128> {
-    let one_plus = F128::ONE + challenge;
-    let values = [F128::ZERO, one_plus, challenge, F128::ONE];
+    let challenge_plus_one = challenge + F128::ONE;
+    let values = [F128::ZERO, challenge_plus_one, challenge, F128::ONE];
     let element = |(slot, &element): (&mut [F128], &F128)| {
-        let bits = bits(element);
+        let bits = element.to_u128();
         for (pair, value) in slot.iter_mut().enumerate() {
             *value = values[((bits >> (2 * pair)) & 3) as usize];
         }
@@ -298,6 +274,11 @@ fn bind_first(packed: &[F128], challenge: F128) -> Vec<F128> {
     table
 }
 
+/// `h' = p(rho)` with `a_1 = h + a_2`.
+fn advance(claim: F128, [a0, a2]: RoundMessage, challenge: F128) -> F128 {
+    a0 + challenge * (claim + a2 + challenge * a2)
+}
+
 #[cfg(test)]
 mod tests {
     use common::Shape;
@@ -308,7 +289,15 @@ mod tests {
     use crate::sumcheck::inner_product;
     use crate::test_util::{Leaf, random, rng};
 
-    fn reduced(leaf: &Leaf) -> (MleClaim, Proof) {
+    /// The evaluation claim's parts.
+    fn mle(query: &OpeningQuery) -> (&[F128], F128) {
+        let OpeningQuery::Mle { point, target } = query else {
+            panic!("the sumcheck leaves an evaluation claim");
+        };
+        (point, *target)
+    }
+
+    fn reduced(leaf: &Leaf) -> (OpeningQuery, Proof) {
         let mut prover = build_prover("post_gkr-tests", "reduce");
         let sent = prove_factors(
             &leaf.rows,
@@ -321,7 +310,7 @@ mod tests {
         (sent, prover.finish())
     }
 
-    fn verified(leaf: &Leaf, proof: &Proof) -> Result<MleClaim, VerifyError> {
+    fn verified(leaf: &Leaf, proof: &Proof) -> Result<OpeningQuery, VerifyError> {
         let mut verifier = build_verifier("post_gkr-tests", "reduce", proof);
         let received = verify_factors(&leaf.rows, &leaf.columns, leaf.target, &mut verifier)?;
         assert!(verifier.check_eof().is_ok());
@@ -332,11 +321,11 @@ mod tests {
     fn set_bits_are_read_in_ascending_order() {
         let element = F128::new(0b1011, 1 << 63);
         assert_eq!(
-            set_bits(bits(element)).collect::<Vec<_>>(),
+            iter_over_set_bits(element.to_u128()).collect::<Vec<_>>(),
             vec![0, 1, 3, 127]
         );
-        assert_eq!(set_bits(0).count(), 0);
-        assert_eq!(set_bits(u128::MAX).count(), 128);
+        assert_eq!(iter_over_set_bits(0).count(), 0);
+        assert_eq!(iter_over_set_bits(u128::MAX).count(), 128);
     }
 
     /// Factored over several columns, and a single column of weight one:
@@ -351,10 +340,11 @@ mod tests {
 
             let received = verified(&leaf, &proof).unwrap();
             assert_eq!(sent, received);
-            assert_eq!(received.point.len(), 10);
+            let (point, target) = mle(&received);
+            assert_eq!(point.len(), 10);
             assert_eq!(
-                leaf.bits_extension().evaluate(&received.point).unwrap(),
-                received.target,
+                leaf.bits_extension().evaluate(point).unwrap(),
+                target,
                 "{log_rows} x {log_columns}"
             );
         }
@@ -376,7 +366,8 @@ mod tests {
         let proof = prover.finish();
         let mut verifier = build_verifier("post_gkr-tests", "reduce", &proof);
         assert_eq!(verify(&claim, &mut verifier), Ok(sent.clone()));
-        assert_eq!(leaf.evaluate(&sent.point), sent.target);
+        let (point, target) = mle(&sent);
+        assert_eq!(leaf.evaluate(point), target);
     }
 
     /// The first round off the bits sends what the generic round over the
@@ -397,7 +388,7 @@ mod tests {
 
         let mut generic = Pair::new(weights.clone(), written_out.clone());
         let mut prover = build_prover("post_gkr-tests", "reduce");
-        let (point, _) = prove_rounds(&mut generic, 1, leaf.target, &mut prover);
+        let (point, _) = sumcheck::prove(&mut generic, leaf.target, &mut prover);
         let proof = prover.finish();
         let message = factors.first_message(&leaf.packed);
         assert_eq!(
@@ -407,7 +398,7 @@ mod tests {
 
         let fold = |table: Vec<F128>| {
             let mut folded = DenseMultilinearExtension { evaluations: table };
-            folded.fold(&point).unwrap();
+            folded.fold(&point[..1]).unwrap();
             folded.evaluations
         };
         assert_eq!(bind_first(&leaf.packed, point[0]), fold(written_out));

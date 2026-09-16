@@ -157,8 +157,9 @@ impl<'a, const Q: u128, M: VirtualMap> VirtualStatement<'a, Q, M> {
     ///
     /// Coefficients use `column * row_count + row` order. The map drops weights on
     /// virtual padding. The opening subtracts the constant-column weight from the
-    /// target and zero-pads the remaining weights to the commitment size. A
-    /// single-column `InnerProduct` holds the dense weights with column weight one.
+    /// target and zero-pads the remaining weights to the commitment size, refusing
+    /// more weights than it has. A single-column `InnerProduct` holds the dense
+    /// weights with column weight one.
     pub fn transpose_query(&self, query: OpeningQuery) -> Result<OpeningQuery, VirtualMapError> {
         let shape = self.params.claim().shape();
         let (weights, target) = match query {
@@ -200,11 +201,11 @@ impl<'a, const Q: u128, M: VirtualMap> VirtualStatement<'a, Q, M> {
     }
 }
 
-/// `column_weights (x) row_weights` written out per bit of `h`, one column
+/// `row_weights (x) column_weights` written out per bit of `h`, one column
 /// after another.
 fn flatten(row_weights: &[F128], column_weights: &[F128]) -> Vec<F128> {
     let mut weights = vec![F128::ZERO; row_weights.len() * column_weights.len()];
-    let column = |(slot, &scale): (&mut [F128], &F128)| {
+    let process_column = |(slot, &scale): (&mut [F128], &F128)| {
         for (weight, &row) in slot.iter_mut().zip(row_weights) {
             *weight = scale * row;
         }
@@ -213,12 +214,12 @@ fn flatten(row_weights: &[F128], column_weights: &[F128]) -> Vec<F128> {
     weights
         .par_chunks_mut(row_weights.len())
         .zip(column_weights)
-        .for_each(column);
+        .for_each(process_column);
     #[cfg(not(feature = "parallel"))]
     weights
         .chunks_mut(row_weights.len())
         .zip(column_weights)
-        .for_each(column);
+        .for_each(process_column);
     weights
 }
 

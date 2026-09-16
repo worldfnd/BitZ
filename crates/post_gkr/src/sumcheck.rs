@@ -1,6 +1,6 @@
 //! The degree-two sumcheck: from `sum_x W(x) V(x) = h_0` over two tables to
-//! `MLE[V](rho) = v`, with `MLE[W](rho) * v = h_n` left for the caller to
-//! check.
+//! `MLE[V](rho) = v`, the verifier checking `MLE[W](rho) * v = h_n` with the
+//! `MLE[W](rho)` its caller computes.
 //!
 //! Each round splits off the lowest remaining variable of both tables and
 //! sends the round polynomial
@@ -16,16 +16,15 @@
 //! in any round surfaces in the closing check. Soundness error at most
 //! `2n / |E|` for `n` rounds, plus the probability that `MLE[W](rho) = 0`.
 
+use crate::VerifyError;
 use common::shape::PACK_BITS;
 use field::{F128, Wide256};
+use poly::eq_table;
 #[cfg(feature = "parallel")]
 use poly::parallel::workload_size;
-use poly::{DenseMultilinearExtension, eq_table};
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 use transcript::{ProverState, VerifierState};
-
-use crate::VerifyError;
 
 /// `(a_0, a_2)` of `p(X) = a_0 + a_1 X + a_2 X^2`; `a_1` the running claim
 /// implies.
@@ -53,7 +52,7 @@ impl Pair {
     }
 
     /// `(MLE[W](rho), MLE[V](rho))` once every variable is bound.
-    pub(crate) fn bound(&self) -> (F128, F128) {
+    fn bound(&self) -> (F128, F128) {
         debug_assert_eq!(self.weights.len(), 1);
         (self.weights[0], self.values[0])
     }
@@ -62,7 +61,28 @@ impl Pair {
     /// over adjacent entries, since `MLE[W](X, x') = w_0 + X (w_0 + w_1)`
     /// and likewise for `MLE[V]`.
     fn message(&self) -> RoundMessage {
-        let (a0, a2) = coefficients(&self.weights, &self.values);
+        fn coeffs(this: &Pair) -> (Wide256, Wide256) {
+            // Large tables are split into cache-sized chunks summed on the Rayon pool.
+            #[cfg(feature = "parallel")]
+            {
+                // An even chunk length keeps every pair inside one chunk.
+                let chunk = workload_size::<F128>() & !1;
+                if this.weights.len() > chunk {
+                    return this
+                        .weights
+                        .par_chunks(chunk)
+                        .zip(this.values.par_chunks(chunk))
+                        .map(|(w, v)| coefficients_serial(w, v))
+                        .reduce(
+                            || (Wide256::zero(), Wide256::zero()),
+                            |(a0, a2), (b0, b2)| (a0 + b0, a2 + b2),
+                        );
+                }
+            }
+            coefficients_serial(&this.weights, &this.values)
+        }
+
+        let (a0, a2) = coeffs(self);
         [a0.reduce(), a2.reduce()]
     }
 
@@ -72,9 +92,36 @@ impl Pair {
     }
 }
 
+/// Runs the sumcheck over `pair`, folding it in place, and writes the
+/// closing evaluation. Returns the challenges in the order they were drawn
+/// and `v = MLE[V](rho)`.
+pub(crate) fn prove(
+    pair: &mut Pair,
+    claim: F128,
+    transcript: &mut ProverState,
+) -> (Vec<F128>, F128) {
+    let rounds = pair.weights.len().trailing_zeros() as usize;
+    let (point, running) = prove_rounds(pair, rounds, claim, transcript);
+    let evaluation = prove_evaluation(pair, running, transcript);
+    (point, evaluation)
+}
+
+/// Replays the sumcheck from the records and checks the closing evaluation
+/// against `weight(rho) = MLE[W](rho)`. Returns the challenges and `v`.
+pub(crate) fn verify(
+    rounds: usize,
+    claim: F128,
+    weight: impl FnOnce(&[F128]) -> F128,
+    transcript: &mut VerifierState<'_>,
+) -> Result<(Vec<F128>, F128), VerifyError> {
+    let (point, running) = verify_rounds(rounds, claim, transcript)?;
+    let evaluation = verify_evaluation(weight(&point), running, transcript)?;
+    Ok((point, evaluation))
+}
+
 /// Runs `rounds` rounds over `pair`, folding it in place. Returns the
 /// challenges in the order they were drawn and the running claim.
-pub(crate) fn prove_rounds(
+fn prove_rounds(
     pair: &mut Pair,
     rounds: usize,
     mut claim: F128,
@@ -85,7 +132,7 @@ pub(crate) fn prove_rounds(
         let message = pair.message();
         transcript.prover_message(&message);
         let challenge: F128 = transcript.verifier_message();
-        claim = advance(claim, message, challenge);
+        claim = super::advance(claim, message, challenge);
         point.push(challenge);
         pair.fold(challenge);
     }
@@ -94,7 +141,7 @@ pub(crate) fn prove_rounds(
 
 /// Replays `rounds` rounds from the records alone. Returns the challenges
 /// and the running claim.
-pub(crate) fn verify_rounds(
+fn verify_rounds(
     rounds: usize,
     mut claim: F128,
     transcript: &mut VerifierState<'_>,
@@ -105,19 +152,14 @@ pub(crate) fn verify_rounds(
             .prover_message()
             .map_err(|_| VerifyError::MalformedProof)?;
         let challenge: F128 = transcript.verifier_message();
-        claim = advance(claim, message, challenge);
+        claim = super::advance(claim, message, challenge);
         point.push(challenge);
     }
     Ok((point, claim))
 }
 
-/// `h' = p(rho)` with `a_1 = h + a_2`.
-pub(crate) fn advance(claim: F128, [a0, a2]: RoundMessage, challenge: F128) -> F128 {
-    a0 + challenge * (claim + a2 + challenge * a2)
-}
-
 /// Writes `v = MLE[V](rho)`, the one entry left in the folded pair.
-pub(crate) fn prove_evaluation(pair: &Pair, claim: F128, transcript: &mut ProverState) -> F128 {
+fn prove_evaluation(pair: &Pair, claim: F128, transcript: &mut ProverState) -> F128 {
     let (weight, evaluation) = pair.bound();
     debug_assert_eq!(weight * evaluation, claim);
     transcript.prover_message(&evaluation);
@@ -125,7 +167,7 @@ pub(crate) fn prove_evaluation(pair: &Pair, claim: F128, transcript: &mut Prover
 }
 
 /// Reads `v` and checks `MLE[W](rho) * v = h` for the caller's `MLE[W](rho)`.
-pub(crate) fn verify_evaluation(
+fn verify_evaluation(
     bound_weight: F128,
     claim: F128,
     transcript: &mut VerifierState<'_>,
@@ -139,6 +181,11 @@ pub(crate) fn verify_evaluation(
     Ok(evaluation)
 }
 
+/// Fixes the lowest remaining variable of `table` at `challenge`.
+pub(crate) fn fold(table: &mut Vec<F128>, challenge: F128) {
+    *table = folded(table, challenge)
+}
+
 /// [`fold`] into a fresh table, for a table that is only borrowed.
 pub(crate) fn folded(table: &[F128], challenge: F128) -> Vec<F128> {
     let entry = |pair: &[F128]| pair[0] + challenge * (pair[0] + pair[1]);
@@ -147,15 +194,6 @@ pub(crate) fn folded(table: &[F128], challenge: F128) -> Vec<F128> {
         return table.par_chunks_exact(2).map(entry).collect();
     }
     table.chunks_exact(2).map(entry).collect()
-}
-
-/// Fixes the lowest remaining variable of `table` at `challenge`.
-pub(crate) fn fold(table: &mut Vec<F128>, challenge: F128) {
-    let mut extension = DenseMultilinearExtension {
-        evaluations: std::mem::take(table),
-    };
-    extension.fold(&[challenge]).expect("a variable remains");
-    *table = extension.evaluations;
 }
 
 /// `MLE[weights](point)`, one multiplication per weight: the weights have
@@ -190,28 +228,6 @@ pub(crate) fn inner_product(a: &[F128], b: &[F128]) -> F128 {
         .reduce()
 }
 
-/// `(a_0, a_2)` over the adjacent pairs of `weights` and `values`, left
-/// unreduced. Large tables are split into cache-sized chunks summed on the
-/// Rayon pool.
-fn coefficients(weights: &[F128], values: &[F128]) -> (Wide256, Wide256) {
-    #[cfg(feature = "parallel")]
-    {
-        // An even chunk length keeps every pair inside one chunk.
-        let chunk = workload_size::<F128>() & !1;
-        if weights.len() > chunk {
-            return weights
-                .par_chunks(chunk)
-                .zip(values.par_chunks(chunk))
-                .map(|(w, v)| coefficients_serial(w, v))
-                .reduce(
-                    || (Wide256::zero(), Wide256::zero()),
-                    |(a0, a2), (b0, b2)| (a0 + b0, a2 + b2),
-                );
-        }
-    }
-    coefficients_serial(weights, values)
-}
-
 fn coefficients_serial(weights: &[F128], values: &[F128]) -> (Wide256, Wide256) {
     let mut a0 = Wide256::zero();
     let mut a2 = Wide256::zero();
@@ -225,6 +241,7 @@ fn coefficients_serial(weights: &[F128], values: &[F128]) -> (Wide256, Wide256) 
 #[cfg(test)]
 mod tests {
     use num_traits::{ConstOne, ConstZero};
+    use poly::DenseMultilinearExtension;
     use transcript::{build_prover, build_verifier};
 
     use super::*;
@@ -245,18 +262,6 @@ mod tests {
     }
 
     #[test]
-    fn the_coefficients_agree_between_the_chunked_and_the_serial_sums() {
-        // Larger than one cache-sized chunk, and not a multiple of it.
-        let pair = pair(15, &mut rng(0));
-        let (a0, a2) = coefficients(&pair.weights, &pair.values);
-        let (b0, b2) = coefficients_serial(&pair.weights, &pair.values);
-        assert_eq!((a0.reduce(), a2.reduce()), (b0.reduce(), b2.reduce()));
-        let (a0, a2) = coefficients(&pair.weights[..6000], &pair.values[..6000]);
-        let (b0, b2) = coefficients_serial(&pair.weights[..6000], &pair.values[..6000]);
-        assert_eq!((a0.reduce(), a2.reduce()), (b0.reduce(), b2.reduce()));
-    }
-
-    #[test]
     fn the_message_is_the_round_polynomial() {
         let mut rng = rng(1);
         let pair = pair(5, &mut rng);
@@ -268,7 +273,10 @@ mod tests {
         );
         assert_eq!(message[0], round_polynomial(&pair, F128::ZERO));
         let rho = random(&mut rng);
-        assert_eq!(advance(claim, message, rho), round_polynomial(&pair, rho));
+        assert_eq!(
+            crate::advance(claim, message, rho),
+            round_polynomial(&pair, rho)
+        );
     }
 
     #[test]

@@ -2,12 +2,12 @@
 //!
 //! Ported from f2z-pcs's `benches/sha256_compressions.rs`. The witness is the
 //! circuit crate's; the committed bits `f` and the assignment `h = M f` are
-//! laid out one compression per column (2.2. "Virtual F_2-linear transforms
-//! in F2Z and NP-complete dually linear relations"). The PIOP
-//! ([`MockSpartan`]) is mocked; the commitment, the fold, the grand product
-//! (the `gkr` crate), the transposition onto `f`, the
-//! post-GKR sumcheck and the opening are real. `sha256_steps` times the same
-//! pipeline one step at a time.
+//! laid out one compression per column (2.4. "Virtual F_2-linear transforms,
+//! NP-complete multi-domain linear relations, and hybrid proof systems"). The
+//! PIOP ([`MockSpartan`]) is mocked; the commitment, the fold, the grand product
+//! (the `gkr` crate), the transposition onto `f`, the post-GKR sumcheck and
+//! the opening are real. `sha256_steps` times the same pipeline one step at
+//! a time.
 //!
 //! Run with `RUSTFLAGS="-C target-cpu=native" cargo bench -p tests --bench sha256`.
 //! Knobs:
@@ -189,7 +189,7 @@ fn witness(bencher: Bencher, shape: BenchShape) {
         .bench_local(|| Sha256Batch::generate(shape.log_compressions, SEED));
 }
 
-/// Step 1: the commitment to `f`.
+/// The commitment to `f`.
 #[divan::bench(args = shapes(), sample_count = 3, sample_size = 1)]
 fn commit(bencher: Bencher, shape: BenchShape) {
     let instance = &fixture(shape).instance;
@@ -198,8 +198,8 @@ fn commit(bencher: Bencher, shape: BenchShape) {
         .bench_local(|| instance.pcs.commit(&instance.batch.source).unwrap());
 }
 
-/// Steps 3 to 6 on the committed batch: the mocked PIOP's claim, the fold,
-/// the grand product, the transposition, the sumcheck, the opening.
+/// Everything after the commitment: the mocked PIOP's claim, the fold, the
+/// grand product, the transposition, the sumcheck, the opening.
 #[divan::bench(args = shapes(), sample_count = 3, sample_size = 1)]
 fn prove(bencher: Bencher, shape: BenchShape) {
     let instance = &fixture(shape).instance;
