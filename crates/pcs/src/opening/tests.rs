@@ -1,6 +1,7 @@
 use std::sync::OnceLock;
 
 use common::{LinearClaim, Shape};
+use num_traits::ConstZero;
 use proptest::prelude::*;
 use transcript::{build_prover, build_verifier};
 
@@ -25,7 +26,7 @@ fn fixture() -> &'static Fixture {
     FIXTURE.get_or_init(|| {
         let shape = Shape::new(7, M - 7).unwrap();
         let pcs = Pcs::new(&shape, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
-        let mut witness = vec![F128::default(); pcs.packed_len()];
+        let mut witness = vec![F128::ZERO; pcs.packed_len()];
         witness[SINGLETON / 128].hi = 1 << (SINGLETON % 128 - 64);
         let (root, data) = pcs.commit(&witness).unwrap();
         let rows = (0..shape.rows())

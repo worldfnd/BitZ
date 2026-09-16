@@ -2,7 +2,7 @@
 
 use common::{Root, TableError};
 use field::{F128, Fq};
-use num_traits::ConstOne;
+use num_traits::{ConstOne, ConstZero};
 use pcs::{HashKind, LigeritoProfile, Pcs, VerifyError as PcsVerifyError};
 use prover::ProveError;
 use tests::{
@@ -186,7 +186,7 @@ fn a_witness_of_the_wrong_length_is_refused_before_anything_is_written() {
             &instance.claim,
             &instance.pcs,
             &instance.data,
-            vec![F128::default(); 10],
+            vec![F128::ZERO; 10],
             &mut transcript,
         ),
         Err(ProveError::Witness(TableError::BitCountMismatch))

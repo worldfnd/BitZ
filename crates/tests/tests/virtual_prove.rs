@@ -5,7 +5,7 @@ use common::{
     VirtualMapError, VirtualStatement,
 };
 use field::{F128, Fq, gf128::smallest_generator};
-use num_traits::ConstOne;
+use num_traits::{ConstOne, ConstZero};
 use pcs::{HashKind, LigeritoProfile, Pcs, ProverData};
 use prover::{BitZProver, ProveError, VirtualWitness};
 use tests::{Q, WINDOW, prover_transcript, verifier_transcript};
@@ -63,9 +63,9 @@ impl Instance {
             Fq::from(3u128),
         )
         .unwrap();
-        let mut committed_bits = vec![F128::default(); 1 << committed_shape.log_packed_len()];
+        let mut committed_bits = vec![F128::ZERO; 1 << committed_shape.log_packed_len()];
         committed_bits[0] = F128::from(1u64);
-        let mut virtual_bits = vec![F128::default(); 1 << claim_shape.log_packed_len()];
+        let mut virtual_bits = vec![F128::ZERO; 1 << claim_shape.log_packed_len()];
         virtual_bits[0] = F128::from(3u64);
         virtual_bits[1] = F128::from(2u64);
 
