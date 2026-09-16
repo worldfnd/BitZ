@@ -1,5 +1,10 @@
 //! Virtual prove/verify through GKR, matrix transposition, and the real PCS.
 
+use circuit::{
+    matrix_transpose::MTransposeGenerator,
+    sha256::{ABC_BLOCK, ABC_DIGEST, COMPRESSION_INPUT_BITS, INITIAL_STATE, compression_circuit},
+    witgen::{PackedWitness, Witgen},
+};
 use common::{
     BitZParams, LinearClaim, Root, Shape, TableError, TransposedWeights, VirtualMap,
     VirtualMapError, VirtualStatement,
@@ -305,4 +310,79 @@ fn virtual_bits_inconsistent_with_the_map_cannot_be_opened() {
         ),
         Err(ProveError::Opening(pcs::ProveError::InvalidClaim))
     );
+}
+
+#[test]
+fn sha256_virtual_inner_product_opens_the_committed_bits() {
+    let inputs = std::array::from_fn::<_, COMPRESSION_INPUT_BITS, _>(|index| {
+        let word = if index < 512 {
+            ABC_BLOCK[index / 32]
+        } else {
+            INITIAL_STATE[(index - 512) / 32]
+        };
+        (word >> (index % 32)) & 1 != 0
+    });
+    let mut materializer = MTransposeGenerator::new(inputs.len());
+    let matrix_inputs = materializer.take_boxed_inputs();
+    compression_circuit(&mut materializer, &matrix_inputs);
+    let map = materializer.finish();
+    let mut witgen = Witgen::with_inputs(&inputs);
+    let output = compression_circuit(&mut witgen, &inputs);
+    for (index, bit) in output.into_iter().enumerate() {
+        assert_eq!(bit, (ABC_DIGEST[index / 32] >> (index % 32)) & 1 != 0);
+    }
+    let (f, h) = witgen.into_witnesses();
+    assert_eq!(map.f_len(), f.bit_len() + 1);
+    assert_eq!(map.h_len(), h.bit_len());
+
+    let claim_shape = Shape::new(7, 15).unwrap();
+    let committed_shape = Shape::new(8, 14).unwrap();
+    let params = BitZParams::<Q>::new(claim_shape, smallest_generator()).unwrap();
+    let pack = |witness: &PackedWitness, shape: Shape| {
+        assert!(witness.bit_len() <= 1 << shape.log_bits());
+        let mut packed: Vec<_> = witness
+            .words()
+            .chunks(2)
+            .map(|words| F128::new(words[0], words.get(1).copied().unwrap_or(0)))
+            .collect();
+        packed.resize(1 << shape.log_packed_len(), F128::ZERO);
+        packed
+    };
+    let committed_bits = pack(&f, committed_shape);
+    let virtual_bits = pack(&h, claim_shape);
+    let rows: Vec<_> = (0..claim_shape.rows())
+        .map(|row| Fq::<Q>::from((row + 1) as u128))
+        .collect();
+    let columns: Vec<_> = (0..claim_shape.columns())
+        .map(|column| Fq::<Q>::from((column + 1) as u128))
+        .collect();
+    let target = (0..h.bit_len())
+        .filter(|&index| h.bit(index))
+        .map(|index| rows[index % claim_shape.rows()] * columns[index / claim_shape.rows()])
+        .sum();
+    let claim = LinearClaim::new(&params, rows, columns, target).unwrap();
+    let statement = VirtualStatement::new(params, committed_shape, &map, &claim).unwrap();
+    let pcs = Pcs::new(&committed_shape, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
+    let (root, data) = pcs.commit(&committed_bits).unwrap();
+    let mut transcript = prover_transcript();
+    BitZProver::new(params, WINDOW)
+        .prove_virtual(
+            &statement,
+            &pcs,
+            &data,
+            VirtualWitness {
+                committed_bits,
+                virtual_bits: &virtual_bits,
+            },
+            &mut transcript,
+        )
+        .unwrap();
+    BitZVerifier::new(params, WINDOW)
+        .verify_virtual(
+            &statement,
+            &pcs,
+            root,
+            verifier_transcript(&transcript.finish()),
+        )
+        .unwrap();
 }

@@ -9,6 +9,7 @@ rust-version = "1.97"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
+circuit = { path = "crates/circuit" }
 common = { path = "crates/common" }
 field = { path = "crates/field" }
 host = { path = "crates/host" }
