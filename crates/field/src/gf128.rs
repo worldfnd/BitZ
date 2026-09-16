@@ -65,6 +65,10 @@ pub struct F128 {
     pub hi: u64,
 }
 
+// SAFETY: `repr(C)` with two `u64` fields and no padding or niches, so the
+// all-zero-byte pattern is a valid `F128` (`F128::ZERO`).
+unsafe impl bytemuck::Zeroable for F128 {}
+
 impl F128 {
     /// `X`, whose multiplicative order is the full `2^128 - 1` — checked by
     /// [`is_generator`], not assumed. `X` in AES's `GF(2^8)` has order 51 of
@@ -73,6 +77,13 @@ impl F128 {
 
     pub const fn new(lo: u64, hi: u64) -> Self {
         Self { lo, hi }
+    }
+
+    /// `n` zero elements, allocated via the allocator's zeroing fast path
+    /// (`alloc_zeroed`) rather than `vec![F128::ZERO; n]`'s allocate-then-clone-
+    /// per-element loop.
+    pub fn zeroed_vec(n: usize) -> Vec<Self> {
+        bytemuck::zeroed_vec(n)
     }
 
     #[inline]
@@ -343,7 +354,7 @@ impl WithExtensionDegree for F128 {
 mod tests {
     use super::*;
     use crypto_primitives::ConstField;
-    use rand_core::{RngCore, SeedableRng};
+    use rand_core::{Rng, SeedableRng};
     use rand_pcg::Pcg64;
 
     /// A random field element; the tests only need uniform 128-bit words.

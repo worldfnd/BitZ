@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+bytemuck = { workspace = true, features = ["extern_crate_alloc"] }
 num-traits = { workspace = true }
 crypto-primitives = { workspace = true }
 crypto-primitives-proc-macros = { workspace = true }

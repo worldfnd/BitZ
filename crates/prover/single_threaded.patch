@@ -1,0 +1,57 @@
+diff --git a/crates/gkr/src/lib.rs b/crates/gkr/src/lib.rs
+--- a/crates/gkr/src/lib.rs
++++ b/crates/gkr/src/lib.rs
+@@ -62,14 +62,14 @@
+         // the value at one. Otherwise send the value at zero as usual.
+         let send_one = z == Field::ZERO;
+         let (sum_endpoint, sum_inf) = lo_l
+-            .par_iter_mut()
+-            .zip(lo_r.par_iter_mut())
+-            .zip(hi_l.par_iter())
+-            .zip(hi_r.par_iter())
+-            .zip(eq.par_iter())
+-            .with_min_len(PARALLEL_MIN_LANES)
++            .iter_mut()
++            .zip(lo_r.iter_mut())
++            .zip(hi_l.iter())
++            .zip(hi_r.iter())
++            .zip(eq.iter())
++            // .with_min_len(PARALLEL_MIN_LANES)
+             .fold(
+-                || (Wide256::zero(), Wide256::zero()),
++                (Wide256::zero(), Wide256::zero()),
+                 |(mut sum_endpoint, mut sum_inf), ((((l_lo, r_lo), &l_hi), &r_hi), &e)| {
+                     let (d_l, d_r) = (l_hi - *l_lo, r_hi - *r_lo);
+                     let (l_endpoint, r_endpoint) = if send_one {
+@@ -86,22 +86,22 @@
+ 
+                     (sum_endpoint, sum_inf)
+                 },
+-            )
+-            .reduce(
+-                || (Wide256::zero(), Wide256::zero()),
+-                |(a0, ainf), (b0, binf)| (a0 + b0, ainf + binf),
+             );
++        // .reduce(
++        //     || (Wide256::zero(), Wide256::zero()),
++        //     |(a0, ainf), (b0, binf)| (a0 + b0, ainf + binf),
++        // );
+ 
+         ps.prover_message(&[factor * sum_endpoint.reduce(), factor * sum_inf.reduce()]);
+ 
+         let r = ps.verifier_message();
+         next_point.push_back(r);
+ 
+-        lo_l.par_iter_mut()
+-            .zip(lo_r.par_iter_mut())
+-            .zip(hi_l.par_iter())
+-            .zip(hi_r.par_iter())
+-            .with_min_len(PARALLEL_MIN_LANES)
++        lo_l.iter_mut()
++            .zip(lo_r.iter_mut())
++            .zip(hi_l.iter())
++            .zip(hi_r.iter())
++            // .with_min_len(PARALLEL_MIN_LANES)
+             .for_each(|(((l_lo, r_lo), &l_hi), &r_hi)| {
+                 // Recalculating delta rather than writing it in the top half of the array in the previous loop to save on writes.
+                 // No benchmarking has been done to check the difference.

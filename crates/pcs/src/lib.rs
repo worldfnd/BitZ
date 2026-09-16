@@ -47,6 +47,7 @@
 //! ```
 //! use common::Shape;
 //! use field::F128;
+//! use num_traits::ConstZero;
 //! use pcs::{
 //!     CommitScheme, HashKind, LigeritoProfile, OpeningQuery, Pcs, StatementBinding,
 //! };

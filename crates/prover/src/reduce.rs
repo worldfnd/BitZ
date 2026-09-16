@@ -5,34 +5,57 @@
 //! `sum(row, column) u1[row] * u2[column] * table.bit(column, row)`.
 //! The caller must discharge this claim through the commitment opening.
 
-use common::{BitTable, ClaimError, Fold, LinearClaim, OpeningQuery};
+use common::{BitTable, ClaimError, Fold, LinearClaim, OpeningQuery, TransposeError};
 use field::F128;
 use gkr::{GrandProductCircuit, gpgkr_prove};
-use num_traits::{ConstOne, identities::Zero};
+use num_traits::ConstOne;
 use poly::eq_table;
 use transcript::ProverState;
 
-pub(crate) fn gkr_reduce(
+#[inline(never)]
+fn init_circuit(table: &BitTable, fold: &Fold) -> GrandProductCircuit {
+    let columns = table.shape().columns();
+    let dim = columns * table.shape().rows();
+    let mut leafs = F128::zeroed_vec(dim);
+
+    // TODO optimisation: Handle the leafs and the two layers above it lazily.
+    // Columns occupy the low index bits, so each product tree reduces one column.
+    match table.transpose() {
+        Ok(transposed) => {
+            // Transpose wide tables so each row can be read sequentially.
+            let transposed = transposed.as_table();
+            for (b, &row_image) in fold.row_images.iter().enumerate() {
+                let leafs = &mut leafs[b * columns..(b + 1) * columns];
+                for (leaf, bit) in leafs.iter_mut().zip(transposed.column_bits(b)) {
+                    *leaf = if bit { row_image } else { F128::ONE };
+                }
+            }
+        }
+        Err(TransposeError::ColumnCountTooNarrow) => {
+            // Narrow tables cannot form packed columns after transposition.
+            for (b, &row_image) in fold.row_images.iter().enumerate() {
+                let leafs = &mut leafs[b * columns..(b + 1) * columns];
+                for (c, leaf) in leafs.iter_mut().enumerate() {
+                    *leaf = if table.bit(c, b) {
+                        row_image
+                    } else {
+                        F128::ONE
+                    };
+                }
+            }
+        }
+    }
+
+    GrandProductCircuit::new(leafs)
+}
+
+/// Reduces the grand-product circuit to a factored claim on the committed bits.
+pub fn gkr_reduce(
     transcript: &mut ProverState,
     fold: &Fold,
     table: &BitTable,
 ) -> Result<OpeningQuery, ClaimError> {
-    let dim = table.shape().columns() * table.shape().rows();
-    let mut leafs: Vec<_> = vec![F128::zero(); dim];
-
-    // TODO optimisation: Handle the leafs and the two layers above it lazily.
-    // Columns occupy the low index bits, so each product tree reduces one column.
-    for b in 0..table.shape().rows() {
-        for c in 0..table.shape().columns() {
-            leafs[b * table.shape().columns() + c] = if table.bit(c, b) {
-                fold.row_images[b]
-            } else {
-                F128::ONE
-            };
-        }
-    }
-
-    let circuit = GrandProductCircuit::new(leafs);
+    let circuit = init_circuit(table, fold);
     let (_last_value, witnesses) = circuit.batched_eval(table.shape().columns());
 
     let (mut point, claim) = gpgkr_prove(transcript, &fold.zeta, witnesses);
@@ -120,6 +143,41 @@ mod order_check_ai_test {
         let mut prover = transcript::build_prover("order-check", &F128::ZERO);
         let query = gkr_reduce(&mut prover, &fold, &table).unwrap();
         check_query(&query, &table);
+    }
+
+    #[test]
+    fn factored_claim_matches_for_narrow_tables() {
+        const Q100: u128 = (1 << 100) - 15;
+
+        // Cover one column and both sides of the 128-column transpose boundary.
+        for log_columns in [0, 6, 7] {
+            let shape = Shape::new(22 - log_columns, log_columns).unwrap();
+            let params = BitZParams::<Q100>::new(shape, smallest_generator()).unwrap();
+            let packed = packed_witness(&shape, |column, row| {
+                let bits = (row as u64).wrapping_mul(0x9E3779B97F4A7C15)
+                    ^ (column as u64).wrapping_mul(0xD1B54A32D192ED03);
+                bits >> 63 & 1 == 1
+            });
+            let table = params.table(&packed).unwrap();
+            let row_images = (0..shape.rows())
+                .map(|row| F128::from((row as u128 + 1) * 0x9E3779B97F4A7C15 + 7))
+                .collect();
+            let zeta = (0..shape.log_columns())
+                .map(|index| F128::from((index as u128 + 3) * 0xABCDEF12345 + 1))
+                .collect();
+            let fold = Fold::new(
+                &shape,
+                vec![0; shape.columns()],
+                vec![F128::ONE; shape.columns()],
+                row_images,
+                zeta,
+            )
+            .unwrap();
+
+            let mut prover = transcript::build_prover("narrow-table", &F128::ZERO);
+            let query = gkr_reduce(&mut prover, &fold, &table).unwrap();
+            check_query(&query, &table);
+        }
     }
 
     // Identical columns make the leaf evaluation independent of column coordinates.

@@ -19,7 +19,7 @@ pub use fold::{
 pub use opening::OpeningQuery;
 pub use params::{BitZParams, ParamsError, VirtualParams, VirtualParamsError};
 pub use shape::{Shape, ShapeError};
-pub use table::{BitTable, TableError};
+pub use table::{BitTable, TableError, TransposeError, TransposedBitTable};
 pub use virtual_map::{
     TransposedWeights, VirtualMap, VirtualMapError, VirtualStatement, VirtualStatementError,
 };

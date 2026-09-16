@@ -128,7 +128,7 @@ pub const fn mul_x(a: [u64; 2]) -> [u64; 2] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand_core::{RngCore, SeedableRng};
+    use rand_core::{Rng, SeedableRng};
     use rand_pcg::Pcg64;
 
     fn bit(words: &[u64], i: usize) -> bool {
