@@ -182,6 +182,7 @@ impl ProverData {
 #[cfg(test)]
 mod tests {
     use flock_core::pcs::pack_witness;
+    use num_traits::ConstZero;
     use proptest::prelude::*;
 
     use super::*;
@@ -193,7 +194,7 @@ mod tests {
     #[test]
     fn commitment_is_deterministic_for_packed_boundary_bits() {
         let scheme = Pcs::new(&shape(), LigeritoProfile::Fast, HashKind::Blake3).unwrap();
-        let mut packed_witness = vec![F128::default(); scheme.packed_len()];
+        let mut packed_witness = vec![F128::ZERO; scheme.packed_len()];
         packed_witness[0] = F128::new(1 | (1 << 1) | (1 << 63), 1 | (1 << 63));
         packed_witness[1] = F128::new(1, 0);
         packed_witness.last_mut().unwrap().hi = 1 << 63;
@@ -259,7 +260,7 @@ mod tests {
         #[test]
         fn rejects_arbitrary_short_packed_witnesses(len in 0usize..4096) {
             let pcs = Pcs::new(&shape(), LigeritoProfile::Fast, HashKind::Blake3).unwrap();
-            let packed_witness = vec![F128::default(); len];
+            let packed_witness = vec![F128::ZERO; len];
 
             prop_assert!(matches!(
                 pcs.commit(&packed_witness),

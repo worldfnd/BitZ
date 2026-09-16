@@ -11,7 +11,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use common::{TransposedWeights, VirtualMap, VirtualMapError};
 use field::F128;
-use poly::eq_table;
 use rayon::prelude::*;
 
 use crate::witgen::Z;
@@ -372,18 +371,13 @@ const DIGEST_DOMAIN: &[u8] = b"bitz/virtual-map/csc/v1";
 const DIGEST_CHUNK: usize = 1 << 12;
 
 impl VirtualMap for MaterializedMTranspose {
-    /// `h` is zero-padded to a power of two, so truncating the equality table
-    /// to `row_count` drops only weights that multiply a zero.
-    fn transpose_eq(&self, point: &[F128]) -> Result<TransposedWeights, VirtualMapError> {
-        if point.len() < self.row_count.next_power_of_two().trailing_zeros() as usize {
-            return Err(VirtualMapError::PointLengthMismatch);
-        }
-
-        let mut weights = eq_table(point);
-        weights.truncate(self.row_count);
+    fn transpose(&self, weights: &[F128]) -> Result<TransposedWeights, VirtualMapError> {
+        let weights = weights
+            .get(..self.row_count)
+            .ok_or(VirtualMapError::WeightCountMismatch)?;
         let mut transposed = self
-            .apply(&weights)
-            .map_err(|_| VirtualMapError::PointLengthMismatch)?;
+            .apply(weights)
+            .map_err(|_| VirtualMapError::WeightCountMismatch)?;
 
         // Column zero is `M`'s constant column.
         let on_bits = transposed.split_off(1);
@@ -569,12 +563,7 @@ mod tests {
             .collect()
     }
 
-    /// A point over the padded `h`.
-    fn point(rows: usize) -> Vec<F128> {
-        challenges(rows.next_power_of_two().trailing_zeros() as usize)
-    }
-
-    /// `<M^T eq, (1 || f)>` must equal `<eq, h>`.
+    /// `<M^T weights, (1 || f)>` must equal `<weights, h>`.
     #[test]
     fn the_transposed_claim_matches_the_claim_on_the_integer_witness() {
         let inputs = [true, false, true];
@@ -592,13 +581,12 @@ mod tests {
         assert_eq!(map.f_len(), f.bit_len() + 1, "M's columns are 1 || f");
         assert!(h.bit(0), "M's first row is the constant one");
 
-        let point = point(map.h_len());
-        let weights = eq_table(&point);
+        let weights = challenges(map.h_len());
         let direct = (0..h.bit_len())
             .filter(|index| h.bit(*index))
             .fold(F128::new(0, 0), |sum, index| sum + weights[index]);
 
-        let transposed = map.transpose_eq(&point).unwrap();
+        let transposed = map.transpose(&weights).unwrap();
         let through_f = (0..f.bit_len())
             .filter(|index| f.bit(*index))
             .fold(transposed.constant_weight(), |sum, index| {
@@ -609,28 +597,35 @@ mod tests {
     }
 
     #[test]
-    fn a_point_that_does_not_index_the_padded_rows_is_rejected() {
+    fn missing_virtual_witness_weights_are_rejected() {
         let mut materializer = MTransposeGenerator::new(3);
         let inputs = materializer.take_boxed_inputs();
         example_circuit(&mut materializer, &inputs);
         let map = materializer.finish();
 
-        let short = point(map.h_len()).len() - 1;
+        let short = map.h_len() - 1;
         assert_eq!(
-            map.transpose_eq(&challenges(short)),
-            Err(VirtualMapError::PointLengthMismatch)
+            map.transpose(&challenges(short)),
+            Err(VirtualMapError::WeightCountMismatch)
         );
     }
 
     #[test]
-    fn a_point_that_indexes_zero_padding_is_accepted() {
+    fn transpose_ignores_weights_on_zero_padded_virtual_bits() {
         let mut materializer = MTransposeGenerator::new(3);
         let inputs = materializer.take_boxed_inputs();
         example_circuit(&mut materializer, &inputs);
         let map = materializer.finish();
-        let wide = challenges(point(map.h_len()).len() + 1);
-
-        assert!(map.transpose_eq(&wide).is_ok());
+        let weights = challenges(map.h_len());
+        let expected = map.transpose(&weights).unwrap();
+        for padded_len in [
+            map.h_len().next_power_of_two(),
+            2 * map.h_len().next_power_of_two(),
+        ] {
+            let mut padded = weights.clone();
+            padded.resize(padded_len, F128::new(13, 17));
+            assert_eq!(map.transpose(&padded).unwrap(), expected);
+        }
     }
 
     #[test]

@@ -55,7 +55,7 @@
 //! const M: usize = 22;
 //! let shape = Shape::new(7, 15).unwrap();
 //! let pcs = Pcs::new(&shape, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
-//! let packed_witness = vec![F128::default(); pcs.packed_len()];
+//! let packed_witness = vec![F128::ZERO; pcs.packed_len()];
 //! let point = (0..M)
 //!     .map(|coordinate| F128::from(coordinate as u64 + 2))
 //!     .collect();

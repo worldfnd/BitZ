@@ -1014,6 +1014,7 @@ dependencies = [
  "divan",
  "field",
  "flock-core",
+ "num-traits",
  "proptest",
  "transcript",
 ]
@@ -1489,6 +1490,7 @@ dependencies = [
 name = "tests"
 version = "0.1.0"
 dependencies = [
+ "circuit",
  "common",
  "crypto-primitives",
  "field",

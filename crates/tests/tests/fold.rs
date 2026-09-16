@@ -104,7 +104,7 @@ fn a_fold_at_the_bound_is_accepted_and_one_past_it_is_not() {
     let claim = LinearClaim::new(
         &params,
         vec![Fq::from(Q - 1); shape.rows()],
-        vec![Fq::from(1u128); shape.columns()],
+        vec![Fq::ONE; shape.columns()],
         Fq::from(fold) * Fq::from(shape.columns() as u128),
     )
     .unwrap();
@@ -155,7 +155,7 @@ fn folds_that_do_not_reconstruct_the_target_are_rejected() {
     let (_, proof) = prove(&instance);
 
     // The proof is honest; the claim it is replayed against is not.
-    let retargeted = instance.with_target(instance.claim.target() + Fq::from(1u128));
+    let retargeted = instance.with_target(instance.claim.target() + Fq::ONE);
     let mut transcript = verifier_transcript(&proof);
     assert_eq!(
         instance.verifier.receive_fold(&retargeted, &mut transcript),

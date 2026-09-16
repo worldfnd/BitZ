@@ -162,6 +162,8 @@ fn claims_from_prover(values: Vec<FlockF128>) -> Result<[FlockF128; CLAIM_COUNT]
 
 #[cfg(test)]
 mod tests {
+    use num_traits::ConstZero;
+
     use super::*;
 
     #[test]
@@ -195,7 +197,7 @@ mod tests {
                 )
             })
             .sum::<F128>();
-        assert_ne!(target, F128::default());
+        assert_ne!(target, F128::ZERO);
         let ring_switch = RingSwitch::new(&point, point.len()).unwrap();
         let prepared_claims = ring_switch.prepare_claims(&packed_witness, target).unwrap();
         let claims = prepared_claims.claims;

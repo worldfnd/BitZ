@@ -2,6 +2,7 @@ use std::sync::OnceLock;
 
 use common::{LinearClaim, Shape};
 use field::F128;
+use num_traits::ConstZero;
 use pcs::{
     CommitScheme, HashKind, LigeritoProfile, OpeningQuery, Pcs, ProveError, Root, StatementBinding,
     VerifyError,
@@ -34,7 +35,7 @@ impl RealFixture {
     fn build(profile: LigeritoProfile) -> Self {
         let pcs = Pcs::new(&shape(), profile, HashKind::Blake3).unwrap();
         // One nonzero bit gives the expected MLE value a simple independent formula.
-        let mut packed_witness = vec![F128::default(); pcs.packed_len()];
+        let mut packed_witness = vec![F128::ZERO; pcs.packed_len()];
         let packed_index = SINGLETON / 128;
         let bit_index = SINGLETON % 128;
         if bit_index < 64 {
@@ -115,7 +116,7 @@ fn factored_query(shape: &Shape, target: F128) -> OpeningQuery {
 }
 
 fn inner_product_witness(packed_len: usize) -> Vec<F128> {
-    let mut witness = vec![F128::default(); packed_len];
+    let mut witness = vec![F128::ZERO; packed_len];
     for index in INNER_PRODUCT_SET_BITS {
         if index % 128 < 64 {
             witness[index / 128].lo |= 1 << (index % 128);
@@ -148,7 +149,7 @@ impl InnerProductFixture {
         let pcs = Pcs::new(&shape, profile, HashKind::Blake3).unwrap();
         let witness = inner_product_witness(pcs.packed_len());
         let target = inner_product_target(&shape);
-        assert_ne!(target, F128::default());
+        assert_ne!(target, F128::ZERO);
         let query = factored_query(&shape, target);
         let (commitment, data) = pcs.commit(&witness).unwrap();
         let proofs = [StatementBinding::Bind, StatementBinding::AlreadyBound].map(|binding| {
@@ -373,10 +374,10 @@ fn factored_inner_product_requires_complete_transcript_consumption() {
 #[test]
 fn factored_inner_product_rejects_wrong_weight_lengths() {
     let pcs = Pcs::new(&shape(), LigeritoProfile::Secure, HashKind::Blake3).unwrap();
-    let packed_witness = vec![F128::default(); pcs.packed_len()];
+    let packed_witness = vec![F128::ZERO; pcs.packed_len()];
     let (commitment, data) = pcs.commit(&packed_witness).unwrap();
     let larger_shape = Shape::new(8, M - 7).unwrap();
-    let query = factored_query(&larger_shape, F128::default());
+    let query = factored_query(&larger_shape, F128::ZERO);
 
     let mut prover = build_prover(SESSION, b"wrong-inner-product-weight-count");
     assert_eq!(
@@ -402,9 +403,9 @@ fn factored_inner_product_rejects_wrong_weight_lengths() {
 fn factored_inner_product_rejects_invalid_prover_inputs_before_sumcheck() {
     let shape = inner_product_shape();
     let pcs = Pcs::new(&shape, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
-    let packed_witness = vec![F128::default(); pcs.packed_len()];
+    let packed_witness = vec![F128::ZERO; pcs.packed_len()];
     let (_, data) = pcs.commit(&packed_witness).unwrap();
-    let query = factored_query(&shape, F128::default());
+    let query = factored_query(&shape, F128::ZERO);
 
     let mut short_witness = packed_witness.clone();
     short_witness.pop();
@@ -454,7 +455,7 @@ fn slim_profile_opening_round_trip_exercises_pow() {
 #[test]
 fn real_pcs_accepts_an_already_bound_statement() {
     let pcs = Pcs::new(&shape(), LigeritoProfile::Fast, HashKind::Blake3).unwrap();
-    let packed_witness = vec![F128::default(); pcs.packed_len()];
+    let packed_witness = vec![F128::ZERO; pcs.packed_len()];
     let query = OpeningQuery::Mle {
         point: vec![F128::from(2u64); M],
         target: F128::from(0u64),
@@ -500,7 +501,7 @@ fn real_pcs_accepts_an_already_bound_statement() {
 #[test]
 fn real_pcs_rejects_point_length_mismatches() {
     let pcs = Pcs::new(&shape(), LigeritoProfile::Fast, HashKind::Blake3).unwrap();
-    let packed_witness = vec![F128::default(); pcs.packed_len()];
+    let packed_witness = vec![F128::ZERO; pcs.packed_len()];
     let (commitment, data) = pcs.commit(&packed_witness).unwrap();
     let short_query = OpeningQuery::Mle {
         point: vec![F128::from(2u64); M - 1],
@@ -539,7 +540,7 @@ fn real_pcs_rejects_point_length_mismatches() {
 #[test]
 fn real_pcs_rejects_packed_witness_length_mismatches_during_opening() {
     let pcs = Pcs::new(&shape(), LigeritoProfile::Fast, HashKind::Blake3).unwrap();
-    let mut packed_witness = vec![F128::default(); pcs.packed_len()];
+    let mut packed_witness = vec![F128::ZERO; pcs.packed_len()];
     let (_, data) = pcs.commit(&packed_witness).unwrap();
     packed_witness.pop();
     let query = OpeningQuery::Mle {
@@ -563,7 +564,7 @@ fn real_pcs_rejects_packed_witness_length_mismatches_during_opening() {
 #[test]
 fn real_pcs_rejects_mismatched_prover_parameters() {
     let source = Pcs::new(&shape(), LigeritoProfile::Fast, HashKind::Blake3).unwrap();
-    let packed_witness = vec![F128::default(); source.packed_len()];
+    let packed_witness = vec![F128::ZERO; source.packed_len()];
     let (_, data) = source.commit(&packed_witness).unwrap();
     let other = Pcs::new(&shape(), LigeritoProfile::Slim, HashKind::Blake3).unwrap();
     let query = OpeningQuery::Mle {
@@ -587,7 +588,7 @@ fn real_pcs_rejects_mismatched_prover_parameters() {
 #[test]
 fn real_pcs_prover_rejects_a_false_evaluation_without_consuming_prover_data() {
     let pcs = Pcs::new(&shape(), LigeritoProfile::Fast, HashKind::Blake3).unwrap();
-    let packed_witness = vec![F128::default(); pcs.packed_len()];
+    let packed_witness = vec![F128::ZERO; pcs.packed_len()];
     let (_, data) = pcs.commit(&packed_witness).unwrap();
     let query = OpeningQuery::Mle {
         point: vec![F128::from(2u64); M],
@@ -612,7 +613,7 @@ fn real_pcs_prover_rejects_a_false_evaluation_without_consuming_prover_data() {
 #[test]
 fn real_pcs_rejects_an_opening_for_a_different_packed_witness() {
     let pcs = Pcs::new(&shape(), LigeritoProfile::Fast, HashKind::Blake3).unwrap();
-    let packed_witness = vec![F128::default(); pcs.packed_len()];
+    let packed_witness = vec![F128::ZERO; pcs.packed_len()];
     let (commitment, data) = pcs.commit(&packed_witness).unwrap();
     let mut different_witness = packed_witness;
     different_witness[0].lo = 1;
