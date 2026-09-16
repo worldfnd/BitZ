@@ -1,15 +1,15 @@
-//! Circuit constraints over Q100, reduced by Spartan and opened through virtual BitZ.
+//! Circuit constraints over Q100, reduced by Spartan and opened through direct or virtual BitZ.
 
 use circuit::{
     Circuit,
-    constraints::ConstraintGenerator,
+    constraints::{ConstraintGenerator, SparseBoolMatrix},
     matrix_transpose::{MTransposeGenerator, MaterializedMTranspose},
     witgen::{PackedWitness, ProductWitgen},
 };
-use common::{BitZParams, LinearClaim, Root, Shape, VirtualMap, VirtualStatement};
+use common::{BitZParams, LinearClaim, OpeningQuery, Root, Shape, VirtualMap, VirtualStatement};
 use field::{F128, FqDefault, Q100, gf128::smallest_generator};
-use num_traits::ConstZero;
-use pcs::{HashKind, LigeritoProfile, Pcs, ProverData};
+use num_traits::{ConstOne, ConstZero};
+use pcs::{CommitScheme, HashKind, LigeritoProfile, Pcs, ProverData, StatementBinding};
 use poly::{DenseMultilinearExtension, ScaledMleEvaluationClaim};
 use prover::{BitZProver, VirtualWitness};
 use transcript::{PublicTranscript, build_prover, build_verifier};
@@ -47,15 +47,37 @@ pub enum Error {
     Spartan(spartan::SpartanError),
     #[error("commitment failed: {0:?}")]
     Commit(pcs::CommitError),
+    #[error("constant-one opening failed: {0:?}")]
+    ConstantProve(pcs::ProveError),
+    #[error("constant-one verification failed: {0:?}")]
+    ConstantVerify(pcs::VerifyError),
     #[error("BitZ proving failed: {0:?}")]
     Prove(prover::ProveError),
     #[error("BitZ verification failed: {0:?}")]
     Verify(verifier::VerifyError),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum OpeningPath {
+    Direct = 0,
+    Virtual = 1,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CircuitStats {
+    pub opening_path: OpeningPath,
+    pub constraints: usize,
+    pub assignment_bits: usize,
+    /// Meaningful committed witness bits before PCS zero padding.
+    pub committed_bits: usize,
+    pub padded_committed_bits: usize,
+}
+
 #[derive(Debug)]
-pub struct Prepared<S> {
+pub struct CircuitProofSystem<S> {
     statement: S,
+    opening_path: OpeningPath,
     matrices: PreparedConstraintMatrices<FqDefault>,
     map: MaterializedMTranspose,
     params: BitZParams<Q100>,
@@ -66,7 +88,7 @@ pub struct Prepared<S> {
 #[derive(Debug)]
 pub struct Witness {
     committed: Vec<F128>,
-    virtual_bits: Vec<F128>,
+    assignment_bits: Vec<F128>,
     assignment: DenseMultilinearExtension<FqDefault>,
     products: R1csProductMles<FqDefault>,
 }
@@ -78,7 +100,7 @@ pub struct Proof {
     pub opening: transcript::Proof,
 }
 
-impl<S: CircuitStatement> Prepared<S> {
+impl<S: CircuitStatement> CircuitProofSystem<S> {
     pub fn new(statement: S) -> Result<Self, Error> {
         let mut constraints = ConstraintGenerator::new(statement.input_bits());
         let inputs: Vec<_> = (0..statement.input_bits())
@@ -99,19 +121,41 @@ impl<S: CircuitStatement> Prepared<S> {
             return Err(Error::Configuration("map and assignment dimensions differ"));
         }
         let claim_shape = shape_for(map.h_len())?;
-        let committed_shape = shape_for(map.f_len() - 1)?;
+        let opening_path = if is_identity(&matrices.matrices().m) {
+            OpeningPath::Direct
+        } else {
+            OpeningPath::Virtual
+        };
+        let committed_shape = match opening_path {
+            OpeningPath::Direct => claim_shape,
+            OpeningPath::Virtual => shape_for(map.f_len() - 1)?,
+        };
         let params = BitZParams::new(claim_shape, smallest_generator())
             .map_err(|_| Error::Configuration("inadmissible BitZ parameters"))?;
         let pcs = Pcs::new(&committed_shape, LigeritoProfile::Fast, HashKind::Blake3)
             .map_err(|_| Error::Configuration("unsupported PCS shape"))?;
         Ok(Self {
             statement,
+            opening_path,
             matrices,
             map,
             params,
             committed_shape,
             pcs,
         })
+    }
+
+    pub fn stats(&self) -> CircuitStats {
+        CircuitStats {
+            opening_path: self.opening_path,
+            constraints: self.matrices.matrices().a.row_count(),
+            assignment_bits: self.map.h_len(),
+            committed_bits: match self.opening_path {
+                OpeningPath::Direct => self.map.h_len(),
+                OpeningPath::Virtual => self.map.f_len() - 1,
+            },
+            padded_committed_bits: self.pcs.bit_len(),
+        }
     }
 
     pub fn witness(&self, inputs: &[bool]) -> Result<Witness, Error> {
@@ -136,9 +180,14 @@ impl<S: CircuitStatement> Prepared<S> {
             return Err(Error::Unsatisfied);
         }
         let assignment = build_assignment_mle(&h, self.map.h_len()).map_err(Error::Matrix)?;
+        let assignment_bits = pack(&h, *self.params.shape());
+        let committed = match self.opening_path {
+            OpeningPath::Direct => assignment_bits.clone(),
+            OpeningPath::Virtual => pack(&f, self.committed_shape),
+        };
         Ok(Witness {
-            committed: pack(&f, self.committed_shape),
-            virtual_bits: pack(&h, *self.params.shape()),
+            committed,
+            assignment_bits,
             assignment,
             products,
         })
@@ -155,6 +204,17 @@ impl<S: CircuitStatement> Prepared<S> {
         let root = data.root();
         let mut transcript = build_prover(SESSION, self.statement.domain());
         self.bind(&mut transcript, root);
+        if self.opening_path == OpeningPath::Direct {
+            self.pcs
+                .prove_lin(
+                    data,
+                    witness.committed.clone(),
+                    &self.constant_query(),
+                    StatementBinding::Bind,
+                    &mut transcript,
+                )
+                .map_err(Error::ConstantProve)?;
+        }
         let (spartan, terminal) = prove_spartan_piop(
             &mut transcript,
             &self.matrices,
@@ -163,20 +223,28 @@ impl<S: CircuitStatement> Prepared<S> {
         )
         .map_err(Error::Spartan)?;
         let claim = opening_claim(&self.params, &terminal)?;
-        let statement = VirtualStatement::new(self.params, self.committed_shape, &self.map, &claim)
-            .map_err(|_| Error::Configuration("invalid virtual statement"))?;
-        BitZProver::new(self.params, WINDOW)
-            .prove_virtual(
-                &statement,
-                &self.pcs,
-                data,
-                VirtualWitness {
-                    committed_bits: witness.committed,
-                    virtual_bits: &witness.virtual_bits,
-                },
-                &mut transcript,
-            )
-            .map_err(Error::Prove)?;
+        let prover = BitZProver::new(self.params, WINDOW);
+        match self.opening_path {
+            OpeningPath::Direct => {
+                prover.prove(&claim, &self.pcs, data, witness.committed, &mut transcript)
+            }
+            OpeningPath::Virtual => {
+                let statement =
+                    VirtualStatement::new(self.params, self.committed_shape, &self.map, &claim)
+                        .map_err(|_| Error::Configuration("invalid virtual statement"))?;
+                prover.prove_virtual(
+                    &statement,
+                    &self.pcs,
+                    data,
+                    VirtualWitness {
+                        committed_bits: witness.committed,
+                        virtual_bits: &witness.assignment_bits,
+                    },
+                    &mut transcript,
+                )
+            }
+        }
+        .map_err(Error::Prove)?;
         Ok(Proof {
             root,
             spartan,
@@ -187,14 +255,39 @@ impl<S: CircuitStatement> Prepared<S> {
     pub fn verify(&self, proof: &Proof) -> Result<(), Error> {
         let mut transcript = build_verifier(SESSION, self.statement.domain(), &proof.opening);
         self.bind(&mut transcript, proof.root);
+        if self.opening_path == OpeningPath::Direct {
+            self.pcs
+                .verify_lin(
+                    &proof.root,
+                    &self.constant_query(),
+                    StatementBinding::Bind,
+                    &mut transcript,
+                )
+                .map_err(Error::ConstantVerify)?;
+        }
         let terminal = verify_spartan_proof(&mut transcript, &self.matrices, &proof.spartan)
             .map_err(Error::Spartan)?;
         let claim = opening_claim(&self.params, &terminal)?;
-        let statement = VirtualStatement::new(self.params, self.committed_shape, &self.map, &claim)
-            .map_err(|_| Error::Configuration("invalid virtual statement"))?;
-        BitZVerifier::new(self.params, WINDOW)
-            .verify_virtual(&statement, &self.pcs, proof.root, transcript)
-            .map_err(Error::Verify)
+        let verifier = BitZVerifier::new(self.params, WINDOW);
+        match self.opening_path {
+            OpeningPath::Direct => verifier.verify(&claim, &self.pcs, proof.root, transcript),
+            OpeningPath::Virtual => {
+                let statement =
+                    VirtualStatement::new(self.params, self.committed_shape, &self.map, &claim)
+                        .map_err(|_| Error::Configuration("invalid virtual statement"))?;
+                verifier.verify_virtual(&statement, &self.pcs, proof.root, transcript)
+            }
+        }
+        .map_err(Error::Verify)
+    }
+
+    // Direct commitment includes h[0]; unlike the virtual map, it does not
+    // supply that coordinate as a fixed one. Opening at zero enforces h[0] = 1.
+    fn constant_query(&self) -> OpeningQuery {
+        OpeningQuery::Mle {
+            point: vec![F128::ZERO; self.committed_shape.log_bits()],
+            target: F128::ONE,
+        }
     }
 
     fn bind(&self, transcript: &mut impl PublicTranscript, root: Root) {
@@ -205,7 +298,18 @@ impl<S: CircuitStatement> Prepared<S> {
         transcript.public_message(&self.params);
         transcript.public_message(&self.pcs);
         transcript.public_message(&self.map.digest());
+        transcript.public_message(b"bitz/circuit-opening-path/v1");
+        transcript.public_message(&[self.opening_path as u8]);
     }
+}
+
+fn is_identity(map: &SparseBoolMatrix) -> bool {
+    map.row_count() == map.column_count()
+        && map
+            .rows()
+            .iter()
+            .enumerate()
+            .all(|(i, row)| row.positions() == [i])
 }
 
 fn shape_for(bits: usize) -> Result<Shape, Error> {
@@ -251,6 +355,88 @@ fn opening_claim(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_exact_identity_maps_select_direct_opening() {
+        let identity = SparseBoolMatrix::try_from_rows(3, vec![vec![0], vec![1], vec![2]]).unwrap();
+        assert!(is_identity(&identity));
+        for rows in [
+            vec![vec![0], vec![2], vec![1]],
+            vec![vec![0], vec![1], vec![1, 2]],
+            vec![vec![0], vec![1], vec![0, 2]],
+            vec![vec![0], vec![1], vec![1]],
+            vec![vec![0], vec![1]],
+        ] {
+            assert!(!is_identity(
+                &SparseBoolMatrix::try_from_rows(3, rows).unwrap()
+            ));
+        }
+    }
+
+    struct IdentityBit;
+
+    impl CircuitStatement for IdentityBit {
+        fn domain(&self) -> &'static [u8] {
+            b"test/identity-bit/v1"
+        }
+        fn public_bytes(&self) -> Vec<u8> {
+            vec![1]
+        }
+        fn input_bits(&self) -> usize {
+            1
+        }
+        fn synthesize<C: Circuit>(&self, cs: &mut C, inputs: &[C::Bool]) -> Result<(), Error> {
+            let bit = cs.bitz::<1>(inputs[0].clone());
+            let one = C::Z::<1>::from(C::Coefficient::<1>::from(1u64));
+            cs.assert_r1c::<1>(one.clone(), bit, one);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn direct_opening_requires_constant_one_on_both_sides() {
+        let mut system = CircuitProofSystem::new(IdentityBit).unwrap();
+        let witness = system.witness(&[true]).unwrap();
+        let data = system.commit(&witness).unwrap();
+        let mut proof = system.prove(witness, &data).unwrap();
+        system.verify(&proof).unwrap();
+        system.opening_path = OpeningPath::Virtual;
+        assert!(system.verify(&proof).is_err());
+        system.opening_path = OpeningPath::Direct;
+
+        let mut bad_witness = system.witness(&[true]).unwrap();
+        bad_witness.committed.fill(F128::ZERO);
+        let bad_data = system.commit(&bad_witness).unwrap();
+        assert!(matches!(
+            system.prove(bad_witness, &bad_data),
+            Err(Error::ConstantProve(_))
+        ));
+
+        // A valid opening to zero must not substitute for the required one.
+        let packed = vec![F128::ZERO; 1 << system.committed_shape.log_packed_len()];
+        let mut transcript = build_prover(SESSION, system.statement.domain());
+        system.bind(&mut transcript, bad_data.root());
+        let query = OpeningQuery::Mle {
+            point: vec![F128::ZERO; system.committed_shape.log_bits()],
+            target: F128::ZERO,
+        };
+        system
+            .pcs
+            .prove_lin(
+                &bad_data,
+                packed,
+                &query,
+                StatementBinding::Bind,
+                &mut transcript,
+            )
+            .unwrap();
+        proof.root = bad_data.root();
+        proof.opening = transcript.finish();
+        assert!(matches!(
+            system.verify(&proof),
+            Err(Error::ConstantVerify(_))
+        ));
+    }
 
     #[test]
     fn scaled_claim_conversion_preserves_values_and_zero_scale() {

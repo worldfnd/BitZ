@@ -6,11 +6,9 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
-[[bin]]
-name = "circuit-e2e"
-path = "src/main.rs"
-
 [dependencies]
+anyhow.workspace = true
+argh.workspace = true
 circuit.workspace = true
 common.workspace = true
 field = { workspace = true, features = ["spongefish"] }

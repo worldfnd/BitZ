@@ -21,6 +21,8 @@ verifier = { path = "crates/verifier" }
 gkr = { path = "crates/gkr"}
 
 aes = "0.9.2"
+anyhow = "1.0.93"
+argh = "0.1.12"
 binius-field = { git = "https://github.com/IrreducibleOSS/binius64.git", rev = "49deecec1bf691c57aeadcda2499316d8094fcd8" }
 bincode = "1.3.3"
 blake3 = "1.8.6"
