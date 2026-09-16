@@ -1,4 +1,4 @@
-use bitz_cli::end_to_end::{CircuitStatement, Error, Prepared};
+use bitz_cli::end_to_end::{CircuitStatement, Error, Prepared, PreparedSampled};
 use circuit::Circuit;
 
 struct PublicBit;
@@ -50,6 +50,27 @@ fn generic_driver_accepts_a_non_sha_circuit() {
         prepared.witness(&[false]),
         Err(Error::Unsatisfied)
     ));
+}
+
+#[test]
+fn sampled_prime_driver_round_trips_and_binds_its_prime() {
+    let prepared = PreparedSampled::new(PublicBit, 100).unwrap();
+    let witness = prepared.witness(&[true]).unwrap();
+    let data = prepared.commit(&witness).unwrap();
+    let proof = prepared.prove(witness, &data).unwrap();
+    assert_eq!(128 - proof.prime.leading_zeros(), 100);
+    assert!(field::is_probable_prime(proof.prime));
+    assert_eq!(proof.prime, prepared.prime_for(proof.root));
+    PreparedSampled::new(PublicBit, 100).unwrap().verify(&proof).unwrap();
+
+    let mut changed = proof.clone();
+    changed.root.0[0] ^= 1;
+    assert!(prepared.verify(&changed).is_err());
+    let mut changed = proof.clone();
+    changed.opening.narg_string.push(0);
+    assert!(prepared.verify(&changed).is_err());
+    assert!(matches!(prepared.witness(&[false]), Err(Error::Unsatisfied)));
+    field::set_modulus(field::Q100).unwrap();
 }
 
 #[test]

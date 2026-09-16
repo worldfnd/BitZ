@@ -5,7 +5,8 @@
 //! `BitZProver::prove_virtual`) so the terminal claim and the claim on `h`
 //! can be written out too. The two flows must agree on root, narg, hints.
 //!
-//! `dump_e2e <sha256-compression|sha256-chain> <blocks> <seed> <dir>`
+//! `dump_e2e <sha256-compression|sha256-chain> <blocks> <seed> <dir> [--sampled]`
+//! (`--sampled`: the sampled-prime scheme, `PreparedSampled`, 100-bit prime)
 //!
 //! Files: `meta.txt`, `public.bin`, `inputs.bin` (LSB-first bits), `f.bin`,
 //! `h.bin` (packed bits), `spartan.bin` (the feasibility doc's canonical
@@ -14,7 +15,7 @@
 //! and `products.bin` (Az ‖ Bz ‖ Cz) up to 64 blocks.
 use std::io::Write;
 
-use bitz_cli::end_to_end::{CircuitStatement, Prepared};
+use bitz_cli::end_to_end::{CircuitStatement, Prepared, PreparedSampled};
 use circuit::{
     constraints::ConstraintGenerator,
     matrix_transpose::MTransposeGenerator,
@@ -22,7 +23,7 @@ use circuit::{
     witgen::{PackedWitness, ProductWitgen},
 };
 use common::{BitZParams, LinearClaim, Shape, VirtualMap, VirtualStatement};
-use field::{F128, FqDefault, Q100, gf128::smallest_generator};
+use field::{F128, Fq, FqDefault, Q100, RUNTIME, gf128::smallest_generator};
 use num_traits::ConstZero;
 use pcs::{HashKind, LigeritoProfile, Pcs};
 use poly::ScaledMleEvaluationClaim;
@@ -90,13 +91,13 @@ fn pack(witness: &PackedWitness, shape: Shape) -> Vec<F128> {
     packed
 }
 
-fn opening_claim(
-    params: &BitZParams<Q100>,
-    terminal: &ScaledMleEvaluationClaim<FqDefault>,
-) -> LinearClaim<FqDefault> {
+fn opening_claim<const Q: u128>(
+    params: &BitZParams<Q>,
+    terminal: &ScaledMleEvaluationClaim<Fq<Q>>,
+) -> LinearClaim<Fq<Q>> {
     let shape = params.shape();
     let mut point = terminal.point().to_vec();
-    point.resize(shape.log_bits(), FqDefault::ZERO);
+    point.resize(shape.log_bits(), Fq::<Q>::ZERO);
     let rows = poly::eq_table(&point[..shape.log_rows()])
         .into_iter()
         .map(|weight| terminal.scale() * weight)
@@ -105,11 +106,11 @@ fn opening_claim(
     LinearClaim::new(params, rows, columns, terminal.value()).expect("claim dimensions")
 }
 
-fn fq_bytes(value: &FqDefault) -> [u8; 16] {
+fn fq_bytes<const Q: u128>(value: &Fq<Q>) -> [u8; 16] {
     value.encode().as_ref().try_into().expect("16 bytes")
 }
 
-fn spartan_bytes(proof: &SpartanPiopProof<FqDefault>, terminal: &ScaledMleEvaluationClaim<FqDefault>) -> Vec<u8> {
+fn spartan_bytes<const Q: u128>(proof: &SpartanPiopProof<Fq<Q>>, terminal: &ScaledMleEvaluationClaim<Fq<Q>>) -> Vec<u8> {
     let mut bytes = Vec::new();
     for round in &proof.outer.sumcheck.round_polynomials {
         for c in round {
@@ -149,6 +150,125 @@ fn bools_to_bytes(bits: &[bool]) -> Vec<u8> {
         }
     }
     out
+}
+
+fn claim_bytes<const Q: u128>(claim: &LinearClaim<Fq<Q>>) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for weights in [claim.row_weights(), claim.column_weights()] {
+        bytes.extend_from_slice(&(weights.len() as u64).to_le_bytes());
+        for w in weights {
+            bytes.extend_from_slice(&fq_bytes(w));
+        }
+    }
+    bytes.extend_from_slice(&fq_bytes(&claim.target()));
+    bytes
+}
+
+/// The sampled-prime scheme on the same statement: `PreparedSampled` end to
+/// end (its proof carries the terminal claim and the prime), the same files
+/// with `kind=e2e-sampled`, `prime_bits`, `prime`, the integer digest as
+/// `constraint_digest`, and `q` the prime.
+fn dump_sampled(
+    circuit: Sha256Circuit,
+    blocks: usize,
+    seed: u64,
+    out: &std::path::Path,
+    args0: &str,
+) {
+    const PRIME_BITS: u32 = 100;
+    let statement = seeded_statement(circuit, blocks, seed);
+    let inputs = statement.input();
+    let started = std::time::Instant::now();
+    let prepared = PreparedSampled::new(statement.clone(), PRIME_BITS).expect("prepared");
+    let t_setup = started.elapsed();
+    let started = std::time::Instant::now();
+    let witness = prepared.witness(&inputs).expect("witness");
+    let t_witness = started.elapsed();
+    let started = std::time::Instant::now();
+    let data = prepared.commit(&witness).expect("commit");
+    let t_commit = started.elapsed();
+    let started = std::time::Instant::now();
+    let proof = prepared.prove(witness, &data).expect("prove");
+    let t_prove = started.elapsed();
+    let started = std::time::Instant::now();
+    prepared.verify(&proof).expect("verify");
+    let t_verify = started.elapsed();
+    assert_eq!(proof.prime, prepared.prime_for(proof.root));
+
+    // f and h for the files, by hand.
+    let mut witgen = ProductWitgen::with_inputs(&inputs);
+    statement.synthesize(&mut witgen, &inputs).expect("witgen");
+    let (f, h, exact) = witgen.into_parts();
+    let params = BitZParams::<RUNTIME>::new(prepared.claim_shape(), smallest_generator()).expect("params");
+    let claim = opening_claim(&params, &proof.terminal);
+    let spartan_bin = spartan_bytes(&proof.spartan, &proof.terminal);
+    let public = statement.public_bytes();
+
+    std::fs::create_dir_all(out).unwrap();
+    let mut files: Vec<(&str, Vec<u8>)> = vec![
+        ("public.bin", public.clone()),
+        ("inputs.bin", bools_to_bytes(&inputs)),
+        ("f.bin", packed_bits(&f)),
+        ("h.bin", packed_bits(&h)),
+        ("spartan.bin", spartan_bin.clone()),
+        ("claim_h.bin", claim_bytes(&claim)),
+        ("narg.bin", proof.opening.narg_string.clone()),
+        ("hints.bin", proof.opening.hints.clone()),
+    ];
+    if blocks <= 64 {
+        let products = spartan::build_product_mles_in::<RUNTIME>(&exact, prepared.matrices().matrices().a.row_count()).unwrap();
+        let mut bytes = Vec::new();
+        for table in [&products.az, &products.bz, &products.cz] {
+            for v in table.iter() {
+                bytes.extend_from_slice(&fq_bytes(v));
+            }
+        }
+        files.push(("products.bin", bytes));
+    }
+    for (name, bytes) in &files {
+        std::fs::write(out.join(name), bytes).unwrap();
+    }
+    let meta = [
+        ("kind", "e2e-sampled".to_string()),
+        ("circuit", args0.to_string()),
+        ("blocks", blocks.to_string()),
+        ("seed", seed.to_string()),
+        ("session", String::from_utf8_lossy(bitz_cli::end_to_end::SESSION_SAMPLED).into()),
+        ("instance", String::from_utf8_lossy(statement.domain()).into()),
+        ("input_bits", inputs.len().to_string()),
+        ("root", hex(&proof.root.0)),
+        ("prime_bits", PRIME_BITS.to_string()),
+        ("prime", proof.prime.to_string()),
+        ("q", proof.prime.to_string()),
+        ("claim_t", prepared.claim_shape().log_rows().to_string()),
+        ("claim_s", prepared.claim_shape().log_columns().to_string()),
+        ("committed_t", prepared.committed_shape().log_rows().to_string()),
+        ("committed_s", prepared.committed_shape().log_columns().to_string()),
+        ("generator", hex(&params.generator().to_bytes())),
+        ("constraint_digest", hex(prepared.matrices().digest())),
+        ("map_digest", hex(&prepared.map().digest())),
+        ("rows", prepared.matrices().matrices().a.row_count().to_string()),
+        ("h_len", prepared.map().h_len().to_string()),
+        ("f_len", prepared.map().f_len().to_string()),
+        ("map_nnz", prepared.map().nonzero_count().to_string()),
+        ("num_row_vars", prepared.matrices().num_row_vars().to_string()),
+        ("num_column_vars", prepared.matrices().num_column_vars().to_string()),
+        ("spartan_len", spartan_bin.len().to_string()),
+        ("narg_len", proof.opening.narg_string.len().to_string()),
+        ("hints_len", proof.opening.hints.len().to_string()),
+        ("setup_ms", format!("{:.3}", ms(t_setup))),
+        ("witness_ms", format!("{:.3}", ms(t_witness))),
+        ("commit_ms", format!("{:.3}", ms(t_commit))),
+        ("prove_ms", format!("{:.3}", ms(t_prove))),
+        ("verify_ms", format!("{:.3}", ms(t_verify))),
+    ];
+    let mut text = String::new();
+    for (k, v) in &meta {
+        text.push_str(&format!("{k}={v}\n"));
+    }
+    std::fs::write(out.join("meta.txt"), &text).unwrap();
+    print!("{text}");
+    let _ = std::io::stdout().flush();
 }
 
 fn products_bytes(products: &R1csProductMles<FqDefault>) -> Vec<u8> {
@@ -193,6 +313,10 @@ fn main() {
     let out = std::path::PathBuf::from(&args[3]);
     let _ = rayon::ThreadPoolBuilder::new().build_global();
     rayon::broadcast(|_| {});
+    if args.iter().any(|a| a == "--sampled") {
+        dump_sampled(circuit, blocks, seed, &out, &args[0]);
+        return;
+    }
 
     let statement = seeded_statement(circuit, blocks, seed);
     let inputs = statement.input();

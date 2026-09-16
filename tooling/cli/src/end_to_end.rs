@@ -6,8 +6,9 @@ use circuit::{
     matrix_transpose::{MTransposeGenerator, MaterializedMTranspose},
     witgen::{PackedWitness, ProductWitgen},
 };
+use circuit::matrix_products::IntegerProducts;
 use common::{BitZParams, LinearClaim, Root, Shape, VirtualMap, VirtualStatement};
-use field::{F128, FqDefault, Q100, gf128::smallest_generator};
+use field::{F128, Fq, FqDefault, FqRuntime, Q100, RUNTIME, gf128::smallest_generator};
 use num_traits::ConstZero;
 use pcs::{HashKind, LigeritoProfile, Pcs, ProverData};
 use poly::{DenseMultilinearExtension, ScaledMleEvaluationClaim};
@@ -16,11 +17,15 @@ use transcript::{PublicTranscript, build_prover, build_verifier};
 use verifier::BitZVerifier;
 
 use spartan::{
-    PreparedConstraintMatrices, R1csProductMles, SpartanPiopProof, bigint_to_fq,
-    build_assignment_mle, build_product_mles, prove_spartan_piop, verify_spartan_proof,
+    PreparedConstraintMatrices, PreparedIntegerMatrices, R1csProductMles, SpartanPiopProof,
+    bigint_to_fq, build_assignment_mle, build_product_mles, build_product_mles_in,
+    prove_spartan_piop, prove_spartan_piop_absorbed, verify_spartan_proof,
+    verify_spartan_proof_absorbed,
 };
 
 const SESSION: &[u8] = b"bitz/circuit-e2e/v1";
+/// The session of the sampled-prime scheme, its own Fiat–Shamir domain.
+pub const SESSION_SAMPLED: &[u8] = b"bitz/circuit-e2e/sampled-prime/v1";
 const WINDOW: u32 = 8;
 
 /// A trusted, deterministic circuit and its public inputs. Implementations must
@@ -233,10 +238,10 @@ fn pack(witness: &PackedWitness, shape: Shape) -> Vec<F128> {
     packed
 }
 
-fn opening_claim(
-    params: &BitZParams<Q100>,
-    terminal: &ScaledMleEvaluationClaim<FqDefault>,
-) -> Result<LinearClaim<FqDefault>, Error> {
+fn opening_claim<const Q: u128>(
+    params: &BitZParams<Q>,
+    terminal: &ScaledMleEvaluationClaim<Fq<Q>>,
+) -> Result<LinearClaim<Fq<Q>>, Error> {
     let shape = params.shape();
     if terminal.point().len() > shape.log_bits() {
         return Err(Error::Configuration("Spartan point exceeds virtual shape"));
@@ -244,7 +249,7 @@ fn opening_claim(
     // Zero high coordinates select the original assignment inside its zero padding.
     // Put the scale in one factor, avoiding division even when the scale is zero.
     let mut point = terminal.point().to_vec();
-    point.resize(shape.log_bits(), FqDefault::ZERO);
+    point.resize(shape.log_bits(), Fq::<Q>::ZERO);
     let rows = poly::eq_table(&point[..shape.log_rows()])
         .into_iter()
         .map(|weight| terminal.scale() * weight)
@@ -252,6 +257,238 @@ fn opening_claim(
     let columns = poly::eq_table(&point[shape.log_rows()..]);
     LinearClaim::new(params, rows, columns, terminal.value())
         .map_err(|_| Error::Configuration("invalid terminal claim dimensions"))
+}
+
+/// [`Prepared`] with the prime drawn from the transcript, per proof.
+///
+/// The matrices stay integers, their digest is over the integers, and the
+/// parameters exist only once the prime does. Transcript: [`SESSION_SAMPLED`]
+/// and the statement's domain; bind the public bytes, the root, the PCS, the
+/// map digest and the integer constraint digest; squeeze the prime; install
+/// it; absorb the parameters (their frame carries it); then the Spartan
+/// reduction on the lowered matrices and the virtual opening, as in
+/// [`Prepared`]. The prime is derived by both sides, never transmitted.
+///
+/// The installed modulus is process-wide (`field::set_modulus`): one
+/// sampled-prime proof or verification at a time per process.
+#[derive(Debug)]
+pub struct PreparedSampled<S> {
+    statement: S,
+    matrices: PreparedIntegerMatrices,
+    map: MaterializedMTranspose,
+    claim_shape: Shape,
+    committed_shape: Shape,
+    pcs: Pcs,
+    prime_bits: u32,
+}
+
+/// The witness with its products kept exact, reduced once the prime is known.
+#[derive(Debug)]
+pub struct SampledWitness {
+    committed: Vec<F128>,
+    virtual_bits: Vec<F128>,
+    assignment: PackedWitness,
+    products: IntegerProducts,
+}
+
+/// A sampled-prime proof: the prime is the transcript's, carried for
+/// inspection and as a check that the residues were made under it.
+#[derive(Clone, Debug)]
+pub struct SampledProof {
+    pub root: Root,
+    pub prime: u128,
+    pub spartan: SpartanPiopProof<FqRuntime>,
+    pub terminal: ScaledMleEvaluationClaim<FqRuntime>,
+    pub opening: transcript::Proof,
+}
+
+impl<S: CircuitStatement> PreparedSampled<S> {
+    /// `prime_bits` is at most 100, which keeps every reference-split row
+    /// width admissible under the fold bound.
+    pub fn new(statement: S, prime_bits: u32) -> Result<Self, Error> {
+        if !(64..=100).contains(&prime_bits) {
+            return Err(Error::Configuration("prime width outside 64..=100 bits"));
+        }
+        let mut constraints = ConstraintGenerator::new(statement.input_bits());
+        let inputs: Vec<_> = (0..statement.input_bits())
+            .map(|i| constraints.input(i))
+            .collect();
+        statement.synthesize(&mut constraints, &inputs)?;
+        let matrices =
+            PreparedIntegerMatrices::new(constraints.into_matrices()).map_err(Error::Matrix)?;
+        let mut generator = MTransposeGenerator::new(statement.input_bits());
+        let inputs = generator.take_inputs();
+        statement.synthesize(&mut generator, &inputs)?;
+        let map = generator.finish();
+        if map.h_len() != matrices.matrices().a.column_count() {
+            return Err(Error::Configuration("map and assignment dimensions differ"));
+        }
+        let claim_shape = shape_for(map.h_len())?;
+        let committed_shape = shape_for(map.f_len() - 1)?;
+        let pcs = Pcs::new(&committed_shape, LigeritoProfile::Fast, HashKind::Blake3)
+            .map_err(|_| Error::Configuration("unsupported PCS shape"))?;
+        Ok(Self {
+            statement,
+            matrices,
+            map,
+            claim_shape,
+            committed_shape,
+            pcs,
+            prime_bits,
+        })
+    }
+
+    pub fn matrices(&self) -> &PreparedIntegerMatrices {
+        &self.matrices
+    }
+
+    pub fn map(&self) -> &MaterializedMTranspose {
+        &self.map
+    }
+
+    pub fn claim_shape(&self) -> Shape {
+        self.claim_shape
+    }
+
+    pub fn committed_shape(&self) -> Shape {
+        self.committed_shape
+    }
+
+    pub fn prime_bits(&self) -> u32 {
+        self.prime_bits
+    }
+
+    pub fn witness(&self, inputs: &[bool]) -> Result<SampledWitness, Error> {
+        if inputs.len() != self.statement.input_bits() {
+            return Err(Error::Input("wrong witness input length"));
+        }
+        let mut generator = ProductWitgen::with_inputs(inputs);
+        self.statement.synthesize(&mut generator, inputs)?;
+        let (f, h, products) = generator.into_parts();
+        if f.bit_len() + 1 != self.map.f_len() || h.bit_len() != self.map.h_len() {
+            return Err(Error::Input("circuit replay changed witness dimensions"));
+        }
+        // Satisfaction over the integers implies it modulo any prime; the
+        // fixed field is a cheap check before any prime is drawn.
+        let check = build_product_mles(&products, self.matrices.matrices().a.row_count())
+            .map_err(Error::Matrix)?;
+        if check
+            .az
+            .iter()
+            .zip(check.bz.iter())
+            .zip(check.cz.iter())
+            .any(|((&a, &b), &c)| a * b != c)
+        {
+            return Err(Error::Unsatisfied);
+        }
+        let claim_shape = self.claim_shape;
+        Ok(SampledWitness {
+            committed: pack(&f, self.committed_shape),
+            virtual_bits: pack(&h, claim_shape),
+            assignment: h,
+            products,
+        })
+    }
+
+    pub fn commit(&self, witness: &SampledWitness) -> Result<ProverData, Error> {
+        self.pcs
+            .commit(&witness.committed)
+            .map(|(_, data)| data)
+            .map_err(Error::Commit)
+    }
+
+    /// The prime this statement and root yield: the verifier's first step,
+    /// exposed so a proof's residues can be decoded under it before
+    /// [`Self::verify`].
+    pub fn prime_for(&self, root: Root) -> u128 {
+        let empty = transcript::Proof::default();
+        let mut transcript = build_verifier(SESSION_SAMPLED, self.statement.domain(), &empty);
+        self.bind(&mut transcript, root);
+        transcript.squeeze_prime(self.prime_bits)
+    }
+
+    /// The parameters under the installed prime.
+    fn params(&self) -> Result<BitZParams<RUNTIME>, Error> {
+        BitZParams::<RUNTIME>::new(self.claim_shape, smallest_generator())
+            .map_err(|_| Error::Configuration("inadmissible BitZ parameters"))
+    }
+
+    pub fn prove(&self, witness: SampledWitness, data: &ProverData) -> Result<SampledProof, Error> {
+        let root = data.root();
+        let mut transcript = build_prover(SESSION_SAMPLED, self.statement.domain());
+        self.bind(&mut transcript, root);
+        let prime = transcript.squeeze_prime(self.prime_bits);
+        field::set_modulus(prime)
+            .map_err(|_| Error::Configuration("the sampled prime is not admissible"))?;
+        let params = self.params()?;
+        transcript.public_message(&params);
+        let matrices = self.matrices.lower::<RUNTIME>().map_err(Error::Matrix)?;
+        let products =
+            build_product_mles_in::<RUNTIME>(&witness.products, matrices.matrices().a.row_count())
+                .map_err(Error::Matrix)?;
+        let assignment = build_assignment_mle::<FqRuntime>(&witness.assignment, self.map.h_len())
+            .map_err(Error::Matrix)?;
+        let (spartan, terminal) =
+            prove_spartan_piop_absorbed(&mut transcript, &matrices, &products, &assignment)
+                .map_err(Error::Spartan)?;
+        let claim = opening_claim(&params, &terminal)?;
+        let statement = VirtualStatement::new(params, self.committed_shape, &self.map, &claim)
+            .map_err(|_| Error::Configuration("invalid virtual statement"))?;
+        BitZProver::new(params, WINDOW)
+            .prove_virtual(
+                &statement,
+                &self.pcs,
+                data,
+                VirtualWitness {
+                    committed_bits: witness.committed,
+                    virtual_bits: &witness.virtual_bits,
+                },
+                &mut transcript,
+            )
+            .map_err(Error::Prove)?;
+        Ok(SampledProof {
+            root,
+            prime,
+            spartan,
+            terminal,
+            opening: transcript.finish(),
+        })
+    }
+
+    /// The proof's residues must have been made, or decoded, under the prime
+    /// [`Self::prime_for`] yields for its root.
+    pub fn verify(&self, proof: &SampledProof) -> Result<(), Error> {
+        let mut transcript = build_verifier(SESSION_SAMPLED, self.statement.domain(), &proof.opening);
+        self.bind(&mut transcript, proof.root);
+        let prime = transcript.squeeze_prime(self.prime_bits);
+        if prime != proof.prime {
+            return Err(Error::Configuration("the proof's prime is not the transcript's"));
+        }
+        field::set_modulus(prime)
+            .map_err(|_| Error::Configuration("the sampled prime is not admissible"))?;
+        let params = self.params()?;
+        transcript.public_message(&params);
+        let matrices = self.matrices.lower::<RUNTIME>().map_err(Error::Matrix)?;
+        let terminal = verify_spartan_proof_absorbed(&mut transcript, &matrices, &proof.spartan)
+            .map_err(Error::Spartan)?;
+        let claim = opening_claim(&params, &terminal)?;
+        let statement = VirtualStatement::new(params, self.committed_shape, &self.map, &claim)
+            .map_err(|_| Error::Configuration("invalid virtual statement"))?;
+        BitZVerifier::new(params, WINDOW)
+            .verify_virtual(&statement, &self.pcs, proof.root, transcript)
+            .map_err(Error::Verify)
+    }
+
+    /// Everything that binds the statement before the prime.
+    fn bind(&self, transcript: &mut impl PublicTranscript, root: Root) {
+        let public = self.statement.public_bytes();
+        transcript.public_message(&(public.len() as u64));
+        transcript.public_message(public.as_slice());
+        transcript.public_message(&root.0);
+        transcript.public_message(&self.pcs);
+        transcript.public_message(&self.map.digest());
+        transcript.public_message(self.matrices.digest());
+    }
 }
 
 #[cfg(test)]
