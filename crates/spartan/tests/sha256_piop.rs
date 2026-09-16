@@ -10,8 +10,9 @@ use circuit::{
 };
 use num_bigint::BigInt;
 use spartan::{
-    PreparedConstraintMatrices, bigint_to_fq, build_assignment_mle, build_product_mles,
-    prove_spartan_piop, verify_spartan_with_mle_claim,
+    PreparedConstraintMatrices, PreparedIntegerMatrices, bigint_to_fq, build_assignment_mle,
+    build_product_mles, prove_spartan_piop, prove_spartan_piop_sampled,
+    verify_spartan_proof_sampled, verify_spartan_with_mle_claim,
 };
 use transcript::{build_prover, build_verifier};
 
@@ -77,6 +78,59 @@ fn sha256_compression_verifies_through_spartan_piop() {
     )
     .unwrap();
     verifier.check_eof().unwrap();
+}
+
+/// The same fixture under a prime sampled from the transcript: the digest is
+/// over the integer matrices, the prime comes after it, the proof lives in
+/// `Fq<RUNTIME>`, and the verifier lands on the same prime.
+#[test]
+fn sha256_compression_verifies_under_a_sampled_prime() {
+    const SAMPLED_SESSION: &[u8] = b"spartan/piop/sha256-compression/sampled-prime/v1";
+    let inputs = abc_compression_input();
+    let mut witgen = ProductWitgen::with_inputs_and_capacity(
+        inputs.as_ref(),
+        COMPRESSION_INPUT_BITS + COMPRESSION_HINT_BITS,
+    );
+    let _ = compression_circuit(&mut witgen, inputs.as_ref());
+    let (_, recorded_assignment, exact_products) = witgen.into_parts();
+    let mut generator = ConstraintGenerator::new(COMPRESSION_INPUT_BITS);
+    let symbolic_inputs = generator.boxed_inputs::<COMPRESSION_INPUT_BITS>();
+    let _ = compression_circuit(&mut generator, symbolic_inputs.as_ref());
+    let matrices = PreparedIntegerMatrices::new(generator.into_matrices()).unwrap();
+    assert_eq!(matrices.num_row_vars(), 8);
+    assert_eq!(matrices.num_column_vars(), 15);
+
+    let mut prover = build_prover(SAMPLED_SESSION, INSTANCE);
+    let (proof, claim, prime) = prove_spartan_piop_sampled(
+        &mut prover,
+        &matrices,
+        &exact_products,
+        &recorded_assignment,
+        100,
+    )
+    .unwrap();
+    let transcript_proof = prover.finish();
+    assert!(transcript_proof.narg_string.is_empty());
+    assert_eq!(128 - prime.leading_zeros(), 100);
+    assert!(field::is_probable_prime(prime));
+    assert_ne!(prime, field::Q100);
+    assert_eq!(field::modulus(), prime);
+    assert_eq!(proof.outer.sumcheck.round_polynomials.len(), 8);
+    assert_eq!(proof.inner.round_polynomials.len(), 15);
+
+    let mut verifier = build_verifier(SAMPLED_SESSION, INSTANCE, &transcript_proof);
+    let (checked, verifier_prime) =
+        verify_spartan_proof_sampled(&mut verifier, &matrices, &proof, 100).unwrap();
+    verifier.check_eof().unwrap();
+    assert_eq!(verifier_prime, prime);
+    assert_eq!(checked, claim);
+    let assignment = build_assignment_mle::<field::FqRuntime>(
+        &recorded_assignment,
+        matrices.matrices().a.column_count(),
+    )
+    .unwrap();
+    claim.nonsuccinct_verify(&assignment).unwrap();
+    field::set_modulus(field::Q100).unwrap();
 }
 
 fn abc_compression_input() -> Box<[bool; COMPRESSION_INPUT_BITS]> {

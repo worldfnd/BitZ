@@ -1,6 +1,6 @@
 //! The protocol parameters: everything both sides fix before a claim exists.
 
-use field::{F128, gf128::is_generator};
+use field::{F128, Fq, gf128::is_generator};
 use spongefish::Encoding;
 
 use crate::{BitTable, Shape, TableError, VirtualMap};
@@ -44,7 +44,10 @@ impl<const Q: u128> BitZParams<Q> {
         // Overflow is itself a rejection: past `2^128 - 1` there is no room
         // left. `ord(g)` is `u128::MAX`, the full order the generator gate
         // below establishes.
-        let Some(gap) = (Q - 1).checked_mul(shape.rows() as u128 + 1) else {
+        // `Fq<RUNTIME>` reads the installed modulus: build the parameters
+        // after the protocol has sampled and installed its prime.
+        let q = Fq::<Q>::modulus();
+        let Some(gap) = (q - 1).checked_mul(shape.rows() as u128 + 1) else {
             return Err(ParamsError::FoldBoundExceeded);
         };
         // A `u128` cannot exceed `ord(g)`, so equalling it is the only way
@@ -79,7 +82,7 @@ impl<const Q: u128> BitZParams<Q> {
     ///
     /// [`Self::new`]'s gate puts it below `ord(g)`.
     pub fn fold_bound(&self) -> u128 {
-        (self.shape.rows() as u128) * (Q - 1)
+        (self.shape.rows() as u128) * (Fq::<Q>::modulus() - 1)
     }
 }
 
@@ -95,7 +98,7 @@ impl<const Q: u128> Encoding<[u8]> for BitZParams<Q> {
 
         put(&(self.shape.log_rows() as u64).to_le_bytes());
         put(&(self.shape.log_columns() as u64).to_le_bytes());
-        put(&Q.to_le_bytes());
+        put(&Fq::<Q>::modulus().to_le_bytes());
         put(&self.generator.to_bytes());
         frame
     }
@@ -330,6 +333,15 @@ mod tests {
         assert_eq!(&encoded[8..16], &15u64.to_le_bytes());
         assert_eq!(&encoded[16..32], &Q114.to_le_bytes());
         assert_eq!(&encoded[32..], &smallest_generator().to_bytes());
+    }
+
+    /// `BitZParams<RUNTIME>` gates and encodes the installed modulus.
+    #[test]
+    fn the_runtime_parameters_carry_the_installed_modulus() {
+        let params = BitZParams::<{ field::RUNTIME }>::new(shape(), smallest_generator()).unwrap();
+        let encoded = params.encode();
+        assert_eq!(&encoded.as_ref()[16..32], &field::modulus().to_le_bytes());
+        assert_eq!(params.fold_bound(), 128 * (field::modulus() - 1));
     }
 
     #[test]

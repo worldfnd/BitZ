@@ -51,7 +51,7 @@ impl<const Q: u128> NargDeserialize for Fq<Q> {
         // and the range check can still fail after the read succeeds.
         let mut rest = *buf;
         let value = u128::from_le_bytes(<[u8; 16]>::deserialize_from_narg(&mut rest)?);
-        if value >= Q {
+        if value >= Fq::<Q>::modulus() {
             return Err(VerificationError);
         }
         *buf = rest;

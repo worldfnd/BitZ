@@ -1,13 +1,18 @@
 //! Composition of Spartan's outer and inner sumchecks.
 
+use circuit::matrix_products::IntegerProducts;
 use circuit::witgen::PackedWitness;
 use crypto_primitives::ConstField;
+use field::{FqRuntime, RUNTIME};
 use poly::{
     DenseMultilinearExtension, MleClaimError, ScaledMleEvaluationClaim, make_equality_factors,
 };
 use transcript::{Encoding, ProverState, TranscriptChallenge, VerifierState};
 
-use crate::matrix::{PreparedConstraintMatrices, SpartanMatrixError, build_assignment_mle};
+use crate::matrix::{
+    PreparedConstraintMatrices, PreparedIntegerMatrices, SpartanMatrixError,
+    build_assignment_mle, build_product_mles_in,
+};
 use crate::sumcheck::{
     OuterSumcheckProof, R1csProductMles, SumcheckError, SumcheckProof, prove_inner_sumcheck,
     prove_outer_sumcheck,
@@ -85,6 +90,32 @@ where
     }
 
     transcript.public_message(matrices.digest());
+    prove_spartan_piop_absorbed(transcript, matrices, products, assignment)
+}
+
+/// [`prove_spartan_piop`] once the statement digest is in the transcript —
+/// the sampled-prime path absorbs it before drawing the prime.
+pub fn prove_spartan_piop_absorbed<F>(
+    transcript: &mut ProverState,
+    matrices: &PreparedConstraintMatrices<F>,
+    products: &R1csProductMles<F>,
+    assignment: &DenseMultilinearExtension<F>,
+) -> Result<(SpartanPiopProof<F>, ScaledMleEvaluationClaim<F>), SpartanError>
+where
+    F: ConstField + Copy + Encoding<[u8]> + TranscriptChallenge,
+{
+    let num_row_vars = matrices.num_row_vars();
+    let num_column_vars = matrices.num_column_vars();
+    if products.az.num_vars() != num_row_vars
+        || products.bz.num_vars() != num_row_vars
+        || products.cz.num_vars() != num_row_vars
+    {
+        return Err(SpartanError::InvalidProductDimensions);
+    }
+    if assignment.num_vars() != num_column_vars {
+        return Err(SpartanError::InvalidAssignmentDimensions);
+    }
+
     let tau = (0..num_row_vars)
         .map(|_| transcript.squeeze::<F>())
         .collect::<Vec<_>>();
@@ -123,9 +154,21 @@ pub fn verify_spartan_proof<F>(
 where
     F: ConstField + Copy + Encoding<[u8]> + TranscriptChallenge,
 {
+    transcript.public_message(matrices.digest());
+    verify_spartan_proof_absorbed(transcript, matrices, proof)
+}
+
+/// [`verify_spartan_proof`] once the statement digest is in the transcript.
+pub fn verify_spartan_proof_absorbed<F>(
+    transcript: &mut VerifierState<'_>,
+    matrices: &PreparedConstraintMatrices<F>,
+    proof: &SpartanPiopProof<F>,
+) -> Result<ScaledMleEvaluationClaim<F>, SpartanError>
+where
+    F: ConstField + Copy + Encoding<[u8]> + TranscriptChallenge,
+{
     let num_row_vars = matrices.num_row_vars();
     let num_column_vars = matrices.num_column_vars();
-    transcript.public_message(matrices.digest());
     let tau = (0..num_row_vars)
         .map(|_| transcript.squeeze::<F>())
         .collect::<Vec<_>>();
@@ -146,6 +189,59 @@ where
         matrix_evaluation,
         final_claim,
     ))
+}
+
+/// The PIOP under a prime sampled from the transcript.
+///
+/// Absorbs the integer statement digest, squeezes a `prime_bits`-bit probable
+/// prime, installs it as `Fq<RUNTIME>`'s modulus, lowers the matrices and the
+/// witness under it, and runs the reduction. The verifier derives the same
+/// prime from the same transcript, so it is returned, not transmitted. Bind
+/// the commitment and every other public input before calling: the prime
+/// must come after everything a cheating prover could adapt to it. One
+/// proof at a time per process: the modulus is process-wide.
+pub fn prove_spartan_piop_sampled(
+    transcript: &mut ProverState,
+    matrices: &PreparedIntegerMatrices,
+    products: &IntegerProducts,
+    assignment: &PackedWitness,
+    prime_bits: u32,
+) -> Result<
+    (
+        SpartanPiopProof<FqRuntime>,
+        ScaledMleEvaluationClaim<FqRuntime>,
+        u128,
+    ),
+    SpartanError,
+> {
+    transcript.public_message(matrices.digest());
+    let prime = transcript.squeeze_prime(prime_bits);
+    field::set_modulus(prime).map_err(|_| SpartanMatrixError::InvalidModulus)?;
+    let lowered = matrices.lower::<RUNTIME>()?;
+    let products = build_product_mles_in::<RUNTIME>(products, lowered.matrices().a.row_count())?;
+    let assignment =
+        build_assignment_mle::<FqRuntime>(assignment, lowered.matrices().a.column_count())?;
+    let (proof, claim) = prove_spartan_piop_absorbed(transcript, &lowered, &products, &assignment)?;
+    Ok((proof, claim, prime))
+}
+
+/// [`verify_spartan_proof`] for a proof made by [`prove_spartan_piop_sampled`].
+///
+/// Samples the prime the same way and installs it, so decode the proof's
+/// residues after this returns the prime — or, as here, hand it a proof
+/// whose values were made under that prime.
+pub fn verify_spartan_proof_sampled(
+    transcript: &mut VerifierState<'_>,
+    matrices: &PreparedIntegerMatrices,
+    proof: &SpartanPiopProof<FqRuntime>,
+    prime_bits: u32,
+) -> Result<(ScaledMleEvaluationClaim<FqRuntime>, u128), SpartanError> {
+    transcript.public_message(matrices.digest());
+    let prime = transcript.squeeze_prime(prime_bits);
+    field::set_modulus(prime).map_err(|_| SpartanMatrixError::InvalidModulus)?;
+    let lowered = matrices.lower::<RUNTIME>()?;
+    let claim = verify_spartan_proof_absorbed(transcript, &lowered, proof)?;
+    Ok((claim, prime))
 }
 
 /// Verifies both sumchecks and checks their terminal claim against the complete
