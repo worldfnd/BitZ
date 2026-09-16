@@ -106,6 +106,7 @@ impl<'a> ReducedProver<'a> {
     }
 
     /// Proves one reduced claim and writes the completed opening proof.
+    #[tracing::instrument(name = "Prove Ligerito", skip_all)]
     pub(crate) fn prove(
         self,
         claim: ReducedClaim,
@@ -276,6 +277,7 @@ pub(crate) fn read_proof(
     Ok(proof)
 }
 
+#[tracing::instrument(name = "Verify Ligerito", skip_all)]
 pub(crate) fn verify_succinct<F>(
     pcs: &Pcs,
     commitment: &Root,

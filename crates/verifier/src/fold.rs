@@ -33,6 +33,7 @@ impl<const Q: u128> BitZVerifier<Q> {
     /// then is the challenge drawn. Reading a record absorbs it, so the folds are
     /// in the sponge before either check; what the ordering protects is the
     /// challenge, which must not be reachable until both have passed.
+    #[tracing::instrument(name = "Verify column folds", skip_all)]
     pub fn receive_fold(
         &self,
         claim: &LinearClaim<field::Fq<Q>>,

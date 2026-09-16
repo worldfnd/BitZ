@@ -63,6 +63,7 @@ impl From<MleClaimError> for SpartanError {
 /// When a protocol supports more than one choice of `F`, its transcript
 /// session or instance must bind that choice so proofs from different fields
 /// occupy distinct Fiat--Shamir domains.
+#[tracing::instrument(name = "Prove Spartan", skip_all)]
 pub fn prove_spartan_piop<F>(
     transcript: &mut ProverState,
     matrices: &PreparedConstraintMatrices<F>,
@@ -115,6 +116,7 @@ where
 
 /// Verifies both sumchecks and returns their terminal scaled assignment claim
 /// `D(r_y) * h(r_y) = final_claim`.
+#[tracing::instrument(name = "Verify Spartan", skip_all)]
 pub fn verify_spartan_proof<F>(
     transcript: &mut VerifierState<'_>,
     matrices: &PreparedConstraintMatrices<F>,
@@ -135,10 +137,12 @@ where
     let rho = transcript.squeeze::<F>();
     let inner_initial_claim =
         outer.az_mle_claim + rho * outer.bz_mle_claim + rho * rho * outer.cz_mle_claim;
-    let (column_point, final_claim) =
+    let (column_point, final_claim) = {
+        let _span = tracing::info_span!("Verify inner sumcheck").entered();
         proof
             .inner
-            .verify(transcript, inner_initial_claim, num_column_vars)?;
+            .verify(transcript, inner_initial_claim, num_column_vars)?
+    };
     let matrix_evaluation = matrices.evaluate_batched(&outer.eval_points, rho, &column_point)?;
 
     Ok(ScaledMleEvaluationClaim::new(

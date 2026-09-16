@@ -31,6 +31,7 @@ impl<const Q: u128> BitZProver<Q> {
     /// Each fold is one record. The count is not itself absorbed, which is safe
     /// only because it derives from the configured shape; the wire profile is
     /// where a length-delimited vector record would belong.
+    #[tracing::instrument(name = "Fold columns", skip_all)]
     pub fn send_fold(
         &self,
         claim: &LinearClaim<field::Fq<Q>>,

@@ -35,6 +35,7 @@ impl<const Q: u128> BitZVerifier<Q> {
     /// Start the transcript with the prover's session, instance, and public-input events.
     /// This method binds the inputs in [`VirtualStatement`], transposes the reduced
     /// claim, verifies the PCS opening, and rejects trailing proof or hint bytes.
+    #[tracing::instrument(name = "Verify virtual BitZ", skip_all)]
     pub fn verify_virtual(
         &self,
         statement: &VirtualStatement<'_, Q, impl VirtualMap>,
@@ -69,6 +70,7 @@ impl<const Q: u128> BitZVerifier<Q> {
     ///
     /// `pcs` must be the scheme the commitment was made under. The transcript
     /// arrives carrying the caller's events; this appends and consumes it.
+    #[tracing::instrument(name = "Verify BitZ", skip_all)]
     pub fn verify(
         &self,
         claim: &LinearClaim<Fq<Q>>,
