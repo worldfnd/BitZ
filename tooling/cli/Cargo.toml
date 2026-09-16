@@ -13,6 +13,9 @@ circuit.workspace = true
 common.workspace = true
 field = { workspace = true, features = ["spongefish"] }
 num-traits.workspace = true
+rand.workspace = true
+rayon.workspace = true
+sha2 = { version = "0.10", features = ["compress"] }
 pcs.workspace = true
 poly.workspace = true
 prover.workspace = true
@@ -20,3 +23,10 @@ spartan.workspace = true
 thiserror.workspace = true
 transcript.workspace = true
 verifier.workspace = true
+
+[dev-dependencies]
+divan.workspace = true
+
+[[bench]]
+name = "circuits"
+harness = false
