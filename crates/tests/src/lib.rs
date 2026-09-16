@@ -17,12 +17,21 @@ use rand_chacha::ChaCha8Rng;
 use rand_core::{Rng, SeedableRng};
 use transcript::{Proof, ProverState, VerifierState, build_prover, build_verifier};
 
-/// The largest prime below `2^114`, the top of the paper's sampling range.
-pub const Q: u128 = (1 << 114) - 11;
+/// The specification's fixed modulus, `2^100 − 15`. Under it the fold bound
+/// admits every row width up to `t = 27`, so the reference split
+/// ([`Shape::for_log_bits`]) is admissible at every size in the window.
+pub const Q: u128 = field::Q100;
 
 /// Comb window. `FixedBasePow` always covers the full 128-bit exponent range;
 /// this only trades table size against multiplies per call.
 pub const WINDOW: u32 = 8;
+
+/// Builds a packed witness and advances the RNG past its words.
+pub fn packed_witness(shape: Shape, rng: &mut impl RngCore) -> Vec<F128> {
+    (0..1usize << shape.log_packed_len())
+        .map(|_| F128::new(rng.next_u64(), rng.next_u64()))
+        .collect()
+}
 
 /// An instance whose claim actually holds, committed under a real scheme.
 pub struct Instance {
@@ -48,9 +57,7 @@ impl Instance {
         let mut rng = ChaCha8Rng::seed_from_u64(seed);
         let params = BitZParams::<Q>::new(shape, smallest_generator()).unwrap();
 
-        let packed: Vec<F128> = (0..(1 << shape.log_bits()) / 128)
-            .map(|_| F128::new(rng.next_u64(), rng.next_u64()))
-            .collect();
+        let packed = packed_witness(shape, &mut rng);
         let row_weights: Vec<Fq<Q>> = (0..shape.rows())
             .map(|_| Fq::from(sample_below_q(&mut rng)))
             .collect();
@@ -108,7 +115,7 @@ impl Instance {
 fn sample_below_q(rng: &mut ChaCha8Rng) -> u128 {
     loop {
         let candidate =
-            (u128::from(rng.next_u64()) << 64 | u128::from(rng.next_u64())) & ((1u128 << 114) - 1);
+            (u128::from(rng.next_u64()) << 64 | u128::from(rng.next_u64())) & ((1u128 << 100) - 1);
         if candidate < Q {
             return candidate;
         }
@@ -120,17 +127,21 @@ pub fn narrow_shape() -> Shape {
     Shape::new(7, 15).unwrap()
 }
 
-/// `m = 22` at the widest row count this `q` admits: 8192 rows over 64 packed
-/// elements per column, with folds pressed against the u128 ceiling.
+/// `m = 22` with wide rows: 8192 rows over 64 packed elements per column.
 pub fn wide_shape() -> Shape {
     Shape::new(13, 9).unwrap()
 }
 
-/// `m = 28`, the smallest shape past the profile's floor: 8192 rows over
-/// 32768 columns, a 32 MiB witness. Every other fixture sits at the floor, so
+/// `m = 28` at the reference split, `(t, s) = (17, 11)`: 131072 rows over
+/// 2048 columns, a 32 MiB witness. Every other fixture sits at the floor, so
 /// this is the only one whose cost scales the way a real instance does.
 pub fn large_shape() -> Shape {
-    Shape::new(13, 15).unwrap()
+    reference_shape(28)
+}
+
+/// The reference split for `log_bits` bits, [`Shape::for_log_bits`].
+pub fn reference_shape(log_bits: usize) -> Shape {
+    Shape::for_log_bits(log_bits).unwrap()
 }
 
 const SESSION: &str = "bitz-tests";

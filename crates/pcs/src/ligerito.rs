@@ -9,8 +9,8 @@ use flock_core::field::F128 as FlockF128;
 use flock_core::pcs::LOG_PACKING;
 use flock_core::pcs::PcsParams;
 use flock_core::pcs::ligerito::{
-    LigeritoProof, ProverConfig, VerifierConfig, recursive_prover_with_basis,
-    recursive_verifier_with_basis_succinct,
+    LigeritoProof, LigeritoSecurityConfig, ProverConfig, VerifierConfig,
+    recursive_prover_with_basis, recursive_verifier_with_basis_succinct,
 };
 use transcript::{ProverState, VerifierState};
 
@@ -29,19 +29,19 @@ pub(crate) struct CheckedLigerito {
 }
 
 impl CheckedLigerito {
-    pub(crate) fn new(params: &PcsParams) -> Result<Self, ConfigError> {
+    pub(crate) fn new(
+        params: &PcsParams,
+        security: &LigeritoSecurityConfig,
+    ) -> Result<Self, ConfigError> {
         let log_n = params
             .m
             .checked_sub(LOG_PACKING)
             .ok_or(ConfigError::Invalid("m below packing width"))?;
         let log_n_u32 =
             u32::try_from(log_n).map_err(|_| ConfigError::Invalid("log_n exceeds u32"))?;
-        let prover_config = params
-            .ligerito_prover_config()
+        let (prover_config, verifier_config) = security
+            .to_prover_verifier_configs()
             .map_err(|_| ConfigError::Invalid("prover config"))?;
-        let verifier_config = params
-            .ligerito_verifier_config()
-            .map_err(|_| ConfigError::Invalid("verifier config"))?;
         validate_pcs_verifier_prover(params, &prover_config, &verifier_config)?;
         let final_log_n = validate_verifier_config(&verifier_config, log_n, params.log_batch_size)?;
 
@@ -514,7 +514,7 @@ mod tests {
     fn registered_config() -> (VerifierConfig, usize, usize) {
         let shape = Shape::new(7, 15).unwrap();
         let pcs = Pcs::new(&shape, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
-        let config = pcs.params().ligerito_verifier_config().unwrap();
+        let config = pcs.verifier_config().clone();
         (
             config,
             pcs.params().m - LOG_PACKING,

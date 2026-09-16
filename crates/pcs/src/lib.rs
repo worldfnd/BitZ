@@ -94,6 +94,7 @@ mod commitment;
 mod ligerito;
 mod mle;
 mod opening;
+mod profiles;
 mod sumcheck;
 mod transpose;
 
