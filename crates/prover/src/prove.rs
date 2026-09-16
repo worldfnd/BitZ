@@ -102,6 +102,7 @@ impl<const Q: u128> BitZProver<Q> {
         {
             return Err(ProveError::ParameterMismatch);
         }
+        // Validate the committed witness length before binding the transcript.
         params
             .table(&witness.committed_bits)
             .map_err(ProveError::Witness)?;
