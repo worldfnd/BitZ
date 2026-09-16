@@ -50,3 +50,6 @@ pub trait PublicTranscript {
     /// Squeezes an `F128` challenge.
     fn verifier_message_f128(&mut self) -> field::F128;
 }
+
+/// Explicit F2Z wire profile; the default Spongefish profile is unchanged.
+pub mod reference;
