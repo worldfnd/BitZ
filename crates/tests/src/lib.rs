@@ -27,7 +27,7 @@ pub const Q: u128 = field::Q100;
 pub const WINDOW: u32 = 8;
 
 /// Builds a packed witness and advances the RNG past its words.
-pub fn packed_witness(shape: Shape, rng: &mut impl RngCore) -> Vec<F128> {
+pub fn packed_witness(shape: Shape, rng: &mut impl Rng) -> Vec<F128> {
     (0..1usize << shape.log_packed_len())
         .map(|_| F128::new(rng.next_u64(), rng.next_u64()))
         .collect()
