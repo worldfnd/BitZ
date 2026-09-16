@@ -162,7 +162,7 @@ impl<S: CircuitStatement> CircuitProofSystem<S> {
         if inputs.len() != self.statement.input_bits() {
             return Err(Error::Input("wrong witness input length"));
         }
-        let mut generator = ProductWitgen::with_inputs(inputs);
+        let mut generator = ProductWitgen::with_inputs_and_capacity(inputs, self.map.f_len() - 1);
         self.statement.synthesize(&mut generator, inputs)?;
         let (f, h, products) = generator.into_parts();
         if f.bit_len() + 1 != self.map.f_len() || h.bit_len() != self.map.h_len() {
@@ -181,9 +181,9 @@ impl<S: CircuitStatement> CircuitProofSystem<S> {
         }
         let assignment = build_assignment_mle(&h, self.map.h_len()).map_err(Error::Matrix)?;
         let assignment_bits = pack(&h, *self.params.shape());
-        let committed = match self.opening_path {
-            OpeningPath::Direct => assignment_bits.clone(),
-            OpeningPath::Virtual => pack(&f, self.committed_shape),
+        let (committed, assignment_bits) = match self.opening_path {
+            OpeningPath::Direct => (assignment_bits, Vec::new()),
+            OpeningPath::Virtual => (pack(&f, self.committed_shape), assignment_bits),
         };
         Ok(Witness {
             committed,
