@@ -5,6 +5,7 @@ use common::{
     VirtualMapError, VirtualStatement,
 };
 use field::{F128, Fq, gf128::smallest_generator};
+use num_traits::ConstOne;
 use pcs::{HashKind, LigeritoProfile, Pcs, ProverData};
 use prover::{BitZProver, ProveError, VirtualWitness};
 use tests::{Q, WINDOW, prover_transcript, verifier_transcript};
@@ -57,8 +58,8 @@ impl Instance {
         let params = BitZParams::<Q>::new(claim_shape, smallest_generator()).unwrap();
         let claim = LinearClaim::new(
             &params,
-            vec![Fq::from(1u128); claim_shape.rows()],
-            vec![Fq::from(1u128); claim_shape.columns()],
+            vec![Fq::ONE; claim_shape.rows()],
+            vec![Fq::ONE; claim_shape.columns()],
             Fq::from(3u128),
         )
         .unwrap();
@@ -154,7 +155,7 @@ fn changed_virtual_statements_are_rejected() {
     // Changing a weight on a zero virtual row preserves the integer target.
     // Rejection must therefore depend on the statement, not a false claim.
     let mut rows = instance.claim.row_weights().to_vec();
-    rows[2] += Fq::from(1u128);
+    rows[2] += Fq::ONE;
     let changed_claim = LinearClaim::new(
         &instance.params,
         rows,

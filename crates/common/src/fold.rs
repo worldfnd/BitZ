@@ -234,7 +234,7 @@ mod tests {
         let shape = shape();
         let weights: Vec<u128> = (0..shape.rows()).map(|row| (row as u128) * 1_000).collect();
         let field_weights: Vec<Fq<Q114>> = weights.iter().map(|&w| Fq::from(w)).collect();
-        let claim = claim(field_weights, vec![Fq::from(1u128); shape.columns()]);
+        let claim = claim(field_weights, vec![Fq::ONE; shape.columns()]);
 
         let packed = witness(&shape, &[(1, 0), (5, 0), (127, 0), (64, 4)]);
         let table = BitTable::new(shape, &packed).unwrap();
@@ -253,7 +253,7 @@ mod tests {
         // Every weight at `q - 1` and every bit of the column set.
         let claim = claim(
             vec![Fq::from(Q114 - 1); shape.rows()],
-            vec![Fq::from(1u128); shape.columns()],
+            vec![Fq::ONE; shape.columns()],
         );
         let all: Vec<(usize, usize)> = (0..shape.rows()).map(|row| (row, 0)).collect();
         let packed = witness(&shape, &all);
@@ -271,7 +271,7 @@ mod tests {
         let weights: Vec<Fq<Q114>> = (0..shape.rows())
             .map(|row| Fq::from((row as u128 + 1) * (Q114 / 137)))
             .collect();
-        let claim = claim(weights, vec![Fq::from(1u128); shape.columns()]);
+        let claim = claim(weights, vec![Fq::ONE; shape.columns()]);
 
         let bits: Vec<(usize, usize)> = (0..shape.rows())
             .filter(|row| row % 3 == 0 || row % 7 == 1)
@@ -290,10 +290,7 @@ mod tests {
     #[test]
     fn the_reconstruction_reduces_a_fold_that_runs_past_the_modulus() {
         let shape = shape();
-        let claim = claim(
-            vec![Fq::from(1u128); shape.rows()],
-            vec![Fq::from(1u128); shape.columns()],
-        );
+        let claim = claim(vec![Fq::ONE; shape.rows()], vec![Fq::ONE; shape.columns()]);
 
         // One column folding to exactly `q` contributes nothing.
         let mut folds = vec![0u128; shape.columns()];
@@ -308,7 +305,7 @@ mod tests {
     fn the_row_images_are_the_generator_raised_to_each_weight() {
         let shape = shape();
         let weights: Vec<Fq<Q114>> = (0..shape.rows()).map(|row| Fq::from(row as u128)).collect();
-        let claim = claim(weights, vec![Fq::from(1u128); shape.columns()]);
+        let claim = claim(weights, vec![Fq::ONE; shape.columns()]);
         let comb = comb();
 
         let images = row_images(&comb, &claim.row_exponents());
@@ -321,10 +318,7 @@ mod tests {
     #[test]
     fn the_reconstruction_refuses_a_fold_vector_that_is_not_one_per_column() {
         let shape = shape();
-        let claim = claim(
-            vec![Fq::from(1u128); shape.rows()],
-            vec![Fq::from(1u128); shape.columns()],
-        );
+        let claim = claim(vec![Fq::ONE; shape.rows()], vec![Fq::ONE; shape.columns()]);
 
         // The dangerous case: a short vector would sum over a prefix, and at
         // the common `y = 0` an empty one would look correct.

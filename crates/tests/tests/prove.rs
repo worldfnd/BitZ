@@ -2,6 +2,7 @@
 
 use common::{Root, TableError};
 use field::{F128, Fq};
+use num_traits::ConstOne;
 use pcs::{HashKind, LigeritoProfile, Pcs, VerifyError as PcsVerifyError};
 use prover::ProveError;
 use tests::{
@@ -68,7 +69,7 @@ fn the_statement_is_bound_before_the_first_challenge() {
     // Same folds, same commitment, a claim that differs only in its claimed
     // value. The fold's own reconstruction rejects it, which is the check the
     // binding backs up rather than replaces.
-    let retargeted = instance.with_target(instance.claim.target() + Fq::from(1u128));
+    let retargeted = instance.with_target(instance.claim.target() + Fq::ONE);
     assert_eq!(
         instance.verifier.verify(
             &retargeted,

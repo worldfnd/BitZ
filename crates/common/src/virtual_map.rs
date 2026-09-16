@@ -329,8 +329,8 @@ mod tests {
     fn input_claim(params: &BitZParams<Q>) -> LinearClaim<Fq<Q>> {
         LinearClaim::new(
             params,
-            vec![Fq::from(1u128); params.shape().rows()],
-            vec![Fq::from(1u128); params.shape().columns()],
+            vec![Fq::ONE; params.shape().rows()],
+            vec![Fq::ONE; params.shape().columns()],
             Fq::from(0u128),
         )
         .unwrap()
