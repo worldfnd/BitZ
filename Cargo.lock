@@ -180,6 +180,8 @@ dependencies = [
  "pcs",
  "poly",
  "prover",
+ "rayon",
+ "sha2 0.10.9",
  "spartan",
  "thiserror",
  "transcript",

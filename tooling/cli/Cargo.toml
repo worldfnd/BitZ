@@ -22,3 +22,7 @@ spartan = { path = "../../crates/spartan" }
 thiserror.workspace = true
 transcript.workspace = true
 verifier.workspace = true
+
+[dev-dependencies]
+sha2 = { version = "0.10", features = ["compress"] }
+rayon.workspace = true
