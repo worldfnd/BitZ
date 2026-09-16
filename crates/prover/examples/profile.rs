@@ -1,8 +1,8 @@
 //! Profiling target for `samply`.
 //!
-//! Build with the `profiling` profile (release-like, but without LTO /
-//! codegen-units=1, so the profiler's frame attribution is trustworthy) and
-//! profile with:
+//! The `profiling` profile enables debug symbols and uses 16 codegen units.
+//! It disables cross-crate LTO; use the release profile for benchmark timings.
+//! Build and record with:
 //! `cargo build --profile profiling -p prover --example profile && samply record ./target/profiling/examples/profile`
 
 use std::hint::black_box;
