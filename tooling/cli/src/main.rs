@@ -3,14 +3,14 @@ use bitz_cli::{
     sha256::{Sha256Circuit, Sha256Statement},
 };
 use circuit::sha256::INITIAL_STATE;
-use std::{error::Error, path::PathBuf, time::Instant};
+use rand::Rng;
+use std::{error::Error, time::Instant};
 
-const USAGE: &str = "circuit-e2e --circuit sha256-compression|sha256-chain --blocks FILE --digest HEX [--initial-state HEX] [--threads N]\nFILE contains raw 64-byte blocks in stream order; no padding is added. HEX is eight big-endian u32 words (64 hex digits). Chain requires the standard SHA-256 IV.";
+const USAGE: &str = "circuit-e2e --circuit sha256-compression|sha256-chain [--num-blocks N] [--initial-state HEX] [--threads N]\nGenerates fresh random 64-byte blocks and computes the expected output before timing. No padding is added. N defaults to 1; compression requires exactly 1 block. HEX is eight big-endian u32 words (64 hex digits). Chain requires the standard SHA-256 IV.";
 
 struct Options {
     circuit: Sha256Circuit,
-    blocks: PathBuf,
-    digest: [u32; 8],
+    num_blocks: usize,
     initial_state: [u32; 8],
     threads: Option<usize>,
 }
@@ -28,7 +28,8 @@ fn words(hex: &str) -> Result<[u32; 8], Box<dyn Error>> {
 
 fn options() -> Result<Option<Options>, Box<dyn Error>> {
     let mut args = std::env::args().skip(1);
-    let (mut circuit, mut blocks, mut digest, mut threads) = (None, None, None, None);
+    let (mut circuit, mut threads) = (None, None);
+    let mut num_blocks = 1;
     let mut initial_state = INITIAL_STATE;
     while let Some(flag) = args.next() {
         if flag == "--help" {
@@ -44,8 +45,7 @@ fn options() -> Result<Option<Options>, Box<dyn Error>> {
                     _ => return Err("unknown circuit".into()),
                 })
             }
-            "--blocks" => blocks = Some(PathBuf::from(value)),
-            "--digest" => digest = Some(words(&value)?),
+            "--num-blocks" => num_blocks = value.parse()?,
             "--initial-state" => initial_state = words(&value)?,
             "--threads" => {
                 let count: usize = value.parse()?;
@@ -57,39 +57,40 @@ fn options() -> Result<Option<Options>, Box<dyn Error>> {
             _ => return Err(format!("unknown option: {flag}").into()),
         }
     }
+    let circuit = circuit.ok_or("--circuit is required")?;
+    if num_blocks == 0 {
+        return Err("block count must be positive".into());
+    }
+    if circuit == Sha256Circuit::Compression && num_blocks != 1 {
+        return Err("compression requires one block".into());
+    }
+    if circuit == Sha256Circuit::Chain && initial_state != INITIAL_STATE {
+        return Err("chain requires the standard IV".into());
+    }
     Ok(Some(Options {
-        circuit: circuit.ok_or("--circuit is required")?,
-        blocks: blocks.ok_or("--blocks is required")?,
-        digest: digest.ok_or("--digest is required")?,
+        circuit,
+        num_blocks,
         initial_state,
         threads,
     }))
 }
 
 fn run(options: Options) -> Result<(), Box<dyn Error>> {
-    let bytes = std::fs::read(options.blocks)?;
-    if bytes.is_empty() || !bytes.len().is_multiple_of(64) {
-        return Err("block file must contain a positive multiple of 64 bytes".into());
-    }
-    let blocks: Vec<[u32; 16]> = bytes
-        .chunks_exact(64)
-        .map(|block| {
-            std::array::from_fn(|i| {
-                u32::from_be_bytes([
-                    block[4 * i],
-                    block[4 * i + 1],
-                    block[4 * i + 2],
-                    block[4 * i + 3],
-                ])
-            })
+    let mut rng = rand::rng();
+    let count = options.num_blocks;
+    let mut digest = options.initial_state;
+    let blocks = (0..count)
+        .map(|_| {
+            let bytes: [u8; 64] = std::array::from_fn(|_| rng.random());
+            sha2::compress256(&mut digest, &[bytes.into()]);
+            std::array::from_fn(|i| u32::from_be_bytes(std::array::from_fn(|j| bytes[4 * i + j])))
         })
         .collect();
-    let count = blocks.len();
     let statement = Sha256Statement {
         circuit: options.circuit,
         blocks,
         initial_state: options.initial_state,
-        digest: options.digest,
+        digest,
     };
     let inputs = statement.input();
     let started = Instant::now();
