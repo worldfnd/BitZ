@@ -522,9 +522,7 @@ impl<const Q: u128> ConstBaseField for Fq<Q> {
 mod tests {
     use super::*;
     use crypto_primitives::{BaseField, WithExtensionDegree};
-    #[cfg(feature = "rand")]
-    use rand::Rng;
-    use rand_core::SeedableRng;
+    use rand_core::{Rng, SeedableRng};
     use rand_pcg::Pcg64;
 
     /// A prime small enough to check every pair of operands.
