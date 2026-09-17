@@ -1,6 +1,6 @@
 # BitZ
 
-**BitZ** is a hash-based polynomial commitment scheme (PCS) for committing to polynomials with coefficients in a ring $S$ (e.g a Finite Field $\mathbb{F}$, integers $\mathbb{Z}$ and proves evaluation claims over another arbitrary ring $R$. This repo provides a modular implementation of a concrete instantiation of this protocol where $S$ is the integers $\mathbb{Z}$ and $R$ is a Finite Field $\mathbb{F}_q$.
+**BitZ** is a hash-based polynomial commitment scheme (PCS) for committing to polynomials with coefficients in a ring $S$ (e.g a Finite Field $\mathbb{F}$, integers $\mathbb{Z}$) and proves evaluation claims over another arbitrary ring $R$. This repo provides a modular implementation of a concrete instantiation of this protocol where $S$ is the integers $\mathbb{Z}$ and $R$ is a Finite Field $\mathbb{F}_q$.
 
 # BitZ-SNARK
 
