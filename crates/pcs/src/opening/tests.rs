@@ -121,3 +121,41 @@ proptest! {
         prop_assert!(verifier.check_eof().is_ok());
     }
 }
+
+#[test]
+fn opening_leaves_matching_transcripts_for_following_protocols() {
+    let fixture = fixture();
+    for query in [
+        OpeningQuery::Mle {
+            point: vec![F128::ZERO; M],
+            target: F128::ZERO,
+        },
+        OpeningQuery::InnerProduct {
+            claim: fixture.claim.clone(),
+        },
+    ] {
+        let mut prover = build_prover(SESSION, INSTANCE);
+        prove(
+            &fixture.pcs,
+            &fixture.data,
+            fixture.witness.clone(),
+            &query,
+            StatementBinding::Bind,
+            &mut prover,
+        )
+        .unwrap();
+        let expected = prover.verifier_message::<F128>();
+        let proof = prover.finish();
+        let mut verifier = build_verifier(SESSION, INSTANCE, &proof);
+        verify(
+            &fixture.pcs,
+            &fixture.root,
+            &query,
+            StatementBinding::Bind,
+            &mut verifier,
+        )
+        .unwrap();
+        assert_eq!(verifier.verifier_message::<F128>(), expected);
+        verifier.check_eof().unwrap();
+    }
+}

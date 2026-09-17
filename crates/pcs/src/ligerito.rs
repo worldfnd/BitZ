@@ -5,6 +5,7 @@
 
 use bincode::Options;
 use field::F128;
+use flock_core::challenger::Challenger;
 use flock_core::field::F128 as FlockF128;
 use flock_core::pcs::LOG_PACKING;
 use flock_core::pcs::PcsParams;
@@ -125,6 +126,14 @@ impl<'a> ReducedProver<'a> {
             &flock_data.merkle_tree,
             &mut challenger,
         );
+        // The succinct verifier samples final basis and batching challenges
+        // after the recursive prover returns. Match those draws so protocols
+        // following this opening start from the same transcript state.
+        let config = self.pcs.prover_config();
+        let queries = config.queries[config.recursive_steps];
+        let basis_vars = queries.next_power_of_two().ilog2() as usize;
+        let _ = challenger.sample_f128_vec(basis_vars);
+        let _ = challenger.sample_f128();
         if challenger.failed() {
             return Err(ProveError::Internal);
         }
