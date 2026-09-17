@@ -49,6 +49,7 @@ impl<const Q: u128> BitZProver<Q> {
     ///
     /// The witness arrives owned because the opening consumes it. The transcript
     /// arrives carrying the caller's events; this appends and hands it back.
+    #[tracing::instrument(name = "Prove BitZ", skip_all)]
     pub fn prove(
         &self,
         claim: &LinearClaim<Fq<Q>>,
@@ -88,6 +89,7 @@ impl<const Q: u128> BitZProver<Q> {
     ///
     /// Initialize the transcript with the session, instance, and enclosing public inputs.
     /// This method binds the inputs listed in [`VirtualStatement`].
+    #[tracing::instrument(name = "Prove virtual BitZ", skip_all)]
     pub fn prove_virtual(
         &self,
         statement: &VirtualStatement<'_, Q, impl VirtualMap>,

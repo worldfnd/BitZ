@@ -82,6 +82,7 @@ impl From<QueryError> for VerifyError {
     }
 }
 
+#[tracing::instrument(name = "Prove PCS opening", skip_all)]
 pub(crate) fn prove(
     pcs: &Pcs,
     data: &ProverData,
@@ -121,6 +122,7 @@ pub(crate) fn prove(
     }
 }
 
+#[tracing::instrument(name = "Verify PCS opening", skip_all)]
 pub(crate) fn verify(
     pcs: &Pcs,
     commitment: &Root,
@@ -176,10 +178,14 @@ fn prove_mle(
     target: F128,
     transcript: &mut ProverState,
 ) -> Result<(), ProveError> {
-    let prepared_claims = ring_switch.prepare_claims(as_flock_f128s(prover.witness()), target)?;
-    write_claims(transcript, &prepared_claims.claims);
-    let batching_point = sample_challenges(transcript);
-    let dense_reduction = prepared_claims.reduce_dense(&batching_point);
+    let dense_reduction = {
+        let _span = tracing::info_span!("Ring switch").entered();
+        let prepared_claims =
+            ring_switch.prepare_claims(as_flock_f128s(prover.witness()), target)?;
+        write_claims(transcript, &prepared_claims.claims);
+        let batching_point = sample_challenges(transcript);
+        prepared_claims.reduce_dense(&batching_point)
+    };
     prover.prove(dense_reduction, transcript)
 }
 
@@ -192,12 +198,15 @@ fn verify_mle(
     transcript: &mut VerifierState<'_>,
 ) -> Result<(), VerifyError> {
     let proof = ligerito::read_proof(pcs, commitment, transcript)?;
-    let claims = read_claims(transcript)?;
-    if !ring_switch.target_matches(&claims, target) {
-        return Err(VerifyError::VerificationFailed);
-    }
-    let batching_point = sample_challenges(transcript);
-    let reduction = ring_switch.reduce_succinct(&claims, &batching_point);
+    let reduction = {
+        let _span = tracing::info_span!("Verify ring switch").entered();
+        let claims = read_claims(transcript)?;
+        if !ring_switch.target_matches(&claims, target) {
+            return Err(VerifyError::VerificationFailed);
+        }
+        let batching_point = sample_challenges(transcript);
+        ring_switch.reduce_succinct(&claims, &batching_point)
+    };
     ligerito::verify_succinct(
         pcs,
         commitment,

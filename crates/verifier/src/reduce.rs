@@ -20,6 +20,7 @@ pub enum ReduceError {
     Claim(ClaimError),
 }
 
+#[tracing::instrument(name = "Verify grand-product reduction", skip_all)]
 pub(crate) fn gkr_reduce(
     transcript: &mut VerifierState,
     fold: &Fold,

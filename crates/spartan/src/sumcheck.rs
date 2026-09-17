@@ -220,6 +220,7 @@ where
     F: ConstField + Copy + Encoding<[u8]> + TranscriptChallenge,
 {
     /// Verifies the outer reduction and its terminal R1CS identity.
+    #[tracing::instrument(name = "Verify outer sumcheck", skip_all)]
     pub fn verify(
         &self,
         transcript: &mut VerifierState<'_>,
@@ -251,6 +252,7 @@ where
 /// When a protocol supports more than one choice of `F`, its transcript
 /// session or instance must bind that choice so proofs from different fields
 /// occupy distinct Fiat–Shamir domains.
+#[tracing::instrument(name = "Prove outer sumcheck", skip_all)]
 pub fn prove_outer_sumcheck<F>(
     transcript: &mut ProverState,
     initial_claim: F,
@@ -443,6 +445,7 @@ impl<F: Copy> R1csProductTableBuffers<F> {
 /// When a protocol supports more than one choice of `F`, its transcript
 /// session or instance must bind that choice so proofs from different fields
 /// occupy distinct Fiat–Shamir domains.
+#[tracing::instrument(name = "Prove inner sumcheck", skip_all)]
 pub fn prove_inner_sumcheck<F>(
     transcript: &mut ProverState,
     initial_claim: F,

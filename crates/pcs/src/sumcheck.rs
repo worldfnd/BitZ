@@ -30,6 +30,7 @@ pub(super) struct MleClaim {
 }
 
 /// Proves the reduction using a temporary dense table of witness evaluations.
+#[tracing::instrument(name = "Prove inner-product sumcheck", skip_all)]
 pub(super) fn prove(
     claim: &LinearClaim<F128>,
     packed_witness: &[F128],
@@ -81,6 +82,7 @@ pub(super) fn prove(
 }
 
 /// Verifies sumcheck and returns a witness claim that still requires the final PCS opening.
+#[tracing::instrument(name = "Verify inner-product sumcheck", skip_all)]
 pub(super) fn verify(
     claim: &LinearClaim<F128>,
     transcript: &mut VerifierState<'_>,

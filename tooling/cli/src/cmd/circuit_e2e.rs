@@ -40,9 +40,21 @@ impl Command for Args {
         let pool = builder.build()?;
         pool.broadcast(|_| {});
         pool.install(|| {
-            let statement = CircuitInstance::random(self.circuit, self.num_blocks, self.initial_state)?;
+            // Enter on the worker: Rayon does not inherit the caller's current span.
+            let _span = tracing::info_span!(
+                "circuit_e2e",
+                circuit = %self.circuit,
+                threads = rayon::current_num_threads(),
+                field = "Q100",
+                pcs = "Fast",
+                hash = "Blake3",
+            ).entered();
+            let statement = tracing::info_span!("generate_inputs").in_scope(|| {
+                CircuitInstance::random(self.circuit, self.num_blocks, self.initial_state)
+            })?;
             let inputs = statement.inputs.clone();
             let timings = benchmark::run(statement, &inputs)?;
+            tracing::info!("Proof verified successfully");
             println!("circuit={} threads={} field=Q100 pcs=Fast hash=Blake3 relation=Q100-r1cs constraints_verified=true", self.circuit, rayon::current_num_threads());
             println!("{timings}");
             Ok(())

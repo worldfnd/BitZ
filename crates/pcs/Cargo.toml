@@ -12,6 +12,7 @@ common = { workspace = true }
 field = { workspace = true, features = ["spongefish"] }
 flock-core = { workspace = true }
 transcript = { workspace = true }
+tracing = { workspace = true }
 num-traits = { workspace = true }
 
 [dev-dependencies]
