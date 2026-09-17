@@ -1589,22 +1589,16 @@ dependencies = [
 name = "tests"
 version = "0.1.0"
 dependencies = [
- "blake3",
  "circuit",
  "common",
  "crypto-primitives",
- "divan",
  "field",
- "flock-core",
  "host",
  "num-traits",
  "pcs",
- "poly",
- "post_gkr",
  "prover",
  "rand_chacha 0.10.0",
  "rand_core 0.10.1",
- "rayon",
  "transcript",
  "verifier",
 ]

@@ -23,7 +23,7 @@ pub enum ReduceError {
     Claim(ClaimError),
 }
 
-pub fn gkr_reduce(
+pub(crate) fn gkr_reduce(
     transcript: &mut VerifierState,
     fold: &Fold,
     shape: &Shape,
