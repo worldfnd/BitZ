@@ -130,7 +130,7 @@ fn prove_factors(
     transcript.prover_message(&message);
     let challenge: F128 = transcript.verifier_message();
     let running = advance(target, message, challenge);
-    let mut pair = Pair::new(factors.folded(challenge), bind_first(packed, challenge));
+    let mut pair = Pair::new(factors.fold(challenge), bind_first(packed, challenge));
     let (rest, target) = sumcheck::prove(&mut pair, running, transcript);
     let mut point = vec![challenge];
     point.extend(rest);
@@ -228,7 +228,7 @@ impl Factors<'_> {
 
     /// The weights with their first variable bound: the folded row factor
     /// tensored with the column factor, one entry per two bits.
-    fn folded(&self, challenge: F128) -> Vec<F128> {
+    fn fold(self, challenge: F128) -> Vec<F128> {
         let rows = sumcheck::folded(self.rows, challenge);
         let mut table = Vec::with_capacity(rows.len() * self.columns.len());
         for &column in self.columns {
@@ -404,7 +404,7 @@ mod tests {
             folded.evaluations
         };
         assert_eq!(bind_first(&leaf.packed, point[0]), fold(written_out));
-        assert_eq!(factors.folded(point[0]), fold(weights));
+        assert_eq!(factors.fold(point[0]), fold(weights));
     }
 
     /// Every record off by one bit fails the closing check; a different

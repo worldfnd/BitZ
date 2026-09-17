@@ -279,9 +279,7 @@ fn bind_mle_statement(
 }
 
 /// Binds both tensor factors before the first sumcheck challenge: their
-/// lengths, a digest of their weights, and the target. A factor can be one
-/// weight per committed bit, and absorbing it whole would cost the sponge
-/// as much as the sumcheck costs the prover.
+/// lengths, a digest of their weights, and the target.
 fn bind_inner_product_statement(
     pcs: &Pcs,
     root: &[u8; 32],
