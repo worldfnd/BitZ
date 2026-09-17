@@ -241,6 +241,7 @@ where
     /// `D(j) = sum_i eq(i,r_x) (A[i,j] + rho B[i,j] + rho^2 C[i,j])`
     ///
     /// as a dense table over the column domain, one column chunk per task.
+    #[tracing::instrument(name = "Bind Spartan matrices", skip_all)]
     pub fn bind_and_batch(
         &self,
         row_point: &[F],
@@ -262,6 +263,7 @@ where
     ///
     /// This deliberately does not call [`Self::bind_and_batch`], keeping the
     /// verifier path independent from the prover's dense-table construction.
+    #[tracing::instrument(name = "Evaluate Spartan matrices", level = "debug", skip_all)]
     pub fn evaluate_batched(
         &self,
         row_point: &[F],

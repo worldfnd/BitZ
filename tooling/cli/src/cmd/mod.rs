@@ -9,6 +9,10 @@ pub trait Command {
 /// Prove and verify circuits using BitZ.
 #[derive(FromArgs, PartialEq, Debug)]
 pub struct Args {
+    /// suppress span output; keep the benchmark summary on stdout
+    #[argh(switch)]
+    pub quiet: bool,
+
     #[argh(subcommand)]
     subcommand: Commands,
 }

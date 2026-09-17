@@ -104,6 +104,7 @@ pub struct Proof {
 }
 
 impl<S: CircuitStatement> CircuitProofSystem<S> {
+    #[tracing::instrument(name = "setup", skip_all)]
     pub fn new(statement: S) -> Result<Self, Error> {
         let mut constraints = ConstraintGenerator::new(statement.input_bits());
         let inputs: Vec<_> = (0..statement.input_bits())
@@ -164,6 +165,7 @@ impl<S: CircuitStatement> CircuitProofSystem<S> {
         }
     }
 
+    #[tracing::instrument(name = "witness", skip_all)]
     pub fn witness(&self, inputs: &[bool]) -> Result<Witness, Error> {
         if inputs.len() != self.statement.input_bits() {
             return Err(Error::Input("wrong witness input length"));
@@ -199,6 +201,7 @@ impl<S: CircuitStatement> CircuitProofSystem<S> {
         })
     }
 
+    #[tracing::instrument(name = "commit", skip_all)]
     pub fn commit(&self, witness: &Witness) -> Result<ProverData, Error> {
         self.pcs
             .commit(&witness.committed)
@@ -206,6 +209,7 @@ impl<S: CircuitStatement> CircuitProofSystem<S> {
             .map_err(Error::Commit)
     }
 
+    #[tracing::instrument(name = "prove", skip_all, fields(opening_path = ?self.opening_path))]
     pub fn prove(&self, witness: Witness, data: &ProverData) -> Result<Proof, Error> {
         let root = data.root();
         let mut transcript = build_prover(SESSION, self.statement.domain());
@@ -258,6 +262,7 @@ impl<S: CircuitStatement> CircuitProofSystem<S> {
         })
     }
 
+    #[tracing::instrument(name = "verify", skip_all)]
     pub fn verify(&self, proof: &Proof) -> Result<(), Error> {
         let mut transcript = build_verifier(SESSION, self.statement.domain(), &proof.opening);
         self.bind(&mut transcript, proof.root);

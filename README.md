@@ -78,8 +78,6 @@ The workspace contains library crates under `crates/` and the `bitz-cli` package
 
 ## Acknowledgments
 
-We thank the authors and maintainers of the projects that support this implementation:
-
 - **[Flock](https://github.com/succinctlabs/flock) and Ligerito.** We use Ligerito through Flock's `flock-core` for our internal binary-field PCS.
 - **[Spongefish](https://github.com/arkworks-rs/spongefish).** We use Spongefish for Fiat–Shamir transcripts, challenge generation, and message encoding.
 - **[Nethermind's crypto-primitives](https://github.com/NethermindEth/crypto-primitives).** We use its field traits and procedural macros throughout our arithmetic and polynomial code.

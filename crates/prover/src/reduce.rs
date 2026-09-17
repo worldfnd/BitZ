@@ -24,6 +24,7 @@ pub enum ReduceError {
 }
 
 #[inline(never)]
+#[tracing::instrument(name = "Build grand-product circuit", level = "debug", skip_all)]
 fn init_circuit(table: &BitTable, fold: &Fold) -> GrandProductCircuit {
     let columns = table.shape().columns();
     let dim = columns * table.shape().rows();
@@ -61,6 +62,7 @@ fn init_circuit(table: &BitTable, fold: &Fold) -> GrandProductCircuit {
 }
 
 /// Reduces the grand-product circuit to a factored claim on the committed bits.
+#[tracing::instrument(name = "Reduce grand products", skip_all)]
 pub fn gkr_reduce(
     transcript: &mut ProverState,
     fold: &Fold,

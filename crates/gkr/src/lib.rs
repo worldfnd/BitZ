@@ -12,6 +12,7 @@ type Point = VecDeque<Field>;
 /// Proves the layer-by-layer sumcheck reduction from a claim at `point`
 /// (an evaluation point on the output layer) down to a claim on the leaves.
 // TODO #[must_use], requires changing the test suite
+#[tracing::instrument(name = "Prove GKR", skip_all)]
 pub fn gpgkr_prove(
     ps: &mut ProverState,
     point: &[F128],
@@ -188,6 +189,7 @@ impl SuffixTable {
 const PARALLEL_MIN_LANES: usize = 1 << 12;
 
 #[must_use]
+#[tracing::instrument(name = "Verify GKR", skip_all)]
 pub fn gpgkr_verify(
     vs: &mut VerifierState,
     mut claim: Field,
@@ -280,6 +282,7 @@ impl GrandProductCircuit {
     // Returns the final evaluation and the witnesses of the intermediate layers
     // Can't consume the input as the circuit is necessary for the initialisation of fiat shamir
     // TODO: replace with leaf lookups and add multithreading
+    #[tracing::instrument(name = "Evaluate grand-product circuit", level = "debug", skip_all)]
     pub fn batched_eval(&self, groups: usize) -> (Vec<Field>, LayerWitnesses) {
         // +1 to deal with the possible case that the leafs are empty. Given that otherwise the constructor padded it to a power of two, and ilog rounds it down, it becomes a noop
         let mut witnesses = Vec::with_capacity((self.leafs.len() + 1).ilog2() as usize);

@@ -83,6 +83,7 @@ impl Pcs {
     }
 
     /// Commits to the exact configured number of packed field elements.
+    #[tracing::instrument(name = "Commit witness", skip_all)]
     pub fn commit(&self, packed_witness: &[F128]) -> Result<(Root, ProverData), CommitError> {
         // 1. Input Validation
         if packed_witness.len() != self.packed_len() {

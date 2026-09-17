@@ -23,6 +23,14 @@ pub fn run<S: CircuitStatement>(statement: S, inputs: &[bool]) -> Result<Timings
     let prepared = CircuitProofSystem::new(statement)?;
     let setup = started.elapsed();
     let circuit = prepared.stats();
+    tracing::info!(
+        opening_path = ?circuit.opening_path,
+        constraints = circuit.constraints,
+        assignment_bits = circuit.assignment_bits,
+        committed_bits = circuit.committed_bits,
+        padded_committed_bits = circuit.padded_committed_bits,
+        "Circuit prepared",
+    );
     let started = Instant::now();
     let witness = prepared.witness(inputs)?;
     let witness_time = started.elapsed();

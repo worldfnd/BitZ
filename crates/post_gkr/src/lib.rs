@@ -78,6 +78,7 @@ const ELEMENTS_PER_TASK: usize = workload_size::<F128>() / ELEMENT_BITS;
 /// major, and returns the evaluation claim it leaves: `MLE[f](rho) = v` as
 /// an [`OpeningQuery::Mle`], `rho` the challenges low coordinate first and
 /// `v` the prover's closing evaluation.
+#[tracing::instrument(name = "Prove inner-product sumcheck", skip_all)]
 pub fn prove(
     claim: &LinearClaim<F128>,
     packed: &[F128],
@@ -95,6 +96,7 @@ pub fn prove(
 /// Replays the sumcheck for `claim`, checks that the closing evaluation
 /// fits, and returns the evaluation claim for the opening scheme to verify
 /// against the commitment.
+#[tracing::instrument(name = "Verify inner-product sumcheck", skip_all)]
 pub fn verify(
     claim: &LinearClaim<F128>,
     transcript: &mut VerifierState<'_>,

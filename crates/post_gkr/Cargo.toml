@@ -15,6 +15,7 @@ field = { workspace = true, features = ["spongefish"] }
 num-traits = { workspace = true }
 poly = { workspace = true }
 rayon = { workspace = true, optional = true }
+tracing = { workspace = true }
 transcript = { workspace = true }
 
 [dev-dependencies]
