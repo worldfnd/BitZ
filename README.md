@@ -87,5 +87,4 @@ We thank the authors and maintainers of the projects that support this implement
   Our P-256 circuit ports its Lean implementation.
 - **[Binius64](https://github.com/binius-zk/binius64).** We adapt field reduction and interpolation routines from Binius64.
   We also use `binius-field` for benchmark comparisons.
-- **[WHIR](https://github.com/worldfnd/whir) and [Zinc+](https://github.com/NethermindEth/zinc-plus).** We adapt multilinear evaluation and workload sizing from WHIR.  
-  Our dense multilinear representation derives from Zinc+.
+- **[WHIR](https://github.com/worldfnd/whir) and [Zinc+](https://github.com/NethermindEth/zinc-plus).** We adapt multilinear evaluation and workload sizing from WHIR. Our dense multilinear representation derives from Zinc+.
