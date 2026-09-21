@@ -6,15 +6,15 @@
 //! rank-1 constraints `(A z) * (B z) = C z` over that integer witness. Every
 //! integer coefficient is an arbitrary-precision signed [`BigInt`].
 
+use num_bigint::BigInt;
+use num_traits::{One, Zero};
+use rayon::prelude::*;
 use std::array;
 use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 use std::error::Error;
 use std::fmt::{self, Display};
 use std::iter::Sum;
 use std::ops::{Add, AddAssign, Mul, Neg, Sub, SubAssign};
-
-use num_bigint::BigInt;
-use num_traits::{One, Zero};
 
 use crate::witgen::PackedWitness;
 use crate::{BoolWitness, Circuit, HintResult, PackedBits, ScalarBits, WitnessContext};
@@ -94,12 +94,18 @@ impl<C> SparseMatrix<C> {
     pub const fn column_count(&self) -> usize {
         self.columns
     }
+}
 
-    fn map_values_with<D>(self, map: &mut impl FnMut(C) -> D) -> SparseMatrix<D> {
+impl<C: Send + Sync> SparseMatrix<C> {
+    fn map_values_with<D, M>(self, map: M) -> SparseMatrix<D>
+    where
+        D: Send + Sync,
+        M: Fn(C) -> D + Send + Sync,
+    {
         SparseMatrix {
             rows: self
                 .rows
-                .into_iter()
+                .into_par_iter()
                 .map(|row| SparseRow {
                     entries: row
                         .entries
@@ -273,7 +279,7 @@ impl Display for ConstraintMatrixShapeError {
 
 impl Error for ConstraintMatrixShapeError {}
 
-impl<C> ConstraintMatrices<C> {
+impl<C: Send + Sync> ConstraintMatrices<C> {
     /// Checks that A, B, and C share a shape and consume the assignment
     /// produced by M.
     pub fn validate_shape(&self) -> Result<(), ConstraintMatrixShapeError> {
@@ -313,12 +319,16 @@ impl<C> ConstraintMatrices<C> {
     /// Consumes the matrices and maps every A/B/C coefficient.
     ///
     /// The Boolean `M` matrix and sparse topology are moved unchanged.
-    pub fn map_coefficients<D>(self, mut map: impl FnMut(C) -> D) -> ConstraintMatrices<D> {
+    pub fn map_coefficients<D, M>(self, map: M) -> ConstraintMatrices<D>
+    where
+        D: Send + Sync,
+        M: Fn(C) -> D + Send + Sync,
+    {
         ConstraintMatrices {
             m: self.m,
-            a: self.a.map_values_with(&mut map),
-            b: self.b.map_values_with(&mut map),
-            c: self.c.map_values_with(&mut map),
+            a: self.a.map_values_with(&map),
+            b: self.b.map_values_with(&map),
+            c: self.c.map_values_with(&map),
         }
     }
 }

@@ -1,6 +1,5 @@
 //! R1CS matrix preparation and the sparse kernels used by Spartan.
 
-use std::sync::LazyLock;
 use circuit::constraints::{ConstraintMatrices, SparseMatrix};
 use circuit::matrix_products::{IntegerProducts, ModularVector, RuntimeModulus};
 use circuit::witgen::PackedWitness;
@@ -11,6 +10,7 @@ use num_traits::{Signed, ToPrimitive};
 use poly::DenseMultilinearExtension;
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
+use std::sync::LazyLock;
 use transcript::Encoding;
 
 use crate::sumcheck::R1csProductMles;
@@ -400,7 +400,7 @@ where
     Ok(evaluation)
 }
 
-pub(crate) fn r1cs_num_vars<F>(
+pub(crate) fn r1cs_num_vars<F: Send + Sync>(
     matrices: &ConstraintMatrices<F>,
 ) -> Result<(usize, usize), SpartanMatrixError> {
     matrices
