@@ -10,10 +10,11 @@ use num_bigint::BigInt;
 use num_traits::{One, Zero};
 use rayon::prelude::*;
 use std::array;
-use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
+use std::cmp::Ordering;
 use std::error::Error;
 use std::fmt::{self, Display};
 use std::iter::Sum;
+use std::mem;
 use std::ops::{Add, AddAssign, Mul, Neg, Sub, SubAssign};
 
 use crate::witgen::PackedWitness;
@@ -434,7 +435,8 @@ fn evaluate_integer_row(row: &SparseRow<BigInt>, witness: &[BigInt]) -> BigInt {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct BoolLinearCombination {
     constant: bool,
-    witnesses: BTreeSet<usize>,
+    /// Witness indices, sorted and deduplicated.
+    witnesses: Vec<usize>,
 }
 
 impl BoolLinearCombination {
@@ -443,25 +445,26 @@ impl BoolLinearCombination {
         self.constant
     }
 
-    /// Zero-based Boolean witness indices with coefficient one.
-    pub fn witnesses(&self) -> &BTreeSet<usize> {
+    /// Sorted zero-based Boolean witness indices with coefficient one.
+    pub fn witnesses(&self) -> &[usize] {
         &self.witnesses
     }
 
     pub(crate) fn witness(index: usize) -> Self {
         Self {
             constant: false,
-            witnesses: BTreeSet::from([index]),
+            witnesses: vec![index],
         }
     }
 
     pub(crate) fn xor(mut self, rhs: Self) -> Self {
         self.constant ^= rhs.constant;
-        for witness in rhs.witnesses {
-            if !self.witnesses.insert(witness) {
-                self.witnesses.remove(&witness);
-            }
-        }
+        self.witnesses = merge_sorted_vecs(
+            self.witnesses,
+            rhs.witnesses,
+            |lhs, rhs| lhs.cmp(rhs),
+            |_lhs, _rhs| None, // Drop overlaps
+        );
         self
     }
 }
@@ -470,7 +473,7 @@ impl From<bool> for BoolLinearCombination {
     fn from(constant: bool) -> Self {
         Self {
             constant,
-            witnesses: BTreeSet::new(),
+            witnesses: Vec::new(),
         }
     }
 }
@@ -483,7 +486,9 @@ impl BoolWitness for BoolLinearCombination {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LinearCombination {
     constant: BigInt,
-    witnesses: BTreeMap<usize, BigInt>,
+    /// Indices of witness elements with nonzero coefficients.
+    /// Sorted and deduplicated by witness index.
+    witnesses: Vec<(usize, BigInt)>,
 }
 
 impl LinearCombination {
@@ -492,47 +497,31 @@ impl LinearCombination {
         &self.constant
     }
 
-    /// Nonzero coefficients keyed by zero-based integer witness index.
-    pub fn witnesses(&self) -> &BTreeMap<usize, BigInt> {
+    /// Nonzero coefficients sorted by zero-based integer witness index.
+    pub fn witnesses(&self) -> &[(usize, BigInt)] {
         &self.witnesses
     }
 
     fn witness(index: usize) -> Self {
         Self {
             constant: BigInt::zero(),
-            witnesses: BTreeMap::from([(index, BigInt::one())]),
-        }
-    }
-
-    fn add_term(&mut self, index: usize, coefficient: BigInt) {
-        if coefficient.is_zero() {
-            return;
-        }
-        match self.witnesses.entry(index) {
-            Entry::Vacant(entry) => {
-                entry.insert(coefficient);
-            }
-            Entry::Occupied(mut entry) => {
-                *entry.get_mut() += coefficient;
-                if entry.get().is_zero() {
-                    entry.remove();
-                }
-            }
+            witnesses: vec![(index, BigInt::one())],
         }
     }
 
     fn into_sparse_row(self) -> SparseRow<BigInt> {
-        let mut entries =
-            Vec::with_capacity(self.witnesses.len() + usize::from(!self.constant.is_zero()));
-        if !self.constant.is_zero() {
-            entries.push((0, self.constant));
+        let Self {
+            constant,
+            mut witnesses,
+        } = self;
+        for (column, _) in &mut witnesses {
+            *column += 1;
         }
-        entries.extend(
-            self.witnesses
-                .into_iter()
-                .map(|(witness, coefficient)| (witness + 1, coefficient)),
-        );
-        SparseRow { entries }
+        if !constant.is_zero() {
+            witnesses.reserve_exact(1);
+            witnesses.insert(0, (0, constant));
+        }
+        SparseRow { entries: witnesses }
     }
 }
 
@@ -540,7 +529,7 @@ impl From<BigInt> for LinearCombination {
     fn from(constant: BigInt) -> Self {
         Self {
             constant,
-            witnesses: BTreeMap::new(),
+            witnesses: Vec::new(),
         }
     }
 }
@@ -559,10 +548,7 @@ impl Add for LinearCombination {
     type Output = Self;
 
     fn add(mut self, rhs: Self) -> Self::Output {
-        self.constant += rhs.constant;
-        for (witness, coefficient) in rhs.witnesses {
-            self.add_term(witness, coefficient);
-        }
+        self += rhs;
         self
     }
 }
@@ -570,9 +556,19 @@ impl Add for LinearCombination {
 impl AddAssign for LinearCombination {
     fn add_assign(&mut self, rhs: Self) {
         self.constant += rhs.constant;
-        for (witness, coefficient) in rhs.witnesses {
-            self.add_term(witness, coefficient);
-        }
+        self.witnesses = merge_sorted_vecs(
+            mem::take(&mut self.witnesses),
+            rhs.witnesses,
+            |(lhs_idx, _), (rhs_idx, _)| lhs_idx.cmp(rhs_idx),
+            |(wit_idx, lhs_coeff), (_, rhs_coeff)| {
+                let coeff = lhs_coeff + rhs_coeff;
+                if coeff.is_zero() {
+                    None
+                } else {
+                    Some((wit_idx, coeff))
+                }
+            },
+        );
     }
 }
 
@@ -581,11 +577,9 @@ impl Neg for LinearCombination {
 
     fn neg(mut self) -> Self::Output {
         self.constant = -self.constant;
-        self.witnesses = self
-            .witnesses
-            .into_iter()
-            .map(|(witness, coefficient)| (witness, -coefficient))
-            .collect();
+        for (_, coefficient) in &mut self.witnesses {
+            *coefficient = -mem::take(coefficient);
+        }
         self
     }
 }
@@ -608,15 +602,13 @@ impl Mul<BigInt> for LinearCombination {
     type Output = Self;
 
     fn mul(mut self, rhs: BigInt) -> Self::Output {
-        self.constant *= rhs.clone();
-        self.witnesses = self
-            .witnesses
-            .into_iter()
-            .filter_map(|(witness, coefficient)| {
-                let coefficient = coefficient * rhs.clone();
-                (!coefficient.is_zero()).then_some((witness, coefficient))
-            })
-            .collect();
+        if rhs.is_zero() {
+            return Self::zero();
+        }
+        self.constant *= &rhs;
+        for (_, coefficient) in &mut self.witnesses {
+            *coefficient *= &rhs;
+        }
         self
     }
 }
@@ -625,6 +617,54 @@ impl Sum for LinearCombination {
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
         iter.fold(Self::zero(), Add::add)
     }
+}
+
+/// Merges two sorted vectors with no duplicates. Compares elements using `cmp` function,
+/// and if two elements are equal, element produced by the `merge` function is added instead.
+///
+/// Concatenation will only reserve as much extra space as needed.
+fn merge_sorted_vecs<T>(
+    mut lhs: Vec<T>,
+    mut rhs: Vec<T>,
+    cmp: impl Fn(&T, &T) -> Ordering,
+    merge: impl Fn(T, T) -> Option<T>,
+) -> Vec<T> {
+    let (Some(lhs_first), Some(lhs_last)) = (lhs.first(), lhs.last()) else {
+        return rhs;
+    };
+    let (Some(rhs_first), Some(rhs_last)) = (rhs.first(), rhs.last()) else {
+        return lhs;
+    };
+    // Disjoint ranges concatenate without a merge.
+    if cmp(lhs_last, rhs_first).is_lt() {
+        lhs.reserve_exact(rhs.len());
+        lhs.extend(rhs);
+        return lhs;
+    }
+    if cmp(rhs_last, lhs_first).is_lt() {
+        rhs.reserve_exact(lhs.len());
+        rhs.extend(lhs);
+        return rhs;
+    }
+    let mut merged = Vec::with_capacity(lhs.len() + rhs.len());
+    let mut lhs = lhs.into_iter().peekable();
+    let mut rhs = rhs.into_iter().peekable();
+    while let (Some(left), Some(right)) = (lhs.peek(), rhs.peek()) {
+        match cmp(left, right) {
+            Ordering::Less => merged.extend(lhs.next()),
+            Ordering::Greater => merged.extend(rhs.next()),
+            Ordering::Equal => {
+                let left = lhs.next().expect("impossible");
+                let right = rhs.next().expect("impossible");
+                if let Some(new) = merge(left, right) {
+                    merged.push(new);
+                }
+            }
+        }
+    }
+    merged.extend(lhs);
+    merged.extend(rhs);
+    merged
 }
 
 /// Circuit backend that records sparse M/A/B/C matrices without evaluating hints.
@@ -722,12 +762,20 @@ impl ConstraintGenerator {
 }
 
 fn bool_sparse_row(value: BoolLinearCombination) -> SparseBoolRow {
-    let mut positions = Vec::with_capacity(value.witnesses.len() + usize::from(value.constant));
-    if value.constant {
-        positions.push(0);
+    let BoolLinearCombination {
+        constant,
+        mut witnesses,
+    } = value;
+    for position in &mut witnesses {
+        *position += 1;
     }
-    positions.extend(value.witnesses.into_iter().map(|witness| witness + 1));
-    SparseBoolRow { positions }
+    if constant {
+        witnesses.reserve_exact(1);
+        witnesses.insert(0, 0);
+    }
+    SparseBoolRow {
+        positions: witnesses,
+    }
 }
 
 impl Circuit for ConstraintGenerator {
@@ -895,5 +943,66 @@ mod tests {
                 ConstraintMatrixShapeError::R1csRowCountMismatch { a: 1, b: 0, c: 1 }
             ))
         );
+    }
+
+    #[test]
+    fn linear_combination_terms_stay_sorted_and_merge_shared_witnesses() {
+        let term = |index: usize, coefficient: i64| {
+            LinearCombination::witness(index) * BigInt::from(coefficient)
+        };
+        let expected = |terms: &[(usize, i64)]| -> Vec<(usize, BigInt)> {
+            terms
+                .iter()
+                .map(|&(witness, coefficient)| (witness, BigInt::from(coefficient)))
+                .collect()
+        };
+        let exact = |value: &LinearCombination| value.witnesses.capacity() == value.witnesses.len();
+
+        // Disjoint ranges append on either side without spare capacity.
+        let ascending = term(1, 1) + term(3, 1);
+        assert_eq!(ascending.witnesses(), expected(&[(1, 1), (3, 1)]));
+        assert!(exact(&ascending));
+        let descending = term(3, 1) + term(1, 1);
+        assert_eq!(descending.witnesses(), expected(&[(1, 1), (3, 1)]));
+        assert!(exact(&descending));
+
+        // Interleaved ranges merge, shared witnesses sum, cancellations vanish.
+        let interleaved = (term(0, 1) + term(2, 1)) + (term(1, 1) + term(3, 1) + term(2, 3));
+        assert_eq!(
+            interleaved.witnesses(),
+            expected(&[(0, 1), (1, 1), (2, 4), (3, 1)])
+        );
+        let cancelled = (term(1, 1) + term(2, 1)) - term(1, 1);
+        assert_eq!(cancelled.witnesses(), expected(&[(2, 1)]));
+        assert!((term(1, 2) - term(1, 2)).is_zero());
+        assert!((term(5, 7) * BigInt::zero()).is_zero());
+
+        let scaled = -(term(1, 2) + LinearCombination::from(BigInt::from(3))) * BigInt::from(5);
+        assert_eq!(*scaled.constant(), BigInt::from(-15));
+        assert_eq!(scaled.witnesses(), expected(&[(1, -10)]));
+    }
+
+    #[test]
+    fn bool_linear_combination_xor_is_a_sorted_symmetric_difference() {
+        let bit = BoolLinearCombination::witness;
+
+        let ascending = bit(1).xor(bit(3));
+        assert_eq!(ascending.witnesses(), &[1, 3]);
+        assert_eq!(bit(3).xor(bit(1)).witnesses(), &[1, 3]);
+        assert_eq!(
+            ascending.clone().xor(bit(3).xor(bit(5))).witnesses(),
+            &[1, 5]
+        );
+        assert_eq!(
+            bit(0).xor(bit(2)).xor(bit(1).xor(bit(3))).witnesses(),
+            &[0, 1, 2, 3]
+        );
+
+        let cancelled = ascending
+            .clone()
+            .xor(ascending)
+            .xor(BoolLinearCombination::from(true));
+        assert!(cancelled.witnesses().is_empty());
+        assert!(cancelled.constant());
     }
 }
