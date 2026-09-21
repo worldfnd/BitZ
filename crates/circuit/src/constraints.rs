@@ -717,6 +717,13 @@ impl ConstraintGenerator {
         }
     }
 
+    /// Records `value` as the next M row and returns its integer witness index.
+    fn record_bitz(&mut self, value: BoolLinearCombination) -> usize {
+        let witness = self.m_rows.len();
+        self.m_rows.push(value);
+        witness
+    }
+
     /// Finishes generation and materializes the four sparse matrices.
     pub fn into_matrices(self) -> ConstraintMatrices<BigInt> {
         let Self {
@@ -815,9 +822,29 @@ impl Circuit for ConstraintGenerator {
     }
 
     fn bitz<const LIMBS: usize>(&mut self, value: BoolLinearCombination) -> LinearCombination {
-        let witness = self.m_rows.len();
-        self.m_rows.push(value);
-        LinearCombination::witness(witness)
+        LinearCombination::witness(self.record_bitz(value))
+    }
+
+    fn bitz_unsigned<const LIMBS: usize, const N: usize, const M: usize, const LOW: usize>(
+        &mut self,
+        bits_le: &ScalarBits<BoolLinearCombination, N>,
+    ) -> (LinearCombination, LinearCombination) {
+        assert!(LOW <= N, "low part cannot be wider than the input");
+        // Same layout as the default, one `bitz` per bit with coefficient
+        // 2^index, but each sum is built once with exact capacity.
+        let mut witnesses = Vec::with_capacity(N);
+        for (index, bit) in bits_le.0.iter().enumerate() {
+            witnesses.push((self.record_bitz(bit.clone()), BigInt::one() << index));
+        }
+        let low = LinearCombination {
+            constant: BigInt::zero(),
+            witnesses: witnesses[..LOW].to_vec(),
+        };
+        let full = LinearCombination {
+            constant: BigInt::zero(),
+            witnesses,
+        };
+        (full, low)
     }
 
     fn assert_r1c<const LIMBS: usize>(
@@ -845,6 +872,13 @@ impl Circuit for ConstraintGenerator {
 mod tests {
     use super::*;
     use crate::witgen::Witgen;
+
+    fn terms(pairs: &[(usize, i64)]) -> Vec<(usize, BigInt)> {
+        pairs
+            .iter()
+            .map(|&(witness, coefficient)| (witness, BigInt::from(coefficient)))
+            .collect()
+    }
 
     #[test]
     fn materializes_freigen_matrix_conventions_and_checks_witnesses() {
@@ -950,36 +984,45 @@ mod tests {
         let term = |index: usize, coefficient: i64| {
             LinearCombination::witness(index) * BigInt::from(coefficient)
         };
-        let expected = |terms: &[(usize, i64)]| -> Vec<(usize, BigInt)> {
-            terms
-                .iter()
-                .map(|&(witness, coefficient)| (witness, BigInt::from(coefficient)))
-                .collect()
-        };
         let exact = |value: &LinearCombination| value.witnesses.capacity() == value.witnesses.len();
 
         // Disjoint ranges append on either side without spare capacity.
         let ascending = term(1, 1) + term(3, 1);
-        assert_eq!(ascending.witnesses(), expected(&[(1, 1), (3, 1)]));
+        assert_eq!(ascending.witnesses(), terms(&[(1, 1), (3, 1)]));
         assert!(exact(&ascending));
         let descending = term(3, 1) + term(1, 1);
-        assert_eq!(descending.witnesses(), expected(&[(1, 1), (3, 1)]));
+        assert_eq!(descending.witnesses(), terms(&[(1, 1), (3, 1)]));
         assert!(exact(&descending));
 
         // Interleaved ranges merge, shared witnesses sum, cancellations vanish.
         let interleaved = (term(0, 1) + term(2, 1)) + (term(1, 1) + term(3, 1) + term(2, 3));
         assert_eq!(
             interleaved.witnesses(),
-            expected(&[(0, 1), (1, 1), (2, 4), (3, 1)])
+            terms(&[(0, 1), (1, 1), (2, 4), (3, 1)])
         );
         let cancelled = (term(1, 1) + term(2, 1)) - term(1, 1);
-        assert_eq!(cancelled.witnesses(), expected(&[(2, 1)]));
+        assert_eq!(cancelled.witnesses(), terms(&[(2, 1)]));
         assert!((term(1, 2) - term(1, 2)).is_zero());
         assert!((term(5, 7) * BigInt::zero()).is_zero());
 
         let scaled = -(term(1, 2) + LinearCombination::from(BigInt::from(3))) * BigInt::from(5);
         assert_eq!(*scaled.constant(), BigInt::from(-15));
-        assert_eq!(scaled.witnesses(), expected(&[(1, -10)]));
+        assert_eq!(scaled.witnesses(), terms(&[(1, -10)]));
+    }
+
+    #[test]
+    fn bitz_unsigned_lifts_bits_with_powers_of_two_into_exact_rows() {
+        let mut generator = ConstraintGenerator::new(3);
+        let bits = ScalarBits(generator.inputs::<3>());
+        let (full, low) = generator.bitz_unsigned::<1, 3, 1, 2>(&bits);
+
+        assert_eq!(generator.m_rows.len(), 3);
+        assert_eq!(generator.m_rows[2].witnesses(), &[2]);
+        assert!(full.constant().is_zero());
+        assert_eq!(full.witnesses(), terms(&[(0, 1), (1, 2), (2, 4)]));
+        assert_eq!(full.witnesses.capacity(), 3);
+        assert_eq!(low.witnesses(), terms(&[(0, 1), (1, 2)]));
+        assert_eq!(low.witnesses.capacity(), 2);
     }
 
     #[test]
