@@ -62,3 +62,10 @@ debug = true
 split-debuginfo = "packed"
 lto = false
 codegen-units = 16
+
+# Tests run the dev profile.
+# The Fiat–Shamir sponge is pure-Rust Keccak, which is ~20x slower unoptimized.
+[profile.dev]
+package.keccak.opt-level = 3
+package.sha3.opt-level = 3
+package.spongefish.opt-level = 3
