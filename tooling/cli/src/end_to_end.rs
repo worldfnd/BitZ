@@ -25,6 +25,12 @@ use spartan::{
 
 const SESSION: &[u8] = b"bitz/circuit-e2e/v1";
 const WINDOW: u32 = 8;
+/// Width of the fingerprint prime: the fixed modulus until the draw exists.
+///
+/// TODO(random-prime): derive it from the claim shape as `f2z-pcs` does,
+/// `min(113, 128 - log_rows)` with the top of the interval capped by the fold
+/// gate of [`BitZParams`].
+const PRIME_BITS: u32 = FqDefault::BITS;
 
 /// A trusted, deterministic circuit and its public inputs. Implementations must
 /// emit identical operations for symbolic and concrete backends and constrain
@@ -225,6 +231,10 @@ impl<S: CircuitStatement> CircuitProofSystem<S> {
                 )
                 .map_err(Error::ConstantProve)?;
         }
+        // TODO(random-prime): bind the integer constraint digest before the
+        // draw, then build the parameters, matrices and witness under `prime`.
+        let prime = transcript.squeeze_prime(PRIME_BITS);
+        debug_assert_eq!(prime, Q100);
         let (spartan, terminal) = prove_spartan_piop(
             &mut transcript,
             &self.matrices,
@@ -276,6 +286,10 @@ impl<S: CircuitStatement> CircuitProofSystem<S> {
                 )
                 .map_err(Error::ConstantVerify)?;
         }
+        // TODO(random-prime): as in `prove`, the parameters and matrices must
+        // be built under `prime`.
+        let prime = transcript.squeeze_prime(PRIME_BITS);
+        debug_assert_eq!(prime, Q100);
         let terminal = verify_spartan_proof(&mut transcript, &self.matrices, &proof.spartan)
             .map_err(Error::Spartan)?;
         let claim = opening_claim(&self.params, &terminal)?;
