@@ -210,8 +210,6 @@ fn eq_factor(r: Field, z: Field) -> Field {
     Field::ONE + r + z
 }
 
-// TODO:  SuffixTable becomes a wrapper around a preallocated vector that is large enough for all rounds.
-//          SuffixTable can be 'created' each round / destroyed to ensure proper truncation of the underlying vector
 // TODO: Split suffix table
 struct SuffixTable<'a> {
     storage: &'a [Field],
@@ -229,12 +227,8 @@ impl<'a> SuffixTable<'a> {
     /// Allocates all directly as it is as much space as a double buffer approach would take.
     #[inline(never)]
     fn new(storage: &'a mut [Field], point: &Point) -> SuffixTable<'a> {
-        // The three asserts below (here and in the loop) are load-bearing
-        // for codegen, not just documentation: without them, LLVM can't
-        // prove `storage` is big enough for the splits and per-element
-        // `low`/`hi` writes below, so every one of those carries its own
-        // bounds check -- including inside the hot per-element loop. With
-        // them, none of it does; verified via disassembly.
+        // Establishes the whole table's space budget up front so LLVM can
+        // prove the `low`/`hi` writes in the loop below are in bounds
         let needed = (1usize << point.len()).saturating_sub(1).max(1);
         assert!(storage.len() >= needed);
 
@@ -249,10 +243,8 @@ impl<'a> SuffixTable<'a> {
         // Suffix table is in the reverse order of the point
         for &z in c.rev() {
             let size = prev.len() << 1;
-            assert!(remaining.len() >= size);
             let (entry, next) = remaining.split_at_mut(size);
-            assert!(entry.len() >= size >> 1);
-            let (low, hi) = entry.split_at_mut(size >> 1);
+            let (low, hi) = entry.split_at_mut(entry.len() >> 1);
 
             for ((l, h), &e) in low.iter_mut().zip(hi.iter_mut()).zip(prev.iter()) {
                 let tmp = z * e;
@@ -351,8 +343,6 @@ fn verify_layer(vs: &mut VerifierState, mut claim: Field, point: Point) -> Optio
     }
 }
 
-//TODO circuit and circuit eval can't have their innards directly available as that would break power of 2 requirements for the rest.
-// A circuit is defined by its leaf value only because it is a balanced tree
 // TODO: Optimise for circuits that are padded.
 pub struct GrandProductCircuit {
     leafs: Vec<Field>,
