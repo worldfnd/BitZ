@@ -299,12 +299,12 @@ impl GrandProductCircuit {
     // Can't consume the input as the circuit is necessary for the initialisation of fiat shamir
     // TODO: replace with leaf lookups and add multithreading
     #[tracing::instrument(name = "Evaluate grand-product circuit", level = "debug", skip_all)]
-    pub fn batched_eval(&self, groups: usize) -> (Vec<Field>, LayerWitnesses) {
+    pub fn batched_eval(self, groups: usize) -> (Vec<Field>, LayerWitnesses) {
         // +1 to deal with the possible case that the leafs are empty. Given that otherwise the constructor padded it to a power of two, and ilog rounds it down, it becomes a noop
         let mut witnesses = Vec::with_capacity((self.leafs.len() + 1).ilog2() as usize);
 
         // TODO expensive clone going to get replaced by leaf lookups
-        let mut prev_eval = self.leafs.clone();
+        let mut prev_eval = self.leafs;
 
         // Stop when there is one output per group
         while prev_eval.len() > groups {
@@ -466,7 +466,12 @@ mod tests {
             let claim = mle(output, &point);
             let instance = (leaves.clone(), point.to_vec());
             let mut prover = transcript::build_prover("gkr-zero", &instance);
-            let terminal = gpgkr_prove(&mut prover, leaves.len().ilog2() as usize, &point, witnesses);
+            let terminal = gpgkr_prove(
+                &mut prover,
+                leaves.len().ilog2() as usize,
+                &point,
+                witnesses,
+            );
             assert_eq!(terminal.1, mle(leaves.clone(), &terminal.0));
             let proof = prover.finish();
 
@@ -504,11 +509,15 @@ mod tests {
     pub fn prove(input: Vec<Field>, log_groups: usize) -> (Vec<Field>, transcript::Proof) {
         let log_bits = input.len().ilog2() as usize;
         let circuit = GrandProductCircuit::new(input);
+        // Fake hashing
+        let n = circuit.leafs.len() as u128;
+
+        let log_bits = circuit.leafs.len().max(1).ilog2() as usize;
         let groups = 1usize << log_groups;
         let (last_value, witnesses) = circuit.batched_eval(groups);
 
         // TODO instance is a bit loose and should be replaced by PCS
-        let instance = (last_value.clone(), circuit.leafs);
+        let instance = (last_value.clone(), n);
 
         let mut prover = transcript::build_prover("gkr", &instance);
 
@@ -524,7 +533,8 @@ mod tests {
 
     pub fn verify(input: Vec<Field>, output: Vec<Field>, proof: transcript::Proof) -> bool {
         let circuit = GrandProductCircuit::new(input);
-        let instance = (&output, &circuit.leafs);
+        // Fake hashing
+        let instance = (&output, circuit.leafs.len() as u128);
         let mut verifier = transcript::build_verifier("gkr", &instance, &proof);
 
         let log_groups = output.len().max(1).ilog2();
