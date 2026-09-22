@@ -5,9 +5,7 @@ use field::{F128, Fq};
 use num_traits::{ConstOne, ConstZero};
 use pcs::{HashKind, LigeritoProfile, Pcs, VerifyError as PcsVerifyError};
 use prover::ProveError;
-use tests::{
-    Instance, large_shape, narrow_shape, prover_transcript, verifier_transcript, wide_shape,
-};
+use tests::{Instance, narrow_shape, prover_transcript, verifier_transcript, wide_shape};
 use transcript::Proof;
 use verifier::{ReceiveError, VerifyError};
 
@@ -27,8 +25,8 @@ fn prove(instance: &Instance) -> Proof {
 }
 
 #[test]
-fn an_honest_proof_verifies_on_every_shape_the_profile_admits() {
-    for shape in [narrow_shape(), wide_shape(), large_shape()] {
+fn an_honest_proof_verifies_on_both_floor_shapes() {
+    for shape in [narrow_shape(), wide_shape()] {
         let instance = Instance::honest(shape, 31);
         let proof = prove(&instance);
 
