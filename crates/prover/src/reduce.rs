@@ -8,9 +8,20 @@
 use common::{BitTable, ClaimError, Fold, LinearClaim, OpeningQuery, TransposeError};
 use field::F128;
 use gkr::{GrandProductCircuit, gpgkr_prove};
-use num_traits::ConstOne;
+use num_traits::{ConstOne, ConstZero};
 use poly::eq_table;
 use transcript::ProverState;
+
+/// A reduction that produced no claim.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReduceError {
+    /// The fold's batch point has a zero coordinate, which the verifier's
+    /// GKR rounds divide by. A `2^-128` accident of the transcript, not
+    /// something a prover can arrange.
+    DegenerateChallenge,
+    /// The derived weight counts do not match the table shape.
+    Claim(ClaimError),
+}
 
 #[inline(never)]
 #[tracing::instrument(name = "Build grand-product circuit", level = "debug", skip_all)]
@@ -56,7 +67,10 @@ pub fn gkr_reduce(
     transcript: &mut ProverState,
     fold: &Fold,
     table: &BitTable,
-) -> Result<OpeningQuery, ClaimError> {
+) -> Result<OpeningQuery, ReduceError> {
+    if fold.zeta.contains(&F128::ZERO) {
+        return Err(ReduceError::DegenerateChallenge);
+    }
     let circuit = init_circuit(table, fold);
     let (_last_value, witnesses) = circuit.batched_eval(table.shape().columns());
 
@@ -80,7 +94,8 @@ pub fn gkr_reduce(
         .collect();
 
     let u2 = eq_table(&alfa_c);
-    let claim = LinearClaim::from_shape(table.shape(), u1, u2, inner_product_claim)?;
+    let claim = LinearClaim::from_shape(table.shape(), u1, u2, inner_product_claim)
+        .map_err(ReduceError::Claim)?;
     Ok(OpeningQuery::InnerProduct { claim })
 }
 

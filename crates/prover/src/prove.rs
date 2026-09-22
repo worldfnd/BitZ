@@ -1,14 +1,13 @@
 //! `ProveBitZ`.
 
 use common::{
-    BitTable, ClaimError, LinearClaim, OpeningQuery, TableError, VirtualMap, VirtualMapError,
-    VirtualStatement,
+    BitTable, LinearClaim, OpeningQuery, TableError, VirtualMap, VirtualMapError, VirtualStatement,
 };
 use field::{F128, Fq};
 use pcs::{CommitScheme, Pcs, ProveError as OpeningProveError, ProverData, StatementBinding};
 use transcript::ProverState;
 
-use crate::{BitZProver, SendError, reduce::gkr_reduce};
+use crate::{BitZProver, SendError, reduce::ReduceError, reduce::gkr_reduce};
 
 /// A proof the prover cannot produce.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,8 +20,8 @@ pub enum ProveError {
     Witness(TableError),
     /// The fold round failed.
     Fold(SendError),
-    /// The derived GKR weight counts do not match the table shape.
-    Reduction(ClaimError),
+    /// The GKR left no claim.
+    Reduction(ReduceError),
     /// The opening failed, so the reduction's claim was never discharged.
     Opening(OpeningProveError),
 }
@@ -132,7 +131,7 @@ impl<const Q: u128> BitZProver<Q> {
             .transpose_query(query)
             .map_err(ProveError::VirtualMap)?;
 
-        // Step 6: run PCS sumcheck, ring switching, and opening on committed bits.
+        // Step 6: the post-GKR sumcheck, ring switching, and opening on committed bits.
         // Bind the PCS parameters and transposed query before its challenges.
         pcs.prove_lin(
             data,

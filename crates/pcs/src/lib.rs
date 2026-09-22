@@ -22,7 +22,7 @@
 //! Ring-switching transposes `(s_v)` into `(s_u)` and samples `batching_point`.
 //! It sets `packed_target = Σ_u eq(batching_point, u) · s_u`.
 //! Recursive Ligerito proves `Σ_y B(y) · q_pkd(y) = packed_target` against the committed root.
-//! Quadratic sumcheck reduces factored inner-product claims to MLE claims before this opening protocol.
+//! The post-GKR sumcheck (`post_gkr`) reduces factored inner-product claims to MLE claims before this opening protocol.
 //!
 //! # Interface
 //!
@@ -95,7 +95,6 @@ mod ligerito;
 mod mle;
 mod opening;
 mod profiles;
-mod sumcheck;
 mod transpose;
 
 #[cfg(test)]
@@ -130,7 +129,7 @@ pub enum StatementBinding {
 /// `q̂(r) = Σ_{b ∈ {0,1}^m} q(b) · eq(b, r) = target`, where
 /// `eq(b, r) = ∏_i (b_i · r_i + (1 - b_i) · (1 - r_i))`.
 /// [`OpeningQuery::InnerProduct`] accepts row weights, column weights, and a target over `F128`.
-/// Quadratic sumcheck reduces this claim to an MLE claim before the opening protocol.
+/// The post-GKR sumcheck reduces this claim to an MLE claim before the opening protocol.
 pub trait CommitScheme {
     /// The public commitment.
     type Commitment;
@@ -147,7 +146,7 @@ pub trait CommitScheme {
 
     /// Consumes the exact packed witness and proves either opening query.
     ///
-    /// Inner-product claims first pass through quadratic sumcheck and then the MLE opening protocol.
+    /// Inner-product claims first pass through the post-GKR sumcheck and then the MLE opening protocol.
     fn prove_lin(
         &self,
         data: &Self::ProverData,
@@ -159,7 +158,7 @@ pub trait CommitScheme {
 
     /// Verifies either opening query against `commitment`.
     ///
-    /// Inner-product claims first pass through quadratic sumcheck and then the MLE opening protocol.
+    /// Inner-product claims first pass through the post-GKR sumcheck and then the MLE opening protocol.
     fn verify_lin(
         &self,
         commitment: &Self::Commitment,
