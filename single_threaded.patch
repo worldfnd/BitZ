@@ -1,0 +1,60 @@
+diff --git a/crates/gkr/src/lib.rs b/crates/gkr/src/lib.rs
+index 89a1bf0..bb364ff 100644
+--- a/crates/gkr/src/lib.rs
++++ b/crates/gkr/src/lib.rs
+@@ -87,11 +87,11 @@ fn prove_layer(
+         let r = ps.verifier_message();
+         next_point.push_back(r);
+ 
+-        lo_l.par_iter_mut()
+-            .zip(lo_r.par_iter_mut())
+-            .zip(hi_l.par_iter())
+-            .zip(hi_r.par_iter())
+-            .with_min_len(PARALLEL_MIN_LANES)
++        lo_l.iter_mut()
++            .zip(lo_r.iter_mut())
++            .zip(hi_l.iter())
++            .zip(hi_r.iter())
++            // .with_min_len(PARALLEL_MIN_LANES)
+             .for_each(|(((l_lo, r_lo), &l_hi), &r_hi)| {
+                 // Recalculating delta rather than writing it in the top half of the array in the previous loop to save on writes.
+                 // No benchmarking has been done to check the difference.
+@@ -161,16 +161,16 @@ fn reduce_round<const SEND_ONE: bool>(
+     hi_r: &[Field],
+     eq: &[Field],
+ ) -> (Wide256, Wide256) {
+-    lo_l.par_chunks_exact(2)
+-        .zip(lo_r.par_chunks_exact(2))
+-        .zip(hi_l.par_chunks_exact(2))
+-        .zip(hi_r.par_chunks_exact(2))
+-        .zip(eq.par_chunks_exact(2))
++    lo_l.chunks_exact(2)
++        .zip(lo_r.chunks_exact(2))
++        .zip(hi_l.chunks_exact(2))
++        .zip(hi_r.chunks_exact(2))
++        .zip(eq.chunks_exact(2))
+         // Chunked by 2, so the element-count threshold below is halved in
+         // terms of chunks.
+-        .with_min_len(PARALLEL_MIN_LANES / 2)
++        // .with_min_len(PARALLEL_MIN_LANES / 2)
+         .fold(
+-            || (Wide256::zero(), Wide256::zero()),
++            (Wide256::zero(), Wide256::zero()),
+             |(mut sum_endpoint, mut sum_inf), ((((l_lo, r_lo), l_hi), r_hi), e)| {
+                 let (d_l0, d_r0) = (l_hi[0] - l_lo[0], r_hi[0] - r_lo[0]);
+                 let (d_l1, d_r1) = (l_hi[1] - l_lo[1], r_hi[1] - r_lo[1]);
+@@ -197,10 +197,10 @@ fn reduce_round<const SEND_ONE: bool>(
+                 (sum_endpoint, sum_inf)
+             },
+         )
+-        .reduce(
+-            || (Wide256::zero(), Wide256::zero()),
+-            |(a0, ainf), (b0, binf)| (a0 + b0, ainf + binf),
+-        )
++    // .reduce(
++    //     || (Wide256::zero(), Wide256::zero()),
++    //     |(a0, ainf), (b0, binf)| (a0 + b0, ainf + binf),
++    // )
+ }
+ 
+ /// `eq(r, z) = r*z + (1 - r)*(1 - z)`. Expanding gives
