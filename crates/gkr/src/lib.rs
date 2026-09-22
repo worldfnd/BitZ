@@ -75,9 +75,9 @@ fn prove_layer(
         // not a per-element check inside the hot fold.
         let send_one = z == Field::ZERO;
         let (sum_endpoint, sum_inf) = if send_one {
-            reduce_round::<true>(lo_l, lo_r, hi_l, hi_r, eq)
+            reduce_sumcheck_round::<true>(lo_l, lo_r, hi_l, hi_r, eq)
         } else {
-            reduce_round::<false>(lo_l, lo_r, hi_l, hi_r, eq)
+            reduce_sumcheck_round::<false>(lo_l, lo_r, hi_l, hi_r, eq)
         };
 
         ps.prover_message(&[factor * sum_endpoint.reduce(), factor * sum_inf.reduce()]);
@@ -145,14 +145,7 @@ fn prove_layer(
     (next_point, claim)
 }
 
-/// Sums the round's endpoint and inf products, two elements at a time so
-/// both elements' first-stage (fused) multiplies are issued before either
-/// second-stage widening multiply -- two independent PMULL chains in flight
-/// instead of one, for the CPU (or LLVM's scheduler) to overlap. `SEND_ONE`
-/// selects which endpoint this round sends -- `l_lo`/`r_lo` (value at zero)
-/// normally, or `l_hi`/`r_hi` (value at one) when `z == 0`; see
-/// `prove_layer`.
-fn reduce_round<const SEND_ONE: bool>(
+fn reduce_sumcheck_round<const SEND_ONE: bool>(
     lo_l: &[Field],
     lo_r: &[Field],
     hi_l: &[Field],
