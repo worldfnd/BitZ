@@ -28,7 +28,7 @@ pub fn gpgkr_prove(
     let mut point = VecDeque::from(point);
 
     let mut claim = Field::ZERO;
-    let mut storage = Field::zeroed_vec(1 << log_bits);
+    let mut storage = SuffixTable::alloc_storage(log_bits);
     for wnext in witnesses.into_iter() {
         (point, claim) = prove_layer(ps, &mut storage, point, wnext);
     }
@@ -44,7 +44,7 @@ fn prove_layer(
     mut point: Point,
     mut wnext: Vec<Field>,
 ) -> (Point, Field) {
-    let mut suffix_table = SuffixTable::new(storage, &point);
+    let suffix_table = SuffixTable::new(storage, &point);
     let mut factor = Field::ONE;
 
     let mid = wnext.len() / 2;
@@ -52,8 +52,6 @@ fn prove_layer(
     let (mut mle_l, mut mle_r) = wnext.split_at_mut(mid);
 
     let rounds = point.len();
-    // TODO: use a double buffer or override approach? Now there is a point allocation each layer
-    // Can go up to ~21 allocations assuming input of 2^35 and 6:4 split
     let mut next_point = VecDeque::with_capacity(rounds + 1);
 
     // `SuffixTable::layer(i)` has length `2^i`, so `h` is even on every round
@@ -62,7 +60,6 @@ fn prove_layer(
     let last_z = point.pop_back();
 
     for (i, z) in (1..rounds).rev().zip(point) {
-        // TODO: unwrap will be dealt with in upcoming approach to SuffixTable
         let eq = suffix_table.layer(i);
         let h = mle_l.len() / 2;
         debug_assert_eq!(eq.len(), h);
@@ -162,6 +159,7 @@ fn reduce_round<const SEND_ONE: bool>(
     hi_r: &[Field],
     eq: &[Field],
 ) -> (Wide256, Wide256) {
+    // chunking reduces variance in benchmarking
     lo_l.par_chunks_exact(2)
         .zip(lo_r.par_chunks_exact(2))
         .zip(hi_l.par_chunks_exact(2))
@@ -216,15 +214,14 @@ fn eq_factor(r: Field, z: Field) -> Field {
 //          SuffixTable can be 'created' each round / destroyed to ensure proper truncation of the underlying vector
 // TODO: Split suffix table
 struct SuffixTable<'a> {
-    storage: &'a mut [Field],
-    offset: usize,
+    storage: &'a [Field],
 }
 
 impl<'a> SuffixTable<'a> {
-    fn layer(&mut self, i: usize) -> &mut [Field] {
-        let start = (1 << i) - 1 - self.offset;
-        let end = (1 << (i + 1)) - 1 - self.offset;
-        &mut self.storage[start..end]
+    fn layer(&self, i: usize) -> &[Field] {
+        let start = (1 << i) - 1;
+        let end = (1 << (i + 1)) - 1;
+        &self.storage[start..end]
     }
 }
 
@@ -232,6 +229,15 @@ impl<'a> SuffixTable<'a> {
     /// Allocates all directly as it is as much space as a double buffer approach would take.
     #[inline(never)]
     fn new(storage: &'a mut [Field], point: &Point) -> SuffixTable<'a> {
+        // The three asserts below (here and in the loop) are load-bearing
+        // for codegen, not just documentation: without them, LLVM can't
+        // prove `storage` is big enough for the splits and per-element
+        // `low`/`hi` writes below, so every one of those carries its own
+        // bounds check -- including inside the hot per-element loop. With
+        // them, none of it does; verified via disassembly.
+        let needed = (1usize << point.len()).saturating_sub(1).max(1);
+        assert!(storage.len() >= needed);
+
         storage[0] = F128::ONE;
         let (mut prev, mut remaining) = storage.split_at_mut(1);
         // The selector is the first entry of the point and we need to skip
@@ -243,22 +249,25 @@ impl<'a> SuffixTable<'a> {
         // Suffix table is in the reverse order of the point
         for &z in c.rev() {
             let size = prev.len() << 1;
+            assert!(remaining.len() >= size);
             let (entry, next) = remaining.split_at_mut(size);
+            assert!(entry.len() >= size >> 1);
             let (low, hi) = entry.split_at_mut(size >> 1);
 
-            for (i, &e) in prev.iter().enumerate() {
+            for ((l, h), &e) in low.iter_mut().zip(hi.iter_mut()).zip(prev.iter()) {
                 let tmp = z * e;
                 // (1-z)*e, z*e
-                (low[i], hi[i]) = (e - tmp, tmp)
+                (*l, *h) = (e - tmp, tmp)
             }
 
             prev = entry;
             remaining = next;
         }
-        SuffixTable {
-            storage: storage,
-            offset: 0,
-        }
+        SuffixTable { storage }
+    }
+
+    fn alloc_storage(log_bits: usize) -> Vec<Field> {
+        Field::zeroed_vec(1 << (log_bits.saturating_sub(1)).max(1))
     }
 }
 
@@ -359,14 +368,12 @@ impl GrandProductCircuit {
     }
 
     // Returns the final evaluation and the witnesses of the intermediate layers
-    // Can't consume the input as the circuit is necessary for the initialisation of fiat shamir
     // TODO: replace with leaf lookups and add multithreading
     #[tracing::instrument(name = "Evaluate grand-product circuit", level = "debug", skip_all)]
     pub fn batched_eval(self, groups: usize) -> (Vec<Field>, LayerWitnesses) {
         // +1 to deal with the possible case that the leafs are empty. Given that otherwise the constructor padded it to a power of two, and ilog rounds it down, it becomes a noop
         let mut witnesses = Vec::with_capacity((self.leafs.len() + 1).ilog2() as usize);
 
-        // TODO expensive clone going to get replaced by leaf lookups
         let mut prev_eval = self.leafs;
 
         // Stop when there is one output per group
