@@ -60,7 +60,8 @@ pub fn gkr_reduce(
     let circuit = init_circuit(table, fold);
     let (_last_value, witnesses) = circuit.batched_eval(table.shape().columns());
 
-    let (mut point, claim) = gpgkr_prove(transcript, &fold.zeta, witnesses);
+    let (mut point, claim) =
+        gpgkr_prove(transcript, table.shape().log_bits(), &fold.zeta, witnesses);
 
     // The multilinear extension of the constant-one table is one at every point.
     let inner_product_claim = claim - F128::ONE;

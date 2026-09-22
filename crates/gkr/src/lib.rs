@@ -15,6 +15,7 @@ type Point = VecDeque<Field>;
 #[tracing::instrument(name = "Prove GKR", skip_all)]
 pub fn gpgkr_prove(
     ps: &mut ProverState,
+    log_bits: usize,
     point: &[F128],
     // All the intermediate witnesses + the input layer. Doesn't contain the output layer
     witnesses: LayerWitnesses,
@@ -27,8 +28,9 @@ pub fn gpgkr_prove(
     let mut point = VecDeque::from(point);
 
     let mut claim = Field::ZERO;
+    let mut storage = SuffixTable::alloc_storage(log_bits);
     for wnext in witnesses.into_iter() {
-        (point, claim) = prove_layer(ps, point, wnext);
+        (point, claim) = prove_layer(ps, &mut storage, point, wnext);
     }
 
     let mut point = Vec::from(point);
@@ -36,62 +38,47 @@ pub fn gpgkr_prove(
     (point, claim)
 }
 
-fn prove_layer(ps: &mut ProverState, point: Point, mut wnext: Vec<Field>) -> (Point, Field) {
-    let mut suffix_table = SuffixTable::new(&point);
+fn prove_layer(
+    ps: &mut ProverState,
+    storage: &mut [Field],
+    mut point: Point,
+    mut wnext: Vec<Field>,
+) -> (Point, Field) {
+    let suffix_table = SuffixTable::new(storage, &point);
     let mut factor = Field::ONE;
 
     let mid = wnext.len() / 2;
     // Tree is encoded in LSB order
     let (mut mle_l, mut mle_r) = wnext.split_at_mut(mid);
 
-    // TODO: use a double buffer or override approach? Now there is a point allocation each layer
-    // Can go up to ~21 allocations assuming input of 2^35 and 6:4 split
-    let mut next_point = VecDeque::with_capacity(point.len() + 1);
+    let rounds = point.len();
+    let mut next_point = VecDeque::with_capacity(rounds + 1);
 
-    for z in point {
-        // TODO: special-case eq.len() == 1 (final round) to skip the `eq[i] *`
-        // multiplications below entirely.
-        // TODO: unwrap will be dealt with in upcoming approach to SuffixTable
-        let eq = suffix_table.pop().unwrap();
+    // `SuffixTable::layer(i)` has length `2^i`, so `h` is even on every round
+    // except the last (`i == 0`). Peel that round out instead of checking
+    // for it on every iteration.
+    let last_z = point.pop_back();
+
+    for (i, z) in (1..rounds).rev().zip(point) {
+        let eq = suffix_table.layer(i);
         let h = mle_l.len() / 2;
         debug_assert_eq!(eq.len(), h);
+        debug_assert_eq!(h % 2, 0);
 
         let (lo_l, hi_l) = mle_l.split_at_mut(h);
         let (lo_r, hi_r) = mle_r.split_at_mut(h);
 
-        // At z = 0 the incoming claim determines the value at zero, so send
-        // the value at one. Otherwise send the value at zero as usual.
+        // `send_one` is constant for the whole round: at z = 0 the incoming
+        // claim determines the value at zero, so this round sends the value
+        // at one instead. Branch on it once here -- SEND_ONE below is a
+        // const generic, so each instantiation gets only its own branch,
+        // not a per-element check inside the hot fold.
         let send_one = z == Field::ZERO;
-        let (sum_endpoint, sum_inf) = lo_l
-            .par_iter_mut()
-            .zip(lo_r.par_iter_mut())
-            .zip(hi_l.par_iter())
-            .zip(hi_r.par_iter())
-            .zip(eq.par_iter())
-            .with_min_len(PARALLEL_MIN_LANES)
-            .fold(
-                || (Wide256::zero(), Wide256::zero()),
-                |(mut sum_endpoint, mut sum_inf), ((((l_lo, r_lo), &l_hi), &r_hi), &e)| {
-                    let (d_l, d_r) = (l_hi - *l_lo, r_hi - *r_lo);
-                    let (l_endpoint, r_endpoint) = if send_one {
-                        (l_hi, r_hi)
-                    } else {
-                        (*l_lo, *r_lo)
-                    };
-
-                    // The endpoint product and `e * (l_hi-l0) * (r_hi-r0)`: each is
-                    // two multiplications in a row, deferred into the
-                    // running wide sums by `mul3_wide`
-                    sum_endpoint += mul3_wide(e, l_endpoint, r_endpoint);
-                    sum_inf += mul3_wide(e, d_l, d_r);
-
-                    (sum_endpoint, sum_inf)
-                },
-            )
-            .reduce(
-                || (Wide256::zero(), Wide256::zero()),
-                |(a0, ainf), (b0, binf)| (a0 + b0, ainf + binf),
-            );
+        let (sum_endpoint, sum_inf) = if send_one {
+            reduce_sumcheck_round::<true>(lo_l, lo_r, hi_l, hi_r, eq)
+        } else {
+            reduce_sumcheck_round::<false>(lo_l, lo_r, hi_l, hi_r, eq)
+        };
 
         ps.prover_message(&[factor * sum_endpoint.reduce(), factor * sum_inf.reduce()]);
 
@@ -118,6 +105,39 @@ fn prove_layer(ps: &mut ProverState, point: Point, mut wnext: Vec<Field>) -> (Po
         factor *= eq_factor(r, z);
     }
 
+    if let Some(z) = last_z {
+        // i == 0, h == 1: `SuffixTable::new` always seeds the base layer
+        // (`eq[0]`) with `Field::ONE`, so the `eq[i] *` multiplication every
+        // other round needs is the identity here -- skipped rather than
+        // spent multiplying by one.
+        debug_assert_eq!(mle_l.len(), 2);
+        let (l_lo, l_hi) = (mle_l[0], mle_l[1]);
+        let (r_lo, r_hi) = (mle_r[0], mle_r[1]);
+        let (d_l, d_r) = (l_hi - l_lo, r_hi - r_lo);
+
+        // Same `send_one` swap as the main loop above: at z = 0 the incoming
+        // claim determines the value at zero, so send the value at one.
+        let (l_endpoint, r_endpoint) = if z == Field::ZERO {
+            (l_hi, r_hi)
+        } else {
+            (l_lo, r_lo)
+        };
+        let sum_endpoint = Wide256::mul(l_endpoint, r_endpoint);
+        let sum_inf = Wide256::mul(d_l, d_r);
+
+        ps.prover_message(&[factor * sum_endpoint.reduce(), factor * sum_inf.reduce()]);
+
+        let r = ps.verifier_message();
+        next_point.push_back(r);
+
+        mle_l[0] = l_lo + r * d_l;
+        mle_r[0] = r_lo + r * d_r;
+        mle_l = &mut mle_l[..1];
+        mle_r = &mut mle_r[..1];
+
+        factor *= eq_factor(r, z);
+    }
+
     ps.prover_message(&[mle_l[0], mle_r[0]]);
     let r = ps.verifier_message();
     next_point.push_front(r);
@@ -125,34 +145,88 @@ fn prove_layer(ps: &mut ProverState, point: Point, mut wnext: Vec<Field>) -> (Po
     (next_point, claim)
 }
 
+fn reduce_sumcheck_round<const SEND_ONE: bool>(
+    lo_l: &[Field],
+    lo_r: &[Field],
+    hi_l: &[Field],
+    hi_r: &[Field],
+    eq: &[Field],
+) -> (Wide256, Wide256) {
+    // chunking reduces variance in benchmarking
+    lo_l.par_chunks_exact(2)
+        .zip(lo_r.par_chunks_exact(2))
+        .zip(hi_l.par_chunks_exact(2))
+        .zip(hi_r.par_chunks_exact(2))
+        .zip(eq.par_chunks_exact(2))
+        // Chunked by 2, so the element-count threshold below is halved in
+        // terms of chunks.
+        .with_min_len(PARALLEL_MIN_LANES / 2)
+        .fold(
+            || (Wide256::zero(), Wide256::zero()),
+            |(mut sum_endpoint, mut sum_inf), ((((l_lo, r_lo), l_hi), r_hi), e)| {
+                let (d_l0, d_r0) = (l_hi[0] - l_lo[0], r_hi[0] - r_lo[0]);
+                let (d_l1, d_r1) = (l_hi[1] - l_lo[1], r_hi[1] - r_lo[1]);
+
+                let (l_e0, r_e0) = if SEND_ONE {
+                    (l_hi[0], r_hi[0])
+                } else {
+                    (l_lo[0], r_lo[0])
+                };
+                let (l_e1, r_e1) = if SEND_ONE {
+                    (l_hi[1], r_hi[1])
+                } else {
+                    (l_lo[1], r_lo[1])
+                };
+
+                let (a0, b0) = (e[0] * l_e0, e[0] * d_l0);
+                let (a1, b1) = (e[1] * l_e1, e[1] * d_l1);
+
+                sum_endpoint += Wide256::mul(a0, r_e0);
+                sum_inf += Wide256::mul(b0, d_r0);
+                sum_endpoint += Wide256::mul(a1, r_e1);
+                sum_inf += Wide256::mul(b1, d_r1);
+
+                (sum_endpoint, sum_inf)
+            },
+        )
+        .reduce(
+            || (Wide256::zero(), Wide256::zero()),
+            |(a0, ainf), (b0, binf)| (a0 + b0, ainf + binf),
+        )
+}
+
 /// `eq(r, z) = r*z + (1 - r)*(1 - z)`. Expanding gives
 /// `1 + r + z + 2*r*z`, and in characteristic 2 `2*r*z = r*z + r*z = 0`, so
 /// this is just `1 + r + z` -- no multiplication at all, and so nothing for
 /// widemul to help with.
 fn eq_factor(r: Field, z: Field) -> Field {
-    poly::eq::eq_eval(&[r], &[z])
+    Field::ONE + r + z
 }
 
-/// `a * b * c`: two multiplications in a row. The first is reduced -- it has
-/// to come back down to a field element to feed the second carryless
-/// multiply -- but the second is left unreduced, so callers can batch its
-/// reduction with the rest of a running wide sum instead of paying for it on
-/// every term.
-fn mul3_wide(a: Field, b: Field, c: Field) -> Wide256 {
-    Wide256::mul(Wide256::mul(a, b).reduce(), c)
-}
-
-// TODO:  SuffixTable becomes a wrapper around a preallocated vector that is large enough for all rounds.
-//          SuffixTable can be 'created' each round / destroyed to ensure proper truncation of the underlying vector
 // TODO: Split suffix table
-struct SuffixTable(Vec<Vec<Field>>);
+struct SuffixTable<'a> {
+    storage: &'a [Field],
+}
 
-impl SuffixTable {
+impl<'a> SuffixTable<'a> {
+    fn layer(&self, i: usize) -> &[Field] {
+        let start = (1 << i) - 1;
+        let end = (1 << (i + 1)) - 1;
+        &self.storage[start..end]
+    }
+}
+
+impl<'a> SuffixTable<'a> {
     /// Allocates all directly as it is as much space as a double buffer approach would take.
-    fn new(point: &Point) -> SuffixTable {
-        let mut table = Vec::with_capacity(point.len().max(1));
-        let mut prev = Vec::from([Field::ONE]);
+    #[inline(never)]
+    fn new(storage: &'a mut [Field], point: &Point) -> SuffixTable<'a> {
+        // Establishes the whole table's space budget up front so LLVM can
+        // prove the `low`/`hi` writes in the loop below are in bounds
+        let needed = (1usize << point.len()).saturating_sub(1).max(1);
+        assert!(storage.len() >= needed);
 
+        storage[0] = F128::ONE;
+        let (mut prev, mut remaining) = storage.split_at_mut(1);
         // The selector is the first entry of the point and we need to skip
         // that -- except when `point` is itself empty, in which case there
         // is no selector and `c` must stay empty too (`min(1)` keeps the
@@ -162,24 +236,23 @@ impl SuffixTable {
         // Suffix table is in the reverse order of the point
         for &z in c.rev() {
             let size = prev.len() << 1;
-            let mut entry = Field::zeroed_vec(size);
-            let (low, hi) = entry.split_at_mut(size >> 1);
+            let (entry, next) = remaining.split_at_mut(size);
+            let (low, hi) = entry.split_at_mut(entry.len() >> 1);
 
-            for (i, &e) in prev.iter().enumerate() {
+            for ((l, h), &e) in low.iter_mut().zip(hi.iter_mut()).zip(prev.iter()) {
                 let tmp = z * e;
                 // (1-z)*e, z*e
-                (low[i], hi[i]) = (e - tmp, tmp)
+                (*l, *h) = (e - tmp, tmp)
             }
 
-            table.push(prev);
             prev = entry;
+            remaining = next;
         }
-        table.push(prev);
-        SuffixTable(table)
+        SuffixTable { storage }
     }
 
-    fn pop(&mut self) -> Option<Vec<Field>> {
-        self.0.pop()
+    fn alloc_storage(log_bits: usize) -> Vec<Field> {
+        Field::zeroed_vec(1 << (log_bits.saturating_sub(1)).max(1))
     }
 }
 
@@ -263,8 +336,6 @@ fn verify_layer(vs: &mut VerifierState, mut claim: Field, point: Point) -> Optio
     }
 }
 
-//TODO circuit and circuit eval can't have their innards directly available as that would break power of 2 requirements for the rest.
-// A circuit is defined by its leaf value only because it is a balanced tree
 // TODO: Optimise for circuits that are padded.
 pub struct GrandProductCircuit {
     leafs: Vec<Field>,
@@ -280,24 +351,19 @@ impl GrandProductCircuit {
     }
 
     // Returns the final evaluation and the witnesses of the intermediate layers
-    // Can't consume the input as the circuit is necessary for the initialisation of fiat shamir
     // TODO: replace with leaf lookups and add multithreading
     #[tracing::instrument(name = "Evaluate grand-product circuit", level = "debug", skip_all)]
-    pub fn batched_eval(&self, groups: usize) -> (Vec<Field>, LayerWitnesses) {
+    pub fn batched_eval(self, groups: usize) -> (Vec<Field>, LayerWitnesses) {
         // +1 to deal with the possible case that the leafs are empty. Given that otherwise the constructor padded it to a power of two, and ilog rounds it down, it becomes a noop
         let mut witnesses = Vec::with_capacity((self.leafs.len() + 1).ilog2() as usize);
 
-        // TODO expensive clone going to get replaced by leaf lookups
-        let mut prev_eval = self.leafs.clone();
+        let mut prev_eval = self.leafs;
 
         // Stop when there is one output per group
         while prev_eval.len() > groups {
-            let mut eval = Vec::with_capacity(prev_eval.len() >> 1);
             let mid = prev_eval.len() / 2;
             let (l, r) = prev_eval.split_at(mid);
-            for (&a, &b) in l.iter().zip(r) {
-                eval.push(a * b)
-            }
+            let eval: Vec<Field> = l.iter().zip(r).map(|(&a, &b)| a * b).collect();
             witnesses.push(prev_eval);
             prev_eval = eval;
         }
@@ -450,7 +516,12 @@ mod tests {
             let claim = mle(output, &point);
             let instance = (leaves.clone(), point.to_vec());
             let mut prover = transcript::build_prover("gkr-zero", &instance);
-            let terminal = gpgkr_prove(&mut prover, &point, witnesses);
+            let terminal = gpgkr_prove(
+                &mut prover,
+                leaves.len().ilog2() as usize,
+                &point,
+                witnesses,
+            );
             assert_eq!(terminal.1, mle(leaves.clone(), &terminal.0));
             let proof = prover.finish();
 
@@ -487,11 +558,15 @@ mod tests {
 
     pub fn prove(input: Vec<Field>, log_groups: usize) -> (Vec<Field>, transcript::Proof) {
         let circuit = GrandProductCircuit::new(input);
+        // Fake hashing
+        let n = circuit.leafs.len() as u128;
+
+        let log_bits = circuit.leafs.len().max(1).ilog2() as usize;
         let groups = 1usize << log_groups;
         let (last_value, witnesses) = circuit.batched_eval(groups);
 
         // TODO instance is a bit loose and should be replaced by PCS
-        let instance = (last_value.clone(), circuit.leafs);
+        let instance = (last_value.clone(), n);
 
         let mut prover = transcript::build_prover("gkr", &instance);
 
@@ -501,13 +576,14 @@ mod tests {
         let log_groups = last_value.len().max(1).ilog2();
         let point: Vec<Field> = (0..log_groups).map(|_| prover.verifier_message()).collect();
 
-        gpgkr_prove(&mut prover, &point, witnesses);
+        gpgkr_prove(&mut prover, log_bits, &point, witnesses);
         (last_value, prover.finish())
     }
 
     pub fn verify(input: Vec<Field>, output: Vec<Field>, proof: transcript::Proof) -> bool {
         let circuit = GrandProductCircuit::new(input);
-        let instance = (&output, &circuit.leafs);
+        // Fake hashing
+        let instance = (&output, circuit.leafs.len() as u128);
         let mut verifier = transcript::build_verifier("gkr", &instance, &proof);
 
         let log_groups = output.len().max(1).ilog2();
