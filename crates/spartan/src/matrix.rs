@@ -10,9 +10,12 @@ use num_traits::{Signed, ToPrimitive};
 use poly::DenseMultilinearExtension;
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
+use std::sync::LazyLock;
 use transcript::Encoding;
 
 use crate::sumcheck::R1csProductMles;
+
+static FQ_DEFAULT_MODULUS: LazyLock<BigInt> = LazyLock::new(|| BigInt::from(Q100));
 
 /// Failures while preparing or evaluating Spartan's R1CS matrices.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -153,8 +156,8 @@ where
 
 /// Reduces a signed integer canonically modulo Q100.
 pub fn bigint_to_fq(value: &BigInt) -> FqDefault {
-    let modulus = BigInt::from(Q100);
-    let mut reduced = value % &modulus;
+    let modulus = &*FQ_DEFAULT_MODULUS;
+    let mut reduced = value % modulus;
     if reduced.is_negative() {
         reduced += modulus;
     }
@@ -397,7 +400,7 @@ where
     Ok(evaluation)
 }
 
-pub(crate) fn r1cs_num_vars<F>(
+pub(crate) fn r1cs_num_vars<F: Send + Sync>(
     matrices: &ConstraintMatrices<F>,
 ) -> Result<(usize, usize), SpartanMatrixError> {
     matrices
