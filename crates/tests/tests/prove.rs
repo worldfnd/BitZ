@@ -13,12 +13,16 @@ use verifier::{ReceiveError, VerifyError};
 
 fn prove(instance: &Instance) -> Proof {
     let mut transcript = prover_transcript();
+    let (_, data) = instance
+        .pcs
+        .commit_with_ood(&instance.packed, &mut transcript)
+        .unwrap();
     instance
         .prover
         .prove(
             &instance.claim,
             &instance.pcs,
-            &instance.data,
+            &data,
             instance.packed.clone(),
             &mut transcript,
         )
@@ -108,12 +112,16 @@ fn an_opening_against_another_commitment_is_refused() {
     let committed = Instance::honest(narrow_shape(), 36);
 
     let mut transcript = prover_transcript();
+    let (_, data) = committed
+        .pcs
+        .commit_with_ood(&committed.packed, &mut transcript)
+        .unwrap();
     proved
         .prover
         .prove(
             &proved.claim,
             &proved.pcs,
-            &committed.data,
+            &data,
             proved.packed.clone(),
             &mut transcript,
         )
@@ -153,9 +161,8 @@ fn a_tampered_opening_proof_is_refused() {
 
 #[test]
 fn a_proof_verified_under_a_different_profile_is_refused() {
-    // The profile is not in the frame step 1 absorbs, so what rejects this is
-    // the opening binding its own parameters: a different profile encodes
-    // differently, the two sponges part, and the ring-switch check fails.
+    // OOD binds PCS parameters before the first fold challenge, so a different
+    // profile changes the fold transcript and GKR rejects.
     let instance = Instance::honest(narrow_shape(), 38);
     let slim = Pcs::new(
         instance.params.shape(),
@@ -165,15 +172,15 @@ fn a_proof_verified_under_a_different_profile_is_refused() {
     .unwrap();
     let proof = prove(&instance);
 
-    assert_eq!(
+    assert!(matches!(
         instance.verifier.verify(
             &instance.claim,
             &slim,
             instance.com,
             verifier_transcript(&proof)
         ),
-        Err(VerifyError::Opening(PcsVerifyError::VerificationFailed))
-    );
+        Err(VerifyError::Reduction(_))
+    ));
 }
 
 #[test]

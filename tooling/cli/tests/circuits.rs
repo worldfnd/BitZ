@@ -53,7 +53,7 @@ fn supported_sha_circuits_prove_and_verify() {
         let system = CircuitProofSystem::new(statement).unwrap();
         let witness = system.witness(&inputs).unwrap();
         let data = system.commit(&witness).unwrap();
-        let proof = system.prove(witness, &data).unwrap();
+        let proof = system.prove(witness, data).unwrap();
         system.verify(&proof).unwrap();
     }
 }
@@ -76,7 +76,7 @@ fn sha_compression_matches_abc_and_binds_public_values() {
     let system = CircuitProofSystem::new(statement.clone()).unwrap();
     let witness = system.witness(&inputs).unwrap();
     let data = system.commit(&witness).unwrap();
-    let proof = system.prove(witness, &data).unwrap();
+    let proof = system.prove(witness, data).unwrap();
     CircuitProofSystem::new(statement.clone())
         .unwrap()
         .verify(&proof)
