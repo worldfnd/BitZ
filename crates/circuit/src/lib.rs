@@ -546,6 +546,28 @@ pub trait Circuit {
     ) -> Self::Z<TO_LIMBS>;
 }
 
+pub trait Bits {
+    /// Determines the fewest bits necessary to express this value
+    fn bits(&self) -> u64;
+}
+
+pub trait IntoWords {
+    fn into_words<const LIMBS: usize>(self) -> [u64; LIMBS];
+}
+
+impl Bits for num_bigint::BigUint {
+    fn bits(&self) -> u64 {
+        num_bigint::BigUint::bits(self)
+    }
+}
+
+impl IntoWords for num_bigint::BigUint {
+    fn into_words<const LIMBS: usize>(self) -> [u64; LIMBS] {
+        let digits = self.to_u64_digits();
+        array::from_fn(|index| digits.get(index).copied().unwrap_or(0))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -3,6 +3,7 @@
 use circuit::constraints::{ConstraintMatrices, SparseMatrix};
 use circuit::matrix_products::{IntegerProducts, ModularVector, RuntimeModulus};
 use circuit::witgen::PackedWitness;
+use common::BitzIntRing;
 use crypto_primitives::ConstField;
 use field::{FqDefault, Q100};
 use num_bigint::{BigInt, BigUint};
@@ -38,8 +39,8 @@ pub enum SpartanMatrixError {
 /// the column chunking are performed once during construction rather than
 /// inside the prover or verifier.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PreparedConstraintMatrices<F> {
-    matrices: ConstraintMatrices<F>,
+pub struct PreparedConstraintMatrices<R> {
+    matrices: ConstraintMatrices<R>,
     /// Nonzeros of `a`, `b` and `c` grouped by column chunk.
     column_chunks: [ColumnChunkIndex; 3],
     digest: [u8; 32],
@@ -400,8 +401,8 @@ where
     Ok(evaluation)
 }
 
-pub(crate) fn r1cs_num_vars<F: Send + Sync>(
-    matrices: &ConstraintMatrices<F>,
+pub(crate) fn r1cs_num_vars<R: BitzIntRing>(
+    matrices: &ConstraintMatrices<R>,
 ) -> Result<(usize, usize), SpartanMatrixError> {
     matrices
         .validate_shape()

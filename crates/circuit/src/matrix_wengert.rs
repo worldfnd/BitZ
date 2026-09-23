@@ -50,10 +50,10 @@ struct RawTerm {
 }
 
 impl RawTerm {
-    fn new<const LIMBS: usize>(node: u32, coefficient: Z<LIMBS>) -> Self {
+    fn new<const LIMBS: usize>(node: u32, coefficient: &Z<LIMBS>) -> Self {
         Self {
             node,
-            coefficient: StoredInteger::from_fixed(coefficient),
+            coefficient: StoredInteger::from(coefficient),
         }
     }
 }
@@ -175,7 +175,7 @@ impl<const LIMBS: usize> WengertValue<LIMBS> {
             ValueLocation::Constant => 0,
             ValueLocation::Node { node, .. } => node,
         };
-        RawTerm::new(node, self.coefficient)
+        RawTerm::new(node, &self.coefficient)
     }
 
     fn same_recorder(left: &Arc<SharedRecorder>, right: &Arc<SharedRecorder>) {
@@ -465,8 +465,8 @@ impl WengertTape {
         }
 
         let mut coefficient_map = HashMap::new();
-        let one = StoredInteger::from_fixed(Z::<1>::one());
-        let negative_one = StoredInteger::from_fixed(-Z::<1>::one());
+        let one = StoredInteger::from(&Z::<1>::one());
+        let negative_one = StoredInteger::from(&-Z::<1>::one());
         coefficient_map.insert(one.clone(), 0_u32);
         coefficient_map.insert(negative_one.clone(), 1_u32);
         let mut coefficients = vec![one, negative_one];
@@ -1362,12 +1362,13 @@ impl Circuit for WengertGenerator {
 
 #[cfg(test)]
 mod tests {
-    use num_bigint::{BigInt, BigUint};
-    use num_traits::Signed;
-
     use super::*;
     use crate::constraints::{ConstraintGenerator, ConstraintMatrices};
     use crate::sha256::{COMPRESSION_INPUT_BITS, compression_circuit};
+    use num_traits::Signed;
+
+    type S = num_bigint::BigUint;
+    type R = num_bigint::BigInt;
 
     fn example_circuit<CS: Circuit>(circuit: &mut CS, inputs: &[CS::Bool; 3]) {
         let a = circuit.bitz::<2>(inputs[0].clone());
@@ -1396,18 +1397,17 @@ mod tests {
     }
 
     fn direct_product(
-        matrices: &ConstraintMatrices,
+        matrices: &ConstraintMatrices<R>,
         challenges: &[[u64; 2]],
         x: [u64; 2],
-        modulus: &BigUint,
+        modulus: &S,
     ) -> Vec<[u64; 2]> {
-        let modulus_int = BigInt::from(modulus.clone());
-        let as_bigint = |words: [u64; 2]| {
-            BigInt::from(BigUint::from(words[0]) + (BigUint::from(words[1]) << 64_usize))
-        };
+        let modulus_int = R::from(modulus.clone());
+        let as_bigint =
+            |words: [u64; 2]| R::from(S::from(words[0]) + (S::from(words[1]) << 64_usize));
         let x = as_bigint(x);
         let x_squared = &x * &x;
-        let mut output = vec![BigInt::zero(); matrices.a.column_count()];
+        let mut output = vec![R::zero(); matrices.a.column_count()];
         for (row, challenge) in challenges.iter().enumerate() {
             let challenge = as_bigint(*challenge);
             for (column, coefficient) in matrices.a.rows()[row].entries() {
@@ -1447,8 +1447,8 @@ mod tests {
         let x = [17, 0];
 
         for modulus in [
-            (BigUint::one() << 127_usize) - BigUint::one(),
-            (BigUint::one() << 128_usize) - BigUint::from(159_u64),
+            (S::one() << 127_usize) - S::one(),
+            (S::one() << 128_usize) - S::from(159_u64),
         ] {
             let runtime = RuntimeModulus::<2>::new(modulus.clone()).unwrap();
             assert_eq!(
@@ -1461,9 +1461,7 @@ mod tests {
     #[test]
     fn parallel_and_sequential_reverse_batches_agree() {
         let tape = build_tape();
-        let modulus =
-            RuntimeModulus::<2>::new((BigUint::one() << 128_usize) - BigUint::from(159_u64))
-                .unwrap();
+        let modulus = RuntimeModulus::<2>::new((S::one() << 128_usize) - S::from(159_u64)).unwrap();
         let challenges = [[0x1234_5678_9abc_def0, 7], [0x0fed_cba9_8765_4321, 11]];
         let mut sequential = Vec::new();
         let mut parallel = Vec::new();
@@ -1477,9 +1475,7 @@ mod tests {
     #[test]
     fn prepared_evaluator_reuses_storage_and_matches_one_shot_apply() {
         let tape = build_tape();
-        let modulus =
-            RuntimeModulus::<2>::new((BigUint::one() << 128_usize) - BigUint::from(159_u64))
-                .unwrap();
+        let modulus = RuntimeModulus::<2>::new((S::one() << 128_usize) - S::from(159_u64)).unwrap();
         let challenges = [[0x1234_5678_9abc_def0, 7], [0x0fed_cba9_8765_4321, 11]];
         let x = [31, 3];
         let expected = tape.apply(&challenges, x, &modulus).unwrap();
@@ -1554,7 +1550,7 @@ mod tests {
             .map(|row| [(17 * row + 3) as u64, (5 * row + 1) as u64])
             .collect();
         let x = [0x1234_5678_9abc_def0, 0x0123_4567_89ab_cdef];
-        let prime = (BigUint::one() << 128_usize) - BigUint::from(159_u64);
+        let prime = (S::one() << 128_usize) - S::from(159_u64);
         let modulus = RuntimeModulus::<2>::new(prime.clone()).unwrap();
 
         assert_eq!(tape.row_count(), matrices.a.row_count());
@@ -1570,7 +1566,7 @@ mod tests {
     #[test]
     fn rejects_wrong_challenge_length_and_even_modulus() {
         let tape = build_tape();
-        let odd = RuntimeModulus::<2>::new(BigUint::from(101_u64)).unwrap();
+        let odd = RuntimeModulus::<2>::new(S::from(101_u64)).unwrap();
         assert_eq!(
             tape.apply(&[[1, 0]], [2, 0], &odd),
             Err(WengertApplyError::ChallengeLength {
@@ -1578,7 +1574,7 @@ mod tests {
                 actual: 1,
             })
         );
-        let even = RuntimeModulus::<2>::new(BigUint::from(100_u64)).unwrap();
+        let even = RuntimeModulus::<2>::new(S::from(100_u64)).unwrap();
         assert_eq!(
             tape.apply(&[[1, 0], [2, 0]], [3, 0], &even),
             Err(WengertApplyError::EvenModulus)
@@ -1594,7 +1590,7 @@ mod tests {
         let _dead = unused.clone() + unused;
         generator.assert_r1c(used, WengertValue::zero(), WengertValue::zero());
         let tape = generator.finish();
-        let modulus = RuntimeModulus::<2>::new(BigUint::from(101_u64)).unwrap();
+        let modulus = RuntimeModulus::<2>::new(S::from(101_u64)).unwrap();
         assert_eq!(
             tape.apply(&[[7, 0]], [3, 0], &modulus).unwrap(),
             [[0, 0], [7, 0], [0, 0]]

@@ -527,8 +527,11 @@ mod tests {
     use crate::sha256::{COMPRESSION_HINT_BITS, COMPRESSION_INPUT_BITS, compression_circuit};
     use crate::witgen::Witgen;
     use crate::{BoolRepresentation, BoolWitness, Circuit};
+    use num_bigint::BigInt;
 
     use super::*;
+
+    type R = BigInt;
 
     fn example_circuit<CS: Circuit>(circuit: &mut CS, inputs: &[CS::Bool; 3]) {
         let xy = circuit.xor(inputs[0].clone(), inputs[1].clone());
@@ -650,7 +653,7 @@ mod tests {
         example_circuit(&mut materializer, &inputs);
         let transpose = materializer.finish();
 
-        let mut generator = ConstraintGenerator::new(3);
+        let mut generator = ConstraintGenerator::<R>::new(3);
         let symbolic = generator.inputs();
         example_circuit(&mut generator, &symbolic);
         let matrices = generator.into_matrices();

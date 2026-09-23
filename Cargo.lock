@@ -152,12 +152,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
-name = "base16ct"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd307490d624467aa6f74b0eabb77633d1f758a7b25f12bceb0b22e08d9726f6"
-
-[[package]]
 name = "bincode"
 version = "1.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -225,6 +219,7 @@ dependencies = [
  "common",
  "divan",
  "field",
+ "num-bigint 0.4.8",
  "num-traits",
  "pcs",
  "poly",
@@ -470,8 +465,6 @@ dependencies = [
  "ctutils",
  "num-traits",
  "rand_core 0.10.1",
- "serdect",
- "zeroize",
 ]
 
 [[package]]
@@ -496,19 +489,18 @@ dependencies = [
 [[package]]
 name = "crypto-primitives"
 version = "0.1.0"
-source = "git+https://github.com/NethermindEth/crypto-primitives.git?rev=3c4232b#3c4232bf362339041414a73254a3af303538ac81"
+source = "git+https://github.com/NethermindEth/crypto-primitives.git?rev=b744c74#b744c74ad827b1e2a37cf7972fb1e1cb4fb0faaf"
 dependencies = [
  "ark-ff",
  "ark-std",
  "crypto-bigint",
- "crypto-primitives-proc-macros",
+ "crypto-primitives-proc-macros 0.1.0 (git+https://github.com/NethermindEth/crypto-primitives.git?rev=b744c74)",
  "num-traits",
  "pastey",
  "rand 0.10.2",
  "serde",
  "thiserror",
  "zerocopy",
- "zerocopy-derive",
  "zeroize",
 ]
 
@@ -516,6 +508,16 @@ dependencies = [
 name = "crypto-primitives-proc-macros"
 version = "0.1.0"
 source = "git+https://github.com/NethermindEth/crypto-primitives.git?rev=3c4232b#3c4232bf362339041414a73254a3af303538ac81"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "crypto-primitives-proc-macros"
+version = "0.1.0"
+source = "git+https://github.com/NethermindEth/crypto-primitives.git?rev=b744c74#b744c74ad827b1e2a37cf7972fb1e1cb4fb0faaf"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -666,7 +668,7 @@ dependencies = [
  "binius-field",
  "bytemuck",
  "crypto-primitives",
- "crypto-primitives-proc-macros",
+ "crypto-primitives-proc-macros 0.1.0 (git+https://github.com/NethermindEth/crypto-primitives.git?rev=3c4232b)",
  "divan",
  "flock-core",
  "num-traits",
@@ -1470,16 +1472,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serdect"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "66cf8fedced2fcf12406bcb34223dffb92eaf34908ede12fed414c82b7f00b3e"
-dependencies = [
- "base16ct",
- "serde",
-]
-
-[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1547,6 +1539,7 @@ name = "spartan"
 version = "0.1.0"
 dependencies = [
  "circuit",
+ "common",
  "crypto-primitives",
  "divan",
  "field",
