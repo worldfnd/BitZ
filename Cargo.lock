@@ -673,6 +673,7 @@ dependencies = [
  "divan",
  "flock-core",
  "num-traits",
+ "pastey",
  "rand 0.10.2",
  "rand_core 0.10.1",
  "rand_pcg 0.10.2",
