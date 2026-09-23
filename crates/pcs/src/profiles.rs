@@ -42,6 +42,32 @@ pub(crate) fn security_config(
     Ok(security)
 }
 
+/// Derives initial OOD grinding from the level-zero collision bound.
+///
+/// With `rho = 2^-log_inv_rate`, let `list_size = 1 / (2 * eta * sqrt(rho))`,
+/// `pairs = max(list_size * (list_size - 1) / 2, 1)`, and
+/// `degree = max(2^packed_vars - 1, 1)`. The unground bound is
+/// `128 - log2(pairs) - log2(degree)` bits; grinding covers its rounded-up
+/// deficit against the target. Unique-decoding profiles return `None`.
+pub(crate) fn ood_grinding_bits(
+    security: &LigeritoSecurityConfig,
+    packed_vars: usize,
+) -> Option<u32> {
+    let level = security.levels.first()?;
+    let eta = match level.regime {
+        SoundnessRegime::JohnsonOod => level.eta?,
+        SoundnessRegime::Udr => return None,
+    };
+    let rho = (-(level.log_inv_rate as f64)).exp2();
+    let list_size = 1.0 / (2.0 * eta * rho.sqrt());
+    let pairs = (list_size * (list_size - 1.0) / 2.0).max(1.0);
+    let degree = ((packed_vars as f64).exp2() - 1.0).max(1.0);
+    let collision_bits = 128.0 - pairs.log2() - degree.log2();
+    let deficit = security.target_security_bits as f64 - collision_bits;
+    let grinding_bits = deficit.ceil().max(0.0) as u32;
+    Some(grinding_bits)
+}
+
 /// Reproduces the reference prover's k = 4 profile with 16-bit query grinding.
 /// Flock's `derive_profile` fixes k = 6 and zero query grinding for Fast.
 fn fast_security_config(m: usize) -> Result<LigeritoSecurityConfig, ConfigError> {
@@ -180,5 +206,16 @@ mod tests {
         for m in [0, 21, 36, usize::MAX] {
             assert!(security_config(m, LigeritoProfile::Fast, HashKind::Blake3).is_err());
         }
+    }
+
+    #[test]
+    fn ood_round_parameters_match_the_level_zero_bound() {
+        let security = security_config(22, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
+        assert_eq!(ood_grinding_bits(&security, 15), Some(0));
+
+        let mut unique = security;
+        unique.levels[0].regime = SoundnessRegime::Udr;
+        unique.levels[0].eta = None;
+        assert_eq!(ood_grinding_bits(&unique, 15), None);
     }
 }

@@ -78,6 +78,7 @@ fn inner_product_proof_composes_sumcheck_with_a_bound_mle_opening() {
             target: reduced.target,
         },
         StatementBinding::Bind,
+        None,
         &mut verifier,
     )
     .unwrap();
@@ -155,6 +156,7 @@ fn opening_leaves_matching_transcripts_for_following_protocols() {
             &fixture.root,
             &query,
             StatementBinding::Bind,
+            None,
             &mut verifier,
         )
         .unwrap();

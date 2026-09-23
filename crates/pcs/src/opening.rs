@@ -8,7 +8,8 @@ use transcript::{ProverState, PublicTranscript, VerifierState};
 
 use crate::bridge::{as_flock_f128, as_flock_f128s, from_flock_f128};
 use crate::ligerito::{self, ReducedProver};
-use crate::{OpeningQuery, Pcs, ProverData, Root, StatementBinding, mle, sumcheck};
+use crate::ood::{OodClaim, add_dense_basis, add_succinct_basis, batching_challenge};
+use crate::{OpeningQuery, Pcs, ProverData, Root, StatementBinding, VerifierData, mle, sumcheck};
 
 const MLE_STATEMENT_LABEL: &[u8] = b"bitz/pcs/mle-opening/v1";
 const INNER_PRODUCT_STATEMENT_LABEL: &[u8] = b"bitz/pcs/bit-inner-product/v2";
@@ -82,6 +83,28 @@ impl From<QueryError> for VerifyError {
     }
 }
 
+/// Verifies an opening batched with the OOD claim retained at commitment ingestion.
+///
+/// Use the state returned by [`Pcs::receive_commitment`] and continue its transcript.
+/// The state is borrowed so multiple openings can authenticate the same OOD claim.
+/// Profiles without OOD sampling verify the ordinary linear claim.
+pub(crate) fn verify_lin_with_ood(
+    pcs: &Pcs,
+    commitment: &VerifierData,
+    query: &OpeningQuery,
+    statement_binding: StatementBinding,
+    transcript: &mut VerifierState<'_>,
+) -> Result<(), VerifyError> {
+    verify(
+        pcs,
+        &commitment.root,
+        query,
+        statement_binding,
+        commitment.ood.as_ref(),
+        transcript,
+    )
+}
+
 #[tracing::instrument(name = "Prove PCS opening", skip_all)]
 pub(crate) fn prove(
     pcs: &Pcs,
@@ -98,7 +121,7 @@ pub(crate) fn prove(
             if statement_binding == StatementBinding::Bind {
                 bind_mle_statement(pcs, &data.commitment().root, point, *target, transcript);
             }
-            prove_mle(prover, ring_switch, *target, transcript)
+            prove_mle(prover, ring_switch, *target, data.ood.as_ref(), transcript)
         }
         OpeningQuery::InnerProduct { claim } => {
             validate_inner_product_claim(pcs, claim)?;
@@ -117,7 +140,13 @@ pub(crate) fn prove(
                 reduced.target,
                 transcript,
             );
-            prove_mle(prover, ring_switch, reduced.target, transcript)
+            prove_mle(
+                prover,
+                ring_switch,
+                reduced.target,
+                data.ood.as_ref(),
+                transcript,
+            )
         }
     }
 }
@@ -128,6 +157,7 @@ pub(crate) fn verify(
     commitment: &Root,
     query: &OpeningQuery,
     statement_binding: StatementBinding,
+    ood_claim: Option<&OodClaim>,
     transcript: &mut VerifierState<'_>,
 ) -> Result<(), VerifyError> {
     match query {
@@ -136,7 +166,7 @@ pub(crate) fn verify(
             if statement_binding == StatementBinding::Bind {
                 bind_mle_statement(pcs, &commitment.0, point, *target, transcript);
             }
-            verify_mle(pcs, commitment, ring_switch, *target, transcript)
+            verify_mle(pcs, commitment, ring_switch, *target, ood_claim, transcript)
         }
         OpeningQuery::InnerProduct { claim } => {
             validate_inner_product_claim(pcs, claim)?;
@@ -153,7 +183,14 @@ pub(crate) fn verify(
                 reduced.target,
                 transcript,
             );
-            verify_mle(pcs, commitment, ring_switch, reduced.target, transcript)
+            verify_mle(
+                pcs,
+                commitment,
+                ring_switch,
+                reduced.target,
+                ood_claim,
+                transcript,
+            )
         }
     }
 }
@@ -176,6 +213,7 @@ fn prove_mle(
     prover: ReducedProver<'_>,
     ring_switch: mle::RingSwitch<'_>,
     target: F128,
+    ood_claim: Option<&OodClaim>,
     transcript: &mut ProverState,
 ) -> Result<(), ProveError> {
     let dense_reduction = {
@@ -184,7 +222,13 @@ fn prove_mle(
             ring_switch.prepare_claims(as_flock_f128s(prover.witness()), target)?;
         write_claims(transcript, &prepared_claims.claims);
         let batching_point = sample_challenges(transcript);
-        prepared_claims.reduce_dense(&batching_point)
+        let mut reduced = prepared_claims.reduce_dense(&batching_point);
+        if let Some(claim) = ood_claim {
+            let coefficient = batching_challenge(transcript);
+            add_dense_basis(&mut reduced.packed_basis, claim, coefficient);
+            reduced.packed_target += as_flock_f128(coefficient * claim.value);
+        }
+        reduced
     };
     prover.prove(dense_reduction, transcript)
 }
@@ -195,6 +239,7 @@ fn verify_mle(
     commitment: &Root,
     ring_switch: mle::RingSwitch<'_>,
     target: F128,
+    ood_claim: Option<&OodClaim>,
     transcript: &mut VerifierState<'_>,
 ) -> Result<(), VerifyError> {
     let proof = ligerito::read_proof(pcs, commitment, transcript)?;
@@ -207,13 +252,24 @@ fn verify_mle(
         let batching_point = sample_challenges(transcript);
         ring_switch.reduce_succinct(&claims, &batching_point)
     };
+    let ood = ood_claim.map(|claim| (claim, batching_challenge(transcript)));
+    let mut packed_target = reduction.packed_target;
+    if let Some((claim, coefficient)) = ood {
+        packed_target += as_flock_f128(coefficient * claim.value);
+    }
     ligerito::verify_succinct(
         pcs,
         commitment,
         &proof,
         ring_switch.suffix_dimension(),
-        reduction.packed_target,
-        |ris, yr_log_n| reduction.evaluate_basis(ris, yr_log_n),
+        packed_target,
+        |ris, yr_log_n| {
+            let mut basis = reduction.evaluate_basis(ris, yr_log_n);
+            if let Some((claim, coefficient)) = ood {
+                add_succinct_basis(&mut basis, claim, coefficient, ris);
+            }
+            basis
+        },
         transcript,
     )
 }

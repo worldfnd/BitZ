@@ -8,15 +8,18 @@
 
 use core::mem::size_of;
 
+use crate::VerifyError;
 use crate::bridge::as_flock_f128s;
 use crate::ligerito::CheckedLigerito;
+use crate::ood::{OodClaim, prove, verify};
+use crate::profiles::{ood_grinding_bits, security_config};
 use common::{Root, Shape};
 use field::F128;
 pub use flock_core::hash::HashKind;
 use flock_core::pcs::Commitment as FlockCommitment;
 use flock_core::pcs::ligerito::LigeritoProfile;
 use flock_core::pcs::{PcsParams, ProverData as FlockProverData};
-use transcript::Encoding;
+use transcript::{Encoding, ProverState, VerifierState};
 
 /// Errors from PCS configuration.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -38,14 +41,32 @@ pub enum CommitError {
 pub struct Pcs {
     params: PcsParams,
     checked_ligerito: CheckedLigerito,
+    ood_grinding_bits: Option<u32>,
     bit_len: usize,
     packed_len: usize,
 }
 
 /// Flock state retained between commitment and openings.
+/// OOD-aware commitment creation also retains the initial evaluation for each opening.
 pub struct ProverData {
     commitment: FlockCommitment,
     flock_prover_data: FlockProverData,
+    pub(crate) ood: Option<OodClaim>,
+}
+
+/// Commitment and out-of-domain claim read from the verifier transcript.
+/// The claim is authenticated only after [`CommitScheme::verify_lin_with_ood`](crate::CommitScheme::verify_lin_with_ood) succeeds.
+#[derive(Debug)]
+pub struct VerifierData {
+    pub(crate) root: Root,
+    pub(crate) ood: Option<OodClaim>,
+}
+
+impl VerifierData {
+    /// Returns the public commitment root.
+    pub fn root(&self) -> Root {
+        self.root
+    }
 }
 
 impl Pcs {
@@ -61,7 +82,7 @@ impl Pcs {
         // The ladder fixes the L0 interleaving: the commit must use the same
         // `log_batch_size` as the opening's `initial_k`, or the L0 tree is not
         // reusable as Ligerito's first oracle.
-        let security = crate::profiles::security_config(m, security_profile, merkle_hash)?;
+        let security = security_config(m, security_profile, merkle_hash)?;
         let params = PcsParams {
             m,
             log_inv_rate: security_profile.log_inv_rate(),
@@ -70,6 +91,7 @@ impl Pcs {
             merkle_hash,
         };
         let checked_ligerito = CheckedLigerito::new(&params, &security)?;
+        let ood_grinding_bits = ood_grinding_bits(&security, checked_ligerito.log_n_u32() as usize);
         let packed_len = 1usize
             .checked_shl(checked_ligerito.log_n_u32())
             .ok_or(ConfigError::Invalid("packed length overflow"))?;
@@ -77,12 +99,14 @@ impl Pcs {
         Ok(Self {
             params,
             checked_ligerito,
+            ood_grinding_bits,
             bit_len,
             packed_len,
         })
     }
 
-    /// Commits to the exact configured number of packed field elements.
+    /// Commits to the packed codeword without sampling an OOD claim.
+    /// Use [`Self::commit_with_ood`] for protocols requiring initial OOD sampling.
     #[tracing::instrument(name = "Commit witness", skip_all)]
     pub fn commit(&self, packed_witness: &[F128]) -> Result<(Root, ProverData), CommitError> {
         // 1. Input Validation
@@ -103,8 +127,42 @@ impl Pcs {
             ProverData {
                 commitment: flock_commitment,
                 flock_prover_data,
+                ood: None,
             },
         ))
+    }
+
+    /// Commits and retains the initial OOD claim for subsequent batched openings.
+    ///
+    /// Call before witness-dependent challenges and continue with the same transcript.
+    /// [`CommitScheme::prove_lin`](crate::CommitScheme::prove_lin) batches the retained claim into each opening.
+    /// Profiles using unique decoding omit the OOD round.
+    ///
+    /// Returns [`CommitError::PackedWitnessLengthMismatch`] before transcript mutation
+    /// if `packed_witness` does not have the configured length.
+    #[tracing::instrument(name = "Commit witness with OOD", skip_all)]
+    pub fn commit_with_ood(
+        &self,
+        packed_witness: &[F128],
+        transcript: &mut ProverState,
+    ) -> Result<(Root, ProverData), CommitError> {
+        let (root, mut data) = self.commit(packed_witness)?;
+        data.ood = prove(self, &root.0, packed_witness, transcript);
+        Ok((root, data))
+    }
+
+    /// Receives the OOD claim for the public root before subsequent protocol challenges.
+    ///
+    /// Mirrors [`Self::commit_with_ood`]. Invalid grinding or a truncated evaluation
+    /// returns [`VerifyError::MalformedProof`]; authentication of the evaluation is
+    /// deferred to [`CommitScheme::verify_lin_with_ood`](crate::CommitScheme::verify_lin_with_ood).
+    pub fn receive_commitment(
+        &self,
+        root: Root,
+        transcript: &mut VerifierState<'_>,
+    ) -> Result<VerifierData, VerifyError> {
+        let ood = verify(self, &root.0, transcript)?;
+        Ok(VerifierData { root, ood })
     }
 
     pub fn bit_len(&self) -> usize {
@@ -118,6 +176,10 @@ impl Pcs {
 
     pub(crate) fn params(&self) -> &PcsParams {
         &self.params
+    }
+
+    pub(crate) fn ood_grinding_bits(&self) -> Option<u32> {
+        self.ood_grinding_bits
     }
 
     pub(crate) fn prover_config(&self) -> &flock_core::pcs::ligerito::ProverConfig {
