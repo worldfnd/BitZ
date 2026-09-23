@@ -244,15 +244,6 @@ impl TransposedBitTable {
     }
 }
 
-/// Iterator over one column's bits, in ascending row order — see
-/// [`BitTable::column_bits`].
-pub struct BitsIter<'a> {
-    elements: std::slice::Iter<'a, Word>,
-    /// Bits not yet emitted; the next one to emit is the LSB.
-    word: Word,
-    remaining: u8,
-}
-
 // Find conditions
 // at most group of size 64 -> would be a transpose again?
 // make grouping a const size that is given to unroll
@@ -290,8 +281,26 @@ fn group_pack<const GS: usize>(tt: &Vec<F128>) -> Vec<Word> {
     out
 }
 
-impl<'a> BitsIter<'a> {
+pub type BitsIter<'a> = StepIter<'a, 1>;
+
+/// Iterator over one column's bits, in ascending row order — see
+/// [`BitTable::column_bits`].
+pub struct StepIter<'a, const S: usize> {
+    elements: std::slice::Iter<'a, Word>,
+    /// Bits not yet emitted; the next one to emit is the LSB.
+    word: Word,
+    remaining: u8,
+}
+
+// TODO
+impl<'a, const S: usize> StepIter<'a, S> {
+    const CHECK_SIZE: () = assert!(
+        S != 0 && S <= Word::BITS as usize && Word::BITS as usize % S == 0,
+        "step size must be nonzero, at most 64, and divide 64 evenly"
+    );
+    const MASK: u64 = 1u64.unbounded_shl(S as u32).wrapping_sub(1);
     fn new(iter: Iter<'a, Word>) -> Self {
+        let () = Self::CHECK_SIZE;
         Self {
             elements: iter,
             word: 0,
@@ -300,19 +309,19 @@ impl<'a> BitsIter<'a> {
     }
 }
 
-impl Iterator for BitsIter<'_> {
-    type Item = bool;
+impl<'a, const S: usize> Iterator for StepIter<'_, S> {
+    type Item = u64;
 
-    fn next(&mut self) -> Option<bool> {
+    fn next(&mut self) -> Option<Self::Item> {
         if self.remaining == 0 {
             let element = self.elements.next()?;
             self.word = *element;
-            self.remaining = BitTable::BITS as u8;
+            self.remaining = Word::BITS as u8;
         }
-        let bit = self.word & 1 == 1;
-        self.word >>= 1;
-        self.remaining -= 1;
-        Some(bit)
+        let bitset = self.word & Self::MASK;
+        self.word = self.word.unbounded_shr(S as u32);
+        self.remaining -= S as u8;
+        Some(bitset)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -321,9 +330,9 @@ impl Iterator for BitsIter<'_> {
     }
 }
 
-impl ExactSizeIterator for BitsIter<'_> {
+impl<'a, const S: usize> ExactSizeIterator for StepIter<'_, S> {
     fn len(&self) -> usize {
-        self.remaining as usize + self.elements.len() * (BitTable::BITS as usize)
+        (self.remaining as usize + self.elements.len() * (BitTable::BITS as usize)) / S
     }
 }
 

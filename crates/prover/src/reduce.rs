@@ -28,7 +28,7 @@ fn init_circuit(table: &BitTable, fold: &Fold) -> GrandProductCircuit {
             for (b, &row_image) in fold.row_images.iter().enumerate() {
                 let leafs = &mut leafs[b * columns..(b + 1) * columns];
                 for (leaf, bit) in leafs.iter_mut().zip(transposed.column_bits(b)) {
-                    *leaf = if bit { row_image } else { F128::ONE };
+                    *leaf = if bit == 1 { row_image } else { F128::ONE };
                 }
             }
         }
