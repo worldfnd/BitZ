@@ -69,12 +69,13 @@ fn inner_product_proof_composes_sumcheck_with_a_bound_mle_opening() {
     let mut verifier = build_verifier(SESSION, INSTANCE, &proof);
     bind_inner_product_statement(&fixture.pcs, &fixture.root.0, &fixture.claim, &mut verifier);
     verifier.public_message(SUMCHECK_LABEL);
-    let reduced = post_gkr::verify(&fixture.claim, &mut verifier).unwrap();
+    let reduced = verify_post_gkr(&fixture.claim, &mut verifier).unwrap();
     verify(
         &fixture.pcs,
         &fixture.root,
         &reduced,
         StatementBinding::Bind,
+        None,
         &mut verifier,
     )
     .unwrap();
@@ -152,6 +153,7 @@ fn opening_leaves_matching_transcripts_for_following_protocols() {
             &fixture.root,
             &query,
             StatementBinding::Bind,
+            None,
             &mut verifier,
         )
         .unwrap();
