@@ -76,7 +76,7 @@ pub fn gkr_reduce(
         .row_images
         .iter()
         .zip(poly::eq_table(&alfa_b))
-        .map(|(a, b)| (*a - F128::ONE) * b) // Does the later step benefit from wide mul?
+        .map(|(a, b)| (*a - F128::ONE) * b)
         .collect();
 
     let u2 = eq_table(&alfa_c);

@@ -9,6 +9,10 @@ pub(crate) const PACKED_BITS: usize = 128;
 const PACKED_SHIFT: u32 = 7;
 /// Bits in each half of a packed element.
 const HALF_BITS: usize = 64;
+/// The machine word `packed` is sliced into. [`BitTable::BITS`] is derived
+/// from this, so changing it is the only step needed to repack into a
+/// different word size.
+type Word = u64;
 
 /// A witness that does not match its shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,10 +51,11 @@ pub enum TransposeError {
 #[derive(Debug, Clone, Copy)]
 pub struct BitTable<'a> {
     shape: Shape,
-    packed: &'a [F128],
+    packed: &'a [Word],
 }
 
 impl<'a> BitTable<'a> {
+    pub const BITS: usize = Word::BITS as usize;
     /// Wraps `packed` in `shape`, least significant bit first inside `lo`.
     ///
     /// Crate-private: [`crate::BitZParams::table`] is the only way in, so a
@@ -60,7 +65,10 @@ impl<'a> BitTable<'a> {
         if packed.len() != (1 << shape.log_bits()) / PACKED_BITS {
             return Err(TableError::BitCountMismatch);
         }
-        Ok(Self { shape, packed })
+        Ok(Self {
+            shape,
+            packed: bytemuck::cast_slice(packed),
+        })
     }
 
     pub fn shape(&self) -> &Shape {
@@ -78,15 +86,13 @@ impl<'a> BitTable<'a> {
             column < self.shape.columns(),
             "column {column} is outside the table"
         );
+
         let index = (column << self.shape.log_rows()) | row;
-        let element = self.packed[index >> PACKED_SHIFT];
-        let offset = index % PACKED_BITS;
-        let half = if offset < HALF_BITS {
-            element.lo
-        } else {
-            element.hi
-        };
-        (half >> (offset % HALF_BITS)) & 1 == 1
+        // /% on compile time constant should be properly optimise away
+        let element = self.packed[index / BitTable::BITS];
+        let offset = index % BitTable::BITS;
+
+        ((element >> offset) & 1) == 1
     }
 
     /// The `2^(t-7)` elements holding one column, in ascending row order.
@@ -95,8 +101,8 @@ impl<'a> BitTable<'a> {
     /// element boundary and spans whole elements. The fold walks these directly
     /// rather than calling [`BitTable::bit`] once per row: at `m = 35` that is
     /// `2^35` calls, each of them a bounds check and two shifts.
-    pub fn column(&self, column: usize) -> &'a [F128] {
-        let elements = self.shape.rows() / PACKED_BITS;
+    pub fn column(&self, column: usize) -> &'a [Word] {
+        let elements = self.shape.rows() / BitTable::BITS;
         &self.packed[column * elements..(column + 1) * elements]
     }
 
@@ -105,7 +111,6 @@ impl<'a> BitTable<'a> {
         ColumnBits {
             elements: self.column(column).iter(),
             word: 0,
-            hi_pending: None,
             remaining: 0,
         }
     }
@@ -154,16 +159,23 @@ impl<'a> BitTable<'a> {
 
         let row_groups = self.shape.rows() / PACKED_BITS;
         let column_groups = self.shape.columns() / PACKED_BITS;
-        debug_assert_eq!(row_groups * column_groups * PACKED_BITS, self.packed.len());
+        // Two `u64` words (lo, hi) per 128-row group in `self.packed`, now
+        // that it holds words rather than `F128` elements.
+        let words_per_column = row_groups * 2;
+        debug_assert_eq!(
+            row_groups * column_groups * PACKED_BITS,
+            self.packed.len() / 2
+        );
 
-        let mut packed = F128::zeroed_vec(self.packed.len());
+        let mut packed = F128::zeroed_vec(row_groups * column_groups * PACKED_BITS);
         let mut block = [0u128; PACKED_BITS];
         for row_group in 0..row_groups {
             for column_group in 0..column_groups {
                 for (lane, word) in block.iter_mut().enumerate() {
                     let column = column_group * PACKED_BITS + lane;
-                    let element = self.packed[column * row_groups + row_group];
-                    *word = u128::from(element.lo) | (u128::from(element.hi) << HALF_BITS);
+                    let element_lo = self.packed[column * words_per_column + row_group * 2];
+                    let element_hi = self.packed[column * words_per_column + row_group * 2 + 1];
+                    *word = u128::from(element_lo) | (u128::from(element_hi) << HALF_BITS);
                 }
 
                 transpose_bit_block(&mut block);
@@ -237,33 +249,20 @@ impl TransposedBitTable {
 /// Iterator over one column's bits, in ascending row order — see
 /// [`BitTable::column_bits`].
 pub struct ColumnBits<'a> {
-    elements: std::slice::Iter<'a, F128>,
+    elements: std::slice::Iter<'a, Word>,
     /// Bits not yet emitted; the next one to emit is the LSB.
-    word: u64,
-    /// `hi` of the current element, once `lo` has been fully shifted out of
-    /// `word` but before it takes `word`'s place.
-    hi_pending: Option<u64>,
-    /// How many low bits of `word` are still valid, i.e. still unemitted.
-    remaining: u32,
+    word: Word,
+    remaining: u8,
 }
 
 impl Iterator for ColumnBits<'_> {
     type Item = bool;
 
     fn next(&mut self) -> Option<bool> {
-        match (self.remaining, self.hi_pending) {
-            (0, Some(hi)) => {
-                self.word = hi;
-                self.hi_pending = None;
-                self.remaining = HALF_BITS as u32;
-            }
-            (0, None) => {
-                let element = self.elements.next()?;
-                self.word = element.lo;
-                self.hi_pending = Some(element.hi);
-                self.remaining = HALF_BITS as u32;
-            }
-            _ => {}
+        if self.remaining == 0 {
+            let element = self.elements.next()?;
+            self.word = *element;
+            self.remaining = BitTable::BITS as u8;
         }
         let bit = self.word & 1 == 1;
         self.word >>= 1;
@@ -279,9 +278,7 @@ impl Iterator for ColumnBits<'_> {
 
 impl ExactSizeIterator for ColumnBits<'_> {
     fn len(&self) -> usize {
-        self.remaining as usize
-            + self.hi_pending.map_or(0, |_| HALF_BITS)
-            + self.elements.len() * PACKED_BITS
+        self.remaining as usize + self.elements.len() * (BitTable::BITS as usize)
     }
 }
 
@@ -372,9 +369,9 @@ mod tests {
         let packed = with_bits(&shape, &[(0, 3), (2, 3), (64, 3)]);
         let table = BitTable::new(shape, &packed).unwrap();
 
-        assert_eq!(table.column(3).len(), shape.rows() / PACKED_BITS);
-        assert_eq!(table.column(3), [F128::new(0b101, 1)]);
-        assert!(table.column(4).iter().all(|element| *element == F128::ZERO));
+        assert_eq!(table.column(3).len(), shape.rows() / BitTable::BITS);
+        assert_eq!(table.column(3), [0b101u64, 1u64]);
+        assert!(table.column(4).iter().all(|&element| element == 0));
     }
 
     #[test]
@@ -400,11 +397,10 @@ mod tests {
         let packed = with_bits(&shape, &rows);
         let table = BitTable::new(shape, &packed).unwrap();
 
-        for (index, element) in table.column(2).iter().enumerate() {
-            let bits = u128::from(element.lo) | (u128::from(element.hi) << 64);
-            for offset in 0..PACKED_BITS {
-                let row = index * PACKED_BITS + offset;
-                assert_eq!(table.bit(2, row), (bits >> offset) & 1 == 1, "row {row}");
+        for (index, &element) in table.column(2).iter().enumerate() {
+            for offset in 0..BitTable::BITS {
+                let row = index * BitTable::BITS + offset;
+                assert_eq!(table.bit(2, row), (element >> offset) & 1 == 1, "row {row}");
             }
         }
     }

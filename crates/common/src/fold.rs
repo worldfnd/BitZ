@@ -5,7 +5,7 @@ use poly::DenseMultilinearExtension;
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
-use crate::{BitTable, LinearClaim, Shape, table::PACKED_BITS};
+use crate::{BitTable, LinearClaim, Shape};
 
 /// A round whose parts do not describe the shape they belong to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,23 +30,16 @@ pub fn fold_column(table: &BitTable<'_>, exponents: &[u128], column: usize) -> u
     table
         .column(column)
         .iter()
-        .enumerate()
-        .map(|(index, element)| {
-            let base = index * PACKED_BITS;
-            [(0, element.lo), (64, element.hi)]
-                .into_iter()
-                .map(|(half, mut remaining)| {
-                    let mut total = 0u128;
-                    while remaining != 0 {
-                        total += exponents[base + half + remaining.trailing_zeros() as usize];
-                        // Clears the lowest set bit.
-                        remaining &= remaining - 1;
-                    }
-                    total
-                })
-                .sum::<u128>()
+        .fold((0usize, 0u128), |(base, mut total), &element| {
+            let mut remaining = element;
+            while remaining != 0 {
+                total += exponents[base + remaining.trailing_zeros() as usize];
+                // Clears the lowest set bit.
+                remaining &= remaining - 1;
+            }
+            (base + BitTable::BITS, total)
         })
-        .sum()
+        .1
 }
 
 /// Every column's fold, in column order.
@@ -190,6 +183,7 @@ mod tests {
     use num_traits::{ConstOne, ConstZero};
 
     use super::*;
+    use crate::table::PACKED_BITS;
     use crate::{BitZParams, Shape};
 
     const Q114: u128 = (1 << 114) - 11;

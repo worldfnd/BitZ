@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 
+use common::BitTable;
 use field::{F128, Wide256};
 use num_traits::{ConstOne, ConstZero};
 use rayon::prelude::*;

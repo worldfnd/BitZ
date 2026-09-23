@@ -11,6 +11,7 @@ parallel = ["dep:rayon"]
 
 [dependencies]
 crypto-primitives = { workspace = true }
+bytemuck = {workspace = true}
 field = { workspace = true, features = ["spongefish"] }
 spongefish = { workspace = true }
 poly = { workspace = true }
