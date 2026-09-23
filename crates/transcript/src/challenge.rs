@@ -1,8 +1,8 @@
 //! Typed Fiat–Shamir challenge sampling.
 
-use field::{F128, Fq, FqDefault, Q100};
-
 use crate::{ProverState, VerifierState};
+use field::dynamic::DynField;
+use field::{F128, Fq, FqDefault, Q100};
 
 /// A type that knows how to construct itself from transcript squeezes.
 ///
@@ -91,6 +91,12 @@ impl TranscriptChallenge for F128 {
     fn from_squeezes(mut next_u128: impl FnMut() -> u128) -> Self {
         // Every 128-bit string is exactly one binary-field element.
         Self::from(next_u128())
+    }
+}
+
+impl TranscriptChallenge for DynField {
+    fn from_squeezes(next_u128: impl FnMut() -> u128) -> Self {
+        todo!()
     }
 }
 

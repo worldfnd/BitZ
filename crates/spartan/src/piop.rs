@@ -1,11 +1,11 @@
 //! Composition of Spartan's outer and inner sumchecks.
 
 use circuit::witgen::PackedWitness;
-use crypto_primitives::ConstField;
+use common::BitzField;
 use poly::{
     DenseMultilinearExtension, MleClaimError, ScaledMleEvaluationClaim, make_equality_factors,
 };
-use transcript::{Encoding, ProverState, TranscriptChallenge, VerifierState};
+use transcript::{ProverState, VerifierState};
 
 use crate::matrix::{PreparedConstraintMatrices, SpartanMatrixError, build_assignment_mle};
 use crate::sumcheck::{
@@ -64,15 +64,12 @@ impl From<MleClaimError> for SpartanError {
 /// session or instance must bind that choice so proofs from different fields
 /// occupy distinct Fiat--Shamir domains.
 #[tracing::instrument(name = "Prove Spartan", skip_all)]
-pub fn prove_spartan_piop<F>(
+pub fn prove_spartan_piop<F: BitzField>(
     transcript: &mut ProverState,
     matrices: &PreparedConstraintMatrices<F>,
     products: &R1csProductMles<F>,
     assignment: &DenseMultilinearExtension<F>,
-) -> Result<(SpartanPiopProof<F>, ScaledMleEvaluationClaim<F>), SpartanError>
-where
-    F: ConstField + Copy + Encoding<[u8]> + TranscriptChallenge,
-{
+) -> Result<(SpartanPiopProof<F>, ScaledMleEvaluationClaim<F>), SpartanError> {
     let num_row_vars = matrices.num_row_vars();
     let num_column_vars = matrices.num_column_vars();
     if products.az.num_vars() != num_row_vars
@@ -91,7 +88,7 @@ where
         .collect::<Vec<_>>();
     let equality_factors =
         make_equality_factors(&tau).map_err(|_| SpartanMatrixError::InvalidMleOperation)?;
-    let outer = prove_outer_sumcheck(transcript, F::ZERO, equality_factors, products)?;
+    let outer = prove_outer_sumcheck(transcript, F::zero(), equality_factors, products)?;
 
     // The outer prover absorbed these evaluations before returning.
     let rho = transcript.squeeze::<F>();
@@ -117,21 +114,18 @@ where
 /// Verifies both sumchecks and returns their terminal scaled assignment claim
 /// `D(r_y) * h(r_y) = final_claim`.
 #[tracing::instrument(name = "Verify Spartan", skip_all)]
-pub fn verify_spartan_proof<F>(
+pub fn verify_spartan_proof<F: BitzField>(
     transcript: &mut VerifierState<'_>,
     matrices: &PreparedConstraintMatrices<F>,
     proof: &SpartanPiopProof<F>,
-) -> Result<ScaledMleEvaluationClaim<F>, SpartanError>
-where
-    F: ConstField + Copy + Encoding<[u8]> + TranscriptChallenge,
-{
+) -> Result<ScaledMleEvaluationClaim<F>, SpartanError> {
     let num_row_vars = matrices.num_row_vars();
     let num_column_vars = matrices.num_column_vars();
     transcript.public_message(matrices.digest());
     let tau = (0..num_row_vars)
         .map(|_| transcript.squeeze::<F>())
         .collect::<Vec<_>>();
-    let outer = proof.outer.verify(transcript, F::ZERO, &tau)?;
+    let outer = proof.outer.verify(transcript, F::zero(), &tau)?;
 
     // The outer verifier absorbed the product evaluations before returning.
     let rho = transcript.squeeze::<F>();
@@ -159,16 +153,13 @@ where
 /// Boolean witness `f`. The eventual virtual opening protocol must enforce
 /// that map from a commitment to `f`; this witness-aware path checks the
 /// resulting assignment directly.
-pub fn verify_spartan_with_mle_claim<F>(
+pub fn verify_spartan_with_mle_claim<F: BitzField>(
     transcript: &mut VerifierState<'_>,
     matrices: &PreparedConstraintMatrices<F>,
     proof: &SpartanPiopProof<F>,
     mle_claim: &ScaledMleEvaluationClaim<F>,
     assignment: &PackedWitness,
-) -> Result<(), SpartanError>
-where
-    F: ConstField + Copy + Encoding<[u8]> + TranscriptChallenge,
-{
+) -> Result<(), SpartanError> {
     let assignment = build_assignment_mle::<F>(assignment, matrices.matrices().a.column_count())?;
     let expected_claim = verify_spartan_proof(transcript, matrices, proof)?;
     if mle_claim != &expected_claim {
@@ -185,7 +176,7 @@ mod tests {
         constraints::{ConstraintMatrices, SparseBoolMatrix, SparseMatrix},
         witgen::PackedWitness,
     };
-    use crypto_primitives::ConstField;
+    use crypto_primitives::Field;
     use field::{F128, FqDefault};
     use poly::DenseMultilinearExtension;
     use rand::{Rng, SeedableRng};
@@ -216,13 +207,13 @@ mod tests {
 
     fn check_verifier_rejects_proof_with_unsatisfied_witness<F>(session: &[u8])
     where
-        F: ConstField + Copy + Encoding<[u8]> + TranscriptChallenge,
+        F: Field + Copy + Encoding<[u8]> + TranscriptChallenge,
     {
         const SIZE: usize = 2;
         const UNSATISFIED_INSTANCE: &[u8] = b"unsatisfied-r1cs";
 
-        let one = F::ONE;
-        let zero = F::ZERO;
+        let one = F::one();
+        let zero = F::zero();
         let satisfying_assignment = [one, zero];
         let unsatisfied_assignment = [one, one];
         let a = SparseMatrix::try_from_rows(SIZE, vec![vec![(1, one)], vec![(1, one)]]).unwrap();
@@ -267,7 +258,7 @@ mod tests {
 
     fn check_random_satisfying_r1cs<F>(session: &[u8])
     where
-        F: ConstField + Copy + Encoding<[u8]> + TranscriptChallenge,
+        F: Field + Copy + Encoding<[u8]> + TranscriptChallenge,
     {
         let mut rng = Pcg64::seed_from_u64(0x5a17_c0de);
         let mut assignment_bits = Vec::with_capacity(COLUMNS);
@@ -276,7 +267,7 @@ mod tests {
         let assignment_values: Vec<_> = assignment_bits
             .iter()
             .copied()
-            .map(|bit| if bit { F::ONE } else { F::ZERO })
+            .map(|bit| if bit { F::one() } else { F::zero() })
             .collect();
 
         let a = random_sparse_matrix::<F>(&mut rng);
@@ -337,7 +328,7 @@ mod tests {
         complete_verifier.check_eof().unwrap();
     }
 
-    fn random_sparse_matrix<F: ConstField + Copy>(rng: &mut Pcg64) -> SparseMatrix<F> {
+    fn random_sparse_matrix<F: Field + Copy>(rng: &mut Pcg64) -> SparseMatrix<F> {
         let rows = (0..ROWS)
             .map(|_| {
                 // A nonzero constant-column entry keeps each row evaluation
@@ -356,25 +347,25 @@ mod tests {
         SparseMatrix::try_from_rows(COLUMNS, rows).unwrap()
     }
 
-    fn multiply<F: ConstField + Copy>(matrix: &SparseMatrix<F>, assignment: &[F]) -> Vec<F> {
+    fn multiply<F: Field + Copy>(matrix: &SparseMatrix<F>, assignment: &[F]) -> Vec<F> {
         matrix
             .rows()
             .iter()
             .map(|row| {
                 row.entries()
                     .iter()
-                    .fold(F::ZERO, |sum, &(column, coefficient)| {
+                    .fold(F::zero(), |sum, &(column, coefficient)| {
                         sum + coefficient * assignment[column]
                     })
             })
             .collect()
     }
 
-    fn padded_mle<F: ConstField + Copy>(values: Vec<F>) -> DenseMultilinearExtension<F> {
+    fn padded_mle<F: Field + Copy>(values: Vec<F>) -> DenseMultilinearExtension<F> {
         let padded_len = values.len().max(1).next_power_of_two();
         let num_vars = padded_len.ilog2() as usize;
         let mut evaluations = values;
-        evaluations.resize(padded_len, F::ZERO);
+        evaluations.resize(padded_len, F::zero());
         DenseMultilinearExtension::from_evaluations(num_vars, evaluations).unwrap()
     }
 }

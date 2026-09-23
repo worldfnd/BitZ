@@ -13,8 +13,8 @@ use divan::{AllocProfiler, Bencher, black_box};
 use field::FqDefault;
 use poly::{DenseMultilinearExtension, ScaledMleEvaluationClaim};
 use spartan::{
-    PreparedConstraintMatrices, R1csProductMles, SpartanPiopProof, bigint_to_fq,
-    build_assignment_mle, build_product_mles, prove_spartan_piop, verify_spartan_proof,
+    PreparedConstraintMatrices, R1csProductMles, SpartanPiopProof, build_assignment_mle,
+    build_product_mles, prove_spartan_piop, verify_spartan_proof,
 };
 use transcript::{Proof, build_prover, build_verifier};
 
@@ -80,7 +80,7 @@ fn build(blocks: usize) -> R1csInstanceWitness {
     let (_witness, assignment_bits, exact_products) = witgen.into_parts();
 
     // Lower to Q100 and pad to the Boolean domains.
-    let matrices = integer_matrices.map_coefficients(|c| bigint_to_fq(&c));
+    let matrices = integer_matrices.map_coefficients(|c| spartan::bigint_to_fq(&c));
     let products = build_product_mles(&exact_products, matrices.a.row_count()).unwrap();
     let assignment =
         build_assignment_mle::<FqDefault>(&assignment_bits, matrices.a.column_count()).unwrap();

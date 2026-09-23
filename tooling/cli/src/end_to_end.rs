@@ -19,8 +19,8 @@ use transcript::{PublicTranscript, build_prover, build_verifier};
 use verifier::BitZVerifier;
 
 use spartan::{
-    PreparedConstraintMatrices, R1csProductMles, SpartanPiopProof, bigint_to_fq,
-    build_assignment_mle, build_product_mles, prove_spartan_piop, verify_spartan_proof,
+    PreparedConstraintMatrices, R1csProductMles, SpartanPiopProof, build_assignment_mle,
+    build_product_mles, prove_spartan_piop, verify_spartan_proof,
 };
 
 const SESSION: &[u8] = b"bitz/circuit-e2e/v1";
@@ -120,7 +120,7 @@ impl<S: CircuitStatement> CircuitProofSystem<S> {
         let matrices = PreparedConstraintMatrices::new(
             constraints
                 .into_matrices()
-                .map_coefficients(|c| bigint_to_fq(&c)),
+                .map_coefficients(|c| spartan::bigint_to_fq(&c)),
         )
         .map_err(Error::Matrix)?;
         let mut generator = MTransposeGenerator::new(statement.input_bits());

@@ -27,10 +27,11 @@
 //!
 //! [*More Optimizations to Sum-Check Proving*]: https://eprint.iacr.org/2024/1210.pdf
 
-use crypto_primitives::ConstField;
+use common::{BitzField, BitzSemiring};
 use poly::DenseMultilinearExtension;
 use rayon::prelude::*;
-use transcript::{Encoding, ProverState, TranscriptChallenge, VerifierState};
+use std::array;
+use transcript::{ProverState, VerifierState};
 
 /// Failures produced while reducing or checking a sumcheck claim.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,10 +54,7 @@ pub struct SumcheckProof<F, const COEFFS: usize> {
     pub round_polynomials: Vec<[F; COEFFS]>,
 }
 
-impl<F, const COEFFS: usize> SumcheckProof<F, COEFFS>
-where
-    F: ConstField + Copy + Encoding<[u8]> + TranscriptChallenge,
-{
+impl<F: BitzField, const COEFFS: usize> SumcheckProof<F, COEFFS> {
     /// Verifies the round reductions and returns `(r, final_claim)`.
     ///
     /// The caller supplies the expected number of rounds from the statement.
@@ -79,7 +77,7 @@ where
             });
         }
 
-        let zero = F::ZERO;
+        let zero = F::zero();
         let mut current_claim = initial_claim;
         let mut eval_points = Vec::with_capacity(expected_rounds);
 
@@ -215,10 +213,7 @@ pub struct InnerSumcheckOutput<F> {
     pub witness_evaluation: F,
 }
 
-impl<F> OuterSumcheckProof<F>
-where
-    F: ConstField + Copy + Encoding<[u8]> + TranscriptChallenge,
-{
+impl<F: BitzField> OuterSumcheckProof<F> {
     /// Verifies the outer reduction and its terminal R1CS identity.
     #[tracing::instrument(name = "Verify outer sumcheck", skip_all)]
     pub fn verify(
@@ -253,15 +248,12 @@ where
 /// session or instance must bind that choice so proofs from different fields
 /// occupy distinct Fiat–Shamir domains.
 #[tracing::instrument(name = "Prove outer sumcheck", skip_all)]
-pub fn prove_outer_sumcheck<F>(
+pub fn prove_outer_sumcheck<F: BitzField>(
     transcript: &mut ProverState,
     initial_claim: F,
     (eq_low, eq_high): (DenseMultilinearExtension<F>, DenseMultilinearExtension<F>),
     products: &R1csProductMles<F>,
-) -> Result<OuterSumcheckOutput<F>, SumcheckError>
-where
-    F: ConstField + Copy + Encoding<[u8]> + TranscriptChallenge,
-{
+) -> Result<OuterSumcheckOutput<F>, SumcheckError> {
     let num_vars = products.az.num_vars();
     if products.bz.num_vars() != num_vars || products.cz.num_vars() != num_vars {
         return Err(SumcheckError::InvalidProductDimensions);
@@ -275,7 +267,7 @@ where
         return Err(SumcheckError::InvalidEqualityDimensions);
     }
 
-    let zero = F::ZERO;
+    let zero = F::zero();
     let mut eq_low: Vec<_> = eq_low.into_iter().collect();
     let mut eq_high: Vec<_> = eq_high.into_iter().collect();
     // It's possible to avoid cloning here but its impact is negligible
@@ -446,21 +438,18 @@ impl<F: Copy> R1csProductTableBuffers<F> {
 /// session or instance must bind that choice so proofs from different fields
 /// occupy distinct Fiat–Shamir domains.
 #[tracing::instrument(name = "Prove inner sumcheck", skip_all)]
-pub fn prove_inner_sumcheck<F>(
+pub fn prove_inner_sumcheck<F: BitzField>(
     transcript: &mut ProverState,
     initial_claim: F,
     batched_matrix_mle: DenseMultilinearExtension<F>,
     witness_mle: &DenseMultilinearExtension<F>,
-) -> Result<InnerSumcheckOutput<F>, SumcheckError>
-where
-    F: ConstField + Copy + Encoding<[u8]> + TranscriptChallenge,
-{
+) -> Result<InnerSumcheckOutput<F>, SumcheckError> {
     let num_vars = batched_matrix_mle.num_vars();
     if witness_mle.num_vars() != num_vars {
         return Err(SumcheckError::InvalidProductDimensions);
     }
 
-    let zero = F::ZERO;
+    let zero = F::zero();
     let mut batched_matrix = batched_matrix_mle.evaluations;
     let mut current_claim = initial_claim;
     let mut eval_points = Vec::with_capacity(num_vars);
@@ -562,13 +551,10 @@ where
 }
 
 #[inline]
-fn compute_inner_pair_coefficients_without_linear<F>(
+fn compute_inner_pair_coefficients_without_linear<F: BitzField>(
     batched_matrix: [F; 2],
     witness: [F; 2],
-) -> [F; 2]
-where
-    F: ConstField + Copy,
-{
+) -> [F; 2] {
     let [matrix_zero, matrix_one] = batched_matrix;
     let [witness_zero, witness_one] = witness;
 
@@ -578,14 +564,14 @@ where
     ]
 }
 
-fn sum_inner_round_coefficients_without_linear<F>(batched_matrix: &[F], witness: &[F]) -> [F; 2]
-where
-    F: ConstField + Copy,
-{
+fn sum_inner_round_coefficients_without_linear<F: BitzField>(
+    batched_matrix: &[F],
+    witness: &[F],
+) -> [F; 2] {
     debug_assert_eq!(batched_matrix.len(), witness.len());
     debug_assert!(batched_matrix.len() >= 2);
 
-    let zero = F::ZERO;
+    let zero = F::zero();
     let pair_count = batched_matrix.len() / 2;
 
     if should_parallelize(pair_count) {
@@ -622,16 +608,13 @@ where
 }
 
 #[inline]
-fn fold_inner_chunk<F>(
+fn fold_inner_chunk<F: BitzField>(
     batched_matrix: &[F],
     witness: &[F],
     batched_matrix_output: &mut [F],
     witness_output: &mut [F],
     challenge: F,
-) -> [F; 2]
-where
-    F: ConstField + Copy,
-{
+) -> [F; 2] {
     debug_assert_eq!(batched_matrix.len(), 4);
     debug_assert_eq!(witness.len(), 4);
     debug_assert_eq!(batched_matrix_output.len(), 2);
@@ -654,22 +637,19 @@ where
 /// Binds the current variable in both tables and simultaneously prepares the
 /// next round's `[c0, c2]`. The challenge has already been sampled, so this
 /// does not move any work across the Fiat-Shamir boundary.
-fn fold_and_compute_next_inner_round_coefficients_without_linear<F>(
+fn fold_and_compute_next_inner_round_coefficients_without_linear<F: BitzField>(
     batched_matrix: &[F],
     witness: &[F],
     batched_matrix_output: &mut [F],
     witness_output: &mut [F],
     challenge: F,
-) -> [F; 2]
-where
-    F: ConstField + Copy,
-{
+) -> [F; 2] {
     debug_assert_eq!(batched_matrix.len(), witness.len());
     debug_assert!(batched_matrix.len() >= 4);
     debug_assert_eq!(batched_matrix_output.len(), batched_matrix.len() / 2);
     debug_assert_eq!(witness_output.len(), witness.len() / 2);
 
-    let zero = F::ZERO;
+    let zero = F::zero();
     let chunk_count = batched_matrix.len() / 4;
 
     if should_parallelize(chunk_count) {
@@ -707,29 +687,26 @@ where
 }
 
 #[inline]
-fn add_coefficients<F, const COEFFS: usize>(left: [F; COEFFS], right: [F; COEFFS]) -> [F; COEFFS]
-where
-    F: ConstField + Copy,
-{
-    std::array::from_fn(|index| left[index] + right[index])
+fn add_coefficients<S: BitzSemiring, const COEFFS: usize>(
+    left: [S; COEFFS],
+    right: [S; COEFFS],
+) -> [S; COEFFS] {
+    array::from_fn(|index| left[index].clone() + &right[index])
 }
 
-fn sum_coefficients<F, const COEFFS: usize>(
+fn sum_coefficients<S: BitzSemiring, const COEFFS: usize>(
     len: usize,
-    contribution: impl Fn(usize) -> [F; COEFFS] + Sync,
-) -> [F; COEFFS]
-where
-    F: ConstField + Copy,
-{
-    let zero = F::ZERO;
+    contribution: impl Fn(usize) -> [S; COEFFS] + Sync,
+) -> [S; COEFFS] {
+    let make_zero_arr = || array::repeat::<_, COEFFS>(S::zero());
 
     if should_parallelize(len) {
         (0..len)
             .into_par_iter()
             .map(&contribution)
-            .reduce(|| [zero; COEFFS], add_coefficients::<F, COEFFS>)
+            .reduce(make_zero_arr, add_coefficients::<S, COEFFS>)
     } else {
-        (0..len).fold([zero; COEFFS], |sum, index| {
+        (0..len).fold(make_zero_arr(), |sum, index| {
             add_coefficients(sum, contribution(index))
         })
     }
@@ -743,10 +720,7 @@ fn should_parallelize(work_items: usize) -> bool {
 }
 
 #[inline]
-fn cubic_contribution<F>(eq: [F; 2], az: [F; 2], bz: [F; 2], cz: [F; 2]) -> [F; 3]
-where
-    F: ConstField + Copy,
-{
+fn cubic_contribution<F: BitzField>(eq: [F; 2], az: [F; 2], bz: [F; 2], cz: [F; 2]) -> [F; 3] {
     let [eq_zero, eq_one] = eq;
     let [az_zero, az_one] = az;
     let [bz_zero, bz_one] = bz;
@@ -787,12 +761,12 @@ fn reconstruct_round_coefficients<F, const INPUT_COEFFS: usize, const COEFFS: us
     coefficients_without_linear: [F; INPUT_COEFFS],
 ) -> [F; COEFFS]
 where
-    F: ConstField + Copy,
+    F: BitzField,
 {
     assert!(INPUT_COEFFS >= 1);
     assert_eq!(COEFFS, INPUT_COEFFS + 1);
 
-    let zero = F::ZERO;
+    let zero = F::zero();
     let mut coefficients = [zero; COEFFS];
     coefficients[0] = coefficients_without_linear[0];
     coefficients[2..].copy_from_slice(&coefficients_without_linear[1..]);
@@ -806,11 +780,11 @@ where
 }
 
 #[inline]
-fn evaluate_polynomial<F, const COEFFS: usize>(coefficients: &[F; COEFFS], point: F) -> F
-where
-    F: ConstField + Copy,
-{
-    let zero = F::ZERO;
+fn evaluate_polynomial<F: BitzField, const COEFFS: usize>(
+    coefficients: &[F; COEFFS],
+    point: F,
+) -> F {
+    let zero = F::zero();
     coefficients
         .iter()
         .rev()
@@ -826,7 +800,7 @@ where
 /// absorbs the completed polynomial, samples `r_i`, and updates
 /// `current_claim` to `g_i(r_i)`.
 fn recover_full_round_polynomial_and_sample_next_challenge<
-    F,
+    F: BitzField,
     const INPUT_COEFFS: usize,
     const COEFFS: usize,
 >(
@@ -835,11 +809,8 @@ fn recover_full_round_polynomial_and_sample_next_challenge<
     coefficients_without_linear: [F; INPUT_COEFFS],
     round_polynomials: &mut Vec<[F; COEFFS]>,
     eval_points: &mut Vec<F>,
-) -> F
-where
-    F: ConstField + Copy + Encoding<[u8]> + TranscriptChallenge,
-{
-    let zero = F::ZERO;
+) -> F {
+    let zero = F::zero();
     let coefficients = reconstruct_round_coefficients(*current_claim, coefficients_without_linear);
     let at_one = coefficients
         .iter()
@@ -867,10 +838,7 @@ struct EqualityPairs<'a, F> {
     low_mask: usize,
 }
 
-impl<'a, F> EqualityPairs<'a, F>
-where
-    F: ConstField + Copy,
-{
+impl<'a, F: BitzField> EqualityPairs<'a, F> {
     fn new(low: &'a [F], high: &'a [F]) -> Self {
         debug_assert!(low.len().is_power_of_two());
         debug_assert!(high.len().is_power_of_two());
@@ -902,13 +870,10 @@ where
 }
 
 /// Computes `[c0, c2, c3]` from adjacent pairs in the current product tables.
-fn compute_coefficients_without_linear<F>(
+fn compute_coefficients_without_linear<F: BitzField>(
     products: &R1csProductTableBuffers<F>,
     equality_pairs: EqualityPairs<'_, F>,
-) -> [F; 3]
-where
-    F: ConstField + Copy,
-{
+) -> [F; 3] {
     let pair_count = products.len() / 2;
 
     sum_coefficients(pair_count, |pair| {
@@ -923,19 +888,13 @@ where
 }
 
 #[inline]
-fn interpolate_pair<F>(pair: [F; 2], challenge: F) -> F
-where
-    F: ConstField + Copy,
-{
+fn interpolate_pair<F: BitzField>(pair: [F; 2], challenge: F) -> F {
     let [zero, one] = pair;
     zero + challenge * (one - zero)
 }
 
 #[inline]
-fn fold_two_pairs<F>(values: &[F], challenge: F) -> [F; 2]
-where
-    F: ConstField + Copy,
-{
+fn fold_two_pairs<F: BitzField>(values: &[F], challenge: F) -> [F; 2] {
     debug_assert_eq!(values.len(), 4);
     [
         interpolate_pair([values[0], values[1]], challenge),
@@ -944,7 +903,7 @@ where
 }
 
 #[inline]
-fn fold_product_chunk<F>(
+fn fold_product_chunk<F: BitzField>(
     az: &[F],
     bz: &[F],
     cz: &[F],
@@ -952,10 +911,7 @@ fn fold_product_chunk<F>(
     bz_output: &mut [F],
     cz_output: &mut [F],
     challenge: F,
-) -> [[F; 2]; 3]
-where
-    F: ConstField + Copy,
-{
+) -> [[F; 2]; 3] {
     debug_assert_eq!(az_output.len(), 2);
     debug_assert_eq!(bz_output.len(), 2);
     debug_assert_eq!(cz_output.len(), 2);
@@ -972,10 +928,7 @@ where
 }
 
 /// Folds one evaluation table into an already initialized destination.
-fn fold_table<F>(input: &[F], output: &mut [F], challenge: F)
-where
-    F: ConstField + Copy,
-{
+fn fold_table<F: BitzField>(input: &[F], output: &mut [F], challenge: F) {
     debug_assert_eq!(input.len(), 2 * output.len());
 
     let fold = |(pair, value): (&[F], &mut F)| {
@@ -992,13 +945,11 @@ where
 }
 
 /// Folds all three product tables into reusable scratch storage.
-fn fold_product_tables<F>(
+fn fold_product_tables<F: BitzField>(
     input: &R1csProductTableBuffers<F>,
     output: &mut R1csProductTableBuffers<F>,
     challenge: F,
-) where
-    F: ConstField + Copy,
-{
+) {
     debug_assert_eq!(input.len(), 2 * output.len());
 
     fold_table(&input.az, &mut output.az, challenge);
@@ -1008,18 +959,15 @@ fn fold_product_tables<F>(
 
 /// Folds all three product tables and accumulates the next round polynomial
 /// from the freshly folded pairs.
-fn fold_products_and_compute_next<F>(
+fn fold_products_and_compute_next<F: BitzField>(
     input: &R1csProductTableBuffers<F>,
     output: &mut R1csProductTableBuffers<F>,
     challenge: F,
     equality_pairs: EqualityPairs<'_, F>,
-) -> [F; 3]
-where
-    F: ConstField + Copy,
-{
+) -> [F; 3] {
     debug_assert_eq!(input.len(), 2 * output.len());
 
-    let zero = F::ZERO;
+    let zero = F::zero();
     let accumulate = |sum: [F; 3],
                       chunk: usize,
                       az: &[F],
@@ -1076,15 +1024,13 @@ where
 }
 
 /// Folds the high equality factor and all product tables together.
-fn fold_products_and_eq<F>(
+fn fold_products_and_eq<F: BitzField>(
     products: &R1csProductTableBuffers<F>,
     product_output: &mut R1csProductTableBuffers<F>,
     eq: &[F],
     eq_output: &mut [F],
     challenge: F,
-) where
-    F: ConstField + Copy,
-{
+) {
     debug_assert_eq!(products.len(), eq.len());
     debug_assert_eq!(products.len(), 2 * product_output.len());
     debug_assert_eq!(eq.len(), 2 * eq_output.len());
@@ -1201,20 +1147,14 @@ mod tests {
     }
 
     /// Builds random product MLEs and equality factors from `poly::eq_table`.
-    fn build_outer_sumcheck_inputs<F>(num_vars: usize) -> OuterSumcheckTestInputs<F>
-    where
-        F: ConstField + Copy,
-    {
+    fn build_outer_sumcheck_inputs<F: BitzField>(num_vars: usize) -> OuterSumcheckTestInputs<F> {
         build_outer_sumcheck_inputs_with_split(num_vars, num_vars / 2)
     }
 
-    fn build_outer_sumcheck_inputs_with_split<F>(
+    fn build_outer_sumcheck_inputs_with_split<F: BitzField>(
         num_vars: usize,
         split: usize,
-    ) -> OuterSumcheckTestInputs<F>
-    where
-        F: ConstField + Copy,
-    {
+    ) -> OuterSumcheckTestInputs<F> {
         assert!(num_vars < usize::BITS as usize);
         assert!(split <= num_vars);
 
@@ -1257,10 +1197,7 @@ mod tests {
     }
 
     /// Runs only the outer prover and outer verifier on prebuilt inputs.
-    fn check_outer_sumcheck<F>(session: &[u8], inputs: OuterSumcheckTestInputs<F>)
-    where
-        F: ConstField + Copy + Encoding<[u8]> + TranscriptChallenge,
-    {
+    fn check_outer_sumcheck<F: BitzField>(session: &[u8], inputs: OuterSumcheckTestInputs<F>) {
         let OuterSumcheckTestInputs {
             tau,
             eq_factors,
@@ -1272,13 +1209,13 @@ mod tests {
 
         let mut prover = build_prover(session, &instance);
         let prover_output =
-            prove_outer_sumcheck(&mut prover, F::ZERO, eq_factors, &products).unwrap();
+            prove_outer_sumcheck(&mut prover, F::zero(), eq_factors, &products).unwrap();
         let proof = prover.finish();
 
         let mut verifier = build_verifier(session, &instance, &proof);
         let verifier_output = prover_output
             .proof
-            .verify(&mut verifier, F::ZERO, &tau)
+            .verify(&mut verifier, F::zero(), &tau)
             .unwrap();
         verifier.check_eof().unwrap();
 
@@ -1322,10 +1259,7 @@ mod tests {
         );
     }
 
-    fn check_outer_sumcheck_input_construction<F>()
-    where
-        F: ConstField + Copy,
-    {
+    fn check_outer_sumcheck_input_construction<F: BitzField>() {
         for num_vars in [0, 1, 3, 10] {
             let inputs = build_outer_sumcheck_inputs::<F>(num_vars);
             let table_len = 1usize << num_vars;
@@ -1578,20 +1512,17 @@ mod tests {
         }
     }
 
-    fn build_inner_sumcheck_inputs<F>(
+    fn build_inner_sumcheck_inputs<F: BitzField>(
         num_row_vars: usize,
         num_column_vars: usize,
-    ) -> InnerSumcheckTestInputs<F>
-    where
-        F: ConstField + Copy,
-    {
+    ) -> InnerSumcheckTestInputs<F> {
         assert!(num_row_vars < usize::BITS as usize);
         assert!(num_column_vars < usize::BITS as usize);
 
         let num_rows = 1usize << num_row_vars;
         let num_columns = 1usize << num_column_vars;
         let matrix_len = num_rows.checked_mul(num_columns).unwrap();
-        let zero = F::ZERO;
+        let zero = F::zero();
         let mut rng = Pcg64::seed_from_u64(
             0x1a2b_3c4d ^ ((num_row_vars as u64) << 32) ^ num_column_vars as u64,
         );
@@ -1653,10 +1584,7 @@ mod tests {
         }
     }
 
-    fn check_inner_sumcheck<F>(session: &[u8], inputs: InnerSumcheckTestInputs<F>)
-    where
-        F: ConstField + Copy + Encoding<[u8]> + TranscriptChallenge,
-    {
+    fn check_inner_sumcheck<F: BitzField>(session: &[u8], inputs: InnerSumcheckTestInputs<F>) {
         let InnerSumcheckTestInputs {
             initial_claim,
             batched_matrix_mle,

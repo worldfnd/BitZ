@@ -10,8 +10,8 @@ use circuit::{
 };
 use num_bigint::BigInt;
 use spartan::{
-    PreparedConstraintMatrices, bigint_to_fq, build_assignment_mle, build_product_mles,
-    prove_spartan_piop, verify_spartan_with_mle_claim,
+    PreparedConstraintMatrices, build_assignment_mle, build_product_mles, prove_spartan_piop,
+    verify_spartan_with_mle_claim,
 };
 use transcript::{build_prover, build_verifier};
 
@@ -51,7 +51,8 @@ fn sha256_compression_verifies_through_spartan_piop() {
     let recomputed_assignment = integer_matrices.integer_witness(&boolean_witness).unwrap();
     assert_assignment_matches(&recomputed_assignment, &recorded_assignment);
 
-    let matrices = integer_matrices.map_coefficients(|coefficient| bigint_to_fq(&coefficient));
+    let matrices =
+        integer_matrices.map_coefficients(|coefficient| spartan::bigint_to_fq(&coefficient));
     let products = build_product_mles(&exact_products, matrices.a.row_count()).unwrap();
     let assignment = build_assignment_mle(&recorded_assignment, matrices.a.column_count()).unwrap();
     let matrices = PreparedConstraintMatrices::new(matrices).unwrap();

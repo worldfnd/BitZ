@@ -7,7 +7,8 @@
 //! small batches stay sequential to avoid scheduling overhead.
 
 use crate::witgen::Z as Integer;
-use crate::{Bits, IntoWords};
+use crate::{BitWidth, IntoWords};
+use field::FqDefault;
 use num_traits::{One, Zero};
 use rayon::prelude::*;
 use std::cmp::Ordering;
@@ -21,14 +22,16 @@ pub struct RuntimeModulus<const PRIME_LIMBS: usize> {
 
 impl<const PRIME_LIMBS: usize> RuntimeModulus<PRIME_LIMBS> {
     /// Validates and stores a runtime modulus.
-    pub fn new<S: One + PartialOrd + Bits + IntoWords>(modulus: S) -> Result<Self, &'static str> {
+    pub fn new<S: One + PartialOrd + BitWidth + IntoWords>(
+        modulus: S,
+    ) -> Result<Self, &'static str> {
         if PRIME_LIMBS == 0 {
             return Err("a runtime field needs at least one limb");
         }
         if modulus <= S::one() {
             return Err("the modulus must be greater than one");
         }
-        if modulus.bits() > (PRIME_LIMBS as u64) * 64 {
+        if modulus.bit_width() > (PRIME_LIMBS as u64) * 64 {
             return Err("the modulus does not fit the selected limb count");
         }
         Ok(Self {
@@ -261,6 +264,16 @@ impl<const PRIME_LIMBS: usize> ModularVector<PRIME_LIMBS> {
     /// Returns one canonical field element.
     pub fn get(&self, index: usize) -> [u64; PRIME_LIMBS] {
         self.values[index]
+    }
+}
+
+impl From<&ModularVector<2>> for Vec<FqDefault> {
+    fn from(values: &ModularVector<2>) -> Self {
+        values
+            .values()
+            .iter()
+            .map(|&[low, high]| FqDefault::from_limbs(low, high))
+            .collect()
     }
 }
 

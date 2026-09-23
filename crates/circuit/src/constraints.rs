@@ -232,7 +232,7 @@ pub enum ConstraintMatrixShapeError {
     AssignmentLengthMismatch { m_rows: usize, r1cs_columns: usize },
 }
 
-impl<R: BitzSemiring> ConstraintMatrices<R> {
+impl<R: Send + Sync> ConstraintMatrices<R> {
     /// Checks that A, B, and C share a shape and consume the assignment
     /// produced by M.
     pub fn validate_shape(&self) -> Result<(), ConstraintMatrixShapeError> {
@@ -284,7 +284,9 @@ impl<R: BitzSemiring> ConstraintMatrices<R> {
             c: self.c.map_values_with(&map),
         }
     }
+}
 
+impl<R: BitzSemiring> ConstraintMatrices<R> {
     /// Applies `M` to a packed Boolean witness.
     ///
     /// The returned vector starts with the implicit constant one and is the

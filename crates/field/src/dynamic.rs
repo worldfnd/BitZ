@@ -4,7 +4,10 @@
 
 use crypto_primitives::{BaseField, LiftElement, WithAssociatedInteger};
 use crypto_primitives_proc_macros::InfallibleCheckedOp;
-use num_traits::{Bounded, CheckedAdd, CheckedDiv, CheckedMul, CheckedNeg, CheckedSub, ConstOne, ConstZero, Inv, One, Pow, Zero};
+use num_traits::{
+    Bounded, CheckedAdd, CheckedDiv, CheckedMul, CheckedNeg, CheckedSub, ConstOne, ConstZero, Inv,
+    One, Pow, Zero,
+};
 use pastey::paste;
 use std::fmt::Display;
 use std::iter::{Product, Sum};
@@ -163,7 +166,6 @@ impl Pow<u128> for DynField {
     }
 }
 
-
 impl Pow<&u128> for DynField {
     type Output = Self;
 
@@ -309,8 +311,9 @@ impl From<u128> for DynField {
 // TODO!
 
 //
-// Semiring, Ring and Field
+// crypto-primitives
 //
+
 impl Bounded for DynField {
     #[inline(always)]
     fn min_value() -> Self {
@@ -320,7 +323,7 @@ impl Bounded for DynField {
     #[inline(always)]
     fn max_value() -> Self {
         DynField {
-            reduced_value: DynField::modulus() - 1
+            reduced_value: DynField::modulus() - 1,
         }
     }
 }
@@ -349,5 +352,12 @@ impl LiftElement<u128> for DynField {
     }
 }
 
+//
+// Other
+//
+
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+    use crypto_primitives::{BaseField, ConstField};
+}
