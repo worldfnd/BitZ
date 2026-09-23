@@ -11,12 +11,16 @@ use tests::{Instance, narrow_shape, prover_transcript, verifier_transcript, wide
 /// Runs an honest prover and hands back what a caller would ship.
 fn shipped(instance: &Instance) -> Vec<u8> {
     let mut transcript = prover_transcript();
+    let (_, data) = instance
+        .pcs
+        .commit_with_ood(&instance.packed, &mut transcript)
+        .unwrap();
     instance
         .prover
         .prove(
             &instance.claim,
             &instance.pcs,
-            &instance.data,
+            &data,
             instance.packed.clone(),
             &mut transcript,
         )

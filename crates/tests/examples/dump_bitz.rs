@@ -29,12 +29,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let started = std::time::Instant::now();
     let mut transcript = prover_transcript();
+    let (_, data) = instance
+        .pcs
+        .commit_with_ood(&instance.packed, &mut transcript)
+        .unwrap();
     instance
         .prover
         .prove(
             &instance.claim,
             &instance.pcs,
-            &instance.data,
+            &data,
             instance.packed.clone(),
             &mut transcript,
         )
