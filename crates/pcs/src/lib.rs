@@ -29,6 +29,7 @@
 //! - [`Pcs`] stores trusted Flock parameters and the expected bit length.
 //! - [`Root`] is the public Merkle root.
 //! - [`ProverData`] retains the codeword and Merkle tree after commitment.
+//! - [`VerifierData`] retains the root and OOD claim received before opening.
 //! - [`OpeningQuery`] contains an MLE point and target, or a `common::LinearClaim<F128>`.
 //! - [`CommitScheme`] connects commitment, proving, and verification to project transcripts.
 //! - [`ConfigError`] reports configuration failures.
@@ -39,6 +40,9 @@
 //! It consumes the packed witness and borrows [`ProverData`].
 //! The caller must use matching transcript session and instance labels.
 //! The caller must also call `VerifierState::check_eof` after successful verification.
+//! Use [`Pcs::commit_with_ood`] and [`Pcs::receive_commitment`] before any
+//! witness-dependent challenges to include the initial OOD claim. Proving batches
+//! that retained claim automatically; verification uses [`Pcs::verify_lin_with_ood`].
 //!
 //! # Example
 //!
@@ -65,8 +69,8 @@
 //!     target: F128::from(0u64),
 //! };
 //!
-//! let (commitment, prover_data) = pcs.commit(&packed_witness).unwrap();
 //! let mut prover = build_prover(b"pcs-example", b"zero-polynomial");
+//! let (commitment, prover_data) = pcs.commit_with_ood(&packed_witness, &mut prover).unwrap();
 //! pcs.prove_lin(
 //!     &prover_data,
 //!     packed_witness,
@@ -78,7 +82,8 @@
 //! let proof = prover.finish();
 //!
 //! let mut verifier = build_verifier(b"pcs-example", b"zero-polynomial", &proof);
-//! pcs.verify_lin(
+//! let commitment = pcs.receive_commitment(commitment, &mut verifier).unwrap();
+//! pcs.verify_lin_with_ood(
 //!     &commitment,
 //!     &query,
 //!     StatementBinding::Bind,
@@ -93,6 +98,7 @@ mod challenger;
 mod commitment;
 mod ligerito;
 mod mle;
+mod ood;
 mod opening;
 mod pow;
 mod profiles;
@@ -106,7 +112,7 @@ mod transpose_tests;
 use field::F128;
 use transcript::{ProverState, VerifierState};
 
-pub use commitment::{CommitError, ConfigError, HashKind, Pcs, ProverData};
+pub use commitment::{CommitError, ConfigError, HashKind, Pcs, ProverData, VerifierData};
 pub use common::{OpeningQuery, Root};
 pub use flock_core::pcs::ligerito::LigeritoProfile;
 pub use opening::{ProveError, VerifyError};
@@ -137,6 +143,8 @@ pub trait CommitScheme {
     type Commitment;
     /// Private data retained by the prover after commitment.
     type ProverData;
+    /// Commitment and OOD claim retained by the verifier before opening.
+    type VerifierData;
 
     /// Commits the caller-owned packed witness to `Enc_C(q_pkd)`, where
     /// `q_pkd(y) = Σ_{v ∈ {0,1}^7} q(y, v) · basis[v]`.
@@ -146,9 +154,30 @@ pub trait CommitScheme {
         packed_witness: &[F128],
     ) -> Result<(Self::Commitment, Self::ProverData), CommitError>;
 
+    /// Commits and retains the initial OOD claim for subsequent openings.
+    ///
+    /// Call before witness-dependent challenges and continue with the same transcript.
+    /// Profiles without initial OOD sampling omit that round.
+    fn commit_with_ood(
+        &self,
+        packed_witness: &[F128],
+        transcript: &mut ProverState,
+    ) -> Result<(Self::Commitment, Self::ProverData), CommitError>;
+
+    /// Receives the OOD claim for the public commitment before protocol challenges.
+    ///
+    /// Mirrors [`Self::commit_with_ood`]. The returned claim must be authenticated
+    /// by [`Self::verify_lin_with_ood`] on the same transcript.
+    fn receive_commitment(
+        &self,
+        commitment: Self::Commitment,
+        transcript: &mut VerifierState<'_>,
+    ) -> Result<Self::VerifierData, VerifyError>;
+
     /// Consumes the exact packed witness and proves either opening query.
     ///
     /// Inner-product claims first pass through quadratic sumcheck and then the MLE opening protocol.
+    /// An OOD claim retained by [`Self::commit_with_ood`] is batched into the opening.
     fn prove_lin(
         &self,
         data: &Self::ProverData,
@@ -168,17 +197,46 @@ pub trait CommitScheme {
         statement_binding: StatementBinding,
         transcript: &mut VerifierState<'_>,
     ) -> Result<(), VerifyError>;
+
+    /// Verifies the linear query batched with the retained OOD claim.
+    ///
+    /// Continue the transcript used by [`Self::receive_commitment`]. Borrowing
+    /// the retained state permits multiple openings against the same commitment.
+    fn verify_lin_with_ood(
+        &self,
+        commitment: &Self::VerifierData,
+        query: &OpeningQuery,
+        statement_binding: StatementBinding,
+        transcript: &mut VerifierState<'_>,
+    ) -> Result<(), VerifyError>;
 }
 
 impl CommitScheme for Pcs {
     type Commitment = Root;
     type ProverData = ProverData;
+    type VerifierData = VerifierData;
 
     fn commit(
         &self,
         packed_witness: &[F128],
     ) -> Result<(Self::Commitment, Self::ProverData), CommitError> {
         Pcs::commit(self, packed_witness)
+    }
+
+    fn commit_with_ood(
+        &self,
+        packed_witness: &[F128],
+        transcript: &mut ProverState,
+    ) -> Result<(Self::Commitment, Self::ProverData), CommitError> {
+        Pcs::commit_with_ood(self, packed_witness, transcript)
+    }
+
+    fn receive_commitment(
+        &self,
+        commitment: Self::Commitment,
+        transcript: &mut VerifierState<'_>,
+    ) -> Result<Self::VerifierData, VerifyError> {
+        Pcs::receive_commitment(self, commitment, transcript)
     }
 
     fn prove_lin(
@@ -206,6 +264,16 @@ impl CommitScheme for Pcs {
         statement_binding: StatementBinding,
         transcript: &mut VerifierState<'_>,
     ) -> Result<(), VerifyError> {
-        opening::verify(self, commitment, query, statement_binding, transcript)
+        opening::verify(self, commitment, query, statement_binding, None, transcript)
+    }
+
+    fn verify_lin_with_ood(
+        &self,
+        commitment: &Self::VerifierData,
+        query: &OpeningQuery,
+        statement_binding: StatementBinding,
+        transcript: &mut VerifierState<'_>,
+    ) -> Result<(), VerifyError> {
+        opening::verify_lin_with_ood(self, commitment, query, statement_binding, transcript)
     }
 }
