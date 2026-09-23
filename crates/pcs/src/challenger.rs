@@ -1,6 +1,7 @@
 //! Flock challenger adapters over the project transcript.
 
 use crate::bridge::{as_flock_f128, from_flock_f128};
+use crate::pow::{find as find_pow, valid as pow_valid};
 use field::F128 as LocalF128;
 use flock_core::challenger::Challenger;
 use flock_core::field::F128 as FlockF128;
@@ -230,44 +231,6 @@ impl Challenger for VerifierChallenger<'_, '_> {
         }
         matches_stream && valid
     }
-}
-
-/// todo: parallel pow? use potentially spongefish?
-fn find_pow(seed: &[u8; 16], bits: u32) -> u64 {
-    if bits == 0 {
-        return 0;
-    }
-    let mut nonce = 0u64;
-    loop {
-        if pow_valid(seed, nonce, bits) {
-            return nonce;
-        }
-        nonce = nonce.checked_add(1).expect("proof-of-work nonce exhausted");
-    }
-}
-
-fn pow_valid(seed: &[u8; 16], nonce: u64, bits: u32) -> bool {
-    if bits == 0 {
-        return nonce == 0;
-    }
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(b"bitz-pcs-pow-v1");
-    hasher.update(seed);
-    hasher.update(&nonce.to_le_bytes());
-    let digest = hasher.finalize();
-    leading_zero_bits(digest.as_bytes()) >= bits
-}
-
-fn leading_zero_bits(bytes: &[u8]) -> u32 {
-    let mut total = 0;
-    for byte in bytes {
-        let zeros = byte.leading_zeros();
-        total += zeros;
-        if zeros != 8 {
-            break;
-        }
-    }
-    total
 }
 
 #[cfg(test)]
