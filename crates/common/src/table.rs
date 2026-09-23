@@ -1,5 +1,7 @@
 //! The committed bit table.
 
+use std::{array, slice::Iter};
+
 use crate::{Shape, ShapeError};
 use field::F128;
 
@@ -88,7 +90,7 @@ impl<'a> BitTable<'a> {
         );
 
         let index = (column << self.shape.log_rows()) | row;
-        // /% on compile time constant should be properly optimise away
+        // /% on compile time constant should be properly optimised away
         let element = self.packed[index / BitTable::BITS];
         let offset = index % BitTable::BITS;
 
@@ -107,12 +109,8 @@ impl<'a> BitTable<'a> {
     }
 
     /// The column's bits, in ascending row order.
-    pub fn column_bits(&self, column: usize) -> ColumnBits<'a> {
-        ColumnBits {
-            elements: self.column(column).iter(),
-            word: 0,
-            remaining: 0,
-        }
+    pub fn column_bits(&self, column: usize) -> BitsIter<'a> {
+        BitsIter::new(self.column(column).iter())
     }
 
     /// Swaps rows and columns, returning an owned copy: `result.bit(b, c) ==
@@ -248,14 +246,61 @@ impl TransposedBitTable {
 
 /// Iterator over one column's bits, in ascending row order — see
 /// [`BitTable::column_bits`].
-pub struct ColumnBits<'a> {
+pub struct BitsIter<'a> {
     elements: std::slice::Iter<'a, Word>,
     /// Bits not yet emitted; the next one to emit is the LSB.
     word: Word,
     remaining: u8,
 }
 
-impl Iterator for ColumnBits<'_> {
+// Find conditions
+// at most group of size 64 -> would be a transpose again?
+// make grouping a const size that is given to unroll
+fn group_pack<const GS: usize>(tt: &Vec<F128>) -> Vec<Word> {
+    let tt: &[Word] = bytemuck::cast_slice(tt);
+    let n = tt.len();
+    let segment_n = n / GS;
+
+    let mut remaining = BitTable::BITS;
+    let mut word = 0;
+    let mut segments: [_; GS] =
+        array::from_fn(|i| BitsIter::new((&tt[i * segment_n..(i + 1) * segment_n]).iter()));
+
+    // Possible without shifting in just selecting the index might be faster
+    // Same goes for the bits iterator. Directly selecting position might be faster.
+    // Bit select library?
+    let mut out = Vec::new();
+    'outer: loop {
+        for s in &mut segments {
+            match s.next() {
+                Some(b) => {
+                    if remaining == 0 {
+                        out.push(word);
+                        word = 0;
+                        remaining = BitTable::BITS
+                    };
+                    word = (word << 1) | (b as Word);
+                    remaining -= 1;
+                }
+                None => break 'outer,
+            }
+        }
+    }
+
+    out
+}
+
+impl<'a> BitsIter<'a> {
+    fn new(iter: Iter<'a, Word>) -> Self {
+        Self {
+            elements: iter,
+            word: 0,
+            remaining: 0,
+        }
+    }
+}
+
+impl Iterator for BitsIter<'_> {
     type Item = bool;
 
     fn next(&mut self) -> Option<bool> {
@@ -276,7 +321,7 @@ impl Iterator for ColumnBits<'_> {
     }
 }
 
-impl ExactSizeIterator for ColumnBits<'_> {
+impl ExactSizeIterator for BitsIter<'_> {
     fn len(&self) -> usize {
         self.remaining as usize + self.elements.len() * (BitTable::BITS as usize)
     }
