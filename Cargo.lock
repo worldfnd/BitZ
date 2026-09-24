@@ -342,6 +342,7 @@ dependencies = [
  "num-traits",
  "poly",
  "rayon",
+ "thiserror",
 ]
 
 [[package]]

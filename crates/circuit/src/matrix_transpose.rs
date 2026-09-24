@@ -4,17 +4,15 @@
 //! from circuit structure alone. [`MaterializedMTranspose`] computes `r * M`
 //! as parallel, disjoint column gathers over the GHASH field.
 
-use std::error::Error;
-use std::fmt::{self, Display};
 use std::mem::size_of;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::witgen::Z;
+use crate::{BoolWitness, Circuit, HintResult, PackedBits, ScalarBits, WitnessContext};
 use common::{TransposedWeights, VirtualMap, VirtualMapError};
 use field::F128;
 use rayon::prelude::*;
-
-use crate::witgen::Z;
-use crate::{BoolWitness, Circuit, HintResult, PackedBits, ScalarBits, WitnessContext};
+use thiserror::Error;
 
 const PARALLEL_MATRIX_NNZ_THRESHOLD: usize = 1 << 15;
 
@@ -413,23 +411,12 @@ impl VirtualMap for MaterializedMTranspose {
 }
 
 /// A challenge-vector dimension mismatch while applying materialized `M^T`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Error)]
+#[error("challenge vector has length {actual}, expected {expected}")]
 pub struct MatrixApplyError {
     pub expected: usize,
     pub actual: usize,
 }
-
-impl Display for MatrixApplyError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "challenge vector has length {}, expected {}",
-            self.actual, self.expected
-        )
-    }
-}
-
-impl Error for MatrixApplyError {}
 
 /// Materializes compact `M^T` from a circuit's static Boolean structure.
 #[derive(Debug)]

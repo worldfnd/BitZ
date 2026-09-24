@@ -6,12 +6,11 @@
 //! symbolic witnesses when witness generation is run.
 
 use std::array;
-use std::error::Error;
-use std::fmt::{self, Display};
 use std::iter::Sum;
 use std::ops::{Add, AddAssign, Mul, Neg, Sub, SubAssign};
 
 use num_traits::{One, Zero};
+use thiserror::Error;
 
 pub mod constraints;
 pub mod ecdsa_sha256;
@@ -32,7 +31,8 @@ mod projection_tests;
 /// Hints are fallible because their inputs may not be in the domain expected by
 /// a gadget (for example, an unsigned decomposition hint may receive a negative
 /// value).
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Error)]
+#[error("{message}")]
 pub struct HintError {
     message: String,
 }
@@ -50,14 +50,6 @@ impl HintError {
         &self.message
     }
 }
-
-impl Display for HintError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.message)
-    }
-}
-
-impl Error for HintError {}
 
 impl From<String> for HintError {
     fn from(message: String) -> Self {

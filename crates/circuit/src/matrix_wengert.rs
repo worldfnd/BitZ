@@ -8,21 +8,19 @@
 //! sufficiently wide depths are evaluated in parallel without atomics.
 
 use std::collections::HashMap;
-use std::error::Error;
-use std::fmt::{self, Display};
 use std::iter::Sum;
 use std::mem::{size_of, size_of_val};
 use std::ops::{Add, AddAssign, Mul, Neg, Sub, SubAssign};
 use std::sync::{Arc, Mutex};
 
+use crate::matrix_products::{RuntimeModulus, StoredInteger};
+use crate::witgen::Z;
+use crate::{BoolWitness, Circuit, HintResult, PackedBits, ScalarBits, WitnessContext};
 use crypto_bigint::modular::{FixedMontyForm, FixedMontyParams};
 use crypto_bigint::{Odd, U128};
 use num_traits::{One, Zero};
 use rayon::prelude::*;
-
-use crate::matrix_products::{RuntimeModulus, StoredInteger};
-use crate::witgen::Z;
-use crate::{BoolWitness, Circuit, HintResult, PackedBits, ScalarBits, WitnessContext};
+use thiserror::Error;
 
 const PARALLEL_LEVEL_THRESHOLD: usize = 1 << 16;
 const PARALLEL_VECTOR_THRESHOLD: usize = 1 << 14;
@@ -1143,25 +1141,13 @@ pub(crate) fn neg_mod_words(value: [u64; 2], modulus: [u64; 2]) -> [u64; 2] {
 }
 
 /// Failure to apply a Wengert tape with the supplied runtime data.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Error)]
 pub enum WengertApplyError {
+    #[error("challenge vector has length {actual}, expected {expected}")]
     ChallengeLength { expected: usize, actual: usize },
+    #[error("Wengert evaluation requires an odd modulus")]
     EvenModulus,
 }
-
-impl Display for WengertApplyError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::ChallengeLength { expected, actual } => write!(
-                formatter,
-                "challenge vector has length {actual}, expected {expected}"
-            ),
-            Self::EvenModulus => formatter.write_str("Wengert evaluation requires an odd modulus"),
-        }
-    }
-}
-
-impl Error for WengertApplyError {}
 
 /// Records and preprocesses the circuit's Z-side linear arithmetic.
 #[derive(Debug)]

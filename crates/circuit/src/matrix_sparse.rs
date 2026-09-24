@@ -5,10 +5,6 @@
 //! together in column-major order so a prepared evaluator can gather each
 //! output column independently and in parallel.
 
-use std::error::Error;
-use std::fmt::{self, Display};
-use std::mem::{size_of, size_of_val};
-
 use crate::constraints::{ConstraintMatrices, SparseMatrix};
 use crate::matrix_products::{RuntimeModulus, StoredInteger};
 use crate::matrix_wengert::{add_mod_words, montgomery_mul_2, neg_mod_words};
@@ -16,6 +12,8 @@ use common::BitzRing;
 use crypto_bigint::modular::{FixedMontyForm, FixedMontyParams};
 use crypto_bigint::{Odd, U128};
 use rayon::prelude::*;
+use std::mem::{size_of, size_of_val};
+use thiserror::Error;
 
 const PARALLEL_NNZ_THRESHOLD: usize = 1 << 15;
 const PARALLEL_VECTOR_THRESHOLD: usize = 1 << 14;
@@ -333,25 +331,13 @@ impl PreparedMaterializedAbc<'_> {
 }
 
 /// Failure to prepare or apply a sparse `A/B/C` materialization.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Error)]
 pub enum SparseAbcApplyError {
+    #[error("challenge vector has length {actual}, expected {expected}")]
     ChallengeLength { expected: usize, actual: usize },
+    #[error("Montgomery evaluation needs an odd modulus")]
     EvenModulus,
 }
-
-impl Display for SparseAbcApplyError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::ChallengeLength { expected, actual } => write!(
-                formatter,
-                "challenge vector has length {actual}, expected {expected}"
-            ),
-            Self::EvenModulus => write!(formatter, "Montgomery evaluation needs an odd modulus"),
-        }
-    }
-}
-
-impl Error for SparseAbcApplyError {}
 
 #[cfg(test)]
 mod tests {

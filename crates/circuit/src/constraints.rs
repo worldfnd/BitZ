@@ -13,11 +13,10 @@ use num_traits::Zero;
 use rayon::prelude::*;
 use std::array;
 use std::cmp::Ordering;
-use std::error::Error;
-use std::fmt::{self, Display};
 use std::iter::Sum;
 use std::mem;
 use std::ops::{Add, AddAssign, Mul, Neg, Sub, SubAssign};
+use thiserror::Error;
 
 /// One row of a sparse matrix, sorted by increasing column index.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -120,44 +119,21 @@ impl<C: Send + Sync> SparseMatrix<C> {
 }
 
 /// Why a sparse row representation is malformed.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Error)]
 pub enum SparseMatrixError {
+    #[error("column {column} in row {row} is outside a {columns}-column matrix")]
     ColumnOutOfBounds {
         row: usize,
         column: usize,
         columns: usize,
     },
+    #[error("columns in row {row} are not strictly increasing: {previous}, {column}")]
     ColumnsNotStrictlyIncreasing {
         row: usize,
         previous: usize,
         column: usize,
     },
 }
-
-impl Display for SparseMatrixError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::ColumnOutOfBounds {
-                row,
-                column,
-                columns,
-            } => write!(
-                formatter,
-                "column {column} in row {row} is outside a {columns}-column matrix"
-            ),
-            Self::ColumnsNotStrictlyIncreasing {
-                row,
-                previous,
-                column,
-            } => write!(
-                formatter,
-                "columns in row {row} are not strictly increasing: {previous}, {column}"
-            ),
-        }
-    }
-}
-
-impl Error for SparseMatrixError {}
 
 /// One sparse F2 row, represented solely by its nonzero column positions.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -246,38 +222,15 @@ pub struct ConstraintMatrices<R> {
 }
 
 /// Why the four constraint matrices cannot describe one R1CS relation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Error)]
 pub enum ConstraintMatrixShapeError {
+    #[error("A, B, and C have different row counts: {a}, {b}, {c}")]
     R1csRowCountMismatch { a: usize, b: usize, c: usize },
+    #[error("A, B, and C have different column counts: {a}, {b}, {c}")]
     R1csColumnCountMismatch { a: usize, b: usize, c: usize },
+    #[error("M produces {m_rows} assignment entries but A, B, and C expect {r1cs_columns}")]
     AssignmentLengthMismatch { m_rows: usize, r1cs_columns: usize },
 }
-
-impl Display for ConstraintMatrixShapeError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::R1csRowCountMismatch { a, b, c } => {
-                write!(
-                    formatter,
-                    "A, B, and C have different row counts: {a}, {b}, {c}"
-                )
-            }
-            Self::R1csColumnCountMismatch { a, b, c } => write!(
-                formatter,
-                "A, B, and C have different column counts: {a}, {b}, {c}"
-            ),
-            Self::AssignmentLengthMismatch {
-                m_rows,
-                r1cs_columns,
-            } => write!(
-                formatter,
-                "M produces {m_rows} assignment entries but A, B, and C expect {r1cs_columns}"
-            ),
-        }
-    }
-}
-
-impl Error for ConstraintMatrixShapeError {}
 
 impl<R: BitzSemiring> ConstraintMatrices<R> {
     /// Checks that A, B, and C share a shape and consume the assignment
@@ -387,35 +340,14 @@ impl<R: BitzSemiring> ConstraintMatrices<R> {
 }
 
 /// Why a Boolean witness does not satisfy a generated constraint system.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Error)]
 pub enum SatisfactionError {
-    /// The four matrices do not share a compatible R1CS shape.
-    InvalidShape(ConstraintMatrixShapeError),
-    /// The packed Boolean witness has the wrong number of entries.
+    #[error("The four matrices do not share a compatible R1CS shape: {0}")]
+    InvalidShape(#[from] ConstraintMatrixShapeError),
+    #[error("The packed Boolean witness has length {actual}, expected {expected}")]
     WitnessLength { expected: usize, actual: usize },
-    /// The indicated R1CS row does not satisfy `a * b = c`.
+    #[error("The indicated R1CS row {row} does not satisfy `a * b = c`")]
     Constraint { row: usize },
-}
-
-impl Display for SatisfactionError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidShape(error) => Display::fmt(error, formatter),
-            Self::WitnessLength { expected, actual } => write!(
-                formatter,
-                "Boolean witness has length {actual}, expected {expected}"
-            ),
-            Self::Constraint { row } => write!(formatter, "R1CS row {row} is unsatisfied"),
-        }
-    }
-}
-
-impl Error for SatisfactionError {}
-
-impl From<ConstraintMatrixShapeError> for SatisfactionError {
-    fn from(error: ConstraintMatrixShapeError) -> Self {
-        Self::InvalidShape(error)
-    }
 }
 
 fn evaluate_integer_row<R: BitzSemiring>(row: &SparseRow<R>, witness: &[R]) -> R {
