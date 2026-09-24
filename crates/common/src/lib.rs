@@ -27,11 +27,11 @@ pub use virtual_map::{
 use crypto_primitives::Semiring;
 use std::ops::Neg;
 
-pub trait BitzIntSemiring: Semiring + From<u64> {}
+pub trait BitzSemiring: Semiring + From<u64> {}
 
-impl<T> BitzIntSemiring for T where T: Semiring + From<u64> {}
+impl<T> BitzSemiring for T where T: Semiring + From<u64> {}
 
-// Since BigInt does not support CheckedNeg and CheckedRem, we use this as a workaround
-pub trait BitzIntRing: BitzIntSemiring + Neg<Output = Self> {}
+// Since BigInt does not support CheckedNeg and CheckedRem, we can't use Ring here
+pub trait BitzRing: BitzSemiring + Neg<Output = Self> {}
 
-impl<T> BitzIntRing for T where T: BitzIntSemiring + Neg<Output = Self> {}
+impl<T> BitzRing for T where T: BitzSemiring + Neg<Output = Self> {}

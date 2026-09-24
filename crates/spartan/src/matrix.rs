@@ -3,7 +3,7 @@
 use circuit::constraints::{ConstraintMatrices, SparseMatrix};
 use circuit::matrix_products::{IntegerProducts, ModularVector, RuntimeModulus};
 use circuit::witgen::PackedWitness;
-use common::BitzIntRing;
+use common::BitzRing;
 use crypto_primitives::ConstField;
 use field::{FqDefault, Q100};
 use num_bigint::{BigInt, BigUint};
@@ -401,7 +401,7 @@ where
     Ok(evaluation)
 }
 
-pub(crate) fn r1cs_num_vars<R: BitzIntRing>(
+pub(crate) fn r1cs_num_vars<R: BitzRing>(
     matrices: &ConstraintMatrices<R>,
 ) -> Result<(usize, usize), SpartanMatrixError> {
     matrices

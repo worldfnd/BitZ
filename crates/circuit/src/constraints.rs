@@ -4,11 +4,11 @@
 //! witness, prefixed by a constant one, to the integer witness. Its first row
 //! is the implicit integer constant one. `A`, `B`, and `C` then encode the
 //! rank-1 constraints `(A z) * (B z) = C z` over that integer witness. Every
-//! integer coefficient is an arbitrary-precision signed [`BitzIntRing`].
+//! integer coefficient is an arbitrary-precision signed [`BitzRing`].
 
 use crate::witgen::PackedWitness;
 use crate::{BoolWitness, Circuit, HintResult, PackedBits, ScalarBits, WitnessContext};
-use common::{BitzIntRing, BitzIntSemiring};
+use common::{BitzRing, BitzSemiring};
 use num_traits::Zero;
 use rayon::prelude::*;
 use std::array;
@@ -279,7 +279,7 @@ impl Display for ConstraintMatrixShapeError {
 
 impl Error for ConstraintMatrixShapeError {}
 
-impl<R: BitzIntSemiring> ConstraintMatrices<R> {
+impl<R: BitzSemiring> ConstraintMatrices<R> {
     /// Checks that A, B, and C share a shape and consume the assignment
     /// produced by M.
     pub fn validate_shape(&self) -> Result<(), ConstraintMatrixShapeError> {
@@ -418,7 +418,7 @@ impl From<ConstraintMatrixShapeError> for SatisfactionError {
     }
 }
 
-fn evaluate_integer_row<R: BitzIntSemiring>(row: &SparseRow<R>, witness: &[R]) -> R {
+fn evaluate_integer_row<R: BitzSemiring>(row: &SparseRow<R>, witness: &[R]) -> R {
     row.entries()
         .iter()
         .map(|(column, coefficient)| witness[*column].clone() * coefficient.clone())
@@ -485,7 +485,7 @@ pub struct LinearCombination<R> {
     witnesses: Vec<(usize, R)>,
 }
 
-impl<R: BitzIntSemiring> LinearCombination<R> {
+impl<R: BitzSemiring> LinearCombination<R> {
     /// The integer constant term.
     pub fn constant(&self) -> &R {
         &self.constant
@@ -528,7 +528,7 @@ impl<R> From<R> for LinearCombination<R> {
     }
 }
 
-impl<R: BitzIntSemiring> Zero for LinearCombination<R> {
+impl<R: BitzSemiring> Zero for LinearCombination<R> {
     fn zero() -> Self {
         Self::from(R::zero())
     }
@@ -538,7 +538,7 @@ impl<R: BitzIntSemiring> Zero for LinearCombination<R> {
     }
 }
 
-impl<R: BitzIntSemiring> Add for LinearCombination<R> {
+impl<R: BitzSemiring> Add for LinearCombination<R> {
     type Output = Self;
 
     fn add(mut self, rhs: Self) -> Self::Output {
@@ -547,7 +547,7 @@ impl<R: BitzIntSemiring> Add for LinearCombination<R> {
     }
 }
 
-impl<R: BitzIntSemiring> AddAssign for LinearCombination<R> {
+impl<R: BitzSemiring> AddAssign for LinearCombination<R> {
     fn add_assign(&mut self, rhs: Self) {
         self.constant += rhs.constant;
         self.witnesses = merge_sorted_vecs(
@@ -566,7 +566,7 @@ impl<R: BitzIntSemiring> AddAssign for LinearCombination<R> {
     }
 }
 
-impl<R: BitzIntRing> Neg for LinearCombination<R> {
+impl<R: BitzRing> Neg for LinearCombination<R> {
     type Output = Self;
 
     fn neg(mut self) -> Self::Output {
@@ -578,7 +578,7 @@ impl<R: BitzIntRing> Neg for LinearCombination<R> {
     }
 }
 
-impl<R: BitzIntRing> Sub for LinearCombination<R> {
+impl<R: BitzRing> Sub for LinearCombination<R> {
     type Output = Self;
 
     fn sub(self, rhs: Self) -> Self::Output {
@@ -586,13 +586,13 @@ impl<R: BitzIntRing> Sub for LinearCombination<R> {
     }
 }
 
-impl<R: BitzIntRing> SubAssign for LinearCombination<R> {
+impl<R: BitzRing> SubAssign for LinearCombination<R> {
     fn sub_assign(&mut self, rhs: Self) {
         *self += -rhs;
     }
 }
 
-impl<R: BitzIntSemiring> Mul<R> for LinearCombination<R> {
+impl<R: BitzSemiring> Mul<R> for LinearCombination<R> {
     type Output = Self;
 
     fn mul(mut self, rhs: R) -> Self::Output {
@@ -607,7 +607,7 @@ impl<R: BitzIntSemiring> Mul<R> for LinearCombination<R> {
     }
 }
 
-impl<R: BitzIntSemiring> Sum for LinearCombination<R> {
+impl<R: BitzSemiring> Sum for LinearCombination<R> {
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
         iter.fold(Self::zero(), Add::add)
     }
@@ -674,7 +674,7 @@ pub struct ConstraintGenerator<R> {
     )>,
 }
 
-impl<R: BitzIntSemiring> ConstraintGenerator<R> {
+impl<R: BitzSemiring> ConstraintGenerator<R> {
     /// Starts a generator with `input_witnesses` preallocated Boolean inputs.
     pub const fn new(input_witnesses: usize) -> Self {
         Self {
@@ -783,7 +783,7 @@ fn bool_sparse_row(value: BoolLinearCombination) -> SparseBoolRow {
     }
 }
 
-impl<R: BitzIntRing> Circuit for ConstraintGenerator<R> {
+impl<R: BitzRing> Circuit for ConstraintGenerator<R> {
     type Bool = BoolLinearCombination;
     type Coefficient<const LIMBS: usize> = R;
     type Z<const LIMBS: usize> = LinearCombination<R>;
