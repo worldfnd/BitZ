@@ -12,14 +12,6 @@ use num_traits::{One, Zero};
 use rayon::prelude::*;
 use std::cmp::Ordering;
 
-// pub trait RuntimeModulus<const PRIME_LIMBS: usize>: Sized {
-//     type Semiring;
-//
-//     fn new(modulus: Self::Semiring) -> Result<Self, &'static str>;
-//
-//     fn modulus(&self) -> Self::Semiring;
-// }
-
 /// A runtime modulus with a compile-time limb count.
 #[derive(Debug, Eq, PartialEq)]
 pub struct RuntimeModulus<const PRIME_LIMBS: usize> {
