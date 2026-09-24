@@ -4,17 +4,15 @@
 //! from circuit structure alone. [`MaterializedMTranspose`] computes `r * M`
 //! as parallel, disjoint column gathers over the GHASH field.
 
-use std::error::Error;
-use std::fmt::{self, Display};
 use std::mem::size_of;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::witgen::Z;
+use crate::{BoolWitness, Circuit, HintResult, PackedBits, ScalarBits, WitnessContext};
 use common::{TransposedWeights, VirtualMap, VirtualMapError};
 use field::F128;
 use rayon::prelude::*;
-
-use crate::witgen::Z;
-use crate::{BoolWitness, Circuit, HintResult, PackedBits, ScalarBits, WitnessContext};
+use thiserror::Error;
 
 const PARALLEL_MATRIX_NNZ_THRESHOLD: usize = 1 << 15;
 
@@ -413,23 +411,12 @@ impl VirtualMap for MaterializedMTranspose {
 }
 
 /// A challenge-vector dimension mismatch while applying materialized `M^T`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Error)]
+#[error("challenge vector has length {actual}, expected {expected}")]
 pub struct MatrixApplyError {
     pub expected: usize,
     pub actual: usize,
 }
-
-impl Display for MatrixApplyError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "challenge vector has length {}, expected {}",
-            self.actual, self.expected
-        )
-    }
-}
-
-impl Error for MatrixApplyError {}
 
 /// Materializes compact `M^T` from a circuit's static Boolean structure.
 #[derive(Debug)]
@@ -527,8 +514,11 @@ mod tests {
     use crate::sha256::{COMPRESSION_HINT_BITS, COMPRESSION_INPUT_BITS, compression_circuit};
     use crate::witgen::Witgen;
     use crate::{BoolRepresentation, BoolWitness, Circuit};
+    use num_bigint::BigInt;
 
     use super::*;
+
+    type R = BigInt;
 
     fn example_circuit<CS: Circuit>(circuit: &mut CS, inputs: &[CS::Bool; 3]) {
         let xy = circuit.xor(inputs[0].clone(), inputs[1].clone());
@@ -650,7 +640,7 @@ mod tests {
         example_circuit(&mut materializer, &inputs);
         let transpose = materializer.finish();
 
-        let mut generator = ConstraintGenerator::new(3);
+        let mut generator = ConstraintGenerator::<R>::new(3);
         let symbolic = generator.inputs();
         example_circuit(&mut generator, &symbolic);
         let matrices = generator.into_matrices();

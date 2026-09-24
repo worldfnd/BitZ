@@ -6,12 +6,11 @@
 //! symbolic witnesses when witness generation is run.
 
 use std::array;
-use std::error::Error;
-use std::fmt::{self, Display};
 use std::iter::Sum;
 use std::ops::{Add, AddAssign, Mul, Neg, Sub, SubAssign};
 
 use num_traits::{One, Zero};
+use thiserror::Error;
 
 pub mod constraints;
 pub mod ecdsa_sha256;
@@ -32,7 +31,8 @@ mod projection_tests;
 /// Hints are fallible because their inputs may not be in the domain expected by
 /// a gadget (for example, an unsigned decomposition hint may receive a negative
 /// value).
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Error)]
+#[error("{message}")]
 pub struct HintError {
     message: String,
 }
@@ -50,14 +50,6 @@ impl HintError {
         &self.message
     }
 }
-
-impl Display for HintError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.message)
-    }
-}
-
-impl Error for HintError {}
 
 impl From<String> for HintError {
     fn from(message: String) -> Self {
@@ -544,6 +536,28 @@ pub trait Circuit {
         &mut self,
         value: Self::Z<FROM_LIMBS>,
     ) -> Self::Z<TO_LIMBS>;
+}
+
+pub trait Bits {
+    /// Determines the fewest bits necessary to express this value
+    fn bits(&self) -> u64;
+}
+
+pub trait IntoWords {
+    fn into_words<const LIMBS: usize>(self) -> [u64; LIMBS];
+}
+
+impl Bits for num_bigint::BigUint {
+    fn bits(&self) -> u64 {
+        num_bigint::BigUint::bits(self)
+    }
+}
+
+impl IntoWords for num_bigint::BigUint {
+    fn into_words<const LIMBS: usize>(self) -> [u64; LIMBS] {
+        let digits = self.to_u64_digits();
+        array::from_fn(|index| digits.get(index).copied().unwrap_or(0))
+    }
 }
 
 #[cfg(test)]

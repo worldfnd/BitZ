@@ -4,21 +4,19 @@
 //! witness, prefixed by a constant one, to the integer witness. Its first row
 //! is the implicit integer constant one. `A`, `B`, and `C` then encode the
 //! rank-1 constraints `(A z) * (B z) = C z` over that integer witness. Every
-//! integer coefficient is an arbitrary-precision signed [`BigInt`].
-
-use num_bigint::BigInt;
-use num_traits::{One, Zero};
-use rayon::prelude::*;
-use std::array;
-use std::cmp::Ordering;
-use std::error::Error;
-use std::fmt::{self, Display};
-use std::iter::Sum;
-use std::mem;
-use std::ops::{Add, AddAssign, Mul, Neg, Sub, SubAssign};
+//! integer coefficient is an arbitrary-precision signed [`BitzRing`].
 
 use crate::witgen::PackedWitness;
 use crate::{BoolWitness, Circuit, HintResult, PackedBits, ScalarBits, WitnessContext};
+use common::{BitzRing, BitzSemiring};
+use num_traits::Zero;
+use rayon::prelude::*;
+use std::array;
+use std::cmp::Ordering;
+use std::iter::Sum;
+use std::mem;
+use std::ops::{Add, AddAssign, Mul, Neg, Sub, SubAssign};
+use thiserror::Error;
 
 /// One row of a sparse matrix, sorted by increasing column index.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -121,44 +119,21 @@ impl<C: Send + Sync> SparseMatrix<C> {
 }
 
 /// Why a sparse row representation is malformed.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Error)]
 pub enum SparseMatrixError {
+    #[error("column {column} in row {row} is outside a {columns}-column matrix")]
     ColumnOutOfBounds {
         row: usize,
         column: usize,
         columns: usize,
     },
+    #[error("columns in row {row} are not strictly increasing: {previous}, {column}")]
     ColumnsNotStrictlyIncreasing {
         row: usize,
         previous: usize,
         column: usize,
     },
 }
-
-impl Display for SparseMatrixError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::ColumnOutOfBounds {
-                row,
-                column,
-                columns,
-            } => write!(
-                formatter,
-                "column {column} in row {row} is outside a {columns}-column matrix"
-            ),
-            Self::ColumnsNotStrictlyIncreasing {
-                row,
-                previous,
-                column,
-            } => write!(
-                formatter,
-                "columns in row {row} are not strictly increasing: {previous}, {column}"
-            ),
-        }
-    }
-}
-
-impl Error for SparseMatrixError {}
 
 /// One sparse F2 row, represented solely by its nonzero column positions.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -235,52 +210,29 @@ impl SparseBoolMatrix {
 
 /// The four sparse matrices generated for a BitZ circuit.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ConstraintMatrices<C = BigInt> {
+pub struct ConstraintMatrices<R> {
     /// Boolean-to-integer witness matrix.
     pub m: SparseBoolMatrix,
     /// Left R1CS matrix.
-    pub a: SparseMatrix<C>,
+    pub a: SparseMatrix<R>,
     /// Right R1CS matrix.
-    pub b: SparseMatrix<C>,
+    pub b: SparseMatrix<R>,
     /// Output R1CS matrix.
-    pub c: SparseMatrix<C>,
+    pub c: SparseMatrix<R>,
 }
 
 /// Why the four constraint matrices cannot describe one R1CS relation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Error)]
 pub enum ConstraintMatrixShapeError {
+    #[error("A, B, and C have different row counts: {a}, {b}, {c}")]
     R1csRowCountMismatch { a: usize, b: usize, c: usize },
+    #[error("A, B, and C have different column counts: {a}, {b}, {c}")]
     R1csColumnCountMismatch { a: usize, b: usize, c: usize },
+    #[error("M produces {m_rows} assignment entries but A, B, and C expect {r1cs_columns}")]
     AssignmentLengthMismatch { m_rows: usize, r1cs_columns: usize },
 }
 
-impl Display for ConstraintMatrixShapeError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::R1csRowCountMismatch { a, b, c } => {
-                write!(
-                    formatter,
-                    "A, B, and C have different row counts: {a}, {b}, {c}"
-                )
-            }
-            Self::R1csColumnCountMismatch { a, b, c } => write!(
-                formatter,
-                "A, B, and C have different column counts: {a}, {b}, {c}"
-            ),
-            Self::AssignmentLengthMismatch {
-                m_rows,
-                r1cs_columns,
-            } => write!(
-                formatter,
-                "M produces {m_rows} assignment entries but A, B, and C expect {r1cs_columns}"
-            ),
-        }
-    }
-}
-
-impl Error for ConstraintMatrixShapeError {}
-
-impl<C: Send + Sync> ConstraintMatrices<C> {
+impl<R: BitzSemiring> ConstraintMatrices<R> {
     /// Checks that A, B, and C share a shape and consume the assignment
     /// produced by M.
     pub fn validate_shape(&self) -> Result<(), ConstraintMatrixShapeError> {
@@ -323,7 +275,7 @@ impl<C: Send + Sync> ConstraintMatrices<C> {
     pub fn map_coefficients<D, M>(self, map: M) -> ConstraintMatrices<D>
     where
         D: Send + Sync,
-        M: Fn(C) -> D + Send + Sync,
+        M: Fn(R) -> D + Send + Sync,
     {
         ConstraintMatrices {
             m: self.m,
@@ -332,49 +284,12 @@ impl<C: Send + Sync> ConstraintMatrices<C> {
             c: self.c.map_values_with(&map),
         }
     }
-}
 
-/// Why a Boolean witness does not satisfy a generated constraint system.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SatisfactionError {
-    /// The four matrices do not share a compatible R1CS shape.
-    InvalidShape(ConstraintMatrixShapeError),
-    /// The packed Boolean witness has the wrong number of entries.
-    WitnessLength { expected: usize, actual: usize },
-    /// The indicated R1CS row does not satisfy `a * b = c`.
-    Constraint { row: usize },
-}
-
-impl Display for SatisfactionError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidShape(error) => Display::fmt(error, formatter),
-            Self::WitnessLength { expected, actual } => write!(
-                formatter,
-                "Boolean witness has length {actual}, expected {expected}"
-            ),
-            Self::Constraint { row } => write!(formatter, "R1CS row {row} is unsatisfied"),
-        }
-    }
-}
-
-impl Error for SatisfactionError {}
-
-impl From<ConstraintMatrixShapeError> for SatisfactionError {
-    fn from(error: ConstraintMatrixShapeError) -> Self {
-        Self::InvalidShape(error)
-    }
-}
-
-impl ConstraintMatrices<BigInt> {
     /// Applies `M` to a packed Boolean witness.
     ///
     /// The returned vector starts with the implicit constant one and is the
     /// witness consumed by `A`, `B`, and `C`.
-    pub fn integer_witness(
-        &self,
-        witness: &PackedWitness,
-    ) -> Result<Vec<BigInt>, SatisfactionError> {
+    pub fn integer_witness(&self, witness: &PackedWitness) -> Result<Vec<R>, SatisfactionError> {
         let expected = self.m.column_count().saturating_sub(1);
         if witness.bit_len() != expected {
             return Err(SatisfactionError::WitnessLength {
@@ -396,7 +311,7 @@ impl ConstraintMatrices<BigInt> {
                             witness.bit(column - 1)
                         }
                 });
-                BigInt::from(value)
+                R::from(value)
             })
             .collect())
     }
@@ -424,7 +339,18 @@ impl ConstraintMatrices<BigInt> {
     }
 }
 
-fn evaluate_integer_row(row: &SparseRow<BigInt>, witness: &[BigInt]) -> BigInt {
+/// Why a Boolean witness does not satisfy a generated constraint system.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Error)]
+pub enum SatisfactionError {
+    #[error("The four matrices do not share a compatible R1CS shape: {0}")]
+    InvalidShape(#[from] ConstraintMatrixShapeError),
+    #[error("The packed Boolean witness has length {actual}, expected {expected}")]
+    WitnessLength { expected: usize, actual: usize },
+    #[error("The indicated R1CS row {row} does not satisfy `a * b = c`")]
+    Constraint { row: usize },
+}
+
+fn evaluate_integer_row<R: BitzSemiring>(row: &SparseRow<R>, witness: &[R]) -> R {
     row.entries()
         .iter()
         .map(|(column, coefficient)| witness[*column].clone() * coefficient.clone())
@@ -484,32 +410,32 @@ impl BoolWitness for BoolLinearCombination {
 
 /// A symbolic integer linear combination.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LinearCombination {
-    constant: BigInt,
+pub struct LinearCombination<R> {
+    constant: R,
     /// Indices of witness elements with nonzero coefficients.
     /// Sorted and deduplicated by witness index.
-    witnesses: Vec<(usize, BigInt)>,
+    witnesses: Vec<(usize, R)>,
 }
 
-impl LinearCombination {
+impl<R: BitzSemiring> LinearCombination<R> {
     /// The integer constant term.
-    pub fn constant(&self) -> &BigInt {
+    pub fn constant(&self) -> &R {
         &self.constant
     }
 
     /// Nonzero coefficients sorted by zero-based integer witness index.
-    pub fn witnesses(&self) -> &[(usize, BigInt)] {
+    pub fn witnesses(&self) -> &[(usize, R)] {
         &self.witnesses
     }
 
     fn witness(index: usize) -> Self {
         Self {
-            constant: BigInt::zero(),
-            witnesses: vec![(index, BigInt::one())],
+            constant: R::zero(),
+            witnesses: vec![(index, R::one())],
         }
     }
 
-    fn into_sparse_row(self) -> SparseRow<BigInt> {
+    fn into_sparse_row(self) -> SparseRow<R> {
         let Self {
             constant,
             mut witnesses,
@@ -525,8 +451,8 @@ impl LinearCombination {
     }
 }
 
-impl From<BigInt> for LinearCombination {
-    fn from(constant: BigInt) -> Self {
+impl<R> From<R> for LinearCombination<R> {
+    fn from(constant: R) -> Self {
         Self {
             constant,
             witnesses: Vec::new(),
@@ -534,9 +460,9 @@ impl From<BigInt> for LinearCombination {
     }
 }
 
-impl Zero for LinearCombination {
+impl<R: BitzSemiring> Zero for LinearCombination<R> {
     fn zero() -> Self {
-        Self::from(BigInt::zero())
+        Self::from(R::zero())
     }
 
     fn is_zero(&self) -> bool {
@@ -544,7 +470,7 @@ impl Zero for LinearCombination {
     }
 }
 
-impl Add for LinearCombination {
+impl<R: BitzSemiring> Add for LinearCombination<R> {
     type Output = Self;
 
     fn add(mut self, rhs: Self) -> Self::Output {
@@ -553,7 +479,7 @@ impl Add for LinearCombination {
     }
 }
 
-impl AddAssign for LinearCombination {
+impl<R: BitzSemiring> AddAssign for LinearCombination<R> {
     fn add_assign(&mut self, rhs: Self) {
         self.constant += rhs.constant;
         self.witnesses = merge_sorted_vecs(
@@ -572,7 +498,7 @@ impl AddAssign for LinearCombination {
     }
 }
 
-impl Neg for LinearCombination {
+impl<R: BitzRing> Neg for LinearCombination<R> {
     type Output = Self;
 
     fn neg(mut self) -> Self::Output {
@@ -584,7 +510,7 @@ impl Neg for LinearCombination {
     }
 }
 
-impl Sub for LinearCombination {
+impl<R: BitzRing> Sub for LinearCombination<R> {
     type Output = Self;
 
     fn sub(self, rhs: Self) -> Self::Output {
@@ -592,16 +518,16 @@ impl Sub for LinearCombination {
     }
 }
 
-impl SubAssign for LinearCombination {
+impl<R: BitzRing> SubAssign for LinearCombination<R> {
     fn sub_assign(&mut self, rhs: Self) {
         *self += -rhs;
     }
 }
 
-impl Mul<BigInt> for LinearCombination {
+impl<R: BitzSemiring> Mul<R> for LinearCombination<R> {
     type Output = Self;
 
-    fn mul(mut self, rhs: BigInt) -> Self::Output {
+    fn mul(mut self, rhs: R) -> Self::Output {
         if rhs.is_zero() {
             return Self::zero();
         }
@@ -613,7 +539,7 @@ impl Mul<BigInt> for LinearCombination {
     }
 }
 
-impl Sum for LinearCombination {
+impl<R: BitzSemiring> Sum for LinearCombination<R> {
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
         iter.fold(Self::zero(), Add::add)
     }
@@ -669,14 +595,18 @@ fn merge_sorted_vecs<T>(
 
 /// Circuit backend that records sparse M/A/B/C matrices without evaluating hints.
 #[derive(Clone, Debug)]
-pub struct ConstraintGenerator {
+pub struct ConstraintGenerator<R> {
     input_witnesses: usize,
     next_boolean_witness: usize,
     m_rows: Vec<BoolLinearCombination>,
-    r1cs: Vec<(LinearCombination, LinearCombination, LinearCombination)>,
+    r1cs: Vec<(
+        LinearCombination<R>,
+        LinearCombination<R>,
+        LinearCombination<R>,
+    )>,
 }
 
-impl ConstraintGenerator {
+impl<R: BitzSemiring> ConstraintGenerator<R> {
     /// Starts a generator with `input_witnesses` preallocated Boolean inputs.
     pub const fn new(input_witnesses: usize) -> Self {
         Self {
@@ -725,7 +655,7 @@ impl ConstraintGenerator {
     }
 
     /// Finishes generation and materializes the four sparse matrices.
-    pub fn into_matrices(self) -> ConstraintMatrices<BigInt> {
+    pub fn into_matrices(self) -> ConstraintMatrices<R> {
         let Self {
             input_witnesses: _,
             next_boolean_witness,
@@ -785,10 +715,10 @@ fn bool_sparse_row(value: BoolLinearCombination) -> SparseBoolRow {
     }
 }
 
-impl Circuit for ConstraintGenerator {
+impl<R: BitzRing> Circuit for ConstraintGenerator<R> {
     type Bool = BoolLinearCombination;
-    type Coefficient<const LIMBS: usize> = BigInt;
-    type Z<const LIMBS: usize> = LinearCombination;
+    type Coefficient<const LIMBS: usize> = R;
+    type Z<const LIMBS: usize> = LinearCombination<R>;
 
     fn xor(
         &mut self,
@@ -804,7 +734,7 @@ impl Circuit for ConstraintGenerator {
     ) -> ScalarBits<BoolLinearCombination, N>
     where
         H: Fn(
-                &dyn WitnessContext<LinearCombination, BoolLinearCombination, BigInt>,
+                &dyn WitnessContext<Self::Z<LIMBS>, Self::Bool, Self::Coefficient<LIMBS>>,
             ) -> HintResult<PackedBits<N, M>>
             + Send
             + Sync
@@ -821,27 +751,28 @@ impl Circuit for ConstraintGenerator {
         }))
     }
 
-    fn bitz<const LIMBS: usize>(&mut self, value: BoolLinearCombination) -> LinearCombination {
+    fn bitz<const LIMBS: usize>(&mut self, value: BoolLinearCombination) -> LinearCombination<R> {
         LinearCombination::witness(self.record_bitz(value))
     }
 
     fn bitz_unsigned<const LIMBS: usize, const N: usize, const M: usize, const LOW: usize>(
         &mut self,
         bits_le: &ScalarBits<BoolLinearCombination, N>,
-    ) -> (LinearCombination, LinearCombination) {
+    ) -> (LinearCombination<R>, LinearCombination<R>) {
         assert!(LOW <= N, "low part cannot be wider than the input");
         // Same layout as the default, one `bitz` per bit with coefficient
         // 2^index, but each sum is built once with exact capacity.
         let mut witnesses = Vec::with_capacity(N);
+        let two = R::one() + R::one();
         for (index, bit) in bits_le.0.iter().enumerate() {
-            witnesses.push((self.record_bitz(bit.clone()), BigInt::one() << index));
+            witnesses.push((self.record_bitz(bit.clone()), two.clone().pow(index as u32)));
         }
         let low = LinearCombination {
-            constant: BigInt::zero(),
+            constant: R::zero(),
             witnesses: witnesses[..LOW].to_vec(),
         };
         let full = LinearCombination {
-            constant: BigInt::zero(),
+            constant: R::zero(),
             witnesses,
         };
         (full, low)
@@ -849,17 +780,17 @@ impl Circuit for ConstraintGenerator {
 
     fn assert_r1c<const LIMBS: usize>(
         &mut self,
-        a: LinearCombination,
-        b: LinearCombination,
-        c: LinearCombination,
+        a: LinearCombination<R>,
+        b: LinearCombination<R>,
+        c: LinearCombination<R>,
     ) {
         self.r1cs.push((a, b, c));
     }
 
     fn sign_extend_z<const FROM_LIMBS: usize, const TO_LIMBS: usize>(
         &mut self,
-        value: LinearCombination,
-    ) -> LinearCombination {
+        value: LinearCombination<R>,
+    ) -> LinearCombination<R> {
         assert!(
             TO_LIMBS >= FROM_LIMBS,
             "cannot sign-extend into fewer limbs"
@@ -872,11 +803,14 @@ impl Circuit for ConstraintGenerator {
 mod tests {
     use super::*;
     use crate::witgen::Witgen;
+    use num_traits::One;
 
-    fn terms(pairs: &[(usize, i64)]) -> Vec<(usize, BigInt)> {
+    type R = num_bigint::BigInt;
+
+    fn terms(pairs: &[(usize, i64)]) -> Vec<(usize, R)> {
         pairs
             .iter()
-            .map(|&(witness, coefficient)| (witness, BigInt::from(coefficient)))
+            .map(|&(witness, coefficient)| (witness, R::from(coefficient)))
             .collect()
     }
 
@@ -888,11 +822,7 @@ mod tests {
         let z_sum = generator.bitz::<1>(sum);
         let z_x = generator.bitz::<1>(x);
         let z_y = generator.bitz::<1>(y);
-        generator.assert_r1c::<1>(
-            z_x.clone() * BigInt::from(2),
-            z_y.clone(),
-            z_x + z_y - z_sum,
-        );
+        generator.assert_r1c::<1>(z_x.clone() * R::from(2), z_y.clone(), z_x + z_y - z_sum);
         let mut matrices = generator.into_matrices();
 
         assert_eq!(matrices.m.row_count(), 4);
@@ -901,22 +831,18 @@ mod tests {
         assert_eq!(matrices.a.column_count(), 4);
         assert_eq!(matrices.m.rows()[0].positions(), &[0]);
         assert_eq!(matrices.m.rows()[1].positions(), &[1, 2]);
-        assert_eq!(matrices.a.rows()[0].entries(), &[(2, BigInt::from(2))]);
-        assert_eq!(matrices.b.rows()[0].entries(), &[(3, BigInt::from(1))]);
+        assert_eq!(matrices.a.rows()[0].entries(), &[(2, R::from(2))]);
+        assert_eq!(matrices.b.rows()[0].entries(), &[(3, R::from(1))]);
         assert_eq!(
             matrices.c.rows()[0].entries(),
-            &[
-                (1, BigInt::from(-1)),
-                (2, BigInt::from(1)),
-                (3, BigInt::from(1)),
-            ]
+            &[(1, R::from(-1)), (2, R::from(1)), (3, R::from(1)),]
         );
 
         let satisfying = Witgen::with_inputs(&[true, false]);
         // This circuit has no hints, so its packed witness consists of inputs.
         assert!(matrices.is_satisfied(satisfying.witness()));
 
-        matrices.c.rows[0].entries.push((0, BigInt::one()));
+        matrices.c.rows[0].entries.push((0, R::one()));
         assert_eq!(
             matrices.check_witness(satisfying.witness()),
             Err(SatisfactionError::Constraint { row: 0 })
@@ -925,10 +851,10 @@ mod tests {
 
     #[test]
     fn coefficients_are_arbitrary_precision_integers() {
-        let huge = BigInt::one() << 512_usize;
+        let huge = R::one() << 512_usize;
         let mut generator = ConstraintGenerator::new(0);
         generator.assert_r1c::<1>(
-            LinearCombination::from(BigInt::one()),
+            LinearCombination::from(R::one()),
             LinearCombination::from(huge.clone()),
             LinearCombination::from(huge.clone()),
         );
@@ -942,10 +868,7 @@ mod tests {
     #[test]
     fn sparse_constructors_reject_unsorted_and_out_of_bounds_columns() {
         assert_eq!(
-            SparseMatrix::<BigInt>::try_from_rows(
-                3,
-                vec![vec![(1, BigInt::one()), (1, BigInt::one())]],
-            ),
+            SparseMatrix::<R>::try_from_rows(3, vec![vec![(1, R::one()), (1, R::one())]],),
             Err(SparseMatrixError::ColumnsNotStrictlyIncreasing {
                 row: 0,
                 previous: 1,
@@ -966,9 +889,9 @@ mod tests {
     fn malformed_constraint_shape_returns_an_error_instead_of_panicking() {
         let matrices = ConstraintMatrices {
             m: SparseBoolMatrix::try_from_rows(1, vec![vec![0]]).unwrap(),
-            a: SparseMatrix::try_from_rows(1, vec![vec![(0, BigInt::one())]]).unwrap(),
+            a: SparseMatrix::try_from_rows(1, vec![vec![(0, R::one())]]).unwrap(),
             b: SparseMatrix::try_from_rows(1, Vec::new()).unwrap(),
-            c: SparseMatrix::try_from_rows(1, vec![vec![(0, BigInt::one())]]).unwrap(),
+            c: SparseMatrix::try_from_rows(1, vec![vec![(0, R::one())]]).unwrap(),
         };
 
         assert_eq!(
@@ -982,9 +905,10 @@ mod tests {
     #[test]
     fn linear_combination_terms_stay_sorted_and_merge_shared_witnesses() {
         let term = |index: usize, coefficient: i64| {
-            LinearCombination::witness(index) * BigInt::from(coefficient)
+            LinearCombination::witness(index) * R::from(coefficient)
         };
-        let exact = |value: &LinearCombination| value.witnesses.capacity() == value.witnesses.len();
+        let exact =
+            |value: &LinearCombination<_>| value.witnesses.capacity() == value.witnesses.len();
 
         // Disjoint ranges append on either side without spare capacity.
         let ascending = term(1, 1) + term(3, 1);
@@ -1003,16 +927,16 @@ mod tests {
         let cancelled = (term(1, 1) + term(2, 1)) - term(1, 1);
         assert_eq!(cancelled.witnesses(), terms(&[(2, 1)]));
         assert!((term(1, 2) - term(1, 2)).is_zero());
-        assert!((term(5, 7) * BigInt::zero()).is_zero());
+        assert!((term(5, 7) * R::zero()).is_zero());
 
-        let scaled = -(term(1, 2) + LinearCombination::from(BigInt::from(3))) * BigInt::from(5);
-        assert_eq!(*scaled.constant(), BigInt::from(-15));
+        let scaled = -(term(1, 2) + LinearCombination::from(R::from(3))) * R::from(5);
+        assert_eq!(*scaled.constant(), R::from(-15));
         assert_eq!(scaled.witnesses(), terms(&[(1, -10)]));
     }
 
     #[test]
     fn bitz_unsigned_lifts_bits_with_powers_of_two_into_exact_rows() {
-        let mut generator = ConstraintGenerator::new(3);
+        let mut generator = ConstraintGenerator::<R>::new(3);
         let bits = ScalarBits(generator.inputs::<3>());
         let (full, low) = generator.bitz_unsigned::<1, 3, 1, 2>(&bits);
 
