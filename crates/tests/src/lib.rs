@@ -37,7 +37,7 @@ pub fn packed_witness(shape: Shape, rng: &mut impl Rng) -> Vec<F128> {
 /// commitment. What the fold round needs and nothing the opening does.
 #[derive(Debug, Clone)]
 pub struct HonestClaim {
-    pub params: BitZParams<Q>,
+    pub params: BitZParams<Fq<Q>>,
     pub claim: LinearClaim<field::Fq<Q>>,
     pub packed: Vec<F128>,
 }
@@ -51,7 +51,7 @@ impl HonestClaim {
     /// with `eta_j` read bit by bit — not from the reconstruction the verifier
     /// runs.
     pub fn new(shape: Shape, rng: &mut impl Rng) -> Self {
-        let params = BitZParams::<Q>::new(shape, smallest_generator()).unwrap();
+        let params = BitZParams::<Fq<Q>>::new(shape, smallest_generator()).unwrap();
 
         let packed = packed_witness(shape, rng);
         let row_weights: Vec<Fq<Q>> = (0..shape.rows())
@@ -89,9 +89,9 @@ impl HonestClaim {
 
 /// An instance whose claim actually holds, committed under a real scheme.
 pub struct Instance {
-    pub params: BitZParams<Q>,
-    pub prover: prover::BitZProver<Q>,
-    pub verifier: verifier::BitZVerifier<Q>,
+    pub params: BitZParams<Fq<Q>>,
+    pub prover: prover::BitZProver<Fq<Q>>,
+    pub verifier: verifier::BitZVerifier<Fq<Q>>,
     pub claim: LinearClaim<field::Fq<Q>>,
     pub pcs: Pcs,
     pub com: Root,

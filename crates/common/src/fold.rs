@@ -1,11 +1,11 @@
 //! The column fold, and the round state both sides hold once it closes.
 
-use field::{F128, FixedBasePow, Fq};
+use field::{F128, FixedBasePow};
 use poly::DenseMultilinearExtension;
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
-use crate::{BitTable, LinearClaim, Shape, table::PACKED_BITS};
+use crate::{BitTable, BitzClaimField, LinearClaim, Shape, table::PACKED_BITS};
 
 /// A round whose parts do not describe the shape they belong to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,10 +110,10 @@ pub fn row_images(comb: &FixedBasePow, exponents: &[u128]) -> Vec<F128> {
 /// The length is checked rather than zipped away. A short `folds` would
 /// otherwise sum over a prefix and return a value that is right for no
 /// instance -- and for the common `y = 0` it would look correct.
-pub fn reconstruct<const Q: u128>(
-    claim: &LinearClaim<Fq<Q>>,
+pub fn reconstruct<F: BitzClaimField>(
+    claim: &LinearClaim<F>,
     folds: &[u128],
-) -> Result<Fq<Q>, FoldError> {
+) -> Result<F, FoldError> {
     if folds.len() != claim.column_weights().len() {
         return Err(FoldError::ColumnCountMismatch);
     }
@@ -121,7 +121,7 @@ pub fn reconstruct<const Q: u128>(
         .column_weights()
         .iter()
         .zip(folds)
-        .map(|(&weight, &fold)| weight * Fq::from(fold))
+        .map(|(&weight, &fold)| weight * F::from(fold))
         .sum())
 }
 
@@ -186,7 +186,7 @@ impl Fold {
 
 #[cfg(test)]
 mod tests {
-    use field::gf128::smallest_generator;
+    use field::{Fq, gf128::smallest_generator};
     use num_traits::{ConstOne, ConstZero};
 
     use super::*;
@@ -202,7 +202,7 @@ mod tests {
         Shape::new(7, 15).unwrap()
     }
 
-    fn params() -> BitZParams<Q114> {
+    fn params() -> BitZParams<Fq<Q114>> {
         BitZParams::new(shape(), smallest_generator()).unwrap()
     }
 

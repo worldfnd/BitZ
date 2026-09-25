@@ -1,7 +1,9 @@
 //! The fold round: read the column folds, check them, then take the
 //! challenge.
 
-use common::{Fold, FoldError, LinearClaim, column_images, reconstruct, row_images};
+use common::{
+    BitzClaimField, Fold, FoldError, LinearClaim, column_images, reconstruct, row_images,
+};
 
 use crate::BitZVerifier;
 use transcript::VerifierState;
@@ -19,7 +21,7 @@ pub enum ReceiveError {
     Fold(FoldError),
 }
 
-impl<const Q: u128> BitZVerifier<Q> {
+impl<F: BitzClaimField> BitZVerifier<F> {
     /// Reads the fold round and checks it.
     ///
     /// The proof carries only the folds; their images are derived here rather than
@@ -36,7 +38,7 @@ impl<const Q: u128> BitZVerifier<Q> {
     #[tracing::instrument(name = "Verify column folds", skip_all)]
     pub fn receive_fold(
         &self,
-        claim: &LinearClaim<field::Fq<Q>>,
+        claim: &LinearClaim<F>,
         transcript: &mut VerifierState<'_>,
     ) -> Result<Fold, ReceiveError> {
         let shape = self.params().shape();

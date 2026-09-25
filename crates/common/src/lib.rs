@@ -61,6 +61,13 @@ define_blanket_trait! {
     pub trait BitzBaseField: BitzField + BaseField
 }
 
+define_blanket_trait! {
+    /// The prime field of a BitZ claim. Its representatives are the fold
+    /// exponents, so the modulus must fit the `u128` exponent of the `F128`
+    /// group; `From<u128>` takes a fold back into the field.
+    pub trait BitzClaimField: BitzBaseField<Integer = u128> + From<u128>
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -90,5 +97,9 @@ mod tests {
         fn assert_impl_base_field<T: BitzBaseField>() {}
         assert_impl_base_field::<FqDefault>();
         assert_impl_base_field::<DynField>();
+
+        fn assert_impl_claim_field<T: BitzClaimField>() {}
+        assert_impl_claim_field::<FqDefault>();
+        assert_impl_claim_field::<DynField>();
     }
 }

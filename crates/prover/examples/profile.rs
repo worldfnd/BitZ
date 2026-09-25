@@ -8,7 +8,7 @@
 use std::hint::black_box;
 
 use common::{BitTable, BitZParams, Fold, Shape};
-use field::F128;
+use field::{F128, Fq};
 use num_traits::ConstOne;
 use transcript::ProverState;
 
@@ -20,7 +20,7 @@ fn random_table(shape: Shape) -> BitTable<'static> {
     let packed: Box<Vec<_>> =
         Box::new((0..n).map(|_| F128::from(rand::random::<u128>())).collect());
     let packed: &'static _ = packed.leak();
-    let params: BitZParams<Q114> =
+    let params: BitZParams<Fq<Q114>> =
         BitZParams::new(shape, field::gf128::smallest_generator()).unwrap();
 
     params.table(packed).unwrap()

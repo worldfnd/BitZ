@@ -1,10 +1,10 @@
 //! `ProveBitZ`.
 
 use common::{
-    BitTable, ClaimError, LinearClaim, OpeningQuery, TableError, VirtualMap, VirtualMapError,
-    VirtualStatement,
+    BitTable, BitzClaimField, ClaimError, LinearClaim, OpeningQuery, TableError, VirtualMap,
+    VirtualMapError, VirtualStatement,
 };
-use field::{F128, Fq};
+use field::F128;
 use pcs::{CommitScheme, Pcs, ProveError as OpeningProveError, ProverData, StatementBinding};
 use transcript::ProverState;
 
@@ -39,7 +39,7 @@ pub struct VirtualWitness<'a> {
     pub virtual_bits: &'a [F128],
 }
 
-impl<const Q: u128> BitZProver<Q> {
+impl<F: BitzClaimField> BitZProver<F> {
     /// Proves the caller's linear claim about the committed bits.
     ///
     /// The caller commits first and passes what that produced: the `data` the
@@ -52,7 +52,7 @@ impl<const Q: u128> BitZProver<Q> {
     #[tracing::instrument(name = "Prove BitZ", skip_all)]
     pub fn prove(
         &self,
-        claim: &LinearClaim<Fq<Q>>,
+        claim: &LinearClaim<F>,
         pcs: &Pcs,
         data: &ProverData,
         packed: Vec<F128>,
@@ -92,7 +92,7 @@ impl<const Q: u128> BitZProver<Q> {
     #[tracing::instrument(name = "Prove virtual BitZ", skip_all)]
     pub fn prove_virtual(
         &self,
-        statement: &VirtualStatement<'_, Q, impl VirtualMap>,
+        statement: &VirtualStatement<'_, F, impl VirtualMap>,
         pcs: &Pcs,
         data: &ProverData,
         witness: VirtualWitness<'_>,
@@ -148,11 +148,12 @@ impl<const Q: u128> BitZProver<Q> {
     /// The caller binds the statement before this call and opens the returned claim.
     pub(crate) fn fold_and_reduce(
         &self,
-        claim: &LinearClaim<field::Fq<Q>>,
+        claim: &LinearClaim<F>,
         table: &BitTable<'_>,
         transcript: &mut ProverState,
     ) -> Result<OpeningQuery, ProveError> {
-        // Step 2 is absent: Q is fixed, and BitZParams::new checks its fold bound.
+        // Step 2 is absent: the field modulus is fixed, and BitZParams::new
+        // checks its fold bound.
 
         // Step 3: fold each column into an integer exponent.
         let fold = self

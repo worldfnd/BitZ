@@ -46,7 +46,7 @@ impl VirtualMap for Map {
 }
 
 struct Instance {
-    params: BitZParams<Q>,
+    params: BitZParams<Fq<Q>>,
     committed_shape: Shape,
     claim: LinearClaim<Fq<Q>>,
     committed_bits: Vec<F128>,
@@ -60,7 +60,7 @@ impl Instance {
     fn new() -> Self {
         let claim_shape = Shape::new(7, 15).unwrap();
         let committed_shape = Shape::new(8, 14).unwrap();
-        let params = BitZParams::<Q>::new(claim_shape, smallest_generator()).unwrap();
+        let params = BitZParams::<Fq<Q>>::new(claim_shape, smallest_generator()).unwrap();
         let claim = LinearClaim::new(
             &params,
             vec![Fq::ONE; claim_shape.rows()],
@@ -88,7 +88,7 @@ impl Instance {
         }
     }
 
-    fn statement(&self) -> VirtualStatement<'_, Q, Map> {
+    fn statement(&self) -> VirtualStatement<'_, Fq<Q>, Map> {
         VirtualStatement::new(self.params, self.committed_shape, &Map(7), &self.claim).unwrap()
     }
 
@@ -111,7 +111,7 @@ impl Instance {
 
     fn verify(
         &self,
-        statement: &VirtualStatement<'_, Q, Map>,
+        statement: &VirtualStatement<'_, Fq<Q>, Map>,
         root: Root,
         proof: &Proof,
     ) -> Result<(), VerifyError> {
@@ -337,7 +337,7 @@ fn sha256_virtual_inner_product_opens_the_committed_bits() {
 
     let claim_shape = Shape::new(7, 15).unwrap();
     let committed_shape = Shape::new(8, 14).unwrap();
-    let params = BitZParams::<Q>::new(claim_shape, smallest_generator()).unwrap();
+    let params = BitZParams::<Fq<Q>>::new(claim_shape, smallest_generator()).unwrap();
     let pack = |witness: &PackedWitness, shape: Shape| {
         assert!(witness.bit_len() <= 1 << shape.log_bits());
         let mut packed: Vec<_> = witness

@@ -88,7 +88,7 @@ pub fn gkr_reduce(
 mod order_check_ai_test {
     use super::*;
     use common::{BitZParams, Fold, Shape};
-    use field::gf128::smallest_generator;
+    use field::{gf128::smallest_generator, Fq, FqDefault};
     use num_traits::ConstZero;
 
     const Q: u128 = (1 << 114) - 11;
@@ -97,7 +97,7 @@ mod order_check_ai_test {
         Shape::new(7, 15).unwrap()
     }
 
-    fn params() -> BitZParams<Q> {
+    fn params() -> BitZParams<Fq<Q>> {
         BitZParams::new(shape(), smallest_generator()).unwrap()
     }
 
@@ -155,7 +155,7 @@ mod order_check_ai_test {
         // Cover one column and both sides of the 128-column transpose boundary.
         for log_columns in [0, 6, 7] {
             let shape = Shape::new(22 - log_columns, log_columns).unwrap();
-            let params = BitZParams::<Q100>::new(shape, smallest_generator()).unwrap();
+            let params = BitZParams::<FqDefault>::new(shape, smallest_generator()).unwrap();
             let packed = packed_witness(&shape, |column, row| {
                 let bits = (row as u64).wrapping_mul(0x9E3779B97F4A7C15)
                     ^ (column as u64).wrapping_mul(0xD1B54A32D192ED03);

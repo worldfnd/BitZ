@@ -6,6 +6,7 @@ use bitz_cli::{
     end_to_end::CircuitProofSystem,
 };
 use divan::Bencher;
+use field::FqDefault;
 
 fn main() {
     divan::main();
@@ -17,23 +18,30 @@ fn instance(circuit: BuiltinCircuit) -> (CircuitInstance, Vec<bool>) {
     (statement, inputs)
 }
 
-fn setup(circuit: BuiltinCircuit) -> (CircuitProofSystem<CircuitInstance>, Vec<bool>) {
+fn setup(circuit: BuiltinCircuit) -> (CircuitProofSystem<CircuitInstance, FqDefault>, Vec<bool>) {
     let (statement, inputs) = instance(circuit);
-    (CircuitProofSystem::new(statement).unwrap(), inputs)
+    (
+        CircuitProofSystem::<_, FqDefault>::new(statement).unwrap(),
+        inputs,
+    )
 }
 
 #[divan::bench(args = BuiltinCircuit::ALL)]
 fn end_to_end(bencher: Bencher, circuit: BuiltinCircuit) {
     bencher
         .with_inputs(|| instance(circuit))
-        .bench_local_values(|(statement, inputs)| benchmark::run(statement, &inputs).unwrap());
+        .bench_local_values(|(statement, inputs)| {
+            benchmark::run::<_, FqDefault>(statement, &inputs).unwrap()
+        });
 }
 
 #[divan::bench(args = BuiltinCircuit::ALL)]
 fn circuit_setup(bencher: Bencher, circuit: BuiltinCircuit) {
     bencher
         .with_inputs(|| CircuitInstance::random(circuit, None, None).unwrap())
-        .bench_local_values(|statement| CircuitProofSystem::new(statement).unwrap());
+        .bench_local_values(|statement| {
+            CircuitProofSystem::<_, FqDefault>::new(statement).unwrap()
+        });
 }
 
 #[divan::bench(args = BuiltinCircuit::ALL)]

@@ -1,5 +1,6 @@
 use bitz_cli::end_to_end::{CircuitProofSystem, CircuitStatement, Error, OpeningPath};
 use circuit::Circuit;
+use field::FqDefault;
 
 struct PublicBit;
 
@@ -23,13 +24,13 @@ impl CircuitStatement for PublicBit {
 
 #[test]
 fn generic_driver_accepts_a_non_sha_circuit() {
-    let prepared = CircuitProofSystem::new(PublicBit).unwrap();
+    let prepared = CircuitProofSystem::<_, FqDefault>::new(PublicBit).unwrap();
     assert_eq!(prepared.stats().opening_path, OpeningPath::Direct);
     assert_eq!(prepared.stats().committed_bits, 2);
     let witness = prepared.witness(&[true]).unwrap();
     let data = prepared.commit(&witness).unwrap();
     let proof = prepared.prove(witness, &data).unwrap();
-    CircuitProofSystem::new(PublicBit)
+    CircuitProofSystem::<_, FqDefault>::new(PublicBit)
         .unwrap()
         .verify(&proof)
         .unwrap();
@@ -94,14 +95,14 @@ impl CircuitStatement for PublicXor {
 
 #[test]
 fn nonidentity_map_uses_virtual_opening_and_checks_xor_relation() {
-    let system = CircuitProofSystem::new(PublicXor).unwrap();
+    let system = CircuitProofSystem::<_, FqDefault>::new(PublicXor).unwrap();
     assert_eq!(system.stats().opening_path, OpeningPath::Virtual);
     assert_eq!(system.stats().assignment_bits, 3);
     assert_eq!(system.stats().committed_bits, 2);
     let witness = system.witness(&[true, false]).unwrap();
     let data = system.commit(&witness).unwrap();
     let proof = system.prove(witness, &data).unwrap();
-    CircuitProofSystem::new(PublicXor)
+    CircuitProofSystem::<_, FqDefault>::new(PublicXor)
         .unwrap()
         .verify(&proof)
         .unwrap();

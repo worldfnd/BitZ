@@ -1,10 +1,8 @@
 //! The linear claim BitZ is asked to discharge.
 
-use crypto_primitives::LiftElement;
-use field::Fq;
 use spongefish::Encoding;
 
-use crate::{BitZParams, Shape};
+use crate::{BitZParams, BitzClaimField, Shape};
 
 /// A Merkle root over the committed codeword.
 ///
@@ -24,8 +22,9 @@ pub enum ClaimError {
 
 /// The caller's `x_core`: the weights and the value they are claimed to give.
 ///
-/// BitZ uses `LinearClaim<Fq<Q>>`; opening queries use `LinearClaim<field::F128>`.
-/// The following BitZ requirements apply to the `Fq<Q>` input claim.
+/// BitZ uses `LinearClaim<F>` over a [`BitzClaimField`]; opening queries use
+/// `LinearClaim<field::F128>`. The following BitZ requirements apply to the
+/// prime-field input claim.
 /// BitZ verifies nothing upstream of this. The caller runs its own PIOP, and
 /// establishes that its claim holds, that `q` is prime, and that the
 /// coefficient factors as `v = v^(1) (x) v^(2)`. A claim whose coefficient
@@ -55,16 +54,16 @@ impl<F: Encoding<[u8]>> Encoding<[u8]> for LinearClaim<F> {
     }
 }
 
-impl<const Q: u128> LinearClaim<Fq<Q>> {
+impl<F: BitzClaimField> LinearClaim<F> {
     /// Checks the weights against `config` and returns the claim.
     ///
     /// `row_weights` is `v^(1)`, one element per row; `column_weights` is
     /// `v^(2)`, one per column; `target` is the claimed value `mu`.
     pub fn new(
-        params: &BitZParams<Q>,
-        row_weights: Vec<Fq<Q>>,
-        column_weights: Vec<Fq<Q>>,
-        target: Fq<Q>,
+        params: &BitZParams<F>,
+        row_weights: Vec<F>,
+        column_weights: Vec<F>,
+        target: F,
     ) -> Result<Self, ClaimError> {
         Self::from_shape(params.shape(), row_weights, column_weights, target)
     }
@@ -127,14 +126,14 @@ impl<F: Copy> LinearClaim<F> {
 mod tests {
     use super::*;
     use crate::Shape;
-    use field::gf128::smallest_generator;
+    use field::{Fq, gf128::smallest_generator};
     use num_traits::ConstOne;
 
     /// The largest prime below `2^114`, the top of the sampling range.
     const Q114: u128 = (1 << 114) - 11;
 
     /// `m = 22`: 128 rows per column, 32768 columns.
-    fn params() -> BitZParams<Q114> {
+    fn params() -> BitZParams<Fq<Q114>> {
         BitZParams::new(Shape::new(7, 15).unwrap(), smallest_generator()).unwrap()
     }
 

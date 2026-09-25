@@ -1,6 +1,8 @@
 //! The fold round: send the column folds, then take the challenge.
 
-use common::{BitTable, Fold, FoldError, LinearClaim, column_images, fold_columns, row_images};
+use common::{
+    BitTable, BitzClaimField, Fold, FoldError, LinearClaim, column_images, fold_columns, row_images,
+};
 
 use crate::BitZProver;
 use transcript::ProverState;
@@ -14,7 +16,7 @@ pub enum SendError {
     Fold(FoldError),
 }
 
-impl<const Q: u128> BitZProver<Q> {
+impl<F: BitzClaimField> BitZProver<F> {
     /// Runs the fold round.
     ///
     /// Only the folds `eta_j` are sent. Their images `g^{eta_j}` are what the
@@ -34,7 +36,7 @@ impl<const Q: u128> BitZProver<Q> {
     #[tracing::instrument(name = "Fold columns", skip_all)]
     pub fn send_fold(
         &self,
-        claim: &LinearClaim<field::Fq<Q>>,
+        claim: &LinearClaim<F>,
         table: &BitTable<'_>,
         transcript: &mut ProverState,
     ) -> Result<Fold, SendError> {
