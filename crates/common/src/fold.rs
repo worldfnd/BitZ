@@ -231,7 +231,7 @@ mod tests {
         let claim = claim(field_weights, vec![Fq::ONE; shape.columns()]);
 
         let packed = witness(&shape, &[(1, 0), (5, 0), (127, 0), (64, 4)]);
-        let table = BitTable::new(shape, &packed).unwrap();
+        let table = BitTable::new(shape, bytemuck::cast_slice(&packed)).unwrap();
 
         assert_eq!(
             fold_column(&table, &claim.row_exponents(), 0),
@@ -251,7 +251,7 @@ mod tests {
         );
         let all: Vec<(usize, usize)> = (0..shape.rows()).map(|row| (row, 0)).collect();
         let packed = witness(&shape, &all);
-        let table = BitTable::new(shape, &packed).unwrap();
+        let table = BitTable::new(shape, bytemuck::cast_slice(&packed)).unwrap();
 
         assert_eq!(
             fold_column(&table, &claim.row_exponents(), 0),
@@ -272,7 +272,7 @@ mod tests {
             .map(|row| (row, 6))
             .collect();
         let packed = witness(&shape, &bits);
-        let table = BitTable::new(shape, &packed).unwrap();
+        let table = BitTable::new(shape, bytemuck::cast_slice(&packed)).unwrap();
 
         let expected: u128 = (0..shape.rows())
             .filter(|&row| table.bit(6, row))

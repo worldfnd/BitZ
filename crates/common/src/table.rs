@@ -62,15 +62,12 @@ impl<'a> BitTable<'a> {
     ///
     /// Crate-private: [`crate::BitZParams::table`] is the only way in, so a
     /// table is always shaped by a checked parameter set.
-    pub(crate) fn new(shape: Shape, packed: &'a [F128]) -> Result<Self, TableError> {
-        // `m >= 22`, so the bit count is always a whole number of elements.
-        if packed.len() != (1 << shape.log_bits()) / PACKED_BITS {
+    pub(crate) fn new(shape: Shape, packed: &'a [Word]) -> Result<Self, TableError> {
+        // `m >= 22`, so the bit count is always a whole number of words.
+        if packed.len() != (1 << shape.log_bits()) / BitTable::BITS {
             return Err(TableError::BitCountMismatch);
         }
-        Ok(Self {
-            shape,
-            packed: bytemuck::cast_slice(packed),
-        })
+        Ok(Self { shape, packed })
     }
 
     pub fn shape(&self) -> &Shape {
@@ -155,62 +152,67 @@ impl<'a> BitTable<'a> {
                 TransposeError::ColumnCountTooNarrow
             })?;
 
-        let row_groups = self.shape.rows() / PACKED_BITS;
-        let column_groups = self.shape.columns() / PACKED_BITS;
-        // Two `u64` words (lo, hi) per 128-row group in `self.packed`, now
-        // that it holds words rather than `F128` elements.
-        let words_per_column = row_groups * 2;
-        debug_assert_eq!(
-            row_groups * column_groups * PACKED_BITS,
-            self.packed.len() / 2
-        );
-
-        let mut packed = F128::zeroed_vec(row_groups * column_groups * PACKED_BITS);
-        let mut block = [0u128; PACKED_BITS];
-        for row_group in 0..row_groups {
-            for column_group in 0..column_groups {
-                for (lane, word) in block.iter_mut().enumerate() {
-                    let column = column_group * PACKED_BITS + lane;
-                    let element_lo = self.packed[column * words_per_column + row_group * 2];
-                    let element_hi = self.packed[column * words_per_column + row_group * 2 + 1];
-                    *word = u128::from(element_lo) | (u128::from(element_hi) << HALF_BITS);
-                }
-
-                transpose_bit_block(&mut block);
-
-                for (lane, &word) in block.iter().enumerate() {
-                    let row = row_group * PACKED_BITS + lane;
-                    packed[row * column_groups + column_group] =
-                        F128::new(word as u64, (word >> HALF_BITS) as u64);
-                }
-            }
-        }
+        let packed = bit_transpose(self.packed, self.shape.columns(), self.shape.rows());
 
         Ok(TransposedBitTable { shape, packed })
     }
 }
 
-/// Transposes a `PACKED_BITS x PACKED_BITS` bit matrix stored as
-/// `PACKED_BITS` words of `PACKED_BITS` bits: after the call, bit `j` of
-/// word `i` is what bit `i` of word `j` held before it, for every `i, j`.
-///
-/// The recursive-doubling bit-matrix transpose (Hacker's Delight, 2nd ed.,
-/// §7-3), generalized from its usual 64x64 form to the 128-bit lane width
-/// `F128` packs bits into. `O(n log n)` word operations rather than the
-/// `O(n^2)` bit-at-a-time approach `BitTable::bit` would need to do the same
-/// work.
-fn transpose_bit_block(a: &mut [u128; PACKED_BITS]) {
-    let mut j = PACKED_BITS / 2;
-    let mut mask: u128 = (1u128 << j) - 1;
+// Bits packed into machine words
+// out of place variant.
+// dim1 and dim2 should be given in bits
+// dim2 is the axis over which the data is adjacent, think xs[dim1][dim2].
+fn bit_transpose(xs: &[Word], dim1: usize, dim2: usize) -> Vec<Word> {
+    let mut out = bytemuck::zeroed_vec(xs.len());
+
+    // Bit transpose approach is dividing the matrix up in blocks of WORD::BITS x WORD::BITS. Perform transpose on the block and write the block to the transposed position.
+
+    // TODO generalise to different bit sizes
+    // generalisation doesn't handle sub byte sizes.
+    let dim1_groups = dim1 / (Word::BITS as usize); // chunk size in dim1 (same as number of words in line)
+    let dim2_groups = dim2 / (Word::BITS as usize); // chunk size in dim2
+    for d1 in 0..dim1_groups {
+        for d2 in 0..dim2_groups {
+            let mut block = [0; Word::BITS as usize];
+
+            for (lane, word) in block.iter_mut().enumerate() {
+                *word = xs[(d1 * Word::BITS as usize + lane) * dim2_groups + d2]
+            }
+
+            bit_block_transpose(&mut block);
+
+            let dim1t = d2;
+            let dim2t = d1;
+            let dim2t_groups = dim1_groups;
+
+            for (lane, word) in block.iter().enumerate() {
+                out[(dim1t * Word::BITS as usize + lane) * dim2t_groups + dim2t] = *word;
+            }
+        }
+    }
+
+    out
+}
+
+fn bit_block_transpose(xs: &mut [Word; Word::BITS as usize]) {
+    let mut j = (Word::BITS / 2) as usize;
+    let mut mask = (1 << j) - 1; // Lower half high
     while j > 0 {
-        let mut k = 0;
-        while k < PACKED_BITS {
-            let t = ((a[k] >> j) ^ a[k | j]) & mask;
-            a[k | j] ^= t;
-            a[k] ^= t << j;
+        let mut k: usize = 0;
+        while k < Word::BITS as usize {
+            let t = xs[k];
+            let b = xs[k | j];
+            // Alternative is a delta swap, however this is more readable.
+            xs[k] = (t & mask) | ((b << j) & !mask);
+            xs[k | j] = ((t >> j) & mask) | (b & !mask);
+            // (k|j) count the upper part. +1 advances the upper part. !j converts it into the lower index again except for when it hits the next round. In that case the | j was
             k = ((k | j) + 1) & !j;
         }
         j >>= 1;
+        // Generate the alternating bit pattern
+        // 00001111
+        // 00110011
+        // 01010101
         mask ^= mask << j;
     }
 }
@@ -220,7 +222,7 @@ fn transpose_bit_block(a: &mut [u128; PACKED_BITS]) {
 #[derive(Debug)]
 pub struct TransposedBitTable {
     shape: Shape,
-    packed: Vec<F128>,
+    packed: Vec<u64>,
 }
 
 impl TransposedBitTable {
@@ -239,7 +241,7 @@ impl TransposedBitTable {
     }
 
     /// Unwraps the packed, transposed bits.
-    pub fn into_packed(self) -> Vec<F128> {
+    pub fn into_packed(self) -> Vec<u64> {
         self.packed
     }
 }
@@ -247,6 +249,8 @@ impl TransposedBitTable {
 // Find conditions
 // at most group of size 64 -> would be a transpose again?
 // make grouping a const size that is given to unroll
+// Incorrect order
+// doesn't have the check.
 fn group_pack<const GS: usize>(tt: &Vec<F128>) -> Vec<Word> {
     let tt: &[Word] = bytemuck::cast_slice(tt);
     let n = tt.len();
@@ -260,6 +264,7 @@ fn group_pack<const GS: usize>(tt: &Vec<F128>) -> Vec<Word> {
     // Possible without shifting in just selecting the index might be faster
     // Same goes for the bits iterator. Directly selecting position might be faster.
     // Bit select library?
+    // Looks like a zero vec for the outer is also an option.
     let mut out = Vec::new();
     'outer: loop {
         for s in &mut segments {
@@ -292,7 +297,6 @@ pub struct StepIter<'a, const S: usize> {
     remaining: u8,
 }
 
-// TODO
 impl<'a, const S: usize> StepIter<'a, S> {
     const CHECK_SIZE: () = assert!(
         S != 0 && S <= Word::BITS as usize && Word::BITS as usize % S == 0,
@@ -368,7 +372,7 @@ mod tests {
         let shape = small_shape();
         let set = [(0, 0), (2, 0), (3, 0), (65, 0), (1, 9)];
         let packed = with_bits(&shape, &set);
-        let table = BitTable::new(shape, &packed).unwrap();
+        let table = BitTable::new(shape, bytemuck::cast_slice(&packed)).unwrap();
 
         for column in [0, 9, 10] {
             for row in 0..shape.rows() {
@@ -389,7 +393,7 @@ mod tests {
         let shape = small_shape();
         let set = [(0, 0), (5, 0), (127, 0), (64, 3), (2, 9)];
         let packed = with_bits(&shape, &set);
-        let table = BitTable::new(shape, &packed).unwrap();
+        let table = BitTable::new(shape, bytemuck::cast_slice(&packed)).unwrap();
 
         assert_eq!(packed.len(), 1 << shape.log_packed_len());
 
@@ -412,7 +416,7 @@ mod tests {
     fn rejects_a_witness_of_the_wrong_length() {
         let shape = small_shape();
         assert_eq!(
-            BitTable::new(shape, &[F128::ZERO; 8]).err(),
+            BitTable::new(shape, bytemuck::cast_slice(&[F128::ZERO; 8])).err(),
             Some(TableError::BitCountMismatch)
         );
     }
@@ -421,7 +425,7 @@ mod tests {
     fn a_column_is_element_aligned_and_spans_whole_elements() {
         let shape = small_shape();
         let packed = with_bits(&shape, &[(0, 3), (2, 3), (64, 3)]);
-        let table = BitTable::new(shape, &packed).unwrap();
+        let table = BitTable::new(shape, bytemuck::cast_slice(&packed)).unwrap();
 
         assert_eq!(table.column(3).len(), shape.rows() / BitTable::BITS);
         assert_eq!(table.column(3), [0b101u64, 1u64]);
@@ -433,11 +437,11 @@ mod tests {
         let shape = small_shape();
         let rows: Vec<(usize, usize)> = (0..shape.rows()).step_by(7).map(|row| (row, 2)).collect();
         let packed = with_bits(&shape, &rows);
-        let table = BitTable::new(shape, &packed).unwrap();
+        let table = BitTable::new(shape, bytemuck::cast_slice(&packed)).unwrap();
 
         let iter = table.column_bits(2);
         assert_eq!(iter.len(), shape.rows());
-        let bits: Vec<bool> = iter.collect();
+        let bits: Vec<bool> = iter.map(|b| b == 1).collect();
         assert_eq!(bits.len(), shape.rows());
         for (row, bit) in bits.into_iter().enumerate() {
             assert_eq!(bit, table.bit(2, row), "row {row}");
@@ -449,7 +453,7 @@ mod tests {
         let shape = small_shape();
         let rows: Vec<(usize, usize)> = (0..shape.rows()).step_by(7).map(|row| (row, 2)).collect();
         let packed = with_bits(&shape, &rows);
-        let table = BitTable::new(shape, &packed).unwrap();
+        let table = BitTable::new(shape, bytemuck::cast_slice(&packed)).unwrap();
 
         for (index, &element) in table.column(2).iter().enumerate() {
             for offset in 0..BitTable::BITS {
@@ -466,16 +470,14 @@ mod tests {
     }
 
     #[test]
-    fn transpose_bit_block_matches_a_brute_force_reference() {
-        let mut original = [0u128; PACKED_BITS];
+    fn bit_block_transpose_matches_a_brute_force_reference() {
+        let mut original = [0 as Word; BitTable::BITS];
         for (i, word) in original.iter_mut().enumerate() {
-            let hi = (i as u64).wrapping_mul(0xD1B5_4A32_D192_ED03) ^ 0xA5A5;
-            let lo = (i as u64).wrapping_mul(0x2545_F491_4F6C_DD1D);
-            *word = u128::from(lo) | (u128::from(hi) << 64);
+            *word = (i as Word).wrapping_mul(0x2545_F491_4F6C_DD1D) ^ 0xA5A5;
         }
 
         let mut transposed = original;
-        transpose_bit_block(&mut transposed);
+        bit_block_transpose(&mut transposed);
 
         for (i, &transposed_word) in transposed.iter().enumerate() {
             for (j, &original_word) in original.iter().enumerate() {
@@ -519,7 +521,7 @@ mod tests {
     fn transpose_swaps_row_and_column_bits() {
         let shape = transpose_shape();
         let packed = pseudo_random_table(&shape);
-        let table = BitTable::new(shape, &packed).unwrap();
+        let table = BitTable::new(shape, bytemuck::cast_slice(&packed)).unwrap();
 
         let transposed = table.transpose().unwrap();
         assert_eq!(transposed.shape().log_rows(), shape.log_columns());
@@ -545,7 +547,7 @@ mod tests {
     fn transposing_twice_recovers_the_original_bits() {
         let shape = transpose_shape();
         let packed = pseudo_random_table(&shape);
-        let table = BitTable::new(shape, &packed).unwrap();
+        let table = BitTable::new(shape, bytemuck::cast_slice(&packed)).unwrap();
 
         let roundtripped = table
             .transpose()
@@ -555,7 +557,7 @@ mod tests {
             .unwrap()
             .into_packed();
 
-        assert_eq!(roundtripped, packed);
+        assert_eq!(roundtripped, bytemuck::cast_slice::<F128, Word>(&packed));
     }
 
     #[test]
@@ -565,7 +567,7 @@ mod tests {
         // though this shape is perfectly admissible for `BitTable` itself.
         let shape = Shape::new(22, 0).unwrap();
         let packed = vec![F128::ZERO; (1 << shape.log_bits()) / PACKED_BITS];
-        let table = BitTable::new(shape, &packed).unwrap();
+        let table = BitTable::new(shape, bytemuck::cast_slice(&packed)).unwrap();
 
         assert_eq!(
             table.transpose().err(),

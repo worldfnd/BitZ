@@ -64,7 +64,7 @@ impl<const Q: u128> BitZParams<Q> {
     /// The only way to build a [`BitTable`], so a table can never be shaped by
     /// anything but a checked parameter set.
     pub fn table<'a>(&self, packed: &'a [F128]) -> Result<BitTable<'a>, TableError> {
-        BitTable::new(self.shape, packed)
+        BitTable::new(self.shape, bytemuck::cast_slice(packed))
     }
 
     pub fn shape(&self) -> &Shape {
@@ -163,7 +163,7 @@ impl<const Q: u128> VirtualParams<Q> {
     /// Views the committed witness, which is `f` and not the vector the claim
     /// is about.
     pub fn table<'a>(&self, packed: &'a [F128]) -> Result<BitTable<'a>, TableError> {
-        BitTable::new(self.committed, packed)
+        BitTable::new(self.committed, bytemuck::cast_slice(packed))
     }
 }
 
