@@ -1,16 +1,8 @@
 //! The committed bit table.
 
-use std::{array, slice::Iter};
+use std::slice::Iter;
 
 use crate::{Shape, ShapeError};
-use field::F128;
-
-/// Bits in a packed element, and the shift that divides an index into element
-/// and offset.
-pub(crate) const PACKED_BITS: usize = 128;
-const PACKED_SHIFT: u32 = 7;
-/// Bits in each half of a packed element.
-const HALF_BITS: usize = 64;
 /// The machine word `packed` is sliced into. [`BitTable::BITS`] is derived
 /// from this, so changing it is the only step needed to repack into a
 /// different word size.
@@ -163,12 +155,11 @@ impl<'a> BitTable<'a> {
 // dim1 and dim2 should be given in bits
 // dim2 is the axis over which the data is adjacent, think xs[dim1][dim2].
 fn bit_transpose(xs: &[Word], dim1: usize, dim2: usize) -> Vec<Word> {
+    assert_eq!(xs.len() * Word::BITS as usize, dim1 * dim2);
     let mut out = bytemuck::zeroed_vec(xs.len());
 
     // Bit transpose approach is dividing the matrix up in blocks of WORD::BITS x WORD::BITS. Perform transpose on the block and write the block to the transposed position.
 
-    // TODO generalise to different bit sizes
-    // generalisation doesn't handle sub byte sizes.
     let dim1_groups = dim1 / (Word::BITS as usize); // chunk size in dim1 (same as number of words in line)
     let dim2_groups = dim2 / (Word::BITS as usize); // chunk size in dim2
     for d1 in 0..dim1_groups {
@@ -246,46 +237,6 @@ impl TransposedBitTable {
     }
 }
 
-// Find conditions
-// at most group of size 64 -> would be a transpose again?
-// make grouping a const size that is given to unroll
-// Incorrect order
-// doesn't have the check.
-fn group_pack<const GS: usize>(tt: &Vec<F128>) -> Vec<Word> {
-    let tt: &[Word] = bytemuck::cast_slice(tt);
-    let n = tt.len();
-    let segment_n = n / GS;
-
-    let mut remaining = BitTable::BITS;
-    let mut word = 0;
-    let mut segments: [_; GS] =
-        array::from_fn(|i| BitsIter::new((&tt[i * segment_n..(i + 1) * segment_n]).iter()));
-
-    // Possible without shifting in just selecting the index might be faster
-    // Same goes for the bits iterator. Directly selecting position might be faster.
-    // Bit select library?
-    // Looks like a zero vec for the outer is also an option.
-    let mut out = Vec::new();
-    'outer: loop {
-        for s in &mut segments {
-            match s.next() {
-                Some(b) => {
-                    if remaining == 0 {
-                        out.push(word);
-                        word = 0;
-                        remaining = BitTable::BITS
-                    };
-                    word = (word << 1) | (b as Word);
-                    remaining -= 1;
-                }
-                None => break 'outer,
-            }
-        }
-    }
-
-    out
-}
-
 pub type BitsIter<'a> = StepIter<'a, 1>;
 
 /// Iterator over one column's bits, in ascending row order — see
@@ -342,7 +293,19 @@ impl<'a, const S: usize> ExactSizeIterator for StepIter<'_, S> {
 
 #[cfg(test)]
 mod tests {
+    use std::array;
+
     use num_traits::ConstZero;
+
+    // We want to use compare against
+    use field::F128;
+
+    /// Bits in a packed element, and the shift that divides an index into element
+    /// and offset.
+    const PACKED_BITS: usize = 128;
+    const PACKED_SHIFT: u32 = 7;
+    /// Bits in each half of a packed element.
+    const HALF_BITS: usize = 64;
 
     use super::*;
 
@@ -490,6 +453,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn transpose_reference_matches_bit_transpose() {
+        // 128 segments of 4 words each: two block groups on both axes.
+        const GS: usize = 128;
+        let segment_n = 4;
+        let tt: Vec<Word> = (0..GS * segment_n)
+            .map(|i| (i as Word).wrapping_mul(0x2545_F491_4F6C_DD1D) ^ 0xA5A5)
+            .collect();
+
+        let reference = transpose_reference::<GS>(&tt);
+        assert_eq!(reference.len(), tt.len());
+        assert_eq!(
+            reference,
+            bit_transpose(&tt, GS, segment_n * BitTable::BITS)
+        );
+    }
+
     /// Two row groups (`log_rows = 8`), two column groups (`log_columns =
     /// 15`), so the block-tiling loop in `transpose` runs more than once on
     /// both axes.
@@ -573,5 +553,32 @@ mod tests {
             table.transpose().err(),
             Some(TransposeError::ColumnCountTooNarrow)
         );
+    }
+
+    fn transpose_reference<const GS: usize>(tt: &[Word]) -> Vec<Word> {
+        assert_eq!(tt.len() % GS, 0);
+        let segment_n = tt.len() / GS;
+        let mut segments: [_; GS] =
+            array::from_fn(|i| BitsIter::new(tt[i * segment_n..(i + 1) * segment_n].iter()));
+
+        let mut out = Vec::with_capacity(tt.len());
+        let mut word: Word = 0;
+        let mut offset = 0;
+        'outer: loop {
+            for s in &mut segments {
+                let Some(b) = s.next() else { break 'outer };
+                // LSB first, like `bit()` and `StepIter`.
+                word |= b << offset;
+                offset += 1;
+                if offset == BitTable::BITS {
+                    out.push(word);
+                    word = 0;
+                    offset = 0;
+                }
+            }
+        }
+        debug_assert_eq!(offset, 0);
+
+        out
     }
 }

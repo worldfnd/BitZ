@@ -183,7 +183,7 @@ mod tests {
     use num_traits::{ConstOne, ConstZero};
 
     use super::*;
-    use crate::table::PACKED_BITS;
+    const PACKED_BITS: usize = 128;
     use crate::{BitZParams, Shape};
 
     const Q114: u128 = (1 << 114) - 11;
