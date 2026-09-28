@@ -1,6 +1,6 @@
 //! The committed bit table.
 
-use std::slice::Iter;
+use std::{ops::Deref, slice::Iter};
 
 use crate::{Shape, ShapeError};
 /// The machine word `packed` is sliced into. [`BitTable::BITS`] is derived
@@ -42,19 +42,32 @@ pub enum TransposeError {
 /// for the monomial basis `beta_v = X^v`. In that basis bit `v` of an `F128`'s
 /// little-endian `lo || hi` *is* the coefficient of `X^v`, so the committed
 /// form and the bit form are the same bytes, and the caller holds one copy.
+///
+/// Generic over the storage `S` of the packed words; use the [`BitTable`]
+/// (borrowed) and [`OwnedBitTable`] aliases rather than naming this directly.
 #[derive(Debug, Clone, Copy)]
-pub struct BitTable<'a> {
+pub struct BitTableBase<S> {
     shape: Shape,
-    packed: &'a [Word],
+    packed: S,
 }
 
-impl<'a> BitTable<'a> {
+/// A [`BitTableBase`] borrowing the prover's packed witness.
+pub type BitTable<'a> = BitTableBase<&'a [Word]>;
+
+/// A [`BitTableBase`] owning its packed words, as [`BitTableBase::transpose`]
+/// returns.
+pub type OwnedBitTable = BitTableBase<Vec<Word>>;
+
+impl<S> BitTableBase<S> {
     pub const BITS: usize = Word::BITS as usize;
+}
+
+impl<S: Deref<Target = [Word]>> BitTableBase<S> {
     /// Wraps `packed` in `shape`, least significant bit first inside `lo`.
     ///
     /// Crate-private: [`crate::BitZParams::table`] is the only way in, so a
     /// table is always shaped by a checked parameter set.
-    pub(crate) fn new(shape: Shape, packed: &'a [Word]) -> Result<Self, TableError> {
+    pub(crate) fn new(shape: Shape, packed: S) -> Result<Self, TableError> {
         // `m >= 22`, so the bit count is always a whole number of words.
         if packed.len() != (1 << shape.log_bits()) / BitTable::BITS {
             return Err(TableError::BitCountMismatch);
@@ -92,13 +105,13 @@ impl<'a> BitTable<'a> {
     /// element boundary and spans whole elements. The fold walks these directly
     /// rather than calling [`BitTable::bit`] once per row: at `m = 35` that is
     /// `2^35` calls, each of them a bounds check and two shifts.
-    pub fn column(&self, column: usize) -> &'a [Word] {
+    pub fn column(&self, column: usize) -> &[Word] {
         let elements = self.shape.rows() / BitTable::BITS;
         &self.packed[column * elements..(column + 1) * elements]
     }
 
     /// The column's bits, in ascending row order.
-    pub fn column_bits(&self, column: usize) -> BitsIter<'a> {
+    pub fn column_bits(&self, column: usize) -> BitsIter<'_> {
         BitsIter::new(self.column(column).iter())
     }
 
@@ -132,7 +145,7 @@ impl<'a> BitTable<'a> {
     ///   (old) row count, and every `BitTable` already has `log_rows >= 7`
     ///   unconditionally -- so the second transpose is never the one that
     ///   rejects.
-    pub fn transpose(&self) -> Result<TransposedBitTable, TransposeError> {
+    pub fn transpose(&self) -> Result<OwnedBitTable, TransposeError> {
         let shape =
             Shape::new(self.shape.log_columns(), self.shape.log_rows()).map_err(|error| {
                 debug_assert_eq!(
@@ -144,9 +157,22 @@ impl<'a> BitTable<'a> {
                 TransposeError::ColumnCountTooNarrow
             })?;
 
-        let packed = bit_transpose(self.packed, self.shape.columns(), self.shape.rows());
+        let packed = bit_transpose(&self.packed, self.shape.columns(), self.shape.rows());
 
-        Ok(TransposedBitTable { shape, packed })
+        Ok(OwnedBitTable { shape, packed })
+    }
+
+    /// Borrows this table as an ordinary [`BitTable`].
+    pub fn as_table(&self) -> BitTable<'_> {
+        BitTable {
+            shape: self.shape,
+            packed: &self.packed,
+        }
+    }
+
+    /// Unwraps the packed bits.
+    pub fn into_packed(self) -> S {
+        self.packed
     }
 }
 
@@ -297,41 +323,12 @@ fn transpose_reference<const GS: usize>(tt: &[Word]) -> Vec<Word> {
 #[cfg(feature = "bench")]
 #[doc(hidden)]
 pub mod bench {
-    pub fn bit_transpose(xs: &[u64], dim1: usize, dim2: usize) -> Vec<u64> {
+    pub fn bit_transpose(xs: &[super::Word], dim1: usize, dim2: usize) -> Vec<super::Word> {
         super::bit_transpose(xs, dim1, dim2)
     }
 
-    pub fn transpose_reference<const GS: usize>(tt: &[u64]) -> Vec<u64> {
+    pub fn transpose_reference<const GS: usize>(tt: &[super::Word]) -> Vec<super::Word> {
         super::transpose_reference::<GS>(tt)
-    }
-}
-
-/// An owned, transposed copy of a [`BitTable`]'s bits -- see
-/// [`BitTable::transpose`], which is the only way to build one.
-#[derive(Debug)]
-pub struct TransposedBitTable {
-    shape: Shape,
-    packed: Vec<u64>,
-}
-
-impl TransposedBitTable {
-    /// The transposed shape: rows and columns swapped from the source.
-    pub fn shape(&self) -> &Shape {
-        &self.shape
-    }
-
-    /// Borrows the transposed bits as an ordinary [`BitTable`].
-    ///
-    /// Infallible: [`BitTable::transpose`] already sized this buffer to
-    /// match `shape`.
-    pub fn as_table(&self) -> BitTable<'_> {
-        BitTable::new(self.shape, &self.packed)
-            .expect("a TransposedBitTable's shape and packed length always agree")
-    }
-
-    /// Unwraps the packed, transposed bits.
-    pub fn into_packed(self) -> Vec<u64> {
-        self.packed
     }
 }
 
@@ -349,9 +346,9 @@ pub struct StepIter<'a, const S: usize> {
 impl<'a, const S: usize> StepIter<'a, S> {
     const CHECK_SIZE: () = assert!(
         S != 0 && S <= Word::BITS as usize && (Word::BITS as usize).is_multiple_of(S),
-        "step size must be nonzero, at most 64, and divide 64 evenly"
+        "step size must be nonzero, at most Word::BITS, and divide Word::BITS evenly"
     );
-    const MASK: u64 = 1u64.unbounded_shl(S as u32).wrapping_sub(1);
+    const MASK: Word = (1 as Word).unbounded_shl(S as u32).wrapping_sub(1);
     fn new(iter: Iter<'a, Word>) -> Self {
         let () = Self::CHECK_SIZE;
         Self {
@@ -363,7 +360,7 @@ impl<'a, const S: usize> StepIter<'a, S> {
 }
 
 impl<const S: usize> Iterator for StepIter<'_, S> {
-    type Item = u64;
+    type Item = Word;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.remaining == 0 {
@@ -631,8 +628,6 @@ mod tests {
         assert_eq!(transposed.shape().log_rows(), shape.log_columns());
         assert_eq!(transposed.shape().log_columns(), shape.log_rows());
 
-        let transposed = transposed.as_table();
-
         // Full columns at both ends of each axis, including a block
         // boundary (128 rows per group here), rather than every column --
         // this shape alone already has 2^15 of them.
@@ -656,7 +651,6 @@ mod tests {
         let roundtripped = table
             .transpose()
             .unwrap()
-            .as_table()
             .transpose()
             .unwrap()
             .into_packed();

@@ -24,7 +24,6 @@ fn init_circuit(table: &BitTable, fold: &Fold) -> GrandProductCircuit {
     match table.transpose() {
         Ok(transposed) => {
             // Transpose wide tables so each row can be read sequentially.
-            let transposed = transposed.as_table();
             for (b, &row_image) in fold.row_images.iter().enumerate() {
                 let leafs = &mut leafs[b * columns..(b + 1) * columns];
                 for (leaf, bit) in leafs.iter_mut().zip(transposed.column_bits(b)) {
