@@ -8,8 +8,11 @@ use std::io::Write;
 
 use common::Shape;
 use crypto_primitives::LiftElement;
+use field::FqDefault;
 use support::{hex, write_binary, write_witness};
 use tests::{Instance, Q, prover_transcript, verifier_transcript};
+
+type F = FqDefault;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     const USAGE: &str = "usage: dump_bitz <log-bits> <seed> <out-dir>";
@@ -25,7 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Shape::for_log_bits(log_bits).map_err(|error| format!("invalid shape: {error:?}"))?;
     std::fs::create_dir_all(out)?;
     let (t, s) = (shape.log_rows(), shape.log_columns());
-    let instance = Instance::honest(shape, seed);
+    let instance = Instance::<F>::honest(shape, seed);
 
     let started = std::time::Instant::now();
     let mut transcript = prover_transcript();

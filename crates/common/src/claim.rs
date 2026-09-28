@@ -74,7 +74,7 @@ impl<F: BitzClaimField> LinearClaim<F> {
     /// The claim lives in `F_q` while the exponent is an integer, and taking
     /// the representative is what bounds it: each is below `q`, so a fold over
     /// `k_1` rows lands in `[0, k_1(q-1)]`.
-    pub fn row_exponents(&self) -> Vec<u128> {
+    pub fn row_exponents(&self) -> Vec<F::Integer> {
         self.row_weights
             .iter()
             .map(|weight| weight.lift())

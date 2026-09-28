@@ -9,10 +9,10 @@ use field::FixedBasePow;
 /// verifier is its only reader: the prover never range-checks a fold it
 /// produced itself.
 #[derive(Debug)]
-pub struct BitZVerifier<F> {
+pub struct BitZVerifier<F: BitzClaimField> {
     params: BitZParams<F>,
     comb: FixedBasePow,
-    fold_bound: u128,
+    fold_bound: F::Integer,
 }
 
 impl<F: BitzClaimField> BitZVerifier<F> {
@@ -40,8 +40,8 @@ impl<F: BitzClaimField> BitZVerifier<F> {
     }
 
     /// The largest fold this verifier accepts, `k_1 (Q - 1)`.
-    pub fn fold_bound(&self) -> u128 {
-        self.fold_bound
+    pub fn fold_bound(&self) -> &F::Integer {
+        &self.fold_bound
     }
 }
 

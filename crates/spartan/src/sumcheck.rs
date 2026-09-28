@@ -27,7 +27,8 @@
 //!
 //! [*More Optimizations to Sum-Check Proving*]: https://eprint.iacr.org/2024/1210.pdf
 
-use common::{BitzField, BitzSemiring};
+use common::BitzField;
+use crypto_primitives::Semiring;
 use poly::DenseMultilinearExtension;
 use rayon::prelude::*;
 use std::array;
@@ -687,14 +688,14 @@ fn fold_and_compute_next_inner_round_coefficients_without_linear<F: BitzField>(
 }
 
 #[inline]
-fn add_coefficients<S: BitzSemiring, const COEFFS: usize>(
+fn add_coefficients<S: Semiring, const COEFFS: usize>(
     left: [S; COEFFS],
     right: [S; COEFFS],
 ) -> [S; COEFFS] {
     array::from_fn(|index| left[index].clone() + &right[index])
 }
 
-fn sum_coefficients<S: BitzSemiring, const COEFFS: usize>(
+fn sum_coefficients<S: Semiring, const COEFFS: usize>(
     len: usize,
     contribution: impl Fn(usize) -> [S; COEFFS] + Sync,
 ) -> [S; COEFFS] {

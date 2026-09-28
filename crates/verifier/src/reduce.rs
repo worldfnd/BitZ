@@ -21,9 +21,9 @@ pub enum ReduceError {
 }
 
 #[tracing::instrument(name = "Verify grand-product reduction", skip_all)]
-pub(crate) fn gkr_reduce(
+pub(crate) fn gkr_reduce<S>(
     transcript: &mut VerifierState,
-    fold: &Fold,
+    fold: &Fold<S>,
     shape: &Shape,
 ) -> Result<OpeningQuery, ReduceError> {
     // Each layer halves the row count, leaving one product per column.

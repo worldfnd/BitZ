@@ -1,19 +1,18 @@
 //! Circuit constraints over a prime field, reduced by Spartan and opened through direct or virtual BitZ.
 
 use circuit::{
-    Circuit,
+    BitWidth, Circuit, IntoWords,
     constraints::{ConstraintGenerator, SparseBoolMatrix},
     matrix_products::ModularVector,
     matrix_transpose::{MTransposeGenerator, MaterializedMTranspose},
     witgen::{PackedWitness, ProductWitgen},
 };
 use common::{
-    BitZParams, BitzClaimField, LinearClaim, OpeningQuery, Root, Shape, VirtualMap,
+    BitZParams, BitzClaimField, BitzRing, LinearClaim, OpeningQuery, Root, Shape, VirtualMap,
     VirtualStatement,
     shape::{MIN_LOG_BITS, PACK_BITS},
 };
 use field::{F128, gf128::smallest_generator};
-use num_bigint::BigInt;
 use num_traits::{ConstOne, ConstZero};
 use pcs::{CommitScheme, HashKind, LigeritoProfile, Pcs, ProverData, StatementBinding};
 use poly::{DenseMultilinearExtension, ScaledMleEvaluationClaim};
@@ -21,9 +20,10 @@ use prover::{BitZProver, VirtualWitness};
 use transcript::{PublicTranscript, build_prover, build_verifier};
 use verifier::BitZVerifier;
 
+use crate::ProjectConstraint;
 use spartan::{
-    PreparedConstraintMatrices, R1csProductMles, SpartanPiopProof, bigint_to_field,
-    build_assignment_mle, build_product_mles, prove_spartan_piop, verify_spartan_proof,
+    PreparedConstraintMatrices, R1csProductMles, SpartanPiopProof, build_assignment_mle,
+    build_product_mles, prove_spartan_piop, verify_spartan_proof,
 };
 
 const SESSION: &[u8] = b"bitz/circuit-e2e/v1";
@@ -35,7 +35,8 @@ const WINDOW: u32 = 8;
 /// `min(113, 128 - log_rows)` with the top of the interval capped by the fold
 /// gate of [`BitZParams`].
 fn prime_bits<F: BitzClaimField>() -> u32 {
-    u128::BITS - F::modulus().leading_zeros()
+    todo!()
+    //u128::BITS - F::modulus().leading_zeros()
 }
 
 /// A trusted, deterministic circuit and its public inputs. Implementations must
@@ -119,22 +120,29 @@ pub struct Proof<F> {
 
 // The `Vec<F>` bound is what `build_product_mles` asks of the field: the
 // R1CS products are reduced two limbs at a time.
-impl<S: CircuitStatement, F: BitzClaimField> CircuitProofSystem<S, F>
+impl<S, F> CircuitProofSystem<S, F>
 where
+    S: CircuitStatement,
+    F: BitzClaimField,
+    F::Integer: BitWidth + IntoWords,
     Vec<F>: for<'a> From<&'a ModularVector<2>>,
 {
     #[tracing::instrument(name = "setup", skip_all)]
-    pub fn new(statement: S) -> Result<Self, Error> {
-        let mut constraints = ConstraintGenerator::new(statement.input_bits());
+    pub fn new<R, Proj>(statement: S) -> Result<Self, Error>
+    where
+        R: BitzRing,
+        Proj: ProjectConstraint<R, F>,
+    {
+        let mut constraints = ConstraintGenerator::<R>::new(statement.input_bits());
         let inputs: Vec<_> = (0..statement.input_bits())
             .map(|i| constraints.input(i))
             .collect();
         statement.synthesize(&mut constraints, &inputs)?;
-        let modulus = BigInt::from(F::modulus());
+        let projection = Proj::prepare();
         let matrices = PreparedConstraintMatrices::new(
             constraints
                 .into_matrices()
-                .map_coefficients(|c| bigint_to_field(&c, &modulus)),
+                .map_coefficients(|c| projection.project(&c)),
         )
         .map_err(Error::Matrix)?;
         let mut generator = MTransposeGenerator::new(statement.input_bits());
@@ -248,6 +256,7 @@ where
         // TODO(random-prime): bind the integer constraint digest before the
         // draw, then build the parameters, matrices and witness under `prime`.
         let prime = transcript.squeeze_prime(prime_bits::<F>());
+        let prime = F::Integer::from(prime);
         debug_assert_eq!(prime, F::modulus());
         let (spartan, terminal) = prove_spartan_piop(
             &mut transcript,
@@ -303,6 +312,7 @@ where
         // TODO(random-prime): as in `prove`, the parameters and matrices must
         // be built under `prime`.
         let prime = transcript.squeeze_prime(prime_bits::<F>());
+        let prime = F::Integer::from(prime);
         debug_assert_eq!(prime, F::modulus());
         let terminal = verify_spartan_proof(&mut transcript, &self.matrices, &proof.spartan)
             .map_err(Error::Spartan)?;
@@ -395,6 +405,7 @@ fn opening_claim<F: BitzClaimField>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ProjectBigIntToFq;
     use field::FqDefault;
 
     #[test]
@@ -436,7 +447,8 @@ mod tests {
 
     #[test]
     fn direct_opening_requires_constant_one_on_both_sides() {
-        let mut system = CircuitProofSystem::<_, FqDefault>::new(IdentityBit).unwrap();
+        let mut system =
+            CircuitProofSystem::<_, FqDefault>::new::<_, ProjectBigIntToFq>(IdentityBit).unwrap();
         let witness = system.witness(&[true]).unwrap();
         let data = system.commit(&witness).unwrap();
         let mut proof = system.prove(witness, &data).unwrap();

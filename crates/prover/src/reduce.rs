@@ -14,7 +14,7 @@ use transcript::ProverState;
 
 #[inline(never)]
 #[tracing::instrument(name = "Build grand-product circuit", level = "debug", skip_all)]
-fn init_circuit(table: &BitTable, fold: &Fold) -> GrandProductCircuit {
+fn init_circuit<S>(table: &BitTable, fold: &Fold<S>) -> GrandProductCircuit {
     let columns = table.shape().columns();
     let dim = columns * table.shape().rows();
     let mut leafs = F128::zeroed_vec(dim);
@@ -52,9 +52,9 @@ fn init_circuit(table: &BitTable, fold: &Fold) -> GrandProductCircuit {
 
 /// Reduces the grand-product circuit to a factored claim on the committed bits.
 #[tracing::instrument(name = "Reduce grand products", skip_all)]
-pub fn gkr_reduce(
+pub fn gkr_reduce<S>(
     transcript: &mut ProverState,
-    fold: &Fold,
+    fold: &Fold<S>,
     table: &BitTable,
 ) -> Result<OpeningQuery, ClaimError> {
     let circuit = init_circuit(table, fold);
@@ -88,7 +88,7 @@ pub fn gkr_reduce(
 mod order_check_ai_test {
     use super::*;
     use common::{BitZParams, Fold, Shape};
-    use field::{gf128::smallest_generator, Fq, FqDefault};
+    use field::{Fq, FqDefault, gf128::smallest_generator};
     use num_traits::ConstZero;
 
     const Q: u128 = (1 << 114) - 11;
@@ -150,8 +150,6 @@ mod order_check_ai_test {
 
     #[test]
     fn factored_claim_matches_for_narrow_tables() {
-        const Q100: u128 = (1 << 100) - 15;
-
         // Cover one column and both sides of the 128-column transpose boundary.
         for log_columns in [0, 6, 7] {
             let shape = Shape::new(22 - log_columns, log_columns).unwrap();
@@ -170,7 +168,7 @@ mod order_check_ai_test {
                 .collect();
             let fold = Fold::new(
                 &shape,
-                vec![0; shape.columns()],
+                vec![0_u64; shape.columns()],
                 vec![F128::ONE; shape.columns()],
                 row_images,
                 zeta,

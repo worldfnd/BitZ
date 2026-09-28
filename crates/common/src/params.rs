@@ -1,10 +1,10 @@
 //! The protocol parameters: everything both sides fix before a claim exists.
 
+use crate::{BitTable, BitzClaimField, Shape, TableError, VirtualMap};
 use field::{F128, gf128::is_generator};
+use num_traits::{Bounded, CheckedMul, ToBytes};
 use spongefish::Encoding;
 use std::marker::PhantomData;
-
-use crate::{BitTable, BitzClaimField, Shape, TableError, VirtualMap};
 
 /// A parameter set one of the pre-claim gates rejects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,12 +45,14 @@ impl<F: BitzClaimField> BitZParams<F> {
         // Overflow is itself a rejection: past `2^128 - 1` there is no room
         // left. `ord(g)` is `u128::MAX`, the full order the generator gate
         // below establishes.
-        let Some(gap) = (F::modulus() - 1).checked_mul(shape.rows() as u128 + 1) else {
+        let f_max = F::max_value().lift();
+        let rows_plus_one = F::Integer::from(shape.rows() as u64 + 1);
+        let Some(gap) = f_max.checked_mul(&rows_plus_one) else {
             return Err(ParamsError::FoldBoundExceeded);
         };
         // A `u128` cannot exceed `ord(g)`, so equalling it is the only way
         // left to reach it.
-        if gap == u128::MAX {
+        if gap == F::Integer::max_value() {
             return Err(ParamsError::FoldBoundExceeded);
         }
         if !is_generator(generator) {
@@ -83,8 +85,11 @@ impl<F: BitzClaimField> BitZParams<F> {
     /// The largest fold the verifier may accept, `k_1 (Q - 1)`.
     ///
     /// [`Self::new`]'s gate puts it below `ord(g)`.
-    pub fn fold_bound(&self) -> u128 {
-        (self.shape.rows() as u128) * (F::modulus() - 1)
+    pub fn fold_bound(&self) -> F::Integer {
+        let rows = u64::try_from(self.shape.rows()).expect("Too many rows");
+        let rows = F::Integer::from(rows);
+        let max_f = F::max_value().lift();
+        rows.checked_mul(&max_f).expect("Multiplication overflow")
     }
 }
 
@@ -100,7 +105,7 @@ impl<F: BitzClaimField> Encoding<[u8]> for BitZParams<F> {
 
         put(&(self.shape.log_rows() as u64).to_le_bytes());
         put(&(self.shape.log_columns() as u64).to_le_bytes());
-        put(&F::modulus().to_le_bytes());
+        put(F::modulus().to_le_bytes().as_ref());
         put(&self.generator.to_bytes());
         frame
     }

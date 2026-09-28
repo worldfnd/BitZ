@@ -1,11 +1,11 @@
 //! The fold round: read the column folds, check them, then take the
 //! challenge.
 
+use crate::BitZVerifier;
 use common::{
     BitzClaimField, Fold, FoldError, LinearClaim, column_images, reconstruct, row_images,
 };
-
-use crate::BitZVerifier;
+use num_traits::FromBytes;
 use transcript::VerifierState;
 
 /// A fold the verifier rejects.
@@ -40,19 +40,19 @@ impl<F: BitzClaimField> BitZVerifier<F> {
         &self,
         claim: &LinearClaim<F>,
         transcript: &mut VerifierState<'_>,
-    ) -> Result<Fold, ReceiveError> {
+    ) -> Result<Fold<F::Integer>, ReceiveError> {
         let shape = self.params().shape();
 
         let folds = (0..shape.columns())
             .map(|_| {
                 transcript
-                    .prover_message::<[u8; 16]>()
-                    .map(u128::from_le_bytes)
+                    .prover_message::<<F::Integer as FromBytes>::Bytes>()
+                    .map(|bs| F::Integer::from_le_bytes(&bs))
                     .map_err(|_| ReceiveError::MalformedProof)
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        if folds.iter().any(|&fold| fold > self.fold_bound()) {
+        if folds.iter().any(|fold| fold > self.fold_bound()) {
             return Err(ReceiveError::FoldOutOfRange);
         }
         if reconstruct(claim, &folds).map_err(ReceiveError::Fold)? != claim.target() {

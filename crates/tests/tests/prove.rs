@@ -1,7 +1,7 @@
 //! The top-level prove and verify, through the real opening.
 
 use common::{Root, TableError};
-use field::{F128, Fq};
+use field::{F128, Fq, FqDefault};
 use num_traits::{ConstOne, ConstZero};
 use pcs::{HashKind, LigeritoProfile, Pcs, VerifyError as PcsVerifyError};
 use prover::ProveError;
@@ -9,7 +9,9 @@ use tests::{Instance, narrow_shape, prover_transcript, verifier_transcript, wide
 use transcript::Proof;
 use verifier::{ReceiveError, VerifyError};
 
-fn prove(instance: &Instance) -> Proof {
+type F = FqDefault;
+
+fn prove(instance: &Instance<F>) -> Proof {
     let mut transcript = prover_transcript();
     instance
         .prover
@@ -27,7 +29,7 @@ fn prove(instance: &Instance) -> Proof {
 #[test]
 fn an_honest_proof_verifies_on_both_floor_shapes() {
     for shape in [narrow_shape(), wide_shape()] {
-        let instance = Instance::honest(shape, 31);
+        let instance = Instance::<F>::honest(shape, 31);
         let proof = prove(&instance);
 
         instance
@@ -44,7 +46,7 @@ fn an_honest_proof_verifies_on_both_floor_shapes() {
 
 #[test]
 fn a_proof_replayed_under_a_different_commitment_is_refused() {
-    let instance = Instance::honest(narrow_shape(), 32);
+    let instance = Instance::<F>::honest(narrow_shape(), 32);
     let proof = prove(&instance);
 
     // Binding a different root changes the fold batching point, so GKR rejects.
@@ -61,7 +63,7 @@ fn a_proof_replayed_under_a_different_commitment_is_refused() {
 
 #[test]
 fn the_statement_is_bound_before_the_first_challenge() {
-    let instance = Instance::honest(narrow_shape(), 33);
+    let instance = Instance::<F>::honest(narrow_shape(), 33);
     let proof = prove(&instance);
 
     // Same folds, same commitment, a claim that differs only in its claimed
@@ -81,7 +83,7 @@ fn the_statement_is_bound_before_the_first_challenge() {
 
 #[test]
 fn a_proof_with_trailing_bytes_is_refused() {
-    let instance = Instance::honest(narrow_shape(), 34);
+    let instance = Instance::<F>::honest(narrow_shape(), 34);
     let mut proof = prove(&instance);
     proof.hints.push(0);
 
@@ -102,8 +104,8 @@ fn an_opening_against_another_commitment_is_refused() {
     // the verifier is given, the folds are over the witness the claim describes,
     // and the GKR claim is true of that witness. Only the codeword and
     // the Merkle tree the opening reads belong to a different commitment.
-    let proved = Instance::honest(narrow_shape(), 35);
-    let committed = Instance::honest(narrow_shape(), 36);
+    let proved = Instance::<F>::honest(narrow_shape(), 35);
+    let committed = Instance::<F>::honest(narrow_shape(), 36);
 
     let mut transcript = prover_transcript();
     proved
@@ -133,7 +135,7 @@ fn an_opening_against_another_commitment_is_refused() {
 fn a_tampered_opening_proof_is_refused() {
     // The opening rides the hint channel, which the sponge never sees, so
     // nothing upstream of the opening notices this. The opening itself must.
-    let instance = Instance::honest(narrow_shape(), 37);
+    let instance = Instance::<F>::honest(narrow_shape(), 37);
     let mut proof = prove(&instance);
     let middle = proof.hints.len() / 2;
     proof.hints[middle] ^= 0xff;
@@ -154,7 +156,7 @@ fn a_proof_verified_under_a_different_profile_is_refused() {
     // The profile is not in the frame step 1 absorbs, so what rejects this is
     // the opening binding its own parameters: a different profile encodes
     // differently, the two sponges part, and the ring-switch check fails.
-    let instance = Instance::honest(narrow_shape(), 38);
+    let instance = Instance::<F>::honest(narrow_shape(), 38);
     let slim = Pcs::new(
         instance.params.shape(),
         LigeritoProfile::Slim,
@@ -176,7 +178,7 @@ fn a_proof_verified_under_a_different_profile_is_refused() {
 
 #[test]
 fn a_witness_of_the_wrong_length_is_refused_before_anything_is_written() {
-    let instance = Instance::honest(narrow_shape(), 39);
+    let instance = Instance::<F>::honest(narrow_shape(), 39);
 
     let mut transcript = prover_transcript();
     assert_eq!(

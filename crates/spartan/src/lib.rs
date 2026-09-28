@@ -19,32 +19,6 @@ pub use sumcheck::{
     prove_outer_sumcheck,
 };
 
-use common::BitzClaimField;
-use field::{FqDefault, Q100};
-use num_bigint::BigInt;
-use num_traits::{Signed, ToPrimitive};
-use std::sync::LazyLock;
-
-/// Reduces a signed integer canonically modulo `modulus`, which must be
-/// `F::modulus()`; the caller lifts it once for all its coefficients.
-pub fn bigint_to_field<F: BitzClaimField>(value: &BigInt, modulus: &BigInt) -> F {
-    let mut reduced = value % modulus;
-    if reduced.is_negative() {
-        reduced += modulus;
-    }
-    F::from(
-        reduced
-            .to_u128()
-            .expect("a canonical residue always fits a u128"),
-    )
-}
-
-/// Reduces a signed integer canonically modulo Q100.
-pub fn bigint_to_fq(value: &BigInt) -> FqDefault {
-    static FQ_DEFAULT_MODULUS: LazyLock<BigInt> = LazyLock::new(|| BigInt::from(Q100));
-    bigint_to_field(value, &FQ_DEFAULT_MODULUS)
-}
-
 #[cfg(test)]
 mod tests {
     use common::BitzRing;
