@@ -170,7 +170,7 @@ fn bit_transpose(xs: &[Word], dim1: usize, dim2: usize) -> Vec<Word> {
                 *word = xs[(d1 * Word::BITS as usize + lane) * dim2_groups + d2]
             }
 
-            bit_block_transpose(&mut block);
+            bit_block_transpose(Word::BITS as usize, &mut block);
 
             let dim1t = d2;
             let dim2t = d1;
@@ -185,9 +185,15 @@ fn bit_transpose(xs: &[Word], dim1: usize, dim2: usize) -> Vec<Word> {
     out
 }
 
-fn bit_block_transpose(xs: &mut [Word; Word::BITS as usize]) {
+fn bit_block_transpose(dim1: usize, xs: &mut [Word; Word::BITS as usize]) {
     let mut j = (Word::BITS / 2) as usize;
     let mut mask = (1 << j) - 1; // Lower half high
+
+    while j > dim1 / 2 {
+        j >>= 1;
+        mask ^= mask << j;
+    }
+
     while j > 0 {
         let mut k: usize = 0;
         while k < Word::BITS as usize {
@@ -200,7 +206,7 @@ fn bit_block_transpose(xs: &mut [Word; Word::BITS as usize]) {
             k = ((k | j) + 1) & !j;
         }
         j >>= 1;
-        // Generate the alternating bit pattern
+        // Generate alternating bit pattern
         // 00001111
         // 00110011
         // 01010101
@@ -440,13 +446,39 @@ mod tests {
         }
 
         let mut transposed = original;
-        bit_block_transpose(&mut transposed);
+        bit_block_transpose(Word::BITS as usize, &mut transposed);
 
         for (i, &transposed_word) in transposed.iter().enumerate() {
             for (j, &original_word) in original.iter().enumerate() {
                 assert_eq!(
                     (transposed_word >> j) & 1,
                     (original_word >> i) & 1,
+                    "word {i} bit {j}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bit_block_transpose_4_matches_reference() {
+        // With `dim1 = 4` every 4x4 tile -- words `4g..4g+4`, bits
+        // `4n..4n+4` -- is transposed on its own.
+        const D: usize = 4;
+        let mut original = [0 as Word; BitTable::BITS];
+        for (i, word) in original.iter_mut().enumerate() {
+            *word = (i as Word).wrapping_mul(0x2545_F491_4F6C_DD1D) ^ 0xA5A5;
+        }
+
+        let mut transposed = original;
+        bit_block_transpose(D, &mut transposed);
+
+        for (i, &transposed_word) in transposed.iter().enumerate() {
+            for j in 0..BitTable::BITS {
+                let source_word = original[i - i % D + j % D];
+                let source_bit = j - j % D + i % D;
+                assert_eq!(
+                    (transposed_word >> j) & 1,
+                    (source_word >> source_bit) & 1,
                     "word {i} bit {j}"
                 );
             }
