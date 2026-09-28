@@ -387,6 +387,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "crypto-primitives",
+ "divan",
  "field",
  "num-traits",
  "poly",

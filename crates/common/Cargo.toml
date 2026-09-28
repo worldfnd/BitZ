@@ -8,6 +8,8 @@ license.workspace = true
 [features]
 default = ["parallel"]
 parallel = ["dep:rayon"]
+# Exposes private kernels to `benches/`; not part of the public API.
+bench = []
 
 [dependencies]
 crypto-primitives = { workspace = true }
@@ -17,3 +19,11 @@ spongefish = { workspace = true }
 poly = { workspace = true }
 rayon = { workspace = true, optional = true }
 num-traits = { workspace = true }
+
+[dev-dependencies]
+divan = { workspace = true }
+
+[[bench]]
+name = "table"
+harness = false
+required-features = ["bench"]
