@@ -242,20 +242,11 @@ fn bit_transpose_blocks<const LOG_D: u32>(xs: &[Word], dim1: usize, dim2: usize)
 /// `log_d`.
 #[inline(always)]
 fn bit_block_transpose(log_d: u32, xs: &mut [Word; Word::BITS as usize]) {
-    const STAGES: usize = Word::BITS.trailing_zeros() as usize;
-    // Generate alternating bit pattern, top stage first
-    // 00001111
-    // 00110011
-    // 01010101
-    let mut masks = [0; STAGES];
-    let mut mask = Word::MAX;
-    for s in (0..STAGES).rev() {
-        mask ^= mask << (1 << s);
-        masks[s] = mask;
-    }
-
-    for (s, mask) in (0..).zip(masks) {
+    for s in 0..Word::BITS.trailing_zeros() {
         let j = 1 << s;
+        // Alternating runs of j bits, lowest run set:
+        // 01010101, 00110011, 00001111
+        let mask = Word::MAX / ((1 << j) + 1);
         // Distance between the paired words.
         let jw = 1 << (s % log_d);
         let mut k: usize = 0;
