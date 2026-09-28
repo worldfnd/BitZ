@@ -6,10 +6,9 @@
 
 use std::array;
 use std::cmp::Ordering;
-use std::sync::OnceLock;
+use std::sync::{LazyLock, OnceLock};
 
 use crypto_bigint::{Odd, U256 as CryptoU256};
-use num_bigint::BigUint;
 use num_traits::{One, Zero};
 
 use crate::{
@@ -38,61 +37,30 @@ const WORD_LIMBS: usize = 4;
 
 type P256Z<CS> = <CS as Circuit>::Z<P256_Z_LIMBS>;
 type P256Coefficient<CS> = <CS as Circuit>::Coefficient<P256_Z_LIMBS>;
+type S = num_bigint::BigUint;
 
-fn base_modulus() -> &'static BigUint {
-    static VALUE: OnceLock<BigUint> = OnceLock::new();
-    VALUE.get_or_init(|| {
-        BigUint::parse_bytes(
-            b"ffffffff00000001000000000000000000000000ffffffffffffffffffffffff",
-            16,
-        )
-        .unwrap()
-    })
+fn parse_hex(hex: &[u8]) -> S {
+    S::parse_bytes(hex, 16).unwrap()
 }
+static BASE_MODULUS: LazyLock<S> = LazyLock::new(|| {
+    parse_hex(b"ffffffff00000001000000000000000000000000ffffffffffffffffffffffff")
+});
 
-fn scalar_modulus() -> &'static BigUint {
-    static VALUE: OnceLock<BigUint> = OnceLock::new();
-    VALUE.get_or_init(|| {
-        BigUint::parse_bytes(
-            b"ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551",
-            16,
-        )
-        .unwrap()
-    })
-}
+static SCALAR_MODULUS: LazyLock<S> = LazyLock::new(|| {
+    parse_hex(b"ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551")
+});
 
-fn curve_b() -> &'static BigUint {
-    static VALUE: OnceLock<BigUint> = OnceLock::new();
-    VALUE.get_or_init(|| {
-        BigUint::parse_bytes(
-            b"5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b",
-            16,
-        )
-        .unwrap()
-    })
-}
+static CURVE_B: LazyLock<S> = LazyLock::new(|| {
+    parse_hex(b"5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b")
+});
 
-fn generator_x() -> &'static BigUint {
-    static VALUE: OnceLock<BigUint> = OnceLock::new();
-    VALUE.get_or_init(|| {
-        BigUint::parse_bytes(
-            b"6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296",
-            16,
-        )
-        .unwrap()
-    })
-}
+static GENERATOR_X: LazyLock<S> = LazyLock::new(|| {
+    parse_hex(b"6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296")
+});
 
-fn generator_y() -> &'static BigUint {
-    static VALUE: OnceLock<BigUint> = OnceLock::new();
-    VALUE.get_or_init(|| {
-        BigUint::parse_bytes(
-            b"4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
-            16,
-        )
-        .unwrap()
-    })
-}
+static GENERATOR_Y: LazyLock<S> = LazyLock::new(|| {
+    parse_hex(b"4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5")
+});
 
 #[derive(Clone, Copy)]
 enum Modulus {
@@ -101,10 +69,10 @@ enum Modulus {
 }
 
 impl Modulus {
-    fn value(self) -> &'static BigUint {
+    fn value(self) -> &'static S {
         match self {
-            Self::Base => base_modulus(),
-            Self::Scalar => scalar_modulus(),
+            Self::Base => &BASE_MODULUS,
+            Self::Scalar => &SCALAR_MODULUS,
         }
     }
 
@@ -162,7 +130,7 @@ impl<CS: Circuit> Lc<CS> {
         Self { z: self.z - rhs.z }
     }
 
-    fn scale(self, coefficient: &BigUint) -> Self {
+    fn scale(self, coefficient: &S) -> Self {
         self.scale_coefficient(coefficient_for::<CS>(coefficient))
     }
 
@@ -231,7 +199,7 @@ impl<CS: Circuit> Clone for Point<CS> {
     }
 }
 
-fn coefficient_for<CS: Circuit>(value: &BigUint) -> P256Coefficient<CS> {
+fn coefficient_for<CS: Circuit>(value: &S) -> P256Coefficient<CS> {
     let mut words = [0; P256_Z_LIMBS];
     for (output, word) in words.iter_mut().zip(value.iter_u64_digits()) {
         *output = word;
@@ -239,7 +207,7 @@ fn coefficient_for<CS: Circuit>(value: &BigUint) -> P256Coefficient<CS> {
     CS::coefficient_from_le_words(&words)
 }
 
-fn lc_constant<CS: Circuit>(value: &BigUint) -> Lc<CS> {
+fn lc_constant<CS: Circuit>(value: &S) -> Lc<CS> {
     Lc {
         z: P256Z::<CS>::from(coefficient_for::<CS>(value)),
     }
@@ -348,7 +316,7 @@ fn of_elem<CS: Circuit>(value: &Elem<CS>) -> Rep<CS> {
     }
 }
 
-fn rep_constant<CS: Circuit>(value: &BigUint) -> Rep<CS> {
+fn rep_constant<CS: Circuit>(value: &S) -> Rep<CS> {
     Rep {
         value: lc_constant(value),
         bound: 2,
@@ -684,24 +652,6 @@ struct U256([u64; 4]);
 impl U256 {
     const ZERO: Self = Self([0; 4]);
 
-    fn from_biguint(value: &BigUint) -> Option<Self> {
-        let digits = value.to_u64_digits();
-        if digits.len() > 4 {
-            return None;
-        }
-        let mut words = [0; 4];
-        words[..digits.len()].copy_from_slice(&digits);
-        Some(Self(words))
-    }
-
-    fn into_biguint(self) -> BigUint {
-        let digits = self
-            .0
-            .into_iter()
-            .flat_map(|word| [word as u32, (word >> 32) as u32]);
-        BigUint::new(digits.collect())
-    }
-
     fn is_zero(self) -> bool {
         self == Self::ZERO
     }
@@ -718,6 +668,29 @@ impl U256 {
             }
         }
         Ordering::Equal
+    }
+}
+
+impl<'a> TryFrom<&'a S> for U256 {
+    type Error = ();
+
+    fn try_from(value: &'a S) -> Result<Self, Self::Error> {
+        let digits = value.to_u64_digits();
+        if digits.len() > 4 {
+            return Err(());
+        }
+        let mut words = [0; 4];
+        words[..digits.len()].copy_from_slice(&digits);
+        Ok(Self(words))
+    }
+}
+
+impl From<U256> for S {
+    fn from(v: U256) -> Self {
+        let digits =
+            v.0.into_iter()
+                .flat_map(|word| [word as u32, (word >> 32) as u32]);
+        Self::new(digits.collect())
     }
 }
 
@@ -932,7 +905,7 @@ fn modular_inverse_u256(u: U256, v: U256) -> Option<U256> {
     inverse.map(|inverse| U256(inverse.to_words()))
 }
 
-fn modular_inverse(value: &BigUint, modulus: &BigUint) -> Option<BigUint> {
+fn modular_inverse(value: &S, modulus: &S) -> Option<S> {
     let reduced;
     let value = if value < modulus {
         value
@@ -940,8 +913,7 @@ fn modular_inverse(value: &BigUint, modulus: &BigUint) -> Option<BigUint> {
         reduced = value % modulus;
         &reduced
     };
-    modular_inverse_u256(U256::from_biguint(value)?, U256::from_biguint(modulus)?)
-        .map(U256::into_biguint)
+    modular_inverse_u256(U256::try_from(value).ok()?, U256::try_from(modulus).ok()?).map(S::from)
 }
 
 fn point_from_elems<CS: Circuit>(x: &Elem<CS>, y: &Elem<CS>) -> Point<CS> {
@@ -1314,20 +1286,16 @@ fn lookup_point<CS: Circuit>(circuit: &mut CS, digit: Lc<CS>, table: &[Point<CS>
     }
 }
 
-fn generator_table() -> &'static Vec<(BigUint, BigUint)> {
-    static TABLE: OnceLock<Vec<(BigUint, BigUint)>> = OnceLock::new();
+fn generator_table() -> &'static Vec<(S, S)> {
+    static TABLE: OnceLock<Vec<(S, S)>> = OnceLock::new();
     TABLE.get_or_init(|| {
-        let modulus = base_modulus();
+        let modulus = &*BASE_MODULUS;
         let mut table = Vec::with_capacity(256);
-        table.push((BigUint::zero(), BigUint::zero()));
-        let mut point = (generator_x().clone(), generator_y().clone());
+        table.push((S::zero(), S::zero()));
+        let mut point = (GENERATOR_X.clone(), GENERATOR_Y.clone());
         table.push(point.clone());
         for _ in 2..256 {
-            point = affine_add(
-                &point,
-                &(generator_x().clone(), generator_y().clone()),
-                modulus,
-            );
+            point = affine_add(&point, &(GENERATOR_X.clone(), GENERATOR_Y.clone()), modulus);
             table.push(point.clone());
         }
         table
@@ -1341,18 +1309,14 @@ pub fn prepare() {
     let _ = generator_table();
 }
 
-fn affine_add(
-    left: &(BigUint, BigUint),
-    right: &(BigUint, BigUint),
-    modulus: &BigUint,
-) -> (BigUint, BigUint) {
+fn affine_add(left: &(S, S), right: &(S, S), modulus: &S) -> (S, S) {
     let numerator = if left == right {
-        (BigUint::from(3_u64) * &left.0 * &left.0 + modulus - BigUint::from(3_u64)) % modulus
+        (S::from(3_u64) * &left.0 * &left.0 + modulus - S::from(3_u64)) % modulus
     } else {
         (&right.1 + modulus - &left.1) % modulus
     };
     let denominator = if left == right {
-        (BigUint::from(2_u64) * &left.1) % modulus
+        (S::from(2_u64) * &left.1) % modulus
     } else {
         (&right.0 + modulus - &left.0) % modulus
     };
@@ -1481,7 +1445,7 @@ fn assert_on_curve<CS: Circuit>(circuit: &mut CS, x: &Elem<CS>, y: &Elem<CS>) {
     let x3 = lazy_mul(circuit, Modulus::Base, x2, x.clone());
     let rhs = rep_sub(
         Modulus::Base,
-        rep_add(x3, rep_constant(curve_b())),
+        rep_add(x3, rep_constant(&CURVE_B)),
         rep_scale(3, x),
     );
     lazy_assert_mul_eq(circuit, Modulus::Base, y.clone(), y, rhs);
@@ -1569,8 +1533,8 @@ mod tests {
         BigInt::from_signed_bytes_le(&bytes)
     }
 
-    fn words_biguint(words: &[u64]) -> BigUint {
-        BigUint::new(
+    fn words_biguint(words: &[u64]) -> S {
+        S::new(
             words
                 .iter()
                 .flat_map(|word| [*word as u32, (*word >> 32) as u32])
@@ -1579,16 +1543,16 @@ mod tests {
     }
 
     fn valid_input() -> Box<[bool; VERIFY_DIGEST_INPUT_BITS]> {
-        let r = generator_x().clone();
-        let s = &r + BigUint::one();
+        let r = GENERATOR_X.clone();
+        let s = &r + S::one();
         let values = [
-            BigUint::one(),
-            generator_x().clone(),
-            generator_y().clone(),
+            S::one(),
+            GENERATOR_X.clone(),
+            GENERATOR_Y.clone(),
             r.clone(),
             s.clone(),
-            modular_inverse(&r, scalar_modulus()).unwrap(),
-            modular_inverse(&s, scalar_modulus()).unwrap(),
+            modular_inverse(&r, &SCALAR_MODULUS).unwrap(),
+            modular_inverse(&s, &SCALAR_MODULUS).unwrap(),
         ];
         let bits: Box<[bool]> = (0..VERIFY_DIGEST_INPUT_BITS)
             .map(|index| values[index / WIDTH].bit((index % WIDTH) as u64))
@@ -1628,7 +1592,7 @@ mod tests {
                 let expected_quotient = &value / modulus.value();
                 let expected_remainder = value % modulus.value();
                 assert_eq!(words_biguint(&quotient.0), expected_quotient);
-                assert_eq!(remainder.into_biguint(), expected_remainder);
+                assert_eq!(S::from(remainder), expected_remainder);
             }
         }
     }
