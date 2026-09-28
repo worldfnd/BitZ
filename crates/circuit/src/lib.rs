@@ -555,8 +555,8 @@ impl Bits for num_bigint::BigUint {
 
 impl IntoWords for num_bigint::BigUint {
     fn into_words<const LIMBS: usize>(self) -> [u64; LIMBS] {
-        let digits = self.to_u64_digits();
-        array::from_fn(|index| digits.get(index).copied().unwrap_or(0))
+        let mut digits = self.iter_u64_digits();
+        array::from_fn(|_| digits.next().unwrap_or(0))
     }
 }
 
