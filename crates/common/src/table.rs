@@ -348,7 +348,7 @@ pub struct StepIter<'a, const S: usize> {
 
 impl<'a, const S: usize> StepIter<'a, S> {
     const CHECK_SIZE: () = assert!(
-        S != 0 && S <= Word::BITS as usize && Word::BITS as usize % S == 0,
+        S != 0 && S <= Word::BITS as usize && (Word::BITS as usize).is_multiple_of(S),
         "step size must be nonzero, at most 64, and divide 64 evenly"
     );
     const MASK: u64 = 1u64.unbounded_shl(S as u32).wrapping_sub(1);
@@ -362,7 +362,7 @@ impl<'a, const S: usize> StepIter<'a, S> {
     }
 }
 
-impl<'a, const S: usize> Iterator for StepIter<'_, S> {
+impl<const S: usize> Iterator for StepIter<'_, S> {
     type Item = u64;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -383,9 +383,9 @@ impl<'a, const S: usize> Iterator for StepIter<'_, S> {
     }
 }
 
-impl<'a, const S: usize> ExactSizeIterator for StepIter<'_, S> {
+impl<const S: usize> ExactSizeIterator for StepIter<'_, S> {
     fn len(&self) -> usize {
-        (self.remaining as usize + self.elements.len() * (BitTable::BITS as usize)) / S
+        (self.remaining as usize + self.elements.len() * BitTable::BITS) / S
     }
 }
 
