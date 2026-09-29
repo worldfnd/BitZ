@@ -2,7 +2,6 @@
 
 #[cfg(feature = "spongefish")]
 mod codec;
-pub mod dynamic;
 pub mod fq;
 pub mod gf128;
 

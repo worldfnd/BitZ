@@ -186,7 +186,7 @@ impl FixedBasePow {
         let mut e = exp;
         let mut i = 0;
         while !e.is_zero() {
-            let d = (e.clone() & mask.clone());
+            let d = e.clone() & mask.clone();
             if !d.is_zero() {
                 let d = d.to_usize().expect("Value is too large");
                 acc *= self.table[i][d];
