@@ -6,13 +6,14 @@ use circuit::{
     constraints::ConstraintGenerator,
     sha256::{ABC_BLOCK, ABC_DIGEST, INITIAL_STATE},
 };
+use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive};
 
 #[test]
 fn sha_constraint_residuals_cannot_wrap_modulo_q100() {
     for circuit in BuiltinCircuit::ALL {
         let statement = CircuitInstance::random(circuit, None, None).unwrap();
-        let mut generator = ConstraintGenerator::new(statement.input_bits());
+        let mut generator = ConstraintGenerator::<BigInt>::new(statement.input_bits());
         let inputs: Vec<_> = (0..statement.input_bits())
             .map(|i| generator.input(i))
             .collect();
