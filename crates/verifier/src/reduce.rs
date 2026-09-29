@@ -60,8 +60,8 @@ mod round_trip_ai_test {
 
     use super::*;
 
-    const Q: u128 = (1 << 114) - 11;
-    type F = field::Fq<Q>;
+    const Q114: u128 = (1 << 114) - 11;
+    type F = field::Fq<Q114>;
 
     fn shape() -> Shape {
         Shape::new(7, 15).unwrap()

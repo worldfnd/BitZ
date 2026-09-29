@@ -200,8 +200,8 @@ mod tests {
     use super::*;
     use num_traits::{ConstOne, ConstZero};
 
-    const Q: u128 = (1 << 114) - 11;
-    type F = field::Fq<Q>;
+    const Q114: u128 = (1 << 114) - 11;
+    type F = field::Fq<Q114>;
 
     /// Dense `M`, the reference the sparse implementations are checked against.
     struct DenseMap {

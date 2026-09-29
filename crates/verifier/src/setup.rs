@@ -49,15 +49,16 @@ impl<F: BitzClaimField> BitZVerifier<F> {
 mod tests {
     use super::*;
     use common::Shape;
-    use field::{Fq, gf128::smallest_generator};
+    use field::gf128::smallest_generator;
 
     const Q114: u128 = (1 << 114) - 11;
+    type F = field::Fq<Q114>;
 
     #[test]
     fn the_comb_is_built_on_the_generator_the_parameters_name() {
         // `pow(1)` reads the base straight out of the comb.
         let params =
-            BitZParams::<Fq<Q114>>::new(Shape::new(7, 15).unwrap(), smallest_generator()).unwrap();
+            BitZParams::<F>::new(Shape::new(7, 15).unwrap(), smallest_generator()).unwrap();
         let setup = BitZVerifier::new(params, 8);
 
         assert_eq!(setup.comb().pow(1), params.generator());

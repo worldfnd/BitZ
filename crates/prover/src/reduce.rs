@@ -91,8 +91,8 @@ mod order_check_ai_test {
     use field::gf128::smallest_generator;
     use num_traits::ConstZero;
 
-    const Q: u128 = (1 << 114) - 11;
-    type F = field::Fq<Q>;
+    const Q114: u128 = (1 << 114) - 11;
+    type F = field::Fq<Q114>;
 
     type F2 = field::FqDefault;
 

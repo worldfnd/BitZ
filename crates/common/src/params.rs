@@ -187,13 +187,14 @@ impl<F: BitzClaimField> Encoding<[u8]> for VirtualParams<F> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use field::{Fq, gf128::smallest_generator};
+    use field::gf128::smallest_generator;
     use num_traits::{ConstOne, ConstZero};
 
     /// The largest prime below `2^114`, the top of the sampling range.
     const Q114: u128 = (1 << 114) - 11;
+    type F = field::Fq<Q114>;
 
-    fn params_at(shape: Shape) -> Result<BitZParams<Fq<Q114>>, ParamsError> {
+    fn params_at(shape: Shape) -> Result<BitZParams<F>, ParamsError> {
         BitZParams::new(shape, smallest_generator())
     }
 
@@ -232,7 +233,7 @@ mod tests {
     fn virtual_params_for(
         h_len: usize,
         f_len: usize,
-    ) -> Result<VirtualParams<Fq<Q114>>, VirtualParamsError> {
+    ) -> Result<VirtualParams<F>, VirtualParamsError> {
         VirtualParams::new(
             params_at(shape()).unwrap(),
             shape(),
@@ -288,8 +289,7 @@ mod tests {
     /// through.
     #[test]
     fn the_table_is_shaped_by_the_committed_bits() {
-        let claim =
-            BitZParams::<Fq<Q114>>::new(Shape::new(8, 15).unwrap(), smallest_generator()).unwrap();
+        let claim = BitZParams::<F>::new(Shape::new(8, 15).unwrap(), smallest_generator()).unwrap();
         let committed = shape();
         let params =
             VirtualParams::new(claim, committed, &Dimensions { h_len: 4, f_len: 4 }).unwrap();
@@ -313,7 +313,7 @@ mod tests {
     #[test]
     fn rejects_a_generator_of_partial_order() {
         assert_eq!(
-            BitZParams::<Fq<Q114>>::new(shape(), F128::ONE).err(),
+            BitZParams::<F>::new(shape(), F128::ONE).err(),
             Some(ParamsError::GeneratorOrderNotFull)
         );
     }
