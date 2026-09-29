@@ -21,11 +21,11 @@ pub use sumcheck::{
 
 #[cfg(test)]
 mod tests {
-    use common::BitzRing;
+    use common::BitzConstraintRing;
 
     #[test]
     fn ensure_traits() {
-        fn assert_impl<T: BitzRing>() {}
+        fn assert_impl<T: BitzConstraintRing>() {}
         assert_impl::<num_bigint::BigInt>();
     }
 }

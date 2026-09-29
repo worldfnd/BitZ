@@ -4,11 +4,11 @@
 //! witness, prefixed by a constant one, to the integer witness. Its first row
 //! is the implicit integer constant one. `A`, `B`, and `C` then encode the
 //! rank-1 constraints `(A z) * (B z) = C z` over that integer witness. Every
-//! integer coefficient is an arbitrary-precision signed [`BitzRing`].
+//! integer coefficient is an arbitrary-precision signed [`BitzConstraintRing`].
 
 use crate::witgen::PackedWitness;
 use crate::{BoolWitness, Circuit, HintResult, PackedBits, ScalarBits, WitnessContext};
-use common::{BitzRing, BitzSemiring};
+use common::{BitzConstraintRing, BitzSemiring};
 use num_traits::Zero;
 use rayon::prelude::*;
 use std::array;
@@ -500,7 +500,7 @@ impl<R: BitzSemiring> AddAssign for LinearCombination<R> {
     }
 }
 
-impl<R: BitzRing> Neg for LinearCombination<R> {
+impl<R: BitzConstraintRing> Neg for LinearCombination<R> {
     type Output = Self;
 
     fn neg(mut self) -> Self::Output {
@@ -512,7 +512,7 @@ impl<R: BitzRing> Neg for LinearCombination<R> {
     }
 }
 
-impl<R: BitzRing> Sub for LinearCombination<R> {
+impl<R: BitzConstraintRing> Sub for LinearCombination<R> {
     type Output = Self;
 
     fn sub(self, rhs: Self) -> Self::Output {
@@ -520,7 +520,7 @@ impl<R: BitzRing> Sub for LinearCombination<R> {
     }
 }
 
-impl<R: BitzRing> SubAssign for LinearCombination<R> {
+impl<R: BitzConstraintRing> SubAssign for LinearCombination<R> {
     fn sub_assign(&mut self, rhs: Self) {
         *self += -rhs;
     }
@@ -717,7 +717,7 @@ fn bool_sparse_row(value: BoolLinearCombination) -> SparseBoolRow {
     }
 }
 
-impl<R: BitzRing> Circuit for ConstraintGenerator<R> {
+impl<R: BitzConstraintRing> Circuit for ConstraintGenerator<R> {
     type Bool = BoolLinearCombination;
     type Coefficient<const LIMBS: usize> = R;
     type Z<const LIMBS: usize> = LinearCombination<R>;

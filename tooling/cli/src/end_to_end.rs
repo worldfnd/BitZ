@@ -8,8 +8,8 @@ use circuit::{
     witgen::{PackedWitness, ProductWitgen},
 };
 use common::{
-    BitZParams, BitzClaimField, BitzRing, LinearClaim, OpeningQuery, Root, Shape, VirtualMap,
-    VirtualStatement,
+    BitZParams, BitzClaimField, BitzConstraintRing, LinearClaim, OpeningQuery, Root, Shape,
+    VirtualMap, VirtualStatement,
     shape::{MIN_LOG_BITS, PACK_BITS},
 };
 use field::{F128, gf128::smallest_generator};
@@ -120,7 +120,7 @@ where
     #[tracing::instrument(name = "setup", skip_all)]
     pub fn new<R, Proj>(statement: S) -> Result<Self, Error>
     where
-        R: BitzRing,
+        R: BitzConstraintRing,
         Proj: ProjectConstraint<R, F>,
     {
         let mut constraints = ConstraintGenerator::<R>::new(statement.input_bits());

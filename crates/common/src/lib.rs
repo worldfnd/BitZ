@@ -52,7 +52,7 @@ define_blanket_trait! {
 
 define_blanket_trait! {
     // Since BigInt does not support CheckedNeg and CheckedRem, we can't use Ring here
-    pub trait BitzRing: BitzSemiring + Neg<Output = Self>
+    pub trait BitzConstraintRing: BitzSemiring + Neg<Output = Self>
 }
 
 define_blanket_trait! {
@@ -97,7 +97,7 @@ mod tests {
         assert_impl_semiring::<num_bigint::BigInt>();
         assert_impl_semiring::<num_bigint::BigUint>();
 
-        fn assert_impl_ring<T: BitzRing>() {}
+        fn assert_impl_ring<T: BitzConstraintRing>() {}
         assert_impl_ring::<i128>();
         assert_impl_ring::<num_bigint::BigInt>();
 

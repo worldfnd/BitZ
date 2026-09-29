@@ -8,7 +8,7 @@
 use crate::constraints::{ConstraintMatrices, SparseMatrix};
 use crate::matrix_products::{RuntimeModulus, StoredInteger};
 use crate::matrix_wengert::{add_mod_words, montgomery_mul_2, neg_mod_words};
-use common::BitzRing;
+use common::BitzConstraintRing;
 use crypto_bigint::modular::{FixedMontyForm, FixedMontyParams};
 use crypto_bigint::{Odd, U128};
 use rayon::prelude::*;
@@ -74,7 +74,7 @@ impl MaterializedAbc {
     /// Transposes and stores the integer matrices without choosing a modulus.
     pub fn from_matrices<R>(matrices: &ConstraintMatrices<R>) -> Self
     where
-        R: BitzRing,
+        R: BitzConstraintRing,
         StoredInteger: for<'a> From<&'a R>,
     {
         let row_count = matrices.a.row_count();

@@ -4,7 +4,7 @@ use crate::ProjectConstraint;
 use crate::end_to_end::{CircuitProofSystem, CircuitStatement, CircuitStats, Error};
 use circuit::matrix_products::ModularVector;
 use circuit::{BitWidth, IntoWords};
-use common::{BitzClaimField, BitzRing};
+use common::{BitzClaimField, BitzConstraintRing};
 use std::{
     fmt,
     time::{Duration, Instant},
@@ -28,7 +28,7 @@ where
     F: BitzClaimField,
     F::Integer: BitWidth + IntoWords,
     Vec<F>: for<'a> From<&'a ModularVector<2>>,
-    R: BitzRing,
+    R: BitzConstraintRing,
     Proj: ProjectConstraint<R, F>,
 {
     let started = Instant::now();
