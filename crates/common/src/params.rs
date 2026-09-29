@@ -30,7 +30,7 @@ pub enum ParamsError {
 pub struct BitZParams<F> {
     shape: Shape,
     generator: F128,
-    field: PhantomData<F>,
+    _phantom: PhantomData<F>,
 }
 
 impl<F: BitzClaimField> BitZParams<F> {
@@ -62,7 +62,7 @@ impl<F: BitzClaimField> BitZParams<F> {
         Ok(Self {
             shape,
             generator,
-            field: PhantomData,
+            _phantom: PhantomData,
         })
     }
 

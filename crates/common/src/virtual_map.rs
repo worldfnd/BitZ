@@ -198,8 +198,10 @@ impl<'a, F: BitzClaimField, M: VirtualMap> VirtualStatement<'a, F, M> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use field::Fq;
     use num_traits::{ConstOne, ConstZero};
+
+    const Q: u128 = (1 << 114) - 11;
+    type F = field::Fq<Q>;
 
     /// Dense `M`, the reference the sparse implementations are checked against.
     struct DenseMap {
@@ -318,19 +320,17 @@ mod tests {
         assert_eq!(map.transpose(&weights), map.transpose(&padded));
     }
 
-    const Q: u128 = (1 << 114) - 11;
-
-    fn params() -> BitZParams<Fq<Q>> {
+    fn params() -> BitZParams<F> {
         let shape = Shape::new(7, 15).unwrap();
         BitZParams::new(shape, field::gf128::smallest_generator()).unwrap()
     }
 
-    fn input_claim(params: &BitZParams<Fq<Q>>) -> LinearClaim<Fq<Q>> {
+    fn input_claim(params: &BitZParams<F>) -> LinearClaim<F> {
         LinearClaim::new(
             params,
-            vec![Fq::ONE; params.shape().rows()],
-            vec![Fq::ONE; params.shape().columns()],
-            Fq::from(0u128),
+            vec![F::ONE; params.shape().rows()],
+            vec![F::ONE; params.shape().columns()],
+            F::from(0u128),
         )
         .unwrap()
     }

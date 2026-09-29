@@ -54,19 +54,20 @@ pub(crate) fn gkr_reduce<S>(
 #[cfg(test)]
 mod round_trip_ai_test {
     use common::{BitZParams, Fold, Shape};
-    use field::{Fq, gf128::smallest_generator};
+    use field::gf128::smallest_generator;
     use gkr::{GrandProductCircuit, gpgkr_prove};
     use num_traits::{ConstOne, ConstZero, identities::Zero};
 
     use super::*;
 
     const Q: u128 = (1 << 114) - 11;
+    type F = field::Fq<Q>;
 
     fn shape() -> Shape {
         Shape::new(7, 15).unwrap()
     }
 
-    fn params() -> BitZParams<Fq<Q>> {
+    fn params() -> BitZParams<F> {
         BitZParams::new(shape(), smallest_generator()).unwrap()
     }
 
