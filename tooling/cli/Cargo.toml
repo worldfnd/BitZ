@@ -33,3 +33,7 @@ divan.workspace = true
 [[bench]]
 name = "circuits"
 harness = false
+
+[[bench]]
+name = "sha256_spartan"
+harness = false

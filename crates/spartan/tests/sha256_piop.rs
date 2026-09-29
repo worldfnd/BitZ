@@ -51,8 +51,8 @@ fn sha256_compression_verifies_through_spartan_piop() {
     let recomputed_assignment = integer_matrices.integer_witness(&boolean_witness).unwrap();
     assert_assignment_matches(&recomputed_assignment, &recorded_assignment);
 
-    let matrices =
-        integer_matrices.map_coefficients(|coefficient| spartan::bigint_to_fq(&coefficient));
+    let projection = Proj::prepare();
+    let matrices = integer_matrices.map_coefficients(|c| projection.project(&c));
     let products = build_product_mles(&exact_products, matrices.a.row_count()).unwrap();
     let assignment = build_assignment_mle(&recorded_assignment, matrices.a.column_count()).unwrap();
     let matrices = PreparedConstraintMatrices::new(matrices).unwrap();

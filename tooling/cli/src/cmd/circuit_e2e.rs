@@ -1,3 +1,4 @@
+use bitz_cli::ProjectBigIntToFq;
 use {
     super::Command,
     anyhow::{Result, ensure},
@@ -54,7 +55,7 @@ impl Command for Args {
                 CircuitInstance::random(self.circuit, self.num_blocks, self.initial_state)
             })?;
             let inputs = statement.inputs.clone();
-            let timings = benchmark::run::<_, FqDefault>(statement, &inputs)?;
+            let timings = benchmark::run::<_, FqDefault, _, ProjectBigIntToFq>(statement, &inputs)?;
             tracing::info!("Proof verified successfully");
             println!("circuit={} threads={} field=Q100 pcs=Fast hash=Blake3 relation=Q100-r1cs constraints_verified=true", self.circuit, rayon::current_num_threads());
             println!("{timings}");
