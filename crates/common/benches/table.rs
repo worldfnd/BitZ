@@ -7,6 +7,8 @@
 use common::table::bench::{bit_transpose, transpose_reference};
 use divan::counter::BytesCount;
 use divan::{Bencher, black_box};
+use rand::rngs::StdRng;
+use rand::{RngExt, SeedableRng};
 
 const DIM1: usize = 128;
 /// `2^20` bits per row: a 16 MiB matrix, well past the last-level cache.
@@ -22,21 +24,14 @@ fn main() {
     divan::main();
 }
 
-/// SplitMix64 for deterministic, well-mixed bits.
+/// Seeded so every run transposes the same matrix.
 fn input() -> Vec<u64> {
-    let mut state = 0u64;
+    let mut rng = StdRng::seed_from_u64(0);
     (0..DIM1 * DIM2 / u64::BITS as usize)
-        .map(|_| {
-            state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
-            let mut word = state;
-            word = (word ^ (word >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-            word = (word ^ (word >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-            word ^ (word >> 31)
-        })
+        .map(|_| rng.random())
         .collect()
 }
 
-#[divan::bench(sample_count = 20)]
 fn blocked(bencher: Bencher) {
     let xs = input();
     bencher
@@ -44,7 +39,6 @@ fn blocked(bencher: Bencher) {
         .bench(|| bit_transpose(black_box(&xs), DIM1, DIM2));
 }
 
-#[divan::bench(sample_count = 20)]
 fn reference(bencher: Bencher) {
     let xs = input();
     bencher
