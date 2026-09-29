@@ -3,11 +3,14 @@ use std::collections::VecDeque;
 use field::{F128, Wide256};
 use num_traits::{ConstOne, ConstZero};
 use rayon::prelude::*;
-use transcript::{ProverState, VerifierState};
+use transcript::{ProverState, SecurityLevel, VerifierState};
 
 pub type Field = F128;
 
 type Point = VecDeque<Field>;
+
+const CUBIC_GRINDING_LABEL: &[u8] = b"gkr/cubic/v1";
+const AFFINE_GRINDING_LABEL: &[u8] = b"gkr/affine/v1";
 
 /// Proves the layer-by-layer sumcheck reduction from a claim at `point`
 /// (an evaluation point on the output layer) down to a claim on the leaves.
@@ -19,6 +22,18 @@ pub fn gpgkr_prove(
     // All the intermediate witnesses + the input layer. Doesn't contain the output layer
     witnesses: LayerWitnesses,
 ) -> (Vec<F128>, Field) {
+    gpgkr_prove_with_security(ps, point, witnesses, None)
+}
+
+/// Proves GKR with optional grinding for the selected classical security target.
+///
+/// `None` preserves the legacy transcript.
+pub fn gpgkr_prove_with_security(
+    ps: &mut ProverState,
+    point: &[F128],
+    witnesses: LayerWitnesses,
+    security: Option<SecurityLevel>,
+) -> (Vec<F128>, Field) {
     // Edge cases
     // - empty witnesses -> single constant circuit -> one verifier message that permutes the proof state, but a single constant can't have an MLE
     let mut point = point.to_owned();
@@ -28,7 +43,7 @@ pub fn gpgkr_prove(
 
     let mut claim = Field::ZERO;
     for wnext in witnesses.into_iter() {
-        (point, claim) = prove_layer(ps, point, wnext);
+        (point, claim) = prove_layer(ps, point, wnext, security);
     }
 
     let mut point = Vec::from(point);
@@ -36,7 +51,12 @@ pub fn gpgkr_prove(
     (point, claim)
 }
 
-fn prove_layer(ps: &mut ProverState, point: Point, mut wnext: Vec<Field>) -> (Point, Field) {
+fn prove_layer(
+    ps: &mut ProverState,
+    point: Point,
+    mut wnext: Vec<Field>,
+    security: Option<SecurityLevel>,
+) -> (Point, Field) {
     let mut suffix_table = SuffixTable::new(&point);
     let mut factor = Field::ONE;
 
@@ -95,6 +115,9 @@ fn prove_layer(ps: &mut ProverState, point: Point, mut wnext: Vec<Field>) -> (Po
 
         ps.prover_message(&[factor * sum_endpoint.reduce(), factor * sum_inf.reduce()]);
 
+        if let Some(security) = security {
+            ps.grind(CUBIC_GRINDING_LABEL, security.grinding_bits(3));
+        }
         let r = ps.verifier_message();
         next_point.push_back(r);
 
@@ -119,6 +142,9 @@ fn prove_layer(ps: &mut ProverState, point: Point, mut wnext: Vec<Field>) -> (Po
     }
 
     ps.prover_message(&[mle_l[0], mle_r[0]]);
+    if let Some(security) = security {
+        ps.grind(AFFINE_GRINDING_LABEL, security.grinding_bits(1));
+    }
     let r = ps.verifier_message();
     next_point.push_front(r);
     let claim = mle_l[0] + r * (mle_r[0] - mle_l[0]);
@@ -192,9 +218,23 @@ const PARALLEL_MIN_LANES: usize = 1 << 12;
 #[tracing::instrument(name = "Verify GKR", skip_all)]
 pub fn gpgkr_verify(
     vs: &mut VerifierState,
+    claim: Field,
+    point: &[F128],
+    rounds: u32,
+) -> Option<(Vec<F128>, Field)> {
+    gpgkr_verify_with_security(vs, claim, point, rounds, None)
+}
+
+/// Verifies GKR with optional grinding for the selected classical security target.
+///
+/// `None` preserves the legacy transcript.
+#[must_use]
+pub fn gpgkr_verify_with_security(
+    vs: &mut VerifierState,
     mut claim: Field,
     point: &[F128],
     rounds: u32,
+    security: Option<SecurityLevel>,
 ) -> Option<(Vec<F128>, Field)> {
     // Edge cases around input lenghts, 0 meaning empty
     // | circuit | last value |
@@ -211,7 +251,7 @@ pub fn gpgkr_verify(
     let mut point = VecDeque::from(point);
 
     for _i in 0..rounds {
-        (point, claim) = verify_layer(vs, claim, point)?
+        (point, claim) = verify_layer(vs, claim, point, security)?
     }
 
     let mut point = Vec::from(point);
@@ -221,7 +261,12 @@ pub fn gpgkr_verify(
 }
 
 /// Point's orientation is the reverse of gpgkr_verify
-fn verify_layer(vs: &mut VerifierState, mut claim: Field, point: Point) -> Option<(Point, Field)> {
+fn verify_layer(
+    vs: &mut VerifierState,
+    mut claim: Field,
+    point: Point,
+    security: Option<SecurityLevel>,
+) -> Option<(Point, Field)> {
     let mut prefix = Field::ONE;
 
     let mut next_point: Point = VecDeque::new();
@@ -237,6 +282,10 @@ fn verify_layer(vs: &mut VerifierState, mut claim: Field, point: Point) -> Optio
             (sum_endpoint, (claim - eqjsum0) / z)
         };
 
+        if let Some(security) = security {
+            vs.grind(CUBIC_GRINDING_LABEL, security.grinding_bits(3))
+                .ok()?;
+        }
         let r = vs.verifier_message();
         next_point.push_back(r);
         let factor = eq_factor(r, z);
@@ -253,6 +302,10 @@ fn verify_layer(vs: &mut VerifierState, mut claim: Field, point: Point) -> Optio
     if (prefix * elem_lr[0] * elem_lr[1]) != claim {
         None
     } else {
+        if let Some(security) = security {
+            vs.grind(AFFINE_GRINDING_LABEL, security.grinding_bits(1))
+                .ok()?;
+        }
         let r = vs.verifier_message();
         next_point.push_front(r);
 
@@ -431,6 +484,57 @@ mod tests {
             tampered[0] += Field::ONE;
 
             prop_assert!(!verify(leaves, tampered, proof));
+        }
+    }
+
+    #[test]
+    fn gpgkr_security_targets_replay_and_reject_changed_nonces() {
+        let leaves: Vec<Field> = (1u128..=16).map(Field::from).collect();
+        let point = [Field::from(5u128), Field::from(7u128)];
+        let circuit = GrandProductCircuit::new(leaves.clone());
+        let instance = (leaves.clone(), point.to_vec());
+        let mut legacy_bytes = None;
+
+        for security in [
+            None,
+            Some(SecurityLevel::Bits100),
+            Some(SecurityLevel::Bits128),
+        ] {
+            let (output, witnesses) = circuit.batched_eval(4);
+            let claim = mle(output, &point);
+            let mut prover = transcript::build_prover("gkr-security", &instance);
+            let terminal = gpgkr_prove_with_security(&mut prover, &point, witnesses, security);
+            assert_eq!(terminal.1, mle(leaves.clone(), &terminal.0));
+            let mut proof = prover.finish();
+
+            let mut verifier = transcript::build_verifier("gkr-security", &instance, &proof);
+            assert_eq!(
+                gpgkr_verify_with_security(&mut verifier, claim, &point, 2, security),
+                Some(terminal)
+            );
+            verifier.check_eof().unwrap();
+
+            match security {
+                None => legacy_bytes = Some(proof.narg_string),
+                Some(SecurityLevel::Bits100) => {
+                    assert_eq!(Some(proof.narg_string), legacy_bytes);
+                }
+                Some(SecurityLevel::Bits128) => {
+                    // Two layers have five cubic challenges and five eight-byte nonces.
+                    assert_eq!(
+                        proof.narg_string.len(),
+                        legacy_bytes.as_ref().unwrap().len() + 40
+                    );
+                    // The first cubic message occupies two canonical field elements.
+                    proof.narg_string[32] ^= 1;
+                    let mut verifier =
+                        transcript::build_verifier("gkr-security", &instance, &proof);
+                    assert!(
+                        gpgkr_verify_with_security(&mut verifier, claim, &point, 2, security)
+                            .is_none()
+                    );
+                }
+            }
         }
     }
 
