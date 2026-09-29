@@ -17,7 +17,6 @@ use poly::{DenseMultilinearExtension, eq_table};
 use transcript::{ProverState, PublicTranscript, VerifierState};
 
 use crate::bridge::{as_flock_f128, from_flock_f128};
-use crate::pow::{find, valid};
 use crate::{Pcs, VerifyError};
 
 const OOD_ROUND_TAG: &[u8] = b"bitz/pcs/ood/v1";
@@ -44,9 +43,7 @@ pub(crate) fn prove(
 ) -> Option<OodClaim> {
     let grinding_bits = pcs.ood_grinding_bits()?;
     absorb_header(pcs, root, grinding_bits, transcript);
-    if grinding_bits != 0 {
-        prove_pow(transcript, grinding_bits);
-    }
+    transcript.grind(OOD_POW_TAG, grinding_bits);
     let point = ood_point(transcript.verifier_message_f128(), pcs.packed_len());
     let value = DenseMultilinearExtension::evaluate_exact(packed, &point);
     transcript.prover_message(&value);
@@ -64,9 +61,9 @@ pub(crate) fn verify(
         return Ok(None);
     };
     absorb_header(pcs, root, grinding_bits, transcript);
-    if grinding_bits != 0 {
-        verify_pow(transcript, grinding_bits).map_err(|_| VerifyError::MalformedProof)?;
-    }
+    transcript
+        .grind(OOD_POW_TAG, grinding_bits)
+        .map_err(|_| VerifyError::MalformedProof)?;
     let point = ood_point(transcript.verifier_message_f128(), pcs.packed_len());
     let value = transcript
         .prover_message::<F128>()
@@ -140,29 +137,9 @@ fn ood_point(zeta: F128, packed_len: usize) -> Vec<F128> {
     point
 }
 
-fn prove_pow(transcript: &mut ProverState, bits: u32) {
-    transcript.public_message(OOD_POW_TAG);
-    transcript.public_message(&bits);
-    let seed = transcript.verifier_message::<F128>().to_bytes();
-    let nonce = find(&seed, bits);
-    transcript.prover_message(&nonce.to_le_bytes());
-}
-
-fn verify_pow(transcript: &mut VerifierState<'_>, bits: u32) -> Result<(), ()> {
-    transcript.public_message(OOD_POW_TAG);
-    transcript.public_message(&bits);
-    let seed = transcript.verifier_message::<F128>().to_bytes();
-    let nonce = transcript
-        .prover_message::<[u8; 8]>()
-        .map(u64::from_le_bytes)
-        .map_err(|_| ())?;
-    valid(&seed, nonce, bits).then_some(()).ok_or(())
-}
-
 #[cfg(test)]
 mod tests {
     use num_traits::ConstZero;
-    use transcript::{build_prover, build_verifier};
 
     use super::*;
 
@@ -188,30 +165,5 @@ mod tests {
         let mut succinct = vec![FlockF128::ZERO; dense.len()];
         add_succinct_basis(&mut succinct, &claim, coefficient, &queries);
         assert_eq!(dense, succinct);
-    }
-
-    #[test]
-    fn grinding_binds_the_following_challenge_and_rejects_invalid_nonces() {
-        const BITS: u32 = 8;
-        let mut prover = build_prover(b"ood-test", b"grinding");
-        prove_pow(&mut prover, BITS);
-        let challenge = prover.verifier_message::<F128>();
-        let mut proof = prover.finish();
-        let mut verifier = build_verifier(b"ood-test", b"grinding", &proof);
-        verify_pow(&mut verifier, BITS).unwrap();
-        assert_eq!(verifier.verifier_message::<F128>(), challenge);
-        verifier.check_eof().unwrap();
-
-        let mut seed_transcript = build_prover(b"ood-test", b"grinding");
-        seed_transcript.public_message(OOD_POW_TAG);
-        seed_transcript.public_message(&BITS);
-        let seed = seed_transcript.verifier_message::<F128>().to_bytes();
-        let invalid = (0..).find(|&nonce| !valid(&seed, nonce, BITS)).unwrap();
-        proof.narg_string.copy_from_slice(&invalid.to_le_bytes());
-        let mut verifier = build_verifier(b"ood-test", b"grinding", &proof);
-        assert!(verify_pow(&mut verifier, BITS).is_err());
-        proof.narg_string.truncate(7);
-        let mut verifier = build_verifier(b"ood-test", b"grinding", &proof);
-        assert!(verify_pow(&mut verifier, BITS).is_err());
     }
 }

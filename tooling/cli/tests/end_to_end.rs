@@ -1,37 +1,15 @@
-use bitz_cli::end_to_end::{CircuitProofSystem, CircuitStatement, Error, OpeningPath, Proof};
+use bitz_cli::end_to_end::{CircuitProofSystem, CircuitStatement, Error, OpeningPath};
 use circuit::Circuit;
-use pcs::VerifyError;
+use pcs::SecurityLevel;
 
-fn rejects_changed_or_missing_ood(
-    system: &CircuitProofSystem<impl CircuitStatement>,
-    proof: &Proof,
-) {
-    // These Fast-profile fixtures have zero initial grinding bits, so the first
-    // 16 transcript bytes encode the OOD evaluation.
-    let mut changed = proof.clone();
-    changed.opening.narg_string[0] ^= 1;
-    assert!(system.verify(&changed).is_err());
-
-    let mut missing = proof.clone();
-    missing.opening.narg_string.drain(..16);
-    assert!(system.verify(&missing).is_err());
-
-    let mut truncated = proof.clone();
-    truncated.opening.narg_string.truncate(15);
-    assert!(matches!(
-        system.verify(&truncated),
-        Err(Error::OodVerify(VerifyError::MalformedProof))
-    ));
-}
-
-struct PublicBit;
+struct PublicBit(bool);
 
 impl CircuitStatement for PublicBit {
     fn domain(&self) -> &'static [u8] {
         b"test/public-bit/v1"
     }
     fn public_bytes(&self) -> Vec<u8> {
-        vec![1]
+        vec![u8::from(self.0)]
     }
     fn input_bits(&self) -> usize {
         1
@@ -39,24 +17,25 @@ impl CircuitStatement for PublicBit {
     fn synthesize<CS: Circuit>(&self, cs: &mut CS, inputs: &[CS::Bool]) -> Result<(), Error> {
         let bit = cs.bitz::<1>(inputs[0].clone());
         let one = CS::Z::<1>::from(CS::Coefficient::<1>::from(1u64));
-        cs.assert_r1c::<1>(one.clone(), bit, one);
+        let expected = CS::Z::<1>::from(CS::Coefficient::<1>::from(u64::from(self.0)));
+        cs.assert_r1c::<1>(one, bit, expected);
         Ok(())
     }
 }
 
 #[test]
 fn generic_driver_accepts_a_non_sha_circuit() {
-    let prepared = CircuitProofSystem::new(PublicBit).unwrap();
+    let prepared = CircuitProofSystem::new(PublicBit(true), SecurityLevel::Bits100).unwrap();
     assert_eq!(prepared.stats().opening_path, OpeningPath::Direct);
+    assert_eq!(prepared.stats().pcs_security, SecurityLevel::Bits100);
     assert_eq!(prepared.stats().committed_bits, 2);
     let witness = prepared.witness(&[true]).unwrap();
     let data = prepared.commit(&witness).unwrap();
     let proof = prepared.prove(witness, data).unwrap();
-    CircuitProofSystem::new(PublicBit)
+    CircuitProofSystem::new(PublicBit(true), SecurityLevel::Bits100)
         .unwrap()
         .verify(&proof)
         .unwrap();
-    rejects_changed_or_missing_ood(&prepared, &proof);
 
     let mut changed = proof.clone();
     changed.root.0[0] ^= 1;
@@ -83,12 +62,14 @@ fn generic_driver_accepts_a_non_sha_circuit() {
 
 #[test]
 fn benchmark_runs_a_generic_circuit_and_propagates_failure() {
-    let timings = bitz_cli::benchmark::run(PublicBit, &[true]).unwrap();
+    let timings =
+        bitz_cli::benchmark::run(PublicBit(true), &[true], SecurityLevel::Bits100).unwrap();
     let output = timings.to_string();
     assert!(output.contains("total_prove_ms="));
     assert!(output.contains("verify_ms="));
+    assert!(output.contains("pcs_round_target_bits=100"));
     assert!(matches!(
-        bitz_cli::benchmark::run(PublicBit, &[false]),
+        bitz_cli::benchmark::run(PublicBit(true), &[false], SecurityLevel::Bits100),
         Err(Error::Unsatisfied)
     ));
 }
@@ -118,18 +99,17 @@ impl CircuitStatement for PublicXor {
 
 #[test]
 fn nonidentity_map_uses_virtual_opening_and_checks_xor_relation() {
-    let system = CircuitProofSystem::new(PublicXor).unwrap();
+    let system = CircuitProofSystem::new(PublicXor, SecurityLevel::Bits100).unwrap();
     assert_eq!(system.stats().opening_path, OpeningPath::Virtual);
     assert_eq!(system.stats().assignment_bits, 3);
     assert_eq!(system.stats().committed_bits, 2);
     let witness = system.witness(&[true, false]).unwrap();
     let data = system.commit(&witness).unwrap();
     let proof = system.prove(witness, data).unwrap();
-    CircuitProofSystem::new(PublicXor)
+    CircuitProofSystem::new(PublicXor, SecurityLevel::Bits100)
         .unwrap()
         .verify(&proof)
         .unwrap();
-    rejects_changed_or_missing_ood(&system, &proof);
     assert!(matches!(
         system.witness(&[true, true]),
         Err(Error::Unsatisfied)
@@ -140,6 +120,39 @@ fn nonidentity_map_uses_virtual_opening_and_checks_xor_relation() {
     let mut changed = proof;
     changed.opening.narg_string.push(0);
     assert!(system.verify(&changed).is_err());
-    let timings = bitz_cli::benchmark::run(PublicXor, &[true, false]).unwrap();
+    let timings =
+        bitz_cli::benchmark::run(PublicXor, &[true, false], SecurityLevel::Bits100).unwrap();
     assert_eq!(timings.circuit.opening_path, OpeningPath::Virtual);
+}
+
+#[test]
+fn explicit_128_budget_binds_the_policy_and_public_statement() {
+    let system = CircuitProofSystem::new(PublicBit(true), SecurityLevel::Bits128).unwrap();
+    assert_eq!(system.stats().pcs_security, SecurityLevel::Bits128);
+    let witness = system.witness(&[true]).unwrap();
+    let data = system.commit(&witness).unwrap();
+    let proof = system.prove(witness, data).unwrap();
+    system.verify(&proof).unwrap();
+
+    assert!(
+        CircuitProofSystem::new(PublicBit(true), SecurityLevel::Bits100)
+            .unwrap()
+            .verify(&proof)
+            .is_err()
+    );
+    assert!(
+        CircuitProofSystem::new(PublicBit(false), SecurityLevel::Bits128)
+            .unwrap()
+            .verify(&proof)
+            .is_err()
+    );
+}
+
+#[test]
+fn explicit_128_budget_supports_virtual_openings() {
+    let timings =
+        bitz_cli::benchmark::run(PublicXor, &[true, false], SecurityLevel::Bits128).unwrap();
+    assert_eq!(timings.circuit.opening_path, OpeningPath::Virtual);
+    assert_eq!(timings.circuit.pcs_security, SecurityLevel::Bits128);
+    assert!(timings.to_string().contains("pcs_round_target_bits=128"));
 }

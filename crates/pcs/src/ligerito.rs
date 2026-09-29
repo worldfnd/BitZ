@@ -10,7 +10,7 @@ use flock_core::field::F128 as FlockF128;
 use flock_core::pcs::LOG_PACKING;
 use flock_core::pcs::PcsParams;
 use flock_core::pcs::ligerito::{
-    LigeritoProof, LigeritoSecurityConfig, ProverConfig, VerifierConfig,
+    LigeritoProof, LigeritoSecurityConfig, ProverConfig, SoundnessRegime, VerifierConfig,
     recursive_prover_with_basis, recursive_verifier_with_basis_succinct,
 };
 use transcript::{ProverState, VerifierState};
@@ -27,6 +27,7 @@ pub(crate) struct CheckedLigerito {
     verifier_config: VerifierConfig,
     log_n_u32: u32,
     final_log_n: usize,
+    pow_schedule: Vec<(u32, u32)>,
 }
 
 impl CheckedLigerito {
@@ -45,12 +46,34 @@ impl CheckedLigerito {
             .map_err(|_| ConfigError::Invalid("prover config"))?;
         validate_pcs_verifier_prover(params, &prover_config, &verifier_config)?;
         let final_log_n = validate_verifier_config(&verifier_config, log_n, params.log_batch_size)?;
+        let mut pow_schedule = Vec::new();
+        for level in &security.levels {
+            if matches!(level.regime, SoundnessRegime::Udr)
+                && level.fold_grinding_bits != 0
+                && level.fold_grinding_bits < level.k_recursive
+            {
+                return Err(ConfigError::Invalid("missing native fold grinding hook"));
+            }
+            let bits = level.fold_grinding_bits as u32;
+            for round in 0..level.k_recursive {
+                let native = bits.saturating_sub(round as u32);
+                if native > 0 {
+                    let effective = match level.regime {
+                        SoundnessRegime::Udr => bits,
+                        SoundnessRegime::JohnsonOod => native,
+                    };
+                    pow_schedule.push((native, effective));
+                }
+            }
+            pow_schedule.push((level.grinding_bits as u32, level.grinding_bits as u32));
+        }
 
         Ok(Self {
             prover_config,
             verifier_config,
             log_n_u32,
             final_log_n,
+            pow_schedule,
         })
     }
 
@@ -68,6 +91,10 @@ impl CheckedLigerito {
 
     pub(crate) fn final_log_n(&self) -> usize {
         self.final_log_n
+    }
+
+    pub(crate) fn pow_schedule(&self) -> &[(u32, u32)] {
+        &self.pow_schedule
     }
 }
 
@@ -116,7 +143,8 @@ impl<'a> ReducedProver<'a> {
             packed_basis,
             packed_target,
         } = claim;
-        let mut challenger = ProverChallenger::new_ligerito(transcript, packed_target);
+        let mut challenger =
+            ProverChallenger::new_ligerito(transcript, packed_target, self.pcs.pow_schedule());
         let flock_data = self.data.flock_data();
         let ligerito = recursive_prover_with_basis(
             self.pcs.prover_config(),
@@ -183,7 +211,7 @@ pub(crate) fn validate_verifier_config(
         return Err(ConfigError::Invalid("initial_log_num_interleaved mismatch"));
     }
     if config.ood_samples[0] != 0 {
-        return Err(ConfigError::Invalid("ood_samples[0] is nonzero"));
+        return Err(ConfigError::Invalid("initial OOD belongs to commitment"));
     }
     if config.log_inv_rates.contains(&0) {
         return Err(ConfigError::Invalid("log_inv_rates contains zero"));
@@ -249,14 +277,7 @@ pub(crate) fn validate_verifier_config(
 }
 
 pub(crate) fn validate_prover_data(pcs: &Pcs, data: &ProverData) -> Result<(), ProveError> {
-    let expected = pcs.params();
-    let actual = &data.commitment().params;
-    if expected.m != actual.m
-        || expected.log_inv_rate != actual.log_inv_rate
-        || expected.log_batch_size != actual.log_batch_size
-        || expected.profile != actual.profile
-        || expected.merkle_hash != actual.merkle_hash
-    {
+    if !data.commitment().matches(pcs) {
         return Err(ProveError::ProverDataMismatch);
     }
     Ok(())
@@ -290,7 +311,8 @@ pub(crate) fn verify_succinct<F>(
 where
     F: Fn(&[FlockF128], usize) -> Vec<FlockF128>,
 {
-    let mut challenger = VerifierChallenger::new_ligerito(transcript, packed_target);
+    let mut challenger =
+        VerifierChallenger::new_ligerito(transcript, packed_target, pcs.pow_schedule());
     let valid = recursive_verifier_with_basis_succinct(
         pcs.verifier_config(),
         proof,
@@ -472,7 +494,7 @@ fn proof_options() -> impl Options {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CommitScheme, HashKind, LigeritoProfile, OpeningQuery, StatementBinding};
+    use crate::{CommitScheme, OpeningQuery, SecurityLevel, StatementBinding};
     use common::Shape;
     use flock_core::pcs::LOG_PACKING;
     use num_traits::ConstZero;
@@ -524,7 +546,7 @@ mod tests {
 
     fn registered_config() -> (VerifierConfig, usize, usize) {
         let shape = Shape::new(7, 15).unwrap();
-        let pcs = Pcs::new(&shape, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
+        let pcs = Pcs::new(&shape, SecurityLevel::Bits100).unwrap();
         let config = pcs.verifier_config().clone();
         (
             config,
@@ -596,14 +618,14 @@ mod tests {
         const SESSION: &[u8] = b"pcs-proof-shape-test";
         const INSTANCE: &[u8] = b"zero-polynomial";
         let shape = Shape::new(7, 15).unwrap();
-        let pcs = Pcs::new(&shape, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
+        let pcs = Pcs::new(&shape, SecurityLevel::Bits100).unwrap();
         let packed_witness = vec![F128::ZERO; pcs.packed_len()];
-        let (commitment, data) = pcs.commit(&packed_witness).unwrap();
+        let mut prover = build_prover(SESSION, INSTANCE);
+        let (commitment, data) = pcs.commit(&packed_witness, &mut prover).unwrap();
         let query = OpeningQuery::Mle {
             point: vec![F128::from(2u64); 22],
             target: F128::ZERO,
         };
-        let mut prover = build_prover(SESSION, INSTANCE);
         pcs.prove_lin(
             &data,
             packed_witness,
@@ -626,12 +648,15 @@ mod tests {
         );
 
         type ProofMutation = fn(&mut LigeritoProof);
-        let mutations: [(&str, ProofMutation); 2] = [
+        let mutations: [(&str, ProofMutation); 3] = [
             ("recursive-root count", |proof| {
                 proof.recursive_roots.pop();
             }),
             ("opened-row width", |proof| {
                 proof.initial_proof.opened_rows[0].pop();
+            }),
+            ("unexpected OOD value", |proof| {
+                proof.ood_values.push(FlockF128::ZERO);
             }),
         ];
 

@@ -4,18 +4,19 @@ use common::LinearClaim;
 use field::F128;
 use flock_core::field::F128 as FlockF128;
 use flock_core::pcs::pack::PACKING_WIDTH as CLAIM_COUNT;
-use transcript::{ProverState, PublicTranscript, VerifierState};
+use transcript::{ProverState, PublicTranscript, SecurityLevel, VerifierState};
 
 use crate::bridge::{as_flock_f128, as_flock_f128s, from_flock_f128};
 use crate::ligerito::{self, ReducedProver};
 use crate::ood::{OodClaim, add_dense_basis, add_succinct_basis, batching_challenge};
-use crate::{OpeningQuery, Pcs, ProverData, Root, StatementBinding, VerifierData, mle, sumcheck};
+use crate::{Commitment, OpeningQuery, Pcs, ProverData, Root, StatementBinding, mle, sumcheck};
 
 const MLE_STATEMENT_LABEL: &[u8] = b"bitz/pcs/mle-opening/v1";
-const INNER_PRODUCT_STATEMENT_LABEL: &[u8] = b"bitz/pcs/bit-inner-product/v2";
+const INNER_PRODUCT_STATEMENT_LABEL: &[u8] = b"bitz/pcs/bit-inner-product/v1";
 const SUMCHECK_LABEL: &[u8] = b"bitz/pcs/inner-product-sumcheck/v1";
 const MLE_CLAIMS_LABEL: &[u8] = b"bitz/pcs/mle-claims/v1";
 const CHALLENGES_LABEL: &[u8] = b"bitz/pcs/ring-switch-challenges/v1";
+const RING_GRINDING_LABEL: &[u8] = b"bitz/pcs/ring/v1";
 
 /// Errors from opening proof creation.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -83,28 +84,6 @@ impl From<QueryError> for VerifyError {
     }
 }
 
-/// Verifies an opening batched with the OOD claim retained at commitment ingestion.
-///
-/// Use the state returned by [`Pcs::receive_commitment`] and continue its transcript.
-/// The state is borrowed so multiple openings can authenticate the same OOD claim.
-/// Profiles without OOD sampling verify the ordinary linear claim.
-pub(crate) fn verify_lin_with_ood(
-    pcs: &Pcs,
-    commitment: &VerifierData,
-    query: &OpeningQuery,
-    statement_binding: StatementBinding,
-    transcript: &mut VerifierState<'_>,
-) -> Result<(), VerifyError> {
-    verify(
-        pcs,
-        &commitment.root,
-        query,
-        statement_binding,
-        commitment.ood.as_ref(),
-        transcript,
-    )
-}
-
 #[tracing::instrument(name = "Prove PCS opening", skip_all)]
 pub(crate) fn prove(
     pcs: &Pcs,
@@ -114,28 +93,40 @@ pub(crate) fn prove(
     statement_binding: StatementBinding,
     transcript: &mut ProverState,
 ) -> Result<(), ProveError> {
+    let commitment = data.commitment();
+    if !commitment.matches(pcs) {
+        return Err(ProveError::ProverDataMismatch);
+    }
     match query {
         OpeningQuery::Mle { point, target } => {
             let ring_switch = mle::RingSwitch::new(point, pcs.params().m)?;
             let prover = ReducedProver::new(pcs, data, packed_witness)?;
             if statement_binding == StatementBinding::Bind {
-                bind_mle_statement(pcs, &data.commitment().root, point, *target, transcript);
+                bind_mle_statement(pcs, &commitment.root().0, point, *target, transcript);
             }
-            prove_mle(prover, ring_switch, *target, data.ood.as_ref(), transcript)
+            prove_mle(
+                prover,
+                ring_switch,
+                *target,
+                commitment.ood.as_ref(),
+                pcs.security_level(),
+                transcript,
+            )
         }
         OpeningQuery::InnerProduct { claim } => {
             validate_inner_product_claim(pcs, claim)?;
             let prover = ReducedProver::new(pcs, data, packed_witness)?;
             if statement_binding == StatementBinding::Bind {
-                bind_inner_product_statement(pcs, &data.commitment().root, claim, transcript);
+                bind_inner_product_statement(pcs, &commitment.root().0, claim, transcript);
             }
             transcript.public_message(SUMCHECK_LABEL);
-            let reduced = sumcheck::prove(claim, prover.witness(), transcript)?;
+            let reduced =
+                sumcheck::prove(claim, prover.witness(), pcs.security_level(), transcript)?;
             let ring_switch = mle::RingSwitch::new(&reduced.point, pcs.params().m)?;
             // AlreadyBound covers the original claim, before the reduction produces this MLE claim.
             bind_mle_statement(
                 pcs,
-                &data.commitment().root,
+                &commitment.root().0,
                 &reduced.point,
                 reduced.target,
                 transcript,
@@ -144,7 +135,8 @@ pub(crate) fn prove(
                 prover,
                 ring_switch,
                 reduced.target,
-                data.ood.as_ref(),
+                commitment.ood.as_ref(),
+                pcs.security_level(),
                 transcript,
             )
         }
@@ -154,41 +146,45 @@ pub(crate) fn prove(
 #[tracing::instrument(name = "Verify PCS opening", skip_all)]
 pub(crate) fn verify(
     pcs: &Pcs,
-    commitment: &Root,
+    commitment: &Commitment,
     query: &OpeningQuery,
     statement_binding: StatementBinding,
-    ood_claim: Option<&OodClaim>,
     transcript: &mut VerifierState<'_>,
 ) -> Result<(), VerifyError> {
+    if !commitment.matches(pcs) {
+        return Err(VerifyError::VerificationFailed);
+    }
+    let root = &commitment.root;
     match query {
         OpeningQuery::Mle { point, target } => {
             let ring_switch = mle::RingSwitch::new(point, pcs.params().m)?;
             if statement_binding == StatementBinding::Bind {
-                bind_mle_statement(pcs, &commitment.0, point, *target, transcript);
+                bind_mle_statement(pcs, &root.0, point, *target, transcript);
             }
-            verify_mle(pcs, commitment, ring_switch, *target, ood_claim, transcript)
+            verify_mle(
+                pcs,
+                root,
+                ring_switch,
+                *target,
+                commitment.ood.as_ref(),
+                transcript,
+            )
         }
         OpeningQuery::InnerProduct { claim } => {
             validate_inner_product_claim(pcs, claim)?;
             if statement_binding == StatementBinding::Bind {
-                bind_inner_product_statement(pcs, &commitment.0, claim, transcript);
+                bind_inner_product_statement(pcs, &root.0, claim, transcript);
             }
             transcript.public_message(SUMCHECK_LABEL);
-            let reduced = sumcheck::verify(claim, transcript)?;
+            let reduced = sumcheck::verify(claim, pcs.security_level(), transcript)?;
             let ring_switch = mle::RingSwitch::new(&reduced.point, pcs.params().m)?;
-            bind_mle_statement(
-                pcs,
-                &commitment.0,
-                &reduced.point,
-                reduced.target,
-                transcript,
-            );
+            bind_mle_statement(pcs, &root.0, &reduced.point, reduced.target, transcript);
             verify_mle(
                 pcs,
-                commitment,
+                root,
                 ring_switch,
                 reduced.target,
-                ood_claim,
+                commitment.ood.as_ref(),
                 transcript,
             )
         }
@@ -214,6 +210,7 @@ fn prove_mle(
     ring_switch: mle::RingSwitch<'_>,
     target: F128,
     ood_claim: Option<&OodClaim>,
+    security: SecurityLevel,
     transcript: &mut ProverState,
 ) -> Result<(), ProveError> {
     let dense_reduction = {
@@ -221,6 +218,11 @@ fn prove_mle(
         let prepared_claims =
             ring_switch.prepare_claims(as_flock_f128s(prover.witness()), target)?;
         write_claims(transcript, &prepared_claims.claims);
+        // The seven coordinates and optional OOD coefficient share one challenge block.
+        transcript.grind(
+            RING_GRINDING_LABEL,
+            security.grinding_bits(7 + usize::from(ood_claim.is_some())),
+        );
         let batching_point = sample_challenges(transcript);
         let mut reduced = prepared_claims.reduce_dense(&batching_point);
         if let Some(claim) = ood_claim {
@@ -249,6 +251,13 @@ fn verify_mle(
         if !ring_switch.target_matches(&claims, target) {
             return Err(VerifyError::VerificationFailed);
         }
+        transcript
+            .grind(
+                RING_GRINDING_LABEL,
+                pcs.security_level()
+                    .grinding_bits(7 + usize::from(ood_claim.is_some())),
+            )
+            .map_err(|_| VerifyError::MalformedProof)?;
         let batching_point = sample_challenges(transcript);
         ring_switch.reduce_succinct(&claims, &batching_point)
     };

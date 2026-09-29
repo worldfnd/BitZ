@@ -40,6 +40,12 @@ Select the workload with `--circuit`:
 `--num-blocks` to set the chain or block-aligned message length in 64-byte blocks.
 Use `--threads` to set the number of worker threads.
 
+Use `--pcs-security-bits 100` or `128` to select the PCS round budget; the default is `100`.
+The implementation derives internal parameters from the padded witness size.
+The `100` target uses list decoding and an initial out-of-domain (OOD) check.
+The `128` target uses unique decoding and omits that check.
+Spartan still uses `Q100`; this option does include spartan yet.
+
 ## Benchmarks
 
 Run all SHA-256 circuit benchmarks with one Rayon worker:

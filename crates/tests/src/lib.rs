@@ -12,7 +12,7 @@
 use common::{BitTable, BitZParams, LinearClaim, Root, Shape};
 use crypto_primitives::LiftElement;
 use field::{F128, Fq, gf128::smallest_generator};
-use pcs::{HashKind, LigeritoProfile, Pcs, ProverData};
+use pcs::{Pcs, ProverData};
 use rand_chacha::ChaCha8Rng;
 use rand_core::{Rng, SeedableRng};
 use transcript::{Proof, ProverState, VerifierState, build_prover, build_verifier};
@@ -79,8 +79,8 @@ impl Instance {
 
         let claim = LinearClaim::new(&params, row_weights, column_weights, target).unwrap();
 
-        let pcs = Pcs::new(&shape, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
-        let (com, data) = pcs.commit(&packed).unwrap();
+        let pcs = Pcs::new(&shape, transcript::SecurityLevel::Bits100).unwrap();
+        let (com, data) = pcs.commit(&packed, &mut prover_transcript()).unwrap();
 
         Self {
             params,
@@ -92,6 +92,20 @@ impl Instance {
             data,
             packed,
         }
+    }
+
+    /// Receives the commitment before the BitZ proof draws witness-dependent challenges.
+    pub fn verify(
+        &self,
+        claim: &LinearClaim<Fq<Q>>,
+        pcs: &Pcs,
+        root: Root,
+        mut transcript: VerifierState<'_>,
+    ) -> Result<(), verifier::VerifyError> {
+        let commitment = pcs
+            .receive_commitment(root, &mut transcript)
+            .map_err(verifier::VerifyError::Opening)?;
+        self.verifier.verify(claim, pcs, &commitment, transcript)
     }
 
     pub fn table(&self) -> BitTable<'_> {

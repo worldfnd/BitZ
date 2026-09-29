@@ -31,7 +31,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut transcript = prover_transcript();
     let (_, data) = instance
         .pcs
-        .commit_with_ood(&instance.packed, &mut transcript)
+        .commit(&instance.packed, &mut transcript)
         .unwrap();
     instance
         .prover
@@ -47,7 +47,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("prove: {:.1?}", started.elapsed());
     let started = std::time::Instant::now();
     instance
-        .verifier
         .verify(
             &instance.claim,
             &instance.pcs,

@@ -29,12 +29,14 @@
 mod bytes;
 mod challenge;
 mod domain;
+pub mod pow;
 mod proof;
 mod prover;
 mod verifier;
 
 pub use challenge::TranscriptChallenge;
 pub use domain::{PROTOCOL_LABEL, build_prover, build_verifier};
+pub use pow::SecurityLevel;
 pub use proof::Proof;
 pub use prover::ProverState;
 pub use spongefish::{

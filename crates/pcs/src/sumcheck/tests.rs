@@ -3,12 +3,12 @@ use std::sync::OnceLock;
 use common::{LinearClaim, Shape};
 use field::F128;
 use num_traits::ConstZero;
-use transcript::{Proof, PublicTranscript, VerifierState, build_prover, build_verifier};
+use transcript::{
+    Proof, PublicTranscript, SecurityLevel, VerifierState, build_prover, build_verifier,
+};
 
 use super::{prove, verify};
-use crate::{
-    CommitScheme, HashKind, LigeritoProfile, OpeningQuery, Pcs, StatementBinding, VerifyError,
-};
+use crate::{CommitScheme, OpeningQuery, Pcs, StatementBinding, VerifyError};
 
 const M: usize = 22;
 const SESSION: &[u8] = b"pcs-sumcheck-format-test";
@@ -55,7 +55,7 @@ struct Fixture {
 
 impl Fixture {
     fn build() -> Self {
-        // Shape requires at least 2^22 bits, so this is the smallest valid commitment size.
+        // Use a fixed commitment size for round-message mutation tests.
         let shape = shape();
         let target = SET_BITS
             .into_iter()
@@ -76,7 +76,7 @@ impl Fixture {
         let witness = sparse_witness(1 << shape.log_packed_len());
         let mut prover = build_prover(SESSION, INSTANCE);
         bind_claim(&mut prover, &claim);
-        let reduced = prove(&claim, &witness, &mut prover).unwrap();
+        let reduced = prove(&claim, &witness, SecurityLevel::Bits100, &mut prover).unwrap();
         Self {
             claim,
             proof: prover.finish(),
@@ -101,7 +101,7 @@ fn fixture() -> &'static Fixture {
 fn standalone_proof_returns_the_witness_mle_evaluation() {
     let fixture = fixture();
     let mut verifier = fixture.verifier(&fixture.proof);
-    let reduced = verify(&fixture.claim, &mut verifier).unwrap();
+    let reduced = verify(&fixture.claim, SecurityLevel::Bits100, &mut verifier).unwrap();
     assert_eq!(reduced.point, fixture.point);
     assert_eq!(reduced.target, fixture.evaluation);
     let expected = SET_BITS
@@ -138,7 +138,7 @@ fn rejects_truncated_rounds_and_witness_evaluation() {
         proof.narg_string.truncate(length);
         let mut verifier = fixture.verifier(&proof);
         assert_eq!(
-            verify(&fixture.claim, &mut verifier).err(),
+            verify(&fixture.claim, SecurityLevel::Bits100, &mut verifier).err(),
             Some(VerifyError::MalformedProof),
         );
     }
@@ -159,18 +159,42 @@ fn rejects_changed_round_coefficients_and_witness_evaluation() {
         proof.narg_string[offset] ^= 1;
         let mut verifier = fixture.verifier(&proof);
         assert_eq!(
-            verify(&fixture.claim, &mut verifier).err(),
+            verify(&fixture.claim, SecurityLevel::Bits100, &mut verifier).err(),
             Some(VerifyError::VerificationFailed),
         );
     }
 }
 
 #[test]
+fn round_grinding_replays_and_rejects_a_missing_nonce_or_wrong_budget() {
+    let fixture = fixture();
+    let witness = sparse_witness(1 << shape().log_packed_len());
+    let security = SecurityLevel::Bits128;
+    let mut prover = build_prover(SESSION, INSTANCE);
+    bind_claim(&mut prover, &fixture.claim);
+    let expected = prove(&fixture.claim, &witness, security, &mut prover).unwrap();
+    let proof = prover.finish();
+    assert_eq!(proof.narg_string.len(), M * (ROUND_BYTES + 8) + 16);
+
+    let mut verifier = fixture.verifier(&proof);
+    let actual = verify(&fixture.claim, security, &mut verifier).unwrap();
+    assert_eq!(actual.point, expected.point);
+    assert_eq!(actual.target, expected.target);
+    verifier.check_eof().unwrap();
+
+    let mut verifier = fixture.verifier(&proof);
+    assert!(verify(&fixture.claim, SecurityLevel::Bits100, &mut verifier).is_err());
+    let mut missing = proof;
+    missing.narg_string.drain(ROUND_BYTES..ROUND_BYTES + 8);
+    let mut verifier = fixture.verifier(&missing);
+    assert!(verify(&fixture.claim, security, &mut verifier).is_err());
+}
+
+#[test]
 fn zero_weight_factor_still_requires_the_correct_pcs_witness_evaluation() {
     let shape = shape();
-    let pcs = Pcs::new(&shape, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
+    let pcs = Pcs::new(&shape, SecurityLevel::Bits100).unwrap();
     let witness = sparse_witness(pcs.packed_len());
-    let (commitment, data) = pcs.commit(&witness).unwrap();
 
     for zero_rows in [true, false] {
         let mut row_weights = (0..shape.rows()).map(factor_weight).collect::<Vec<_>>();
@@ -187,6 +211,7 @@ fn zero_weight_factor_still_requires_the_correct_pcs_witness_evaluation() {
                 .unwrap(),
         };
         let mut prover = build_prover(SESSION, b"zero-inner-product-factor");
+        let (root, data) = pcs.commit(&witness, &mut prover).unwrap();
         pcs.prove_lin(
             &data,
             witness.clone(),
@@ -197,14 +222,19 @@ fn zero_weight_factor_still_requires_the_correct_pcs_witness_evaluation() {
         .unwrap();
         let proof = prover.finish();
         let mut verifier = build_verifier(SESSION, b"zero-inner-product-factor", &proof);
+        let commitment = pcs.receive_commitment(root, &mut verifier).unwrap();
         pcs.verify_lin(&commitment, &query, StatementBinding::Bind, &mut verifier)
             .unwrap();
         verifier.check_eof().unwrap();
 
         // A zero factor leaves this value unconstrained until the full PCS checks the MLE opening.
         let mut changed_proof = proof;
-        changed_proof.narg_string[EVALUATION_OFFSET] ^= 1;
+        let initial_bytes = pcs
+            .ood_grinding_bits()
+            .map_or(0, |bits| 16 + usize::from(bits > 0) * 8);
+        changed_proof.narg_string[initial_bytes + EVALUATION_OFFSET] ^= 1;
         let mut verifier = build_verifier(SESSION, b"zero-inner-product-factor", &changed_proof);
+        let commitment = pcs.receive_commitment(root, &mut verifier).unwrap();
         assert_eq!(
             pcs.verify_lin(&commitment, &query, StatementBinding::Bind, &mut verifier),
             Err(VerifyError::VerificationFailed),

@@ -5,7 +5,6 @@
 pub const PACK_BITS: u32 = 7;
 
 /// The size window for dynamically derived opening parameters.
-/// Legacy profiles require at least `2^22` bits.
 pub const MIN_LOG_BITS: usize = 20;
 /// The upper end of that window.
 pub const MAX_LOG_BITS: usize = 35;

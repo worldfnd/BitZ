@@ -3,7 +3,7 @@
 use common::{BitTable, Fold, FoldError, LinearClaim, column_images, fold_columns, row_images};
 
 use crate::BitZProver;
-use transcript::ProverState;
+use transcript::{ProverState, SecurityLevel};
 
 /// A fold the prover cannot produce.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,6 +37,7 @@ impl<const Q: u128> BitZProver<Q> {
         claim: &LinearClaim<field::Fq<Q>>,
         table: &BitTable<'_>,
         transcript: &mut ProverState,
+        security: SecurityLevel,
     ) -> Result<Fold, SendError> {
         // The weights are sized by the configured row count while the bits are
         // read at the table's. Disagreement is a panic, a silently wrong fold, or
@@ -56,6 +57,10 @@ impl<const Q: u128> BitZProver<Q> {
 
         let images = column_images(self.comb(), &folds);
         let row_images = row_images(self.comb(), &exponents);
+        transcript.grind(
+            b"bitz/columns/v1",
+            security.grinding_bits(shape.log_columns()),
+        );
         let zeta = (0..shape.log_columns())
             .map(|_| transcript.verifier_message())
             .collect();

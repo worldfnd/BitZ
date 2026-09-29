@@ -16,9 +16,11 @@
 use common::LinearClaim;
 use field::F128;
 use num_traits::ConstZero;
-use transcript::{ProverState, VerifierState};
+use transcript::{ProverState, SecurityLevel, VerifierState};
 
 use crate::{ProveError, VerifyError};
+
+const GRINDING_LABEL: &[u8] = b"bitz/pcs/sumcheck/v1";
 
 /// A pending evaluation claim over the original committed bit polynomial.
 pub(super) struct MleClaim {
@@ -34,6 +36,7 @@ pub(super) struct MleClaim {
 pub(super) fn prove(
     claim: &LinearClaim<F128>,
     packed_witness: &[F128],
+    security: SecurityLevel,
     transcript: &mut ProverState,
 ) -> Result<MleClaim, ProveError> {
     let mut rows = claim.row_weights().to_vec();
@@ -59,6 +62,7 @@ pub(super) fn prove(
             return Err(ProveError::InvalidClaim);
         }
         transcript.prover_message(&coefficients);
+        transcript.grind(GRINDING_LABEL, security.grinding_bits(2));
         let challenge = transcript.verifier_message::<F128>();
         target = evaluate_round(coefficients, challenge);
         point.push(challenge);
@@ -85,6 +89,7 @@ pub(super) fn prove(
 #[tracing::instrument(name = "Verify inner-product sumcheck", skip_all)]
 pub(super) fn verify(
     claim: &LinearClaim<F128>,
+    security: SecurityLevel,
     transcript: &mut VerifierState<'_>,
 ) -> Result<MleClaim, VerifyError> {
     let mut rows = claim.row_weights().to_vec();
@@ -99,6 +104,9 @@ pub(super) fn verify(
         if coefficients[1] + coefficients[2] != target {
             return Err(VerifyError::VerificationFailed);
         }
+        transcript
+            .grind(GRINDING_LABEL, security.grinding_bits(2))
+            .map_err(|_| VerifyError::MalformedProof)?;
         let challenge = transcript.verifier_message::<F128>();
         target = evaluate_round(coefficients, challenge);
         point.push(challenge);

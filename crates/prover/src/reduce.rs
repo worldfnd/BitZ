@@ -10,7 +10,7 @@ use field::F128;
 use gkr::{GrandProductCircuit, gpgkr_prove};
 use num_traits::ConstOne;
 use poly::eq_table;
-use transcript::ProverState;
+use transcript::{ProverState, SecurityLevel};
 
 #[inline(never)]
 #[tracing::instrument(name = "Build grand-product circuit", level = "debug", skip_all)]
@@ -56,11 +56,12 @@ pub fn gkr_reduce(
     transcript: &mut ProverState,
     fold: &Fold,
     table: &BitTable,
+    security: SecurityLevel,
 ) -> Result<OpeningQuery, ClaimError> {
     let circuit = init_circuit(table, fold);
     let (_last_value, witnesses) = circuit.batched_eval(table.shape().columns());
 
-    let (mut point, claim) = gpgkr_prove(transcript, &fold.zeta, witnesses);
+    let (mut point, claim) = gpgkr_prove(transcript, &fold.zeta, witnesses, security);
 
     // The multilinear extension of the constant-one table is one at every point.
     let inner_product_claim = claim - F128::ONE;
@@ -143,7 +144,7 @@ mod order_check_ai_test {
         let fold = Fold::new(&shape, folds, images, row_images, zeta).unwrap();
 
         let mut prover = transcript::build_prover("order-check", &F128::ZERO);
-        let query = gkr_reduce(&mut prover, &fold, &table).unwrap();
+        let query = gkr_reduce(&mut prover, &fold, &table, SecurityLevel::Bits100).unwrap();
         check_query(&query, &table);
     }
 
@@ -177,7 +178,7 @@ mod order_check_ai_test {
             .unwrap();
 
             let mut prover = transcript::build_prover("narrow-table", &F128::ZERO);
-            let query = gkr_reduce(&mut prover, &fold, &table).unwrap();
+            let query = gkr_reduce(&mut prover, &fold, &table, SecurityLevel::Bits100).unwrap();
             check_query(&query, &table);
         }
     }
@@ -202,7 +203,7 @@ mod order_check_ai_test {
         let fold = Fold::new(&shape, folds, images, row_images, zeta).unwrap();
 
         let mut prover = transcript::build_prover("order-check-b", &F128::ZERO);
-        let query = gkr_reduce(&mut prover, &fold, &table).unwrap();
+        let query = gkr_reduce(&mut prover, &fold, &table, SecurityLevel::Bits100).unwrap();
         check_query(&query, &table);
     }
 
