@@ -514,11 +514,10 @@ mod tests {
     use crate::sha256::{COMPRESSION_HINT_BITS, COMPRESSION_INPUT_BITS, compression_circuit};
     use crate::witgen::Witgen;
     use crate::{BoolRepresentation, BoolWitness, Circuit};
-    use num_bigint::BigInt;
 
     use super::*;
 
-    type R = BigInt;
+    type R = num_bigint::BigInt;
 
     fn example_circuit<CS: Circuit>(circuit: &mut CS, inputs: &[CS::Bool; 3]) {
         let xy = circuit.xor(inputs[0].clone(), inputs[1].clone());

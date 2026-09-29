@@ -3,7 +3,7 @@
 use common::{BitZParams, FoldError, LinearClaim};
 use crypto_primitives::{BaseField, WithAssociatedInteger};
 use field::{F128, gf128::smallest_generator};
-use num_traits::{ConstOne, ConstZero, ToBytes};
+use num_traits::{Bounded, ConstOne, ConstZero, ToBytes};
 use prover::{BitZProver, SendError};
 use tests::{Instance, WINDOW, narrow_shape, prover_transcript, verifier_transcript, wide_shape};
 use transcript::Proof;
@@ -105,7 +105,7 @@ fn a_fold_at_the_bound_is_accepted_and_one_past_it_is_not() {
     let table = params.table(&packed).unwrap();
     let claim = LinearClaim::new(
         &params,
-        vec![F::from(modulus - 1); shape.rows()],
+        vec![F::max_value(); shape.rows()],
         vec![F::ONE; shape.columns()],
         F::from(fold) * F::from(shape.columns() as u128),
     )
@@ -199,14 +199,13 @@ fn a_truncated_proof_is_refused_rather_than_read_past() {
 #[test]
 fn an_all_zero_witness_folds_to_zero_and_still_round_trips() {
     let shape = narrow_shape();
-    let modulus = F::modulus();
     let packed = vec![F128::ZERO; (1 << shape.log_bits()) / 128];
     let params = BitZParams::<F>::new(shape, smallest_generator()).unwrap();
     let prover = BitZProver::new(params, WINDOW);
     let verifier = BitZVerifier::new(params, WINDOW);
     let claim = LinearClaim::new(
         &params,
-        vec![F::from(modulus - 1); shape.rows()],
+        vec![F::max_value(); shape.rows()],
         vec![F::from(3u128); shape.columns()],
         F::from(0u128),
     )
