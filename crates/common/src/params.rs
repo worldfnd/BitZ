@@ -1,16 +1,19 @@
 //! The protocol parameters: everything both sides fix before a claim exists.
 
 use crate::{BitTable, BitzClaimField, Shape, TableError, VirtualMap};
-use field::{F128, gf128::is_generator};
-use num_traits::{Bounded, CheckedMul, ToBytes};
+use field::{
+    F128,
+    gf128::{MULT_ORDER, is_generator},
+};
+use num_traits::{CheckedMul, ToBytes};
 use spongefish::Encoding;
 use std::marker::PhantomData;
 
 /// A parameter set one of the pre-claim gates rejects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParamsError {
-    /// `(k_1 + 1)(Q - 1)` reaches `ord(g)`, so two folds could collide in the
-    /// exponent.
+    /// `(k_1 + 1)(Q - 1)` reaches `ord(g)`, so a sent fold and the honest
+    /// exponent could collide in the exponent.
     FoldBoundExceeded,
     /// The generator's order is not the full group, so a fold is not the only
     /// exponent producing its image.
@@ -36,23 +39,20 @@ impl<F: BitzClaimField> BitZParams<F> {
         // The field asserts its modulus is an odd prime below 2^126 on its own
         // behalf, so no modulus gate is needed here.
 
-        // `ord(g) > (k_1 + 1)(Q - 1)`, the paper's requisite. A fold is an
-        // integer at most `k_1 (Q - 1)` while the value it is compared against
-        // is at most `Q - 1`, so the two differ by at most the sum; the
-        // exponent is only ever seen modulo `ord(g)`, and a gap that never
-        // reaches the group order cannot close.
+        // `g^{<f_j, gamma>} = g^{eta_j}` implies integer equality only if both
+        // sides, each in `[0, k_1 (Q - 1)]`, differ by less than `ord(g)`.
+        // The paper asks for `Q < (|K| - 1) / k_1`; the PoC's slightly stricter
+        // `(k_1 + 1)(Q - 1) < ord(g)` is kept, and it implies the paper's.
         //
-        // Overflow is itself a rejection: past `2^128 - 1` there is no room
-        // left. `ord(g)` is `u128::MAX`, the full order the generator gate
-        // below establishes.
-        let f_max = F::max_value().lift();
+        // `ord(g) = 2^128 - 1` is a property of `F128`, established by the
+        // generator gate below. A product that overflows exceeds it too.
+        let f128_order = F::Integer::from(MULT_ORDER);
+        let max_f = F::max_value().lift();
         let rows_plus_one = F::Integer::from(shape.rows() as u64 + 1);
-        let Some(gap) = f_max.checked_mul(&rows_plus_one) else {
-            return Err(ParamsError::FoldBoundExceeded);
-        };
-        // A `u128` cannot exceed `ord(g)`, so equalling it is the only way
-        // left to reach it.
-        if gap == F::Integer::max_value() {
+        if !max_f
+            .checked_mul(&rows_plus_one)
+            .is_some_and(|gap| gap < f128_order)
+        {
             return Err(ParamsError::FoldBoundExceeded);
         }
         if !is_generator(generator) {
@@ -93,20 +93,16 @@ impl<F: BitzClaimField> BitZParams<F> {
     }
 }
 
-/// Every field is fixed width, so distinct parameter sets cannot encode alike.
+/// Every field is fixed width, the modulus at `F::Integer`'s, so distinct
+/// parameter sets cannot encode alike.
 impl<F: BitzClaimField> Encoding<[u8]> for BitZParams<F> {
     fn encode(&self) -> impl AsRef<[u8]> {
-        let mut frame = [0u8; 48];
-        let mut at = 0;
-        let mut put = |bytes: &[u8]| {
-            frame[at..at + bytes.len()].copy_from_slice(bytes);
-            at += bytes.len();
-        };
-
-        put(&(self.shape.log_rows() as u64).to_le_bytes());
-        put(&(self.shape.log_columns() as u64).to_le_bytes());
-        put(F::modulus().to_le_bytes().as_ref());
-        put(&self.generator.to_bytes());
+        let modulus = F::modulus().to_le_bytes();
+        let mut frame = Vec::with_capacity(32 + modulus.as_ref().len());
+        frame.extend_from_slice(&(self.shape.log_rows() as u64).to_le_bytes());
+        frame.extend_from_slice(&(self.shape.log_columns() as u64).to_le_bytes());
+        frame.extend_from_slice(modulus.as_ref());
+        frame.extend_from_slice(&self.generator.to_bytes());
         frame
     }
 }
@@ -181,10 +177,9 @@ impl<F: BitzClaimField> VirtualParams<F> {
 /// cannot replay as a proof of the other.
 impl<F: BitzClaimField> Encoding<[u8]> for VirtualParams<F> {
     fn encode(&self) -> impl AsRef<[u8]> {
-        let mut frame = [0u8; 64];
-        frame[..48].copy_from_slice(self.claim.encode().as_ref());
-        frame[48..56].copy_from_slice(&(self.committed.log_rows() as u64).to_le_bytes());
-        frame[56..].copy_from_slice(&(self.committed.log_columns() as u64).to_le_bytes());
+        let mut frame = self.claim.encode().as_ref().to_vec();
+        frame.extend_from_slice(&(self.committed.log_rows() as u64).to_le_bytes());
+        frame.extend_from_slice(&(self.committed.log_columns() as u64).to_le_bytes());
         frame
     }
 }
