@@ -62,13 +62,15 @@ impl TranscriptChallenge for F128 {
 
 #[cfg(test)]
 mod tests {
-    use field::{F128, FqDefault, Q100};
+    use field::{F128, Q100};
 
     use super::TranscriptChallenge;
     use crate::{build_prover, build_verifier};
 
     const SESSION: &[u8] = b"transcript/typed-challenge/test";
     const INSTANCE: &[u8] = b"fq-rejection-sampling";
+
+    type F = field::FqDefault;
 
     #[test]
     fn fq_rejects_the_incomplete_final_interval() {
@@ -80,24 +82,24 @@ mod tests {
         assert_eq!(max_accepted % Q100, Q100 - 1);
         assert_eq!((max_accepted + 1) % Q100, 0);
 
-        let challenge = FqDefault::from_squeezes(|| {
+        let challenge = F::from_squeezes(|| {
             squeezes += 1;
             candidates.next().unwrap()
         });
 
         assert_eq!(squeezes, 3);
-        assert_eq!(challenge, FqDefault::from(Q100 - 1));
+        assert_eq!(challenge, F::from(Q100 - 1));
     }
 
     #[test]
     fn prover_and_verifier_squeeze_in_lockstep() {
         let mut prover = build_prover(SESSION, INSTANCE);
-        let prover_fq = prover.squeeze::<FqDefault>();
+        let prover_fq = prover.squeeze::<F>();
         let prover_f128 = prover.squeeze::<F128>();
         let proof = prover.finish();
 
         let mut verifier = build_verifier(SESSION, INSTANCE, &proof);
-        let verifier_fq = verifier.squeeze::<FqDefault>();
+        let verifier_fq = verifier.squeeze::<F>();
         let verifier_f128 = verifier.squeeze::<F128>();
 
         assert_eq!(verifier_fq, prover_fq);

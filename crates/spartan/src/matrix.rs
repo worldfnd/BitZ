@@ -483,9 +483,10 @@ pub(crate) fn padded_num_vars(logical_len: usize) -> Result<usize, SpartanMatrix
 #[cfg(test)]
 mod tests {
     use circuit::constraints::{ConstraintMatrices, SparseBoolMatrix, SparseMatrix};
-    use field::FqDefault;
     use rand::{Rng, SeedableRng};
     use rand_pcg::Pcg64;
+
+    type F = field::FqDefault;
 
     use super::{BIND_CHUNK_COLUMN_VARS, PreparedConstraintMatrices};
 
@@ -495,7 +496,7 @@ mod tests {
     const ROWS: usize = 37;
     const ENTRIES_PER_ROW: usize = 24;
 
-    fn random_sparse_matrix(rng: &mut Pcg64) -> SparseMatrix<FqDefault> {
+    fn random_sparse_matrix(rng: &mut Pcg64) -> SparseMatrix<F> {
         let rows = (0..ROWS)
             .map(|_| {
                 let mut columns: Vec<usize> = (0..ENTRIES_PER_ROW)
@@ -505,14 +506,14 @@ mod tests {
                 columns.dedup();
                 columns
                     .into_iter()
-                    .map(|column| (column, FqDefault::from(u128::from(rng.random::<u64>()))))
+                    .map(|column| (column, F::from(u128::from(rng.random::<u64>()))))
                     .collect()
             })
             .collect();
         SparseMatrix::try_from_rows(COLUMNS, rows).unwrap()
     }
 
-    fn random_prepared_matrices(rng: &mut Pcg64) -> PreparedConstraintMatrices<FqDefault> {
+    fn random_prepared_matrices(rng: &mut Pcg64) -> PreparedConstraintMatrices<F> {
         let m = SparseBoolMatrix::try_from_rows(1, vec![Vec::new(); COLUMNS]).unwrap();
         let a = random_sparse_matrix(rng);
         let b = random_sparse_matrix(rng);
@@ -520,24 +521,24 @@ mod tests {
         PreparedConstraintMatrices::new(ConstraintMatrices { m, a, b, c }).unwrap()
     }
 
-    fn random_point(rng: &mut Pcg64, len: usize) -> Vec<FqDefault> {
+    fn random_point(rng: &mut Pcg64, len: usize) -> Vec<F> {
         (0..len)
-            .map(|_| FqDefault::from(u128::from(rng.random::<u64>())))
+            .map(|_| F::from(u128::from(rng.random::<u64>())))
             .collect()
     }
 
     /// `D(r_y)` by the direct triple loop over every nonzero.
     fn reference_evaluation(
-        matrices: &ConstraintMatrices<FqDefault>,
-        row_point: &[FqDefault],
-        rho: FqDefault,
-        column_point: &[FqDefault],
-    ) -> FqDefault {
+        matrices: &ConstraintMatrices<F>,
+        row_point: &[F],
+        rho: F,
+        column_point: &[F],
+    ) -> F {
         let row_weights = poly::eq_table(row_point);
         let column_weights = poly::eq_table(column_point);
-        let mut evaluation = FqDefault::from(0u128);
+        let mut evaluation = F::from(0u128);
         for (matrix, batch_scale) in [
-            (&matrices.a, FqDefault::from(1u128)),
+            (&matrices.a, F::from(1u128)),
             (&matrices.b, rho),
             (&matrices.c, rho * rho),
         ] {
@@ -592,7 +593,7 @@ mod tests {
         let prepared = random_prepared_matrices(&mut rng);
         let row_point = random_point(&mut rng, prepared.num_row_vars());
         let column_point = random_point(&mut rng, prepared.num_column_vars());
-        let rho = FqDefault::from(u128::from(rng.random::<u64>()));
+        let rho = F::from(u128::from(rng.random::<u64>()));
 
         let expected = reference_evaluation(prepared.matrices(), &row_point, rho, &column_point);
         let evaluation = prepared

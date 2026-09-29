@@ -279,9 +279,11 @@ mod tests {
         DenseMleError, DenseMultilinearExtension, MleClaimError, ScaledMleEvaluationClaim,
     };
     use crate::eq::eq_table;
-    use field::{F128, FqDefault};
+    use field::F128;
     use num_traits::{ConstOne, ConstZero};
     use proptest::prelude::*;
+
+    type F = field::FqDefault;
 
     fn fold_layer(evaluations: &[F128], challenge: F128) -> Vec<F128> {
         evaluations
@@ -307,14 +309,12 @@ mod tests {
 
     #[test]
     fn scaled_mle_claim_verifies_and_exposes_its_terms() {
-        let polynomial = DenseMultilinearExtension::from_evaluations(
-            1,
-            vec![FqDefault::from(2u128), FqDefault::from(5u128)],
-        )
-        .unwrap();
-        let point = FqDefault::from(3u128);
-        let scale = FqDefault::from(7u128);
-        let value = FqDefault::from(77u128);
+        let polynomial =
+            DenseMultilinearExtension::from_evaluations(1, vec![F::from(2u128), F::from(5u128)])
+                .unwrap();
+        let point = F::from(3u128);
+        let scale = F::from(7u128);
+        let value = F::from(77u128);
         let claim = ScaledMleEvaluationClaim::new(vec![point].into_boxed_slice(), scale, value);
 
         assert_eq!(claim.point(), &[point]);
@@ -325,15 +325,13 @@ mod tests {
 
     #[test]
     fn scaled_mle_claim_rejects_an_incorrect_value() {
-        let polynomial = DenseMultilinearExtension::from_evaluations(
-            1,
-            vec![FqDefault::from(2u128), FqDefault::from(5u128)],
-        )
-        .unwrap();
+        let polynomial =
+            DenseMultilinearExtension::from_evaluations(1, vec![F::from(2u128), F::from(5u128)])
+                .unwrap();
         let claim = ScaledMleEvaluationClaim::new(
-            vec![FqDefault::from(3u128)].into_boxed_slice(),
-            FqDefault::from(7u128),
-            FqDefault::from(78u128),
+            vec![F::from(3u128)].into_boxed_slice(),
+            F::from(7u128),
+            F::from(78u128),
         );
 
         assert_eq!(
@@ -344,15 +342,13 @@ mod tests {
 
     #[test]
     fn scaled_mle_claim_rejects_a_point_with_the_wrong_width() {
-        let polynomial = DenseMultilinearExtension::from_evaluations(
-            1,
-            vec![FqDefault::from(2u128), FqDefault::from(5u128)],
-        )
-        .unwrap();
+        let polynomial =
+            DenseMultilinearExtension::from_evaluations(1, vec![F::from(2u128), F::from(5u128)])
+                .unwrap();
         let claim = ScaledMleEvaluationClaim::new(
-            vec![FqDefault::from(3u128), FqDefault::from(11u128)].into_boxed_slice(),
-            FqDefault::from(7u128),
-            FqDefault::from(77u128),
+            vec![F::from(3u128), F::from(11u128)].into_boxed_slice(),
+            F::from(7u128),
+            F::from(77u128),
         );
 
         assert_eq!(

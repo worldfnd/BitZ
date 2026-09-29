@@ -8,7 +8,6 @@
 //! This test is designed to test what's possible in under a minute.
 
 use common::LinearClaim;
-use field::{Fq, FqDefault};
 use num_traits::ConstOne;
 use prover::BitZProver;
 use rand_chacha::ChaCha8Rng;
@@ -16,7 +15,7 @@ use rand_core::SeedableRng;
 use tests::{HonestClaim, WINDOW, large_shape, prover_transcript, verifier_transcript};
 use verifier::{BitZVerifier, ReceiveError};
 
-type F = FqDefault;
+type F = field::FqDefault;
 
 #[test]
 fn the_fold_round_trips_on_the_large_shape() {
@@ -58,7 +57,7 @@ fn the_fold_round_trips_on_the_large_shape() {
         &honest.params,
         honest.claim.row_weights().to_vec(),
         honest.claim.column_weights().to_vec(),
-        honest.claim.target() + Fq::ONE,
+        honest.claim.target() + F::ONE,
     )
     .unwrap();
     assert_eq!(

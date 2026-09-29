@@ -8,11 +8,10 @@ use std::io::Write;
 
 use common::Shape;
 use crypto_primitives::LiftElement;
-use field::FqDefault;
 use support::{hex, write_binary, write_witness};
 use tests::{Instance, Q, prover_transcript, verifier_transcript};
 
-type F = FqDefault;
+type F = field::FqDefault;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     const USAGE: &str = "usage: dump_bitz <log-bits> <seed> <out-dir>";

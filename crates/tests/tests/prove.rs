@@ -1,7 +1,7 @@
 //! The top-level prove and verify, through the real opening.
 
 use common::{Root, TableError};
-use field::{F128, Fq, FqDefault};
+use field::F128;
 use num_traits::{ConstOne, ConstZero};
 use pcs::{HashKind, LigeritoProfile, Pcs, VerifyError as PcsVerifyError};
 use prover::ProveError;
@@ -9,7 +9,7 @@ use tests::{Instance, narrow_shape, prover_transcript, verifier_transcript, wide
 use transcript::Proof;
 use verifier::{ReceiveError, VerifyError};
 
-type F = FqDefault;
+type F = field::FqDefault;
 
 fn prove(instance: &Instance<F>) -> Proof {
     let mut transcript = prover_transcript();
@@ -69,7 +69,7 @@ fn the_statement_is_bound_before_the_first_challenge() {
     // Same folds, same commitment, a claim that differs only in its claimed
     // value. The fold's own reconstruction rejects it, which is the check the
     // binding backs up rather than replaces.
-    let retargeted = instance.with_target(instance.claim.target() + Fq::ONE);
+    let retargeted = instance.with_target(instance.claim.target() + F::ONE);
     assert_eq!(
         instance.verifier.verify(
             &retargeted,

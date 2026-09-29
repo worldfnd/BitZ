@@ -1,17 +1,15 @@
 //! The fold round, prover against verifier.
 
 use common::{BitZParams, FoldError, LinearClaim};
-use crypto_primitives::WithAssociatedInteger;
-use field::{F128, Fq, FqDefault, gf128::smallest_generator};
+use crypto_primitives::{BaseField, WithAssociatedInteger};
+use field::{F128, gf128::smallest_generator};
 use num_traits::{ConstOne, ConstZero, ToBytes};
 use prover::{BitZProver, SendError};
-use tests::{
-    Instance, Q, WINDOW, narrow_shape, prover_transcript, verifier_transcript, wide_shape,
-};
+use tests::{Instance, WINDOW, narrow_shape, prover_transcript, verifier_transcript, wide_shape};
 use transcript::Proof;
 use verifier::{BitZVerifier, ReceiveError};
 
-type F = FqDefault;
+type F = field::FqDefault;
 
 /// Runs an honest prover and returns the round it produced with its proof.
 fn prove(instance: &Instance<F>) -> (common::Fold<<F as WithAssociatedInteger>::Integer>, Proof) {
@@ -99,16 +97,17 @@ fn a_fold_at_the_bound_is_accepted_and_one_past_it_is_not() {
     let shape = narrow_shape();
     let packed = vec![F128::new(u64::MAX, u64::MAX); (1 << shape.log_bits()) / 128];
 
-    let fold = (shape.rows() as u128) * (Q - 1);
-    let params = BitZParams::<Fq<Q>>::new(shape, smallest_generator()).unwrap();
+    let modulus = F::modulus();
+    let fold = (shape.rows() as u128) * (modulus - 1);
+    let params = BitZParams::<F>::new(shape, smallest_generator()).unwrap();
     let prover = BitZProver::new(params, WINDOW);
     let verifier = BitZVerifier::new(params, WINDOW);
     let table = params.table(&packed).unwrap();
     let claim = LinearClaim::new(
         &params,
-        vec![Fq::from(Q - 1); shape.rows()],
-        vec![Fq::ONE; shape.columns()],
-        Fq::from(fold) * Fq::from(shape.columns() as u128),
+        vec![F::from(modulus - 1); shape.rows()],
+        vec![F::ONE; shape.columns()],
+        F::from(fold) * F::from(shape.columns() as u128),
     )
     .unwrap();
 
@@ -158,7 +157,7 @@ fn folds_that_do_not_reconstruct_the_target_are_rejected() {
     let (_, proof) = prove(&instance);
 
     // The proof is honest; the claim it is replayed against is not.
-    let retargeted = instance.with_target(instance.claim.target() + Fq::ONE);
+    let retargeted = instance.with_target(instance.claim.target() + F::ONE);
     let mut transcript = verifier_transcript(&proof);
     assert_eq!(
         instance.verifier.receive_fold(&retargeted, &mut transcript),
@@ -200,15 +199,16 @@ fn a_truncated_proof_is_refused_rather_than_read_past() {
 #[test]
 fn an_all_zero_witness_folds_to_zero_and_still_round_trips() {
     let shape = narrow_shape();
+    let modulus = F::modulus();
     let packed = vec![F128::ZERO; (1 << shape.log_bits()) / 128];
-    let params = BitZParams::<Fq<Q>>::new(shape, smallest_generator()).unwrap();
+    let params = BitZParams::<F>::new(shape, smallest_generator()).unwrap();
     let prover = BitZProver::new(params, WINDOW);
     let verifier = BitZVerifier::new(params, WINDOW);
     let claim = LinearClaim::new(
         &params,
-        vec![Fq::from(Q - 1); shape.rows()],
-        vec![Fq::from(3u128); shape.columns()],
-        Fq::from(0u128),
+        vec![F::from(modulus - 1); shape.rows()],
+        vec![F::from(3u128); shape.columns()],
+        F::from(0u128),
     )
     .unwrap();
     let table = params.table(&packed).unwrap();

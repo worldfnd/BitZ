@@ -386,7 +386,8 @@ fn opening_claim<F: BitzClaimField>(
 mod tests {
     use super::*;
     use crate::ProjectBigIntToFq;
-    use field::FqDefault;
+
+    type F = field::FqDefault;
 
     #[test]
     fn only_exact_identity_maps_select_direct_opening() {
@@ -428,7 +429,7 @@ mod tests {
     #[test]
     fn direct_opening_requires_constant_one_on_both_sides() {
         let mut system =
-            CircuitProofSystem::<_, FqDefault>::new::<_, ProjectBigIntToFq>(IdentityBit).unwrap();
+            CircuitProofSystem::<_, F>::new::<_, ProjectBigIntToFq>(IdentityBit).unwrap();
         let witness = system.witness(&[true]).unwrap();
         let data = system.commit(&witness).unwrap();
         let mut proof = system.prove(witness, &data).unwrap();
@@ -474,37 +475,27 @@ mod tests {
     #[test]
     fn scaled_claim_conversion_preserves_values_and_zero_scale() {
         let params =
-            BitZParams::<FqDefault>::new(Shape::new(7, 15).unwrap(), smallest_generator()).unwrap();
-        let assignment = DenseMultilinearExtension::from_evaluations(
-            2,
-            [0u128, 1, 1, 0].map(FqDefault::from).to_vec(),
-        )
-        .unwrap();
-        let point = vec![FqDefault::from(3u128), FqDefault::from(5u128)];
+            BitZParams::<F>::new(Shape::new(7, 15).unwrap(), smallest_generator()).unwrap();
+        let assignment =
+            DenseMultilinearExtension::from_evaluations(2, [0u128, 1, 1, 0].map(F::from).to_vec())
+                .unwrap();
+        let point = vec![F::from(3u128), F::from(5u128)];
         let evaluation = assignment.evaluate(&point).unwrap();
-        for scale in [FqDefault::ZERO, FqDefault::from(7u128)] {
+        for scale in [F::ZERO, F::from(7u128)] {
             let terminal = ScaledMleEvaluationClaim::new(
                 point.clone().into_boxed_slice(),
                 scale,
                 scale * evaluation,
             );
             let claim = opening_claim(&params, &terminal).unwrap();
-            let value: FqDefault = assignment
+            let value: F = assignment
                 .iter()
                 .enumerate()
                 .map(|(i, bit)| *bit * claim.row_weights()[i] * claim.column_weights()[0])
                 .sum();
             assert_eq!(value, claim.target());
-            assert!(
-                claim.row_weights()[4..]
-                    .iter()
-                    .all(|w| *w == FqDefault::ZERO)
-            );
-            assert!(
-                claim.column_weights()[1..]
-                    .iter()
-                    .all(|w| *w == FqDefault::ZERO)
-            );
+            assert!(claim.row_weights()[4..].iter().all(|w| *w == F::ZERO));
+            assert!(claim.column_weights()[1..].iter().all(|w| *w == F::ZERO));
         }
     }
 }

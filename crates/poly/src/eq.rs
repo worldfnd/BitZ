@@ -117,9 +117,11 @@ pub fn make_equality_factors<F: Field + Copy>(
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use field::{F128, FqDefault};
+    use field::F128;
     use num_traits::{One, Zero};
     use proptest::prelude::*;
+
+    type F = field::FqDefault;
 
     fn direct_table_entry<F: Field + Copy>(r: &[F], index: usize) -> F {
         r.iter().enumerate().fold(F::one(), |acc, (bit, &r_i)| {
@@ -135,16 +137,12 @@ pub mod tests {
     #[test]
     fn empty_eq_tables_contain_one() {
         assert_eq!(eq_table::<F128>(&[]), vec![F128::one()]);
-        assert_eq!(eq_table::<FqDefault>(&[]), vec![FqDefault::one()]);
+        assert_eq!(eq_table::<F>(&[]), vec![F::one()]);
     }
 
     #[test]
     fn equality_factors_split_low_coordinates_first() {
-        let point = [
-            FqDefault::from(2u128),
-            FqDefault::from(3u128),
-            FqDefault::from(5u128),
-        ];
+        let point = [F::from(2u128), F::from(3u128), F::from(5u128)];
         let (low, high) = make_equality_factors(&point).unwrap();
 
         assert_eq!(low.num_vars(), 1);
@@ -183,14 +181,14 @@ pub mod tests {
             ]
         );
 
-        let r_0 = FqDefault::from(2u128);
-        let r_1 = FqDefault::from(7u128);
+        let r_0 = F::from(2u128);
+        let r_1 = F::from(7u128);
         assert_eq!(
             eq_table(&[r_0, r_1]),
             vec![
-                (FqDefault::one() - r_0) * (FqDefault::one() - r_1),
-                r_0 * (FqDefault::one() - r_1),
-                (FqDefault::one() - r_0) * r_1,
+                (F::one() - r_0) * (F::one() - r_1),
+                r_0 * (F::one() - r_1),
+                (F::one() - r_0) * r_1,
                 r_0 * r_1,
             ]
         );
@@ -203,7 +201,7 @@ pub mod tests {
             .map(|bit| F128::from((selected >> bit) & 1 == 1))
             .collect();
         let r_fq: Vec<_> = (0..4)
-            .map(|bit| FqDefault::from(((selected >> bit) & 1) as u128))
+            .map(|bit| F::from(((selected >> bit) & 1) as u128))
             .collect();
 
         for (index, &weight) in eq_table(&r_f128).iter().enumerate() {
@@ -220,9 +218,9 @@ pub mod tests {
             assert_eq!(
                 weight,
                 if index == selected {
-                    FqDefault::one()
+                    F::one()
                 } else {
-                    FqDefault::zero()
+                    F::zero()
                 }
             );
         }
@@ -231,7 +229,7 @@ pub mod tests {
     #[test]
     fn empty_vectors_give_one() {
         assert_eq!(eq_eval::<F128>(&[], &[]), F128::one());
-        assert_eq!(eq_eval::<FqDefault>(&[], &[]), FqDefault::one());
+        assert_eq!(eq_eval::<F>(&[], &[]), F::one());
     }
 
     #[test]
@@ -331,7 +329,7 @@ pub mod tests {
                 prop_assert_eq!(weight, direct_table_entry(&r_f128, index));
             }
 
-            let r_fq: Vec<_> = raw.iter().copied().map(FqDefault::from).collect();
+            let r_fq: Vec<_> = raw.iter().copied().map(F::from).collect();
             let table_fq = eq_table(&r_fq);
             prop_assert_eq!(table_fq.len(), 1usize << raw.len());
             for (index, &weight) in table_fq.iter().enumerate() {
@@ -349,11 +347,11 @@ pub mod tests {
                 .fold(F128::zero(), |sum, weight| sum + weight);
             prop_assert_eq!(sum_f128, F128::one());
 
-            let r_fq: Vec<_> = raw.iter().copied().map(FqDefault::from).collect();
+            let r_fq: Vec<_> = raw.iter().copied().map(F::from).collect();
             let sum_fq = eq_table(&r_fq)
                 .into_iter()
-                .fold(FqDefault::zero(), |sum, weight| sum + weight);
-            prop_assert_eq!(sum_fq, FqDefault::one());
+                .fold(F::zero(), |sum, weight| sum + weight);
+            prop_assert_eq!(sum_fq, F::one());
         }
 
         #[test]

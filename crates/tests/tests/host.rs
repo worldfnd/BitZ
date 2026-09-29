@@ -5,11 +5,10 @@
 //! sides hold it already, and in full BitZ it is derived from the PIOP rather
 //! than shipped, so there is no encoding of it to round-trip.
 
-use field::FqDefault;
 use host::wire_proof;
 use tests::{Instance, narrow_shape, prover_transcript, verifier_transcript, wide_shape};
 
-type F = FqDefault;
+type F = field::FqDefault;
 
 /// Runs an honest prover and hands back what a caller would ship.
 fn shipped(instance: &Instance<F>) -> Vec<u8> {

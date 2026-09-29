@@ -177,7 +177,7 @@ mod tests {
         witgen::PackedWitness,
     };
     use crypto_primitives::Field;
-    use field::{F128, FqDefault};
+    use field::F128;
     use poly::DenseMultilinearExtension;
     use rand::{Rng, SeedableRng};
     use rand_pcg::Pcg64;
@@ -193,15 +193,17 @@ mod tests {
     const ROWS: usize = 5;
     const COLUMNS: usize = 7;
 
+    type F = field::FqDefault;
+
     #[test]
     fn random_satisfying_r1cs_reduces_through_both_sumchecks() {
-        check_random_satisfying_r1cs::<FqDefault>(FQ_SESSION);
+        check_random_satisfying_r1cs::<F>(FQ_SESSION);
         check_random_satisfying_r1cs::<F128>(F128_SESSION);
     }
 
     #[test]
     fn verifier_rejects_proof_with_unsatisfied_witness() {
-        check_verifier_rejects_proof_with_unsatisfied_witness::<FqDefault>(FQ_SESSION);
+        check_verifier_rejects_proof_with_unsatisfied_witness::<F>(FQ_SESSION);
         check_verifier_rejects_proof_with_unsatisfied_witness::<F128>(F128_SESSION);
     }
 

@@ -5,10 +5,10 @@
 //! and `C(Mw)` vectors during witness generation. This module subsequently
 //! reduces those vectors modulo a runtime modulus. Large batches use Rayon;
 //! small batches stay sequential to avoid scheduling overhead.
+// TODO(alex): Should this be generalized over [`BitzClaimField`] as well?
 
 use crate::witgen::Z as Integer;
 use crate::{BitWidth, IntoWords};
-use field::FqDefault;
 use num_traits::{One, Zero};
 use rayon::prelude::*;
 use std::cmp::Ordering;
@@ -267,12 +267,12 @@ impl<const PRIME_LIMBS: usize> ModularVector<PRIME_LIMBS> {
     }
 }
 
-impl From<&ModularVector<2>> for Vec<FqDefault> {
+impl From<&ModularVector<2>> for Vec<field::FqDefault> {
     fn from(values: &ModularVector<2>) -> Self {
         values
             .values()
             .iter()
-            .map(|&[low, high]| FqDefault::from_limbs(low, high))
+            .map(|&[low, high]| field::FqDefault::from_limbs(low, high))
             .collect()
     }
 }

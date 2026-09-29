@@ -1042,7 +1042,7 @@ fn fold_products_and_eq<F: BitzField>(
 
 #[cfg(test)]
 mod tests {
-    use field::{F128, FqDefault};
+    use field::F128;
     use rand::{Rng, SeedableRng};
     use rand_pcg::Pcg64;
     use transcript::{build_prover, build_verifier};
@@ -1054,8 +1054,10 @@ mod tests {
     const INNER_SESSION: &[u8] = b"spartan/inner-sumcheck/test";
     const F128_INNER_SESSION: &[u8] = b"spartan/inner-sumcheck/f128/test";
 
-    fn fq(value: u128) -> FqDefault {
-        FqDefault::from(value)
+    type F = field::FqDefault;
+
+    fn fq(value: u128) -> F {
+        F::from(value)
     }
 
     #[test]
@@ -1072,15 +1074,15 @@ mod tests {
             .iter()
             .map(|round| {
                 prover.public_message(round);
-                prover.squeeze::<FqDefault>()
+                prover.squeeze::<F>()
             })
             .collect();
-        let next_prover_challenge = prover.squeeze::<FqDefault>();
+        let next_prover_challenge = prover.squeeze::<F>();
         let transcript_proof = prover.finish();
 
         let mut verifier = build_verifier(SESSION, instance, &transcript_proof);
         let (verifier_points, final_claim) = sumcheck.verify(&mut verifier, fq(20), 2).unwrap();
-        let next_verifier_challenge = verifier.squeeze::<FqDefault>();
+        let next_verifier_challenge = verifier.squeeze::<F>();
 
         let expected_final_claim = second_round
             .iter()
@@ -1113,7 +1115,7 @@ mod tests {
 
     #[test]
     fn zero_round_sumcheck_preserves_the_initial_claim() {
-        let sumcheck_proof = SumcheckProof::<FqDefault, 4> {
+        let sumcheck_proof = SumcheckProof::<F, 4> {
             round_polynomials: vec![],
         };
         let transcript_proof = transcript::Proof::default();
@@ -1128,7 +1130,7 @@ mod tests {
 
     #[test]
     fn sumcheck_rejects_zero_coefficient_rounds() {
-        let sumcheck = SumcheckProof::<FqDefault, 0> {
+        let sumcheck = SumcheckProof::<F, 0> {
             round_polynomials: vec![[]],
         };
         let transcript_proof = transcript::Proof::default();
@@ -1291,7 +1293,7 @@ mod tests {
 
     #[test]
     fn outer_sumcheck_inputs_have_pointwise_products_and_factored_eq() {
-        check_outer_sumcheck_input_construction::<FqDefault>();
+        check_outer_sumcheck_input_construction::<F>();
         check_outer_sumcheck_input_construction::<F128>();
     }
 
@@ -1300,7 +1302,7 @@ mod tests {
         for split in 0..=5 {
             check_outer_sumcheck(
                 SESSION,
-                build_outer_sumcheck_inputs_with_split::<FqDefault>(5, split),
+                build_outer_sumcheck_inputs_with_split::<F>(5, split),
             );
             check_outer_sumcheck(
                 F128_SESSION,
@@ -1330,10 +1332,10 @@ mod tests {
             ),
             Err(SumcheckError::InvalidProductDimensions)
         );
-        let challenge_after_product_error = invalid_product_prover.squeeze::<FqDefault>();
+        let challenge_after_product_error = invalid_product_prover.squeeze::<F>();
 
         let mut invalid_equality_prover = build_prover(SESSION, instance);
-        let inputs = build_outer_sumcheck_inputs::<FqDefault>(1);
+        let inputs = build_outer_sumcheck_inputs::<F>(1);
         assert_eq!(
             prove_outer_sumcheck(
                 &mut invalid_equality_prover,
@@ -1346,10 +1348,10 @@ mod tests {
             ),
             Err(SumcheckError::InvalidEqualityDimensions)
         );
-        let challenge_after_equality_error = invalid_equality_prover.squeeze::<FqDefault>();
+        let challenge_after_equality_error = invalid_equality_prover.squeeze::<F>();
 
         let mut clean_prover = build_prover(SESSION, instance);
-        let clean_challenge = clean_prover.squeeze::<FqDefault>();
+        let clean_challenge = clean_prover.squeeze::<F>();
         assert_eq!(challenge_after_product_error, clean_challenge);
         assert_eq!(challenge_after_equality_error, clean_challenge);
     }
@@ -1401,57 +1403,44 @@ mod tests {
 
     #[test]
     fn outer_sumcheck_zero_vars() {
-        check_outer_sumcheck(SESSION, build_outer_sumcheck_inputs::<FqDefault>(0));
+        check_outer_sumcheck(SESSION, build_outer_sumcheck_inputs::<F>(0));
         check_outer_sumcheck(F128_SESSION, build_outer_sumcheck_inputs::<F128>(0));
     }
 
     #[test]
     fn outer_sumcheck_one_var() {
-        check_outer_sumcheck(SESSION, build_outer_sumcheck_inputs::<FqDefault>(1));
+        check_outer_sumcheck(SESSION, build_outer_sumcheck_inputs::<F>(1));
         check_outer_sumcheck(F128_SESSION, build_outer_sumcheck_inputs::<F128>(1));
     }
 
     #[test]
     fn outer_sumcheck_three_vars() {
-        check_outer_sumcheck(SESSION, build_outer_sumcheck_inputs::<FqDefault>(3));
+        check_outer_sumcheck(SESSION, build_outer_sumcheck_inputs::<F>(3));
         check_outer_sumcheck(F128_SESSION, build_outer_sumcheck_inputs::<F128>(3));
     }
 
     #[test]
     fn outer_sumcheck_ten_vars() {
-        check_outer_sumcheck(SESSION, build_outer_sumcheck_inputs::<FqDefault>(10));
+        check_outer_sumcheck(SESSION, build_outer_sumcheck_inputs::<F>(10));
         check_outer_sumcheck(F128_SESSION, build_outer_sumcheck_inputs::<F128>(10));
     }
 
     #[test]
     fn inner_sumcheck_one_variable_has_expected_quadratic() {
-        let batched_matrix = DenseMultilinearExtension::from_evaluations(
-            1,
-            vec![FqDefault::from(2u128), FqDefault::from(5u128)],
-        )
-        .unwrap();
-        let witness = DenseMultilinearExtension::from_evaluations(
-            1,
-            vec![FqDefault::from(3u128), FqDefault::from(7u128)],
-        )
-        .unwrap();
+        let batched_matrix =
+            DenseMultilinearExtension::from_evaluations(1, vec![F::from(2u128), F::from(5u128)])
+                .unwrap();
+        let witness =
+            DenseMultilinearExtension::from_evaluations(1, vec![F::from(3u128), F::from(7u128)])
+                .unwrap();
         let mut prover = build_prover(INNER_SESSION, b"one-variable");
 
-        let output = prove_inner_sumcheck(
-            &mut prover,
-            FqDefault::from(41u128),
-            batched_matrix,
-            &witness,
-        )
-        .unwrap();
+        let output =
+            prove_inner_sumcheck(&mut prover, F::from(41u128), batched_matrix, &witness).unwrap();
 
         assert_eq!(
             output.sumcheck.proof.round_polynomials,
-            vec![[
-                FqDefault::from(6u128),
-                FqDefault::from(17u128),
-                FqDefault::from(12u128),
-            ]]
+            vec![[F::from(6u128), F::from(17u128), F::from(12u128),]]
         );
     }
 
@@ -1459,37 +1448,22 @@ mod tests {
     fn inner_sumcheck_binds_lowest_index_variable_first() {
         let batched_matrix = DenseMultilinearExtension::from_evaluations(
             2,
-            [2u128, 5, 11, 17]
-                .into_iter()
-                .map(FqDefault::from)
-                .collect(),
+            [2u128, 5, 11, 17].into_iter().map(F::from).collect(),
         )
         .unwrap();
         let witness = DenseMultilinearExtension::from_evaluations(
             2,
-            [3u128, 7, 13, 19]
-                .into_iter()
-                .map(FqDefault::from)
-                .collect(),
+            [3u128, 7, 13, 19].into_iter().map(F::from).collect(),
         )
         .unwrap();
         let mut prover = build_prover(INNER_SESSION, b"lowest-variable-first");
 
-        let output = prove_inner_sumcheck(
-            &mut prover,
-            FqDefault::from(507u128),
-            batched_matrix,
-            &witness,
-        )
-        .unwrap();
+        let output =
+            prove_inner_sumcheck(&mut prover, F::from(507u128), batched_matrix, &witness).unwrap();
 
         assert_eq!(
             output.sumcheck.proof.round_polynomials[0],
-            [
-                FqDefault::from(149u128),
-                FqDefault::from(161u128),
-                FqDefault::from(48u128),
-            ]
+            [F::from(149u128), F::from(161u128), F::from(48u128),]
         );
     }
 
@@ -1504,7 +1478,7 @@ mod tests {
         for num_column_vars in [0, 1, 3, 12, 13] {
             check_inner_sumcheck(
                 INNER_SESSION,
-                build_inner_sumcheck_inputs::<FqDefault>(2, num_column_vars),
+                build_inner_sumcheck_inputs::<F>(2, num_column_vars),
             );
             check_inner_sumcheck(
                 F128_INNER_SESSION,
@@ -1634,9 +1608,9 @@ mod tests {
 
     #[test]
     fn inner_sumcheck_supports_zero_variables() {
-        let batched_matrix = DenseMultilinearExtension::zero_vars(FqDefault::from(5u128));
-        let witness = DenseMultilinearExtension::zero_vars(FqDefault::from(7u128));
-        let initial_claim = FqDefault::from(35u128);
+        let batched_matrix = DenseMultilinearExtension::zero_vars(F::from(5u128));
+        let witness = DenseMultilinearExtension::zero_vars(F::from(7u128));
+        let initial_claim = F::from(35u128);
         let mut prover = build_prover(INNER_SESSION, b"zero-variables");
 
         let output =
@@ -1645,49 +1619,36 @@ mod tests {
         assert!(output.sumcheck.proof.round_polynomials.is_empty());
         assert!(output.sumcheck.eval_points.is_empty());
         assert_eq!(output.sumcheck.final_claim, initial_claim);
-        assert_eq!(output.batched_matrix_evaluation, FqDefault::from(5u128));
-        assert_eq!(output.witness_evaluation, FqDefault::from(7u128));
+        assert_eq!(output.batched_matrix_evaluation, F::from(5u128));
+        assert_eq!(output.witness_evaluation, F::from(7u128));
 
         let mut control = build_prover(INNER_SESSION, b"zero-variables");
-        assert_eq!(
-            prover.squeeze::<FqDefault>(),
-            control.squeeze::<FqDefault>()
-        );
+        assert_eq!(prover.squeeze::<F>(), control.squeeze::<F>());
     }
 
     #[test]
     fn inner_sumcheck_rejects_mismatched_dimensions() {
-        let batched_matrix = DenseMultilinearExtension::from_evaluations(
-            1,
-            vec![FqDefault::from(1u128), FqDefault::from(2u128)],
-        )
-        .unwrap();
+        let batched_matrix =
+            DenseMultilinearExtension::from_evaluations(1, vec![F::from(1u128), F::from(2u128)])
+                .unwrap();
         let witness = DenseMultilinearExtension::from_evaluations(
             2,
             vec![
-                FqDefault::from(1u128),
-                FqDefault::from(2u128),
-                FqDefault::from(3u128),
-                FqDefault::from(4u128),
+                F::from(1u128),
+                F::from(2u128),
+                F::from(3u128),
+                F::from(4u128),
             ],
         )
         .unwrap();
         let mut prover = build_prover(INNER_SESSION, b"mismatched-dimensions");
 
         assert_eq!(
-            prove_inner_sumcheck(
-                &mut prover,
-                FqDefault::from(0u128),
-                batched_matrix,
-                &witness
-            ),
+            prove_inner_sumcheck(&mut prover, F::from(0u128), batched_matrix, &witness),
             Err(SumcheckError::InvalidProductDimensions)
         );
 
         let mut control = build_prover(INNER_SESSION, b"mismatched-dimensions");
-        assert_eq!(
-            prover.squeeze::<FqDefault>(),
-            control.squeeze::<FqDefault>()
-        );
+        assert_eq!(prover.squeeze::<F>(), control.squeeze::<F>());
     }
 }

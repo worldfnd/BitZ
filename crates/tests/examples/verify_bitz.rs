@@ -3,11 +3,10 @@
 //!
 //! Usage: `verify_bitz <log-bits> <seed> <narg-file> <hints-file>` (the reference split)
 use common::Shape;
-use field::FqDefault;
 use tests::{Instance, verifier_transcript};
 use transcript::Proof;
 
-type F = FqDefault;
+type F = field::FqDefault;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     const USAGE: &str = "usage: verify_bitz <log-bits> <seed> <narg-file> <hints-file>";
