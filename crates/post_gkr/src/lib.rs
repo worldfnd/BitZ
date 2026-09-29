@@ -148,8 +148,8 @@ fn verify_factors(
     let rounds = log_rows + columns.len().trailing_zeros() as usize;
     // `MLE[rows (x) columns](rho) = MLE[rows](rho_b) MLE[columns](rho_c)`.
     let weight = |point: &[F128]| {
-        sumcheck::evaluate(rows, &point[..log_rows])
-            * sumcheck::evaluate(columns, &point[log_rows..])
+        poly::f128::evaluate(rows, &point[..log_rows])
+            * poly::f128::evaluate(columns, &point[log_rows..])
     };
     let (point, target) = sumcheck::verify(rounds, target, weight, transcript)?;
     Ok(OpeningQuery::Mle { point, target })
@@ -288,8 +288,8 @@ mod tests {
     use transcript::{Proof, build_prover, build_verifier};
 
     use super::*;
-    use crate::sumcheck::inner_product;
     use crate::test_util::{Leaf, random, rng};
+    use poly::f128::inner_product;
 
     /// The evaluation claim's parts.
     fn mle(query: &OpeningQuery) -> (&[F128], F128) {

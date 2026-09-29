@@ -17,9 +17,7 @@
 //! `2n / |E|` for `n` rounds, plus the probability that `MLE[W](rho) = 0`.
 
 use crate::VerifyError;
-use common::shape::PACK_BITS;
 use field::{F128, Wide256};
-use poly::eq_table;
 #[cfg(feature = "parallel")]
 use poly::parallel::workload_size;
 #[cfg(feature = "parallel")]
@@ -30,10 +28,10 @@ use transcript::{ProverState, VerifierState};
 /// implies.
 pub(crate) type RoundMessage = [F128; 2];
 
-/// Entries below which [`evaluate`] and [`folded`] run on one thread: the
-/// pool's overhead is that of a few hundred thousand multiplications.
+/// Entries below which [`folded`] runs on one thread: the pool's overhead
+/// is that of a few hundred thousand multiplications.
 #[cfg(feature = "parallel")]
-const PARALLEL_EVALUATE_MIN: usize = 1 << 18;
+const PARALLEL_FOLD_MIN: usize = 1 << 18;
 
 /// The public weights `W` and the prover's values `V` over the same
 /// variables, folded together as the rounds bind them.
@@ -190,42 +188,10 @@ pub(crate) fn fold(table: &mut Vec<F128>, challenge: F128) {
 pub(crate) fn folded(table: &[F128], challenge: F128) -> Vec<F128> {
     let entry = |pair: &[F128]| pair[0] + challenge * (pair[0] + pair[1]);
     #[cfg(feature = "parallel")]
-    if table.len() >= PARALLEL_EVALUATE_MIN {
+    if table.len() >= PARALLEL_FOLD_MIN {
         return table.par_chunks_exact(2).map(entry).collect();
     }
     table.chunks_exact(2).map(entry).collect()
-}
-
-/// `MLE[weights](point)`, one multiplication per weight: the weights have
-/// no succinct form. The equality table is factored at the pack width, so
-/// the larger factor is one element per 128 weights.
-pub(crate) fn evaluate(weights: &[F128], point: &[F128]) -> F128 {
-    debug_assert_eq!(weights.len(), 1 << point.len());
-    let (low, high) = point.split_at(point.len().min(PACK_BITS as usize));
-    let eq_low = eq_table(low);
-    let eq_high = eq_table(high);
-    let term = |(chunk, weight): (&[F128], &F128)| *weight * inner_product(chunk, &eq_low);
-    #[cfg(feature = "parallel")]
-    if weights.len() >= PARALLEL_EVALUATE_MIN {
-        return weights
-            .par_chunks_exact(eq_low.len())
-            .zip(&eq_high)
-            .map(term)
-            .sum();
-    }
-    weights
-        .chunks_exact(eq_low.len())
-        .zip(&eq_high)
-        .map(term)
-        .sum()
-}
-
-pub(crate) fn inner_product(a: &[F128], b: &[F128]) -> F128 {
-    debug_assert_eq!(a.len(), b.len());
-    a.iter()
-        .zip(b)
-        .fold(Wide256::zero(), |sum, (x, y)| sum + Wide256::mul(*x, *y))
-        .reduce()
 }
 
 fn coefficients_serial(weights: &[F128], values: &[F128]) -> (Wide256, Wide256) {
@@ -242,6 +208,8 @@ fn coefficients_serial(weights: &[F128], values: &[F128]) -> (Wide256, Wide256) 
 mod tests {
     use num_traits::{ConstOne, ConstZero};
     use poly::DenseMultilinearExtension;
+    use poly::eq_table;
+    use poly::f128::{evaluate, inner_product};
     use transcript::{build_prover, build_verifier};
 
     use super::*;
