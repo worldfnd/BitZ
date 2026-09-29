@@ -4,7 +4,7 @@ use circuit::constraints::{ConstraintMatrices, SparseMatrix};
 use circuit::matrix_products::{IntegerProducts, ModularVector, RuntimeModulus};
 use circuit::witgen::PackedWitness;
 use circuit::{BitWidth, IntoWords};
-use common::{BitzBaseField, BitzField, BitzSemiring};
+use common::{BitzClaimField, BitzField};
 use poly::DenseMultilinearExtension;
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
@@ -150,13 +150,13 @@ const PRIME_LIMBS: usize = 2;
 
 /// Reduces exact `Ah`, `Bh`, and `Ch` values modulo Q100 and pads their row
 /// tables with trailing zeros to the next power of two.
-pub fn build_product_mles<S, F>(
+pub fn build_product_mles<F>(
     products: &IntegerProducts,
     expected_rows: usize,
 ) -> Result<R1csProductMles<F>, SpartanMatrixError>
 where
-    S: BitzSemiring + Ord + BitWidth + IntoWords,
-    F: BitzBaseField<Integer = S>,
+    F: BitzClaimField,
+    F::Integer: BitWidth + IntoWords,
     Vec<F>: for<'a> From<&'a ModularVector<PRIME_LIMBS>>,
 {
     for actual in [
@@ -191,7 +191,7 @@ fn modular_vector_mle<F, const PRIME_LIMBS: usize>(
     num_vars: usize,
 ) -> Result<DenseMultilinearExtension<F>, SpartanMatrixError>
 where
-    F: BitzBaseField,
+    F: BitzClaimField,
     Vec<F>: for<'a> From<&'a ModularVector<PRIME_LIMBS>>,
 {
     let zero = F::zero();

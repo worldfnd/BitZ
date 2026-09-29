@@ -24,7 +24,7 @@ pub use virtual_map::{
     TransposedWeights, VirtualMap, VirtualMapError, VirtualStatement, VirtualStatementError,
 };
 
-use crypto_primitives::{BaseField, Field, Semiring};
+use crypto_primitives::{BaseField, Field, Semiring, WithAssociatedInteger};
 use num_traits::{Bounded, FromBytes, ToBytes, ToPrimitive};
 use spongefish::{Encoding, NargDeserialize};
 use std::ops::{BitAnd, Neg, ShrAssign};
@@ -52,6 +52,8 @@ define_blanket_trait! {
 
 define_blanket_trait! {
     // Since BigInt does not support CheckedNeg and CheckedRem, we can't use Ring here
+
+    /// The ring in which BitZ constraints live.
     pub trait BitzConstraintRing: BitzSemiring + Neg<Output = Self>
 }
 
@@ -64,15 +66,13 @@ define_blanket_trait! {
 }
 
 define_blanket_trait! {
-    pub trait BitzBaseField: BitzField + BaseField
-}
-
-define_blanket_trait! {
     /// The prime field of a BitZ claim. Its representatives are the fold
     /// exponents, so the modulus must fit the `u128` exponent of the `F128`
     /// group; `From<u128>` takes a fold back into the field.
     pub trait BitzClaimField:
-        BitzBaseField<
+        BitzField
+        + BaseField
+        + WithAssociatedInteger<
             Integer:
                 BitzSemiring
                 + Bounded
@@ -104,9 +104,6 @@ mod tests {
         fn assert_impl_field<T: BitzField>() {}
         assert_impl_field::<FqDefault>();
         assert_impl_field::<F128>();
-
-        fn assert_impl_base_field<T: BitzBaseField>() {}
-        assert_impl_base_field::<FqDefault>();
 
         fn assert_impl_claim_field<T: BitzClaimField>() {}
         assert_impl_claim_field::<FqDefault>();
