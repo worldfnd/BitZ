@@ -58,6 +58,7 @@ define_blanket_trait! {
 }
 
 define_blanket_trait! {
+    /// Any BitZ field type (base or GF128)
     pub trait BitzField:
         Field
         + Copy

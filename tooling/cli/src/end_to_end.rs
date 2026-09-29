@@ -108,14 +108,12 @@ pub struct Proof<F> {
     pub opening: transcript::Proof,
 }
 
-// The `Vec<F>` bound is what `build_product_mles` asks of the field: the
-// R1CS products are reduced two limbs at a time.
 impl<S, F> CircuitProofSystem<S, F>
 where
     S: CircuitStatement,
     F: BitzClaimField,
     F::Integer: BitWidth + IntoWords,
-    Vec<F>: for<'a> From<&'a ModularVector<2>>,
+    Vec<F>: for<'a> From<&'a ModularVector<2>>, // Needed for `build_product_mles`
 {
     #[tracing::instrument(name = "setup", skip_all)]
     pub fn new<R, Proj>(statement: S) -> Result<Self, Error>

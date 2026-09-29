@@ -148,7 +148,7 @@ impl<F: BitzField> PreparedConstraintMatrices<F> {
 
 const PRIME_LIMBS: usize = 2;
 
-/// Reduces exact `Ah`, `Bh`, and `Ch` values modulo Q100 and pads their row
+/// Reduces exact `Ah`, `Bh`, and `Ch` values modulo `F::modulus` and pads their row
 /// tables with trailing zeros to the next power of two.
 pub fn build_product_mles<F>(
     products: &IntegerProducts,

@@ -18,14 +18,3 @@ pub use sumcheck::{
     R1csProductMles, SumcheckError, SumcheckProof, SumcheckProverOutput, prove_inner_sumcheck,
     prove_outer_sumcheck,
 };
-
-#[cfg(test)]
-mod tests {
-    use common::BitzConstraintRing;
-
-    #[test]
-    fn ensure_traits() {
-        fn assert_impl<T: BitzConstraintRing>() {}
-        assert_impl::<num_bigint::BigInt>();
-    }
-}

@@ -9,19 +9,19 @@ use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive};
 
 /// Trait for projecting a constraint onto a field.
-/// Needs context prepared right before the projection, as field might be
-/// reconfigured in the process.
+/// Needs to be prepared right before the projection, as field might be
+/// reconfigured.
 pub trait ProjectConstraint<R, F>: Send + Sync {
     fn prepare() -> Self;
 
     fn project(&self, constraint: &R) -> F;
 }
 
+/// Projects [`BigInt`] constraints onto [`Fq`] by reducing it canonically modulo `Q`.
 pub struct ProjectBigIntToFq {
     modulus: BigInt,
 }
 
-/// Projects [`BigInt`] constraints onto [`Fq`] by reducing it canonically modulo [`Q100`].
 impl<const Q: u128> ProjectConstraint<BigInt, Fq<Q>> for ProjectBigIntToFq {
     fn prepare() -> Self {
         Self {
