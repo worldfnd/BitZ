@@ -17,6 +17,7 @@ use spongefish::{
     ByteArray, Decoding, Encoding, NargDeserialize, VerificationError, VerificationResult,
 };
 
+use crate::dynamic::DynField;
 use crate::{F128, Fq};
 
 impl Encoding<[u8]> for F128 {
@@ -56,6 +57,19 @@ impl<const Q: u128> NargDeserialize for Fq<Q> {
         }
         *buf = rest;
         Ok(Self::from(value))
+    }
+}
+
+impl Encoding<[u8]> for DynField {
+    fn encode(&self) -> impl AsRef<[u8]> {
+        todo!();
+        [0]
+    }
+}
+
+impl NargDeserialize for DynField {
+    fn deserialize_from_narg(buf: &mut &[u8]) -> VerificationResult<Self> {
+        todo!()
     }
 }
 

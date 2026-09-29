@@ -1,6 +1,7 @@
 //! Typed Fiat–Shamir challenge sampling.
 
 use crate::{ProverState, VerifierState};
+use field::dynamic::DynField;
 use field::{F128, Fq};
 
 /// A type that knows how to construct itself from transcript squeezes.
@@ -53,10 +54,49 @@ impl<const Q: u128> TranscriptChallenge for Fq<Q> {
     }
 }
 
+/// A `bits`-bit prime from successive `u128` squeezes, the same on both
+/// sides: the fingerprint prime of 5. "An end-to-end BitZ-based SNARK over
+/// any finitely generated ring", Step 2, drawn once per proof after the
+/// commitment and the statement are absorbed and before the PIOP.
+///
+/// TODO(random-prime): draw it. Uniform among the primes in
+/// `[2^(bits-1), 2^bits)`: rejection-sample odd candidates from `next_u128`
+/// and test them by Miller-Rabin with bases squeezed from the same stream, as
+/// `ext_proj::sample_prime_context` does in `f2z-pcs`. Until then the fixed
+/// modulus is returned and nothing is squeezed.
+pub fn prime_from_squeezes(_next_u128: impl FnMut() -> u128, bits: u32) -> u128 {
+    assert_eq!(
+        bits,
+        field::FqDefault::BITS,
+        "the placeholder draw only knows the fixed modulus"
+    );
+    field::Q100
+}
+
+impl ProverState {
+    /// Squeezes a `bits`-bit prime from this transcript.
+    pub fn squeeze_prime(&mut self, bits: u32) -> u128 {
+        prime_from_squeezes(|| self.verifier_message::<u128>(), bits)
+    }
+}
+
+impl VerifierState<'_> {
+    /// Squeezes a `bits`-bit prime from this transcript.
+    pub fn squeeze_prime(&mut self, bits: u32) -> u128 {
+        prime_from_squeezes(|| self.verifier_message::<u128>(), bits)
+    }
+}
+
 impl TranscriptChallenge for F128 {
     fn from_squeezes(mut next_u128: impl FnMut() -> u128) -> Self {
         // Every 128-bit string is exactly one binary-field element.
         Self::from(next_u128())
+    }
+}
+
+impl TranscriptChallenge for DynField {
+    fn from_squeezes(next_u128: impl FnMut() -> u128) -> Self {
+        todo!()
     }
 }
 
@@ -104,6 +144,19 @@ mod tests {
 
         assert_eq!(verifier_fq, prover_fq);
         assert_eq!(verifier_f128, prover_f128);
+        verifier.check_eof().unwrap();
+    }
+
+    #[test]
+    fn prover_and_verifier_squeeze_the_same_prime() {
+        let mut prover = build_prover(SESSION, INSTANCE);
+        let prime = prover.squeeze_prime(F::BITS);
+        let after = prover.squeeze::<F>();
+        let proof = prover.finish();
+
+        let mut verifier = build_verifier(SESSION, INSTANCE, &proof);
+        assert_eq!(verifier.squeeze_prime(F::BITS), prime);
+        assert_eq!(verifier.squeeze::<F>(), after);
         verifier.check_eof().unwrap();
     }
 
