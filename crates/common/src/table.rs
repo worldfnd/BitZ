@@ -3,10 +3,16 @@
 use std::{ops::Deref, slice::Iter};
 
 use crate::{Shape, ShapeError};
-/// The machine word `packed` is sliced into. [`BitTable::BITS`] is derived
-/// from this, so changing it is the only step needed to repack into a
-/// different word size.
-type Word = u64;
+/// The word `packed` is sliced into: one `F128` element. [`BitTable::BITS`]
+/// is derived from this, so changing it is the only step needed to repack
+/// into a different word size of at least 64 bits.
+///
+/// 128 rather than 64 bits because `bit_transpose` is bound by its strided
+/// loads and stores, and each one then moves 16 bytes instead of 8: the same
+/// code with `u64` measured 20-55% slower on `BitTable::transpose`.
+type Word = u128;
+/// Bits in a [`Word`]'s bit index.
+const LOG_BITS: u32 = Word::BITS.trailing_zeros();
 
 /// A witness that does not match its shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -185,16 +191,15 @@ impl<S: Deref<Target = [Word]>> BitTableBase<S> {
 // `r = BITS / d` consecutive words each: word i = c * d + a is row a, word c.
 // Writing a block's index bits as (word | bit), the input is
 // ([c | a] | [p_hi | p_lo]) with a and p_hi log2(d) bits wide, and the
-// output needs ([c | p_hi] | [p_lo | a]): the bit index rotates by log2(d).
+// output needs ([c | p_hi] | [p_lo | a]).
 //
-// A butterfly stage swaps one word index bit with one bit index bit. Stages
-// s < log d swap a with the low bits of p: every d x d tile is transposed and
-// each word holds correct d-bit pieces. The later stages move whole pieces
-// with the same word index bits, s % log d: stage s puts the bit that stage
-// s - log d took out of the bit index back in, log d places higher. That is
-// one sweep of 6 stages for any d >= 2, and it has to run upwards. The word
-// index ends as [c | p_hi] with p_hi's bits rotated by 6 % log d, which the
-// indexed write undoes. For d = BITS this is the plain blocked transpose.
+// p_lo only moves within its word, up by log2(d), so that is done first:
+// each gathered word's bit index is rotated to [p_lo | p_hi], which
+// transposes the word read as d rows of r bits. That leaves a and p_hi to
+// trade places bit for bit: log2(d) butterfly stages, stage s swapping word
+// index bit s with bit index bit s, which transposes every d x d tile of the
+// block. The stages commute and run coarse to fine. For d = BITS the
+// rotation is the identity and this is the plain blocked transpose.
 fn bit_transpose(xs: &[Word], dim1: usize, dim2: usize) -> Vec<Word> {
     assert_eq!(xs.len() * BitTable::BITS, dim1 * dim2);
     assert!(dim1.is_power_of_two(), "dim1 {dim1} is not a power of two");
@@ -210,14 +215,14 @@ fn bit_transpose(xs: &[Word], dim1: usize, dim2: usize) -> Vec<Word> {
         3 => bit_transpose_blocks::<3>(xs, dim1, dim2),
         4 => bit_transpose_blocks::<4>(xs, dim1, dim2),
         5 => bit_transpose_blocks::<5>(xs, dim1, dim2),
-        _ => bit_transpose_blocks::<6>(xs, dim1, dim2),
+        6 => bit_transpose_blocks::<6>(xs, dim1, dim2),
+        _ => bit_transpose_blocks::<LOG_BITS>(xs, dim1, dim2),
     }
 }
 
 /// [`bit_transpose`] for blocks of `d = 2^LOG_D` rows, `LOG_D >= 1`.
 fn bit_transpose_blocks<const LOG_D: u32>(xs: &[Word], dim1: usize, dim2: usize) -> Vec<Word> {
     const BITS: usize = Word::BITS as usize;
-    const LOG_BITS: u32 = Word::BITS.trailing_zeros();
 
     let d = 1 << LOG_D; // rows per block
     let r = BITS / d; // words per row per block
@@ -229,14 +234,15 @@ fn bit_transpose_blocks<const LOG_D: u32>(xs: &[Word], dim1: usize, dim2: usize)
         "dim2 {dim2} does not fill whole {d}-row blocks"
     );
 
-    // The sweep leaves p_hi in the low LOG_D word index bits rotated left
-    // by `rot`; the indexed write rotates them back.
-    let rot = LOG_BITS % LOG_D;
-
     let mut out = bytemuck::zeroed_vec(xs.len());
 
-    for g1 in 0..dim1 / d {
-        for g2 in 0..row_words / r {
+    // g1 innermost, so consecutive blocks write neighbouring words of the
+    // same output rows while those lines are still cached, and it is the
+    // input that is revisited after a sweep; the other way round measured
+    // ~10% slower on a 2^13-column table. g1 only takes more than one value
+    // when d = BITS.
+    for g2 in 0..row_words / r {
+        for g1 in 0..dim1 / d {
             // Word i = [c | a] is row a, word c. Two loops rather than one
             // over i: splitting i back into a and c measured 4-12% slower
             // for d < BITS.
@@ -247,13 +253,14 @@ fn bit_transpose_blocks<const LOG_D: u32>(xs: &[Word], dim1: usize, dim2: usize)
                 }
             }
 
+            for word in &mut block {
+                *word = rotate_bit_index::<LOG_D>(*word);
+            }
             bit_block_transpose(LOG_D, &mut block);
 
             // o is output row g2 * BITS + o, word g1 in [dim2][dim1]; g1 is
             // only nonzero when d = BITS.
-            for (i, &word) in block.iter().enumerate() {
-                let low = i & (d - 1);
-                let o = (i & !(d - 1)) | ((low >> rot) | (low << (LOG_D - rot))) & (d - 1);
+            for (o, &word) in block.iter().enumerate() {
                 out[(g2 * BITS + o) * out_stride + g1] = word;
             }
         }
@@ -262,28 +269,81 @@ fn bit_transpose_blocks<const LOG_D: u32>(xs: &[Word], dim1: usize, dim2: usize)
     out
 }
 
-/// Runs the 6 butterfly stages on a BITS x BITS block, lowest first. Stage
-/// `s` swaps bit index bit `s` with word index bit `s % log_d`, so
-/// `log_d = 6` is the full transpose. See [`bit_transpose`] for smaller
-/// `log_d`.
+/// The bits whose index has bit `s` clear: alternating runs of `2^s` bits,
+/// lowest run set. 01010101, 00110011, 00001111 for `s` = 0, 1, 2.
+const fn index_bit_clear(s: u32) -> Word {
+    Word::MAX / ((1 << (1 << s)) + 1)
+}
+
+/// Rotates the bit index of every bit in `x` left by `LOG_D`: bit
+/// `[p_hi | p_lo]` moves to `[p_lo | p_hi]`, `p_hi` being `LOG_D` bits wide.
+/// Read as `d = 2^LOG_D` rows of `r = BITS / d` bits, the word is transposed.
+/// A delta swap per entry of [`rotation_swaps`], none for `LOG_D = LOG_BITS`.
+#[inline(always)]
+fn rotate_bit_index<const LOG_D: u32>(mut x: Word) -> Word {
+    // Evaluated at compile time, so every shift and mask is a constant.
+    let (swaps, n) = const { rotation_swaps(LOG_D) };
+    for &(shift, mask) in &swaps[..n] {
+        let t = ((x >> shift) ^ x) & mask;
+        x ^= t ^ (t << shift);
+    }
+    x
+}
+
+/// The delta swaps that rotate a bit index left by `log_d`, as `(shift,
+/// mask)` pairs: each bit in `mask` trades places with the bit `shift` above
+/// it. Returns the pairs and how many of them are used.
+///
+/// The rotation splits the index bits into `gcd(LOG_BITS, log_d)` cycles.
+/// Each cycle is walked from its lowest index bit `low`, which is swapped
+/// with the cycle's other bits `i` in turn: `LOG_BITS - gcd` swaps in all.
+const fn rotation_swaps(log_d: u32) -> ([(u32, Word); LOG_BITS as usize], usize) {
+    let (mut cycles, mut rest) = (LOG_BITS, log_d);
+    while rest != 0 {
+        (cycles, rest) = (rest, cycles % rest);
+    }
+
+    let mut swaps = [(0, 0); LOG_BITS as usize];
+    let mut n = 0;
+    let mut low = 0;
+    while low < cycles {
+        let mut i = (low + log_d) % LOG_BITS;
+        while i != low {
+            // The bits whose index has bit low set and bit i clear.
+            swaps[n] = (
+                (1 << i) - (1 << low),
+                !index_bit_clear(low) & index_bit_clear(i),
+            );
+            n += 1;
+            i = (i + log_d) % LOG_BITS;
+        }
+        low += 1;
+    }
+    (swaps, n)
+}
+
+/// Transposes every `2^log_d x 2^log_d` tile of a BITS x BITS block, the
+/// tile's words being those that differ only in their low `log_d` index
+/// bits. Stage `s` swaps bit index bit `s` with word index bit `s`, coarse
+/// to fine; the stages commute, so the order is free. `log_d = LOG_BITS` is
+/// the full transpose.
 #[inline(always)]
 fn bit_block_transpose(log_d: u32, xs: &mut [Word; Word::BITS as usize]) {
-    for s in 0..Word::BITS.trailing_zeros() {
-        let j = 1 << s;
-        // Alternating runs of j bits, lowest run set:
-        // 01010101, 00110011, 00001111
-        let mask = Word::MAX / ((1 << j) + 1);
-        // Distance between the paired words.
-        let jw = 1 << (s % log_d);
+    for s in (0..log_d).rev() {
+        // Distance between the paired bits, and between the paired words.
+        let j: usize = 1 << s;
+        let mask = index_bit_clear(s);
         let mut k: usize = 0;
         while k < Word::BITS as usize {
-            let t = xs[k];
-            let b = xs[k | jw];
-            // Alternative is a delta swap, however this is more readable.
-            xs[k] = (t & mask) | ((b << j) & !mask);
-            xs[k | jw] = ((t >> j) & mask) | (b & !mask);
-            // (k|jw) count the upper part. +1 advances the upper part. !jw converts it into the lower index again except for when it hits the next round. In that case the | jw was
-            k = ((k | jw) + 1) & !jw;
+            // A delta swap across the pair: t is where the upper runs of
+            // xs[k] and the lower runs of xs[k | j] differ, and flipping those
+            // bits in both swaps the runs. Measured 6-10% faster than
+            // rebuilding both words from masked halves.
+            let t = ((xs[k] >> j) ^ xs[k | j]) & mask;
+            xs[k | j] ^= t;
+            xs[k] ^= t << j;
+            // (k|j) count the upper part. +1 advances the upper part. !j converts it into the lower index again except for when it hits the next round. In that case the | j was
+            k = ((k | j) + 1) & !j;
         }
     }
 }
@@ -484,7 +544,7 @@ mod tests {
         let table = BitTable::new(shape, bytemuck::cast_slice(&packed)).unwrap();
 
         assert_eq!(table.column(3).len(), shape.rows() / BitTable::BITS);
-        assert_eq!(table.column(3), [0b101u64, 1u64]);
+        assert_eq!(table.column(3), [0b101 | (1 << 64)]);
         assert!(table.column(4).iter().all(|&element| element == 0));
     }
 
@@ -525,15 +585,20 @@ mod tests {
         (seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 63) & 1 == 1
     }
 
+    /// A word with bits spread over its whole width, distinct for every `i`.
+    fn pseudo_random_word(i: usize) -> Word {
+        (i as Word).wrapping_mul(0x2545_F491_4F6C_DD1D_9E37_79B9_7F4A_7C15) ^ 0xA5A5
+    }
+
     #[test]
     fn bit_block_transpose_matches_a_brute_force_reference() {
         let mut original = [0 as Word; BitTable::BITS];
         for (i, word) in original.iter_mut().enumerate() {
-            *word = (i as Word).wrapping_mul(0x2545_F491_4F6C_DD1D) ^ 0xA5A5;
+            *word = pseudo_random_word(i);
         }
 
         let mut transposed = original;
-        bit_block_transpose(6, &mut transposed);
+        bit_block_transpose(LOG_BITS, &mut transposed);
 
         for (i, &transposed_word) in transposed.iter().enumerate() {
             for (j, &original_word) in original.iter().enumerate() {
@@ -546,12 +611,33 @@ mod tests {
         }
     }
 
+    /// Bit `p` must land at `p` rotated left by `LOG_D` within `LOG_BITS` bits.
+    fn check_rotate_bit_index<const LOG_D: u32>() {
+        for p in 0..BitTable::BITS {
+            let rotated = ((p << LOG_D) | (p >> (LOG_BITS - LOG_D))) % BitTable::BITS;
+            assert_eq!(
+                rotate_bit_index::<LOG_D>(1 << p),
+                1 << rotated,
+                "LOG_D {LOG_D}, bit {p}"
+            );
+        }
+    }
+
+    #[test]
+    fn rotate_bit_index_rotates_every_bit_index() {
+        check_rotate_bit_index::<1>();
+        check_rotate_bit_index::<2>();
+        check_rotate_bit_index::<3>();
+        check_rotate_bit_index::<4>();
+        check_rotate_bit_index::<5>();
+        check_rotate_bit_index::<6>();
+        check_rotate_bit_index::<7>();
+    }
+
     /// `bit_transpose` of `GS` rows of `words` words each against the
     /// bit-at-a-time reference.
     fn check_bit_transpose<const GS: usize>(words: usize) {
-        let tt: Vec<Word> = (0..GS * words)
-            .map(|i| (i as Word).wrapping_mul(0x2545_F491_4F6C_DD1D) ^ 0xA5A5)
-            .collect();
+        let tt: Vec<Word> = (0..GS * words).map(pseudo_random_word).collect();
         assert_eq!(
             bit_transpose(&tt, GS, words * BitTable::BITS),
             transpose_reference::<GS>(&tt),
@@ -563,25 +649,23 @@ mod tests {
     fn bit_transpose_matches_reference_for_every_row_count() {
         // Two blocks along dim2 at every row count, so block placement is
         // exercised as well as the block contents.
-        check_bit_transpose::<1>(128);
-        check_bit_transpose::<2>(64);
-        check_bit_transpose::<4>(32);
-        check_bit_transpose::<8>(16);
-        check_bit_transpose::<16>(8);
-        check_bit_transpose::<32>(4);
-        check_bit_transpose::<64>(2);
+        check_bit_transpose::<1>(256);
+        check_bit_transpose::<2>(128);
+        check_bit_transpose::<4>(64);
+        check_bit_transpose::<8>(32);
+        check_bit_transpose::<16>(16);
+        check_bit_transpose::<32>(8);
+        check_bit_transpose::<64>(4);
         check_bit_transpose::<128>(2);
         check_bit_transpose::<256>(2);
     }
 
     #[test]
     fn transpose_reference_matches_bit_transpose() {
-        // 128 segments of 4 words each: two block groups on both axes.
-        const GS: usize = 128;
-        let segment_n = 4;
-        let tt: Vec<Word> = (0..GS * segment_n)
-            .map(|i| (i as Word).wrapping_mul(0x2545_F491_4F6C_DD1D) ^ 0xA5A5)
-            .collect();
+        // 256 segments of 2 words each: two block groups on both axes.
+        const GS: usize = 256;
+        let segment_n = 2;
+        let tt: Vec<Word> = (0..GS * segment_n).map(pseudo_random_word).collect();
 
         let reference = transpose_reference::<GS>(&tt);
         assert_eq!(reference.len(), tt.len());

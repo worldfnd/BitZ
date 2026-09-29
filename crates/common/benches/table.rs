@@ -25,13 +25,14 @@ fn main() {
 }
 
 /// Seeded so every run transposes the same matrix.
-fn input() -> Vec<u64> {
+fn input() -> Vec<u128> {
     let mut rng = StdRng::seed_from_u64(0);
-    (0..DIM1 * DIM2 / u64::BITS as usize)
+    (0..DIM1 * DIM2 / u128::BITS as usize)
         .map(|_| rng.random())
         .collect()
 }
 
+#[divan::bench]
 fn blocked(bencher: Bencher) {
     let xs = input();
     bencher
@@ -39,6 +40,7 @@ fn blocked(bencher: Bencher) {
         .bench(|| bit_transpose(black_box(&xs), DIM1, DIM2));
 }
 
+#[divan::bench]
 fn reference(bencher: Bencher) {
     let xs = input();
     bencher
