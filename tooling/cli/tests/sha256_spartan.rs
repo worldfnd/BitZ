@@ -1,5 +1,4 @@
-use std::array;
-
+use bitz_cli::{ProjectBigIntToFq, ProjectConstraint};
 use circuit::{
     constraints::ConstraintGenerator,
     sha256::{
@@ -8,12 +7,16 @@ use circuit::{
     },
     witgen::{PackedWitness, ProductWitgen},
 };
-use num_bigint::BigInt;
 use spartan::{
     PreparedConstraintMatrices, build_assignment_mle, build_product_mles, prove_spartan_piop,
     verify_spartan_with_mle_claim,
 };
+use std::array;
 use transcript::{build_prover, build_verifier};
+
+type R = num_bigint::BigInt;
+type F = field::FqDefault;
+type Proj = ProjectBigIntToFq;
 
 const SESSION: &[u8] = b"spartan/piop/sha256-compression/v1";
 const INSTANCE: &[u8] = b"abc-single-compression";
@@ -51,7 +54,7 @@ fn sha256_compression_verifies_through_spartan_piop() {
     let recomputed_assignment = integer_matrices.integer_witness(&boolean_witness).unwrap();
     assert_assignment_matches(&recomputed_assignment, &recorded_assignment);
 
-    let projection = Proj::prepare();
+    let projection = <Proj as ProjectConstraint<R, F>>::prepare();
     let matrices = integer_matrices.map_coefficients(|c| projection.project(&c));
     let products = build_product_mles(&exact_products, matrices.a.row_count()).unwrap();
     let assignment = build_assignment_mle(&recorded_assignment, matrices.a.column_count()).unwrap();
@@ -104,12 +107,12 @@ fn words_from_le_bits(bits: &[bool; 256]) -> [u32; 8] {
     })
 }
 
-fn assert_assignment_matches(computed: &[BigInt], recorded: &PackedWitness) {
+fn assert_assignment_matches(computed: &[R], recorded: &PackedWitness) {
     assert_eq!(computed.len(), recorded.bit_len());
     for (index, expected) in computed.iter().enumerate() {
         assert_eq!(
             expected,
-            &BigInt::from(recorded.bit(index)),
+            &R::from(recorded.bit(index)),
             "assignment differs at index {index}",
         );
     }
