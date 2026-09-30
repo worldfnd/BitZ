@@ -8,7 +8,7 @@ use post_gkr::{
     ProveError as PostGkrProveError, VerifyError as PostGkrVerifyError, prove as prove_post_gkr,
     verify as verify_post_gkr,
 };
-use transcript::{ProverState, PublicTranscript, VerifierState};
+use transcript::{ProverState, PublicTranscript, SecurityLevel, VerifierState};
 
 use crate::bridge::{as_flock_f128, as_flock_f128s, from_flock_f128};
 use crate::ligerito::{self, ReducedProver, validate_prover_data};
@@ -21,6 +21,7 @@ const INNER_PRODUCT_DIGEST_CONTEXT: &str = "bitz/pcs/bit-inner-product-weights/v
 const SUMCHECK_LABEL: &[u8] = b"bitz/pcs/inner-product-sumcheck/v2";
 const MLE_CLAIMS_LABEL: &[u8] = b"bitz/pcs/mle-claims/v1";
 const CHALLENGES_LABEL: &[u8] = b"bitz/pcs/ring-switch-challenges/v1";
+const RING_GRINDING_LABEL: &[u8] = b"bitz/pcs/ring/v1";
 
 /// Errors from opening proof creation.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -116,6 +117,9 @@ pub(crate) fn prove(
     transcript: &mut ProverState,
 ) -> Result<(), ProveError> {
     let commitment = data.commitment();
+    if !commitment.matches(pcs) {
+        return Err(ProveError::ProverDataMismatch);
+    }
     let root = commitment.root();
     match query {
         OpeningQuery::Mle { point, target } => {
@@ -129,17 +133,21 @@ pub(crate) fn prove(
                 ring_switch,
                 *target,
                 commitment.ood.as_ref(),
+                pcs.security_level(),
                 transcript,
             )
         }
         OpeningQuery::InnerProduct { claim } => {
             validate_inner_product_claim(pcs, claim)?;
             validate_prover_data(pcs, data)?;
+            if packed_witness.len() != pcs.packed_len() {
+                return Err(ProveError::PackedWitnessLengthMismatch);
+            }
             if statement_binding == StatementBinding::Bind {
                 bind_inner_product_statement(pcs, &root.0, claim, transcript);
             }
             transcript.public_message(SUMCHECK_LABEL);
-            let reduced = prove_post_gkr(claim, &packed_witness, transcript)?;
+            let reduced = prove_post_gkr(claim, &packed_witness, pcs.security_level(), transcript)?;
             // The evaluation claim the sumcheck leaves is opened like any
             // other, and bound whatever the caller's mode: `AlreadyBound`
             // covers the original claim only.
@@ -182,7 +190,7 @@ pub(crate) fn verify(
                 bind_inner_product_statement(pcs, &root.0, claim, transcript);
             }
             transcript.public_message(SUMCHECK_LABEL);
-            let reduced = verify_post_gkr(claim, transcript)?;
+            let reduced = verify_post_gkr(claim, pcs.security_level(), transcript)?;
             verify(
                 pcs,
                 commitment,
@@ -213,6 +221,7 @@ fn prove_mle(
     ring_switch: mle::RingSwitch<'_>,
     target: F128,
     ood_claim: Option<&OodClaim>,
+    security: SecurityLevel,
     transcript: &mut ProverState,
 ) -> Result<(), ProveError> {
     let dense_reduction = {
@@ -220,6 +229,11 @@ fn prove_mle(
         let prepared_claims =
             ring_switch.prepare_claims(as_flock_f128s(prover.witness()), target)?;
         write_claims(transcript, &prepared_claims.claims);
+        // The seven coordinates and optional OOD coefficient share one challenge block.
+        transcript.grind(
+            RING_GRINDING_LABEL,
+            security.grinding_bits(7 + usize::from(ood_claim.is_some())),
+        );
         let batching_point = sample_challenges(transcript);
         let mut reduced = prepared_claims.reduce_dense(&batching_point);
         if let Some(claim) = ood_claim {
@@ -248,6 +262,13 @@ fn verify_mle(
         if !ring_switch.target_matches(&claims, target) {
             return Err(VerifyError::VerificationFailed);
         }
+        transcript
+            .grind(
+                RING_GRINDING_LABEL,
+                pcs.security_level()
+                    .grinding_bits(7 + usize::from(ood_claim.is_some())),
+            )
+            .map_err(|_| VerifyError::MalformedProof)?;
         let batching_point = sample_challenges(transcript);
         ring_switch.reduce_succinct(&claims, &batching_point)
     };

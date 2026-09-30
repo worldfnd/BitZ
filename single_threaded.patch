@@ -19,10 +19,11 @@ index 89a1bf0..bb364ff 100644
              .for_each(|(((l_lo, r_lo), &l_hi), &r_hi)| {
                  // Recalculating delta rather than writing it in the top half of the array in the previous loop to save on writes.
                  // No benchmarking has been done to check the difference.
-@@ -161,16 +161,16 @@ fn reduce_round<const SEND_ONE: bool>(
+@@ -161,17 +161,17 @@ fn reduce_round<const SEND_ONE: bool>(
      hi_r: &[Field],
      eq: &[Field],
  ) -> (Wide256, Wide256) {
+     // chunking reduces variance in benchmarking
 -    lo_l.par_chunks_exact(2)
 -        .zip(lo_r.par_chunks_exact(2))
 -        .zip(hi_l.par_chunks_exact(2))

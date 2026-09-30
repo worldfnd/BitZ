@@ -5,7 +5,7 @@
 mod support;
 
 use common::Shape;
-use pcs::{HashKind, LigeritoProfile, Pcs};
+use pcs::Pcs;
 use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;
 use support::{hex, write_binary, write_witness};
@@ -39,7 +39,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let shape = Shape::new(t, s).map_err(|error| format!("invalid shape: {error:?}"))?;
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
     let packed = packed_witness(shape, &mut rng);
-    let pcs = Pcs::new(&shape, LigeritoProfile::Fast, HashKind::Blake3)
+    let pcs = Pcs::new(&shape, transcript::SecurityLevel::Bits100)
         .map_err(|error| format!("PCS configuration failed: {error:?}"))?;
     let (root, _data) = pcs
         .commit(&packed, &mut prover_transcript())
@@ -47,7 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     write_binary(out, |output| write_witness(output, &packed))?;
     let root = hex(&root.0);
     println!(
-        "their side: t={t} s={s} m={} packed_len={} profile=Fast hash=blake3 root={root}",
+        "their side: t={t} s={s} m={} packed_len={} security=100 hash=blake3 root={root}",
         shape.log_bits(),
         packed.len()
     );

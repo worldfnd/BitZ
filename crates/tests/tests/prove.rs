@@ -1,12 +1,12 @@
 //! The top-level prove and verify, through the real opening.
 
-use common::{Root, TableError};
+use common::{OpeningQuery, Root, Shape, TableError};
 use field::{F128, Fq};
 use num_traits::{ConstOne, ConstZero};
-use pcs::{HashKind, LigeritoProfile, Pcs, VerifyError as PcsVerifyError};
+use pcs::{CommitScheme, Pcs, StatementBinding, VerifyError as PcsVerifyError};
 use prover::ProveError;
-use tests::{Instance, narrow_shape, verifier_transcript, wide_shape};
-use transcript::Proof;
+use tests::{Instance, narrow_shape, prover_transcript, verifier_transcript, wide_shape};
+use transcript::{Proof, SecurityLevel};
 use verifier::{ReceiveError, VerifyError};
 
 fn prove(instance: &mut Instance) -> Proof {
@@ -31,7 +31,6 @@ fn an_honest_proof_verifies_on_both_floor_shapes() {
         let proof = prove(&mut instance);
 
         instance
-            .verifier
             .verify(
                 &instance.claim,
                 &instance.pcs,
@@ -49,7 +48,7 @@ fn a_proof_replayed_under_a_different_commitment_is_refused() {
 
     // Binding a different root changes the fold batching point, so GKR rejects.
     assert_eq!(
-        instance.verifier.verify(
+        instance.verify(
             &instance.claim,
             &instance.pcs,
             Root([0xffu8; 32]),
@@ -69,7 +68,7 @@ fn the_statement_is_bound_before_the_first_challenge() {
     // binding backs up rather than replaces.
     let retargeted = instance.with_target(instance.claim.target() + Fq::ONE);
     assert_eq!(
-        instance.verifier.verify(
+        instance.verify(
             &retargeted,
             &instance.pcs,
             instance.com,
@@ -86,7 +85,7 @@ fn a_proof_with_trailing_bytes_is_refused() {
     proof.hints.push(0);
 
     assert_eq!(
-        instance.verifier.verify(
+        instance.verify(
             &instance.claim,
             &instance.pcs,
             instance.com,
@@ -119,7 +118,7 @@ fn an_opening_against_another_commitment_is_refused() {
     let proof = transcript.finish();
 
     assert_eq!(
-        proved.verifier.verify(
+        proved.verify(
             &proved.claim,
             &proved.pcs,
             committed.com,
@@ -138,39 +137,36 @@ fn a_tampered_opening_proof_is_refused() {
     let middle = proof.hints.len() / 2;
     proof.hints[middle] ^= 0xff;
 
-    assert_eq!(
-        instance.verifier.verify(
+    assert!(matches!(
+        instance.verify(
             &instance.claim,
             &instance.pcs,
             instance.com,
             verifier_transcript(&proof)
         ),
-        Err(VerifyError::Opening(PcsVerifyError::VerificationFailed))
-    );
+        Err(VerifyError::Opening(
+            PcsVerifyError::MalformedProof | PcsVerifyError::VerificationFailed
+        ))
+    ));
 }
 
 #[test]
-fn a_proof_verified_under_a_different_profile_is_refused() {
-    // OOD binds PCS parameters before the first fold challenge, so a different
-    // profile changes the fold transcript and GKR rejects.
+fn a_proof_verified_under_a_different_security_target_is_refused() {
+    // PCS parameters enter the transcript before the first fold challenge.
     let mut instance = Instance::honest(narrow_shape(), 38);
-    let slim = Pcs::new(
-        instance.params.shape(),
-        LigeritoProfile::Slim,
-        HashKind::Blake3,
-    )
-    .unwrap();
+    let other_pcs = Pcs::new(instance.params.shape(), SecurityLevel::Bits128).unwrap();
     let proof = prove(&mut instance);
 
-    assert!(matches!(
-        instance.verifier.verify(
-            &instance.claim,
-            &slim,
-            instance.com,
-            verifier_transcript(&proof)
-        ),
-        Err(VerifyError::Reduction(_))
-    ));
+    assert!(
+        instance
+            .verify(
+                &instance.claim,
+                &other_pcs,
+                instance.com,
+                verifier_transcript(&proof),
+            )
+            .is_err()
+    );
 }
 
 #[test]
@@ -198,4 +194,116 @@ fn a_witness_of_the_wrong_length_is_refused_without_changing_the_commitment_tran
         .unwrap();
     assert_eq!(verifier.verifier_message::<F128>(), next_challenge);
     verifier.check_eof().unwrap();
+}
+
+#[test]
+fn explicit_security_targets_verify_and_reject_replay_or_tampering() {
+    let mut instance = Instance::honest(narrow_shape(), 40);
+    for level in [SecurityLevel::Bits100, SecurityLevel::Bits128] {
+        instance.pcs = Pcs::new(instance.params.shape(), level).unwrap();
+        let mut transcript = prover_transcript();
+        (instance.com, instance.data) = instance
+            .pcs
+            .commit(&instance.packed, &mut transcript)
+            .unwrap();
+        instance.transcript = Some(transcript);
+        let proof = prove(&mut instance);
+        instance
+            .verify(
+                &instance.claim,
+                &instance.pcs,
+                instance.com,
+                verifier_transcript(&proof),
+            )
+            .unwrap();
+
+        let other_level = match level {
+            SecurityLevel::Bits100 => SecurityLevel::Bits128,
+            SecurityLevel::Bits128 => SecurityLevel::Bits100,
+        };
+        let other_pcs = Pcs::new(instance.params.shape(), other_level).unwrap();
+        assert!(
+            instance
+                .verify(
+                    &instance.claim,
+                    &other_pcs,
+                    instance.com,
+                    verifier_transcript(&proof),
+                )
+                .is_err()
+        );
+
+        let wrong_target = instance.with_target(instance.claim.target() + Fq::ONE);
+        assert_eq!(
+            instance.verify(
+                &wrong_target,
+                &instance.pcs,
+                instance.com,
+                verifier_transcript(&proof),
+            ),
+            Err(VerifyError::Fold(ReceiveError::TargetMismatch))
+        );
+
+        if level == SecurityLevel::Bits128 {
+            // The first nonce follows the column folds.
+            let mut changed = proof.clone();
+            changed.narg_string[16 * instance.params.shape().columns()] ^= 0xff;
+            assert!(
+                instance
+                    .verify(
+                        &instance.claim,
+                        &instance.pcs,
+                        instance.com,
+                        verifier_transcript(&changed),
+                    )
+                    .is_err()
+            );
+        }
+
+        // Both policies use the same commitment geometry, but different opening configurations.
+        // Retained data must match the security target as well as the commitment shape.
+        let query = OpeningQuery::Mle {
+            point: vec![F128::ZERO; instance.params.shape().log_bits()],
+            target: F128::from(instance.packed[0].lo & 1),
+        };
+        let mut transcript = prover_transcript();
+        assert_eq!(
+            other_pcs.prove_lin(
+                &instance.data,
+                instance.packed.clone(),
+                &query,
+                StatementBinding::Bind,
+                &mut transcript,
+            ),
+            Err(pcs::ProveError::ProverDataMismatch)
+        );
+        assert_eq!(transcript.finish(), Proof::default());
+    }
+}
+
+#[test]
+fn a_mismatched_direct_commitment_size_is_rejected_before_transcript_mutation() {
+    let instance = Instance::honest(narrow_shape(), 41);
+    let pcs = Pcs::new(&Shape::new(7, 16).unwrap(), SecurityLevel::Bits128).unwrap();
+    let mut transcript = prover_transcript();
+    assert_eq!(
+        instance.prover.prove(
+            &instance.claim,
+            &pcs,
+            &instance.data,
+            instance.packed.clone(),
+            &mut transcript,
+        ),
+        Err(ProveError::ParameterMismatch)
+    );
+    assert_eq!(transcript.finish(), Proof::default());
+    assert_eq!(
+        instance.verify(
+            &instance.claim,
+            &pcs,
+            instance.com,
+            verifier_transcript(&Proof::default()),
+        ),
+        Err(VerifyError::ParameterMismatch)
+    );
 }

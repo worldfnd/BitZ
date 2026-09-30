@@ -28,13 +28,15 @@
 //!
 //! - [`Pcs`] stores trusted Flock parameters and the expected bit length.
 //! - [`Root`] is the public Merkle root.
-//! - [`ProverData`] retains the codeword and Merkle tree after commitment.
+//! - [`ProverData`] retains the commitment, codeword, and Merkle tree.
 //! - [`Commitment`] retains the root, parameters, and optional OOD claim on both sides.
 //! - [`OpeningQuery`] contains an MLE point and target, or a `common::LinearClaim<F128>`.
 //! - [`CommitScheme`] connects commitment, proving, and verification to project transcripts.
 //! - [`ConfigError`] reports configuration failures.
 //! - [`CommitError`], [`ProveError`], and [`VerifyError`] report operation-specific failures.
 //!
+//! The 100-bit profile includes initial and recursive OOD checks.
+//! The 128-bit profile uses unique decoding without OOD checks.
 //! The caller packs and retains the witness after [`CommitScheme::commit`].
 //! [`CommitScheme::prove_lin`] dispatches both query variants.
 //! It consumes the packed witness and borrows [`ProverData`].
@@ -53,13 +55,13 @@
 //! use field::F128;
 //! use num_traits::ConstZero;
 //! use pcs::{
-//!     CommitScheme, HashKind, LigeritoProfile, OpeningQuery, Pcs, StatementBinding,
+//!     CommitScheme, SecurityLevel, OpeningQuery, Pcs, StatementBinding,
 //! };
 //! use transcript::{build_prover, build_verifier};
 //!
 //! const M: usize = 22;
 //! let shape = Shape::new(7, 15).unwrap();
-//! let pcs = Pcs::new(&shape, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
+//! let pcs = Pcs::new(&shape, SecurityLevel::Bits100).unwrap();
 //! let packed_witness = vec![F128::ZERO; pcs.packed_len()];
 //! let point = (0..M)
 //!     .map(|coordinate| F128::from(coordinate as u64 + 2))
@@ -100,7 +102,6 @@ mod ligerito;
 mod mle;
 mod ood;
 mod opening;
-mod pow;
 mod profiles;
 mod transpose;
 
@@ -112,10 +113,10 @@ use field::F128;
 use opening::{prove, verify};
 use transcript::{ProverState, VerifierState};
 
-pub use commitment::{CommitError, Commitment, ConfigError, HashKind, Pcs, ProverData};
+pub use commitment::{CommitError, Commitment, ConfigError, Pcs, ProverData};
 pub use common::{OpeningQuery, Root};
-pub use flock_core::pcs::ligerito::LigeritoProfile;
 pub use opening::{ProveError, VerifyError};
+pub use transcript::SecurityLevel;
 
 /// Controls statement binding for one opening.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -7,7 +7,7 @@ use prover::{BitZProver, SendError};
 use tests::{
     Instance, Q, WINDOW, narrow_shape, prover_transcript, verifier_transcript, wide_shape,
 };
-use transcript::Proof;
+use transcript::{Proof, SecurityLevel};
 use verifier::{BitZVerifier, ReceiveError};
 
 /// Runs an honest prover and returns the round it produced with its proof.
@@ -15,7 +15,12 @@ fn prove(instance: &Instance) -> (common::Fold, Proof) {
     let mut transcript = prover_transcript();
     let round = instance
         .prover
-        .send_fold(&instance.claim, &instance.table(), &mut transcript)
+        .send_fold(
+            &instance.claim,
+            &instance.table(),
+            &mut transcript,
+            SecurityLevel::Bits100,
+        )
         .unwrap();
     (round, transcript.finish())
 }
@@ -31,7 +36,7 @@ fn forge(folds: &[u128]) -> Proof {
 }
 
 #[test]
-fn the_two_sides_agree_on_every_shape_the_profile_admits() {
+fn the_two_sides_agree_on_the_test_shapes() {
     for shape in [narrow_shape(), wide_shape()] {
         let instance = Instance::honest(shape, 7);
         let (sent, proof) = prove(&instance);
@@ -39,7 +44,7 @@ fn the_two_sides_agree_on_every_shape_the_profile_admits() {
         let mut transcript = verifier_transcript(&proof);
         let received = instance
             .verifier
-            .receive_fold(&instance.claim, &mut transcript)
+            .receive_fold(&instance.claim, &mut transcript, SecurityLevel::Bits100)
             .expect("honest proof");
 
         assert_eq!(sent, received, "t = {}", shape.log_rows());
@@ -110,17 +115,23 @@ fn a_fold_at_the_bound_is_accepted_and_one_past_it_is_not() {
     .unwrap();
 
     let mut transcript = prover_transcript();
-    let round = prover.send_fold(&claim, &table, &mut transcript).unwrap();
+    let round = prover
+        .send_fold(&claim, &table, &mut transcript, SecurityLevel::Bits100)
+        .unwrap();
     assert!(round.folds.iter().all(|&value| value == fold));
 
     let proof = transcript.finish();
     let mut transcript = verifier_transcript(&proof);
-    assert!(verifier.receive_fold(&claim, &mut transcript).is_ok());
+    assert!(
+        verifier
+            .receive_fold(&claim, &mut transcript, SecurityLevel::Bits100)
+            .is_ok()
+    );
 
     let over = forge(&vec![fold + 1; shape.columns()]);
     let mut transcript = verifier_transcript(&over);
     assert_eq!(
-        verifier.receive_fold(&claim, &mut transcript),
+        verifier.receive_fold(&claim, &mut transcript, SecurityLevel::Bits100),
         Err(ReceiveError::FoldOutOfRange)
     );
 }
@@ -138,7 +149,7 @@ fn the_range_check_fires_before_the_reconstruction() {
     assert_eq!(
         instance
             .verifier
-            .receive_fold(&instance.claim, &mut transcript),
+            .receive_fold(&instance.claim, &mut transcript, SecurityLevel::Bits100),
         Err(ReceiveError::FoldOutOfRange)
     );
     // The same folds also fail the reconstruction, so the assertion above is
@@ -158,7 +169,9 @@ fn folds_that_do_not_reconstruct_the_target_are_rejected() {
     let retargeted = instance.with_target(instance.claim.target() + Fq::ONE);
     let mut transcript = verifier_transcript(&proof);
     assert_eq!(
-        instance.verifier.receive_fold(&retargeted, &mut transcript),
+        instance
+            .verifier
+            .receive_fold(&retargeted, &mut transcript, SecurityLevel::Bits100),
         Err(ReceiveError::TargetMismatch)
     );
 }
@@ -170,9 +183,12 @@ fn a_witness_of_a_different_shape_is_refused_before_anything_is_written() {
 
     let mut transcript = prover_transcript();
     assert_eq!(
-        instance
-            .prover
-            .send_fold(&instance.claim, &other.table(), &mut transcript),
+        instance.prover.send_fold(
+            &instance.claim,
+            &other.table(),
+            &mut transcript,
+            SecurityLevel::Bits100
+        ),
         Err(SendError::ShapeMismatch)
     );
     assert!(transcript.finish().narg_string.is_empty());
@@ -189,7 +205,7 @@ fn a_truncated_proof_is_refused_rather_than_read_past() {
     assert_eq!(
         instance
             .verifier
-            .receive_fold(&instance.claim, &mut transcript),
+            .receive_fold(&instance.claim, &mut transcript, SecurityLevel::Bits100),
         Err(ReceiveError::MalformedProof)
     );
 }
@@ -211,14 +227,18 @@ fn an_all_zero_witness_folds_to_zero_and_still_round_trips() {
     let table = params.table(&packed).unwrap();
 
     let mut transcript = prover_transcript();
-    let round = prover.send_fold(&claim, &table, &mut transcript).unwrap();
+    let round = prover
+        .send_fold(&claim, &table, &mut transcript, SecurityLevel::Bits100)
+        .unwrap();
     assert!(round.folds.iter().all(|&fold| fold == 0));
     assert!(round.images.iter().all(|&image| image == F128::ONE));
 
     let proof = transcript.finish();
     let mut transcript = verifier_transcript(&proof);
     assert_eq!(
-        verifier.receive_fold(&claim, &mut transcript).unwrap(),
+        verifier
+            .receive_fold(&claim, &mut transcript, SecurityLevel::Bits100)
+            .unwrap(),
         round
     );
 }
