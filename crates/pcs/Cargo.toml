@@ -16,6 +16,7 @@ transcript = { workspace = true }
 tracing = { workspace = true }
 num-traits = { workspace = true }
 poly = { workspace = true }
+rayon = { workspace = true }
 
 [dev-dependencies]
 divan = { workspace = true }

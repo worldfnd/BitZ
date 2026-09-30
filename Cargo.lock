@@ -1126,6 +1126,7 @@ dependencies = [
  "poly",
  "post_gkr",
  "proptest",
+ "rayon",
  "tracing",
  "transcript",
 ]
