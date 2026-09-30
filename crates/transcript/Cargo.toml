@@ -8,3 +8,4 @@ license.workspace = true
 [dependencies]
 field = { workspace = true, features = ["spongefish"] }
 spongefish = { workspace = true }
+thiserror = { workspace = true }

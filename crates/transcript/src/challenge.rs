@@ -1,5 +1,7 @@
 //! Typed Fiat–Shamir challenge sampling.
 
+pub mod prime;
+
 use crate::{ProverState, VerifierState};
 use field::dynamic::DynField;
 use field::{F128, Fq};
