@@ -5,22 +5,18 @@ use field::{F128, Fq};
 use num_traits::{ConstOne, ConstZero};
 use pcs::{HashKind, LigeritoProfile, Pcs, VerifyError as PcsVerifyError};
 use prover::ProveError;
-use tests::{Instance, narrow_shape, prover_transcript, verifier_transcript, wide_shape};
+use tests::{Instance, narrow_shape, verifier_transcript, wide_shape};
 use transcript::Proof;
 use verifier::{ReceiveError, VerifyError};
 
-fn prove(instance: &Instance) -> Proof {
-    let mut transcript = prover_transcript();
-    let (_, data) = instance
-        .pcs
-        .commit(&instance.packed, &mut transcript)
-        .unwrap();
+fn prove(instance: &mut Instance) -> Proof {
+    let mut transcript = instance.transcript.take().unwrap();
     instance
         .prover
         .prove(
             &instance.claim,
             &instance.pcs,
-            &data,
+            &instance.data,
             instance.packed.clone(),
             &mut transcript,
         )
@@ -31,8 +27,8 @@ fn prove(instance: &Instance) -> Proof {
 #[test]
 fn an_honest_proof_verifies_on_both_floor_shapes() {
     for shape in [narrow_shape(), wide_shape()] {
-        let instance = Instance::honest(shape, 31);
-        let proof = prove(&instance);
+        let mut instance = Instance::honest(shape, 31);
+        let proof = prove(&mut instance);
 
         instance
             .verifier
@@ -48,8 +44,8 @@ fn an_honest_proof_verifies_on_both_floor_shapes() {
 
 #[test]
 fn a_proof_replayed_under_a_different_commitment_is_refused() {
-    let instance = Instance::honest(narrow_shape(), 32);
-    let proof = prove(&instance);
+    let mut instance = Instance::honest(narrow_shape(), 32);
+    let proof = prove(&mut instance);
 
     // Binding a different root changes the fold batching point, so GKR rejects.
     assert_eq!(
@@ -65,8 +61,8 @@ fn a_proof_replayed_under_a_different_commitment_is_refused() {
 
 #[test]
 fn the_statement_is_bound_before_the_first_challenge() {
-    let instance = Instance::honest(narrow_shape(), 33);
-    let proof = prove(&instance);
+    let mut instance = Instance::honest(narrow_shape(), 33);
+    let proof = prove(&mut instance);
 
     // Same folds, same commitment, a claim that differs only in its claimed
     // value. The fold's own reconstruction rejects it, which is the check the
@@ -85,8 +81,8 @@ fn the_statement_is_bound_before_the_first_challenge() {
 
 #[test]
 fn a_proof_with_trailing_bytes_is_refused() {
-    let instance = Instance::honest(narrow_shape(), 34);
-    let mut proof = prove(&instance);
+    let mut instance = Instance::honest(narrow_shape(), 34);
+    let mut proof = prove(&mut instance);
     proof.hints.push(0);
 
     assert_eq!(
@@ -107,19 +103,15 @@ fn an_opening_against_another_commitment_is_refused() {
     // and the GKR claim is true of that witness. Only the codeword and
     // the Merkle tree the opening reads belong to a different commitment.
     let proved = Instance::honest(narrow_shape(), 35);
-    let committed = Instance::honest(narrow_shape(), 36);
+    let mut committed = Instance::honest(narrow_shape(), 36);
 
-    let mut transcript = prover_transcript();
-    let (_, data) = committed
-        .pcs
-        .commit(&committed.packed, &mut transcript)
-        .unwrap();
+    let mut transcript = committed.transcript.take().unwrap();
     proved
         .prover
         .prove(
             &proved.claim,
             &proved.pcs,
-            &data,
+            &committed.data,
             proved.packed.clone(),
             &mut transcript,
         )
@@ -141,8 +133,8 @@ fn an_opening_against_another_commitment_is_refused() {
 fn a_tampered_opening_proof_is_refused() {
     // The opening rides the hint channel, which the sponge never sees, so
     // nothing upstream of the opening notices this. The opening itself must.
-    let instance = Instance::honest(narrow_shape(), 37);
-    let mut proof = prove(&instance);
+    let mut instance = Instance::honest(narrow_shape(), 37);
+    let mut proof = prove(&mut instance);
     let middle = proof.hints.len() / 2;
     proof.hints[middle] ^= 0xff;
 
@@ -161,14 +153,14 @@ fn a_tampered_opening_proof_is_refused() {
 fn a_proof_verified_under_a_different_profile_is_refused() {
     // OOD binds PCS parameters before the first fold challenge, so a different
     // profile changes the fold transcript and GKR rejects.
-    let instance = Instance::honest(narrow_shape(), 38);
+    let mut instance = Instance::honest(narrow_shape(), 38);
     let slim = Pcs::new(
         instance.params.shape(),
         LigeritoProfile::Slim,
         HashKind::Blake3,
     )
     .unwrap();
-    let proof = prove(&instance);
+    let proof = prove(&mut instance);
 
     assert!(matches!(
         instance.verifier.verify(
@@ -182,10 +174,10 @@ fn a_proof_verified_under_a_different_profile_is_refused() {
 }
 
 #[test]
-fn a_witness_of_the_wrong_length_is_refused_before_anything_is_written() {
-    let instance = Instance::honest(narrow_shape(), 39);
+fn a_witness_of_the_wrong_length_is_refused_without_changing_the_commitment_transcript() {
+    let mut instance = Instance::honest(narrow_shape(), 39);
 
-    let mut transcript = prover_transcript();
+    let mut transcript = instance.transcript.take().unwrap();
     assert_eq!(
         instance.prover.prove(
             &instance.claim,
@@ -197,8 +189,13 @@ fn a_witness_of_the_wrong_length_is_refused_before_anything_is_written() {
         Err(ProveError::Witness(TableError::BitCountMismatch))
     );
 
-    // The shape is checked before the first absorb, so a rejected witness
-    // leaves no half-written proof behind.
+    let next_challenge = transcript.verifier_message::<F128>();
     let proof = transcript.finish();
-    assert!(proof.narg_string.is_empty() && proof.hints.is_empty());
+    let mut verifier = verifier_transcript(&proof);
+    instance
+        .pcs
+        .receive_commitment(instance.com, &mut verifier)
+        .unwrap();
+    assert_eq!(verifier.verifier_message::<F128>(), next_challenge);
+    verifier.check_eof().unwrap();
 }

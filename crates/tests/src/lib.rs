@@ -96,6 +96,7 @@ pub struct Instance {
     pub pcs: Pcs,
     pub com: Root,
     pub data: ProverData,
+    pub transcript: Option<ProverState>,
     pub packed: Vec<F128>,
 }
 
@@ -110,7 +111,8 @@ impl Instance {
         } = HonestClaim::new(shape, &mut rng);
 
         let pcs = Pcs::new(&shape, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
-        let (com, data) = pcs.commit(&packed, &mut prover_transcript()).unwrap();
+        let mut transcript = prover_transcript();
+        let (com, data) = pcs.commit(&packed, &mut transcript).unwrap();
 
         Self {
             params,
@@ -120,6 +122,7 @@ impl Instance {
             pcs,
             com,
             data,
+            transcript: Some(transcript),
             packed,
         }
     }
