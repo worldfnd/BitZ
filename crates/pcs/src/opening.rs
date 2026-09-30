@@ -4,11 +4,16 @@ use common::LinearClaim;
 use field::F128;
 use flock_core::field::F128 as FlockF128;
 use flock_core::pcs::pack::PACKING_WIDTH as CLAIM_COUNT;
+use post_gkr::{
+    ProveError as PostGkrProveError, VerifyError as PostGkrVerifyError, prove as prove_post_gkr,
+    verify as verify_post_gkr,
+};
 use transcript::{ProverState, PublicTranscript, VerifierState};
 
 use crate::bridge::{as_flock_f128, as_flock_f128s, from_flock_f128};
 use crate::ligerito::{self, ReducedProver, validate_prover_data};
-use crate::{OpeningQuery, Pcs, ProverData, Root, StatementBinding, mle};
+use crate::ood::{OodClaim, add_dense_basis, add_succinct_basis, batching_challenge};
+use crate::{Commitment, OpeningQuery, Pcs, ProverData, Root, StatementBinding, mle};
 
 const MLE_STATEMENT_LABEL: &[u8] = b"bitz/pcs/mle-opening/v1";
 const INNER_PRODUCT_STATEMENT_LABEL: &[u8] = b"bitz/pcs/bit-inner-product/v3";
@@ -83,20 +88,20 @@ impl From<QueryError> for VerifyError {
     }
 }
 
-impl From<post_gkr::ProveError> for ProveError {
-    fn from(error: post_gkr::ProveError) -> Self {
+impl From<PostGkrProveError> for ProveError {
+    fn from(error: PostGkrProveError) -> Self {
         match error {
-            post_gkr::ProveError::WitnessLengthMismatch => Self::PackedWitnessLengthMismatch,
-            post_gkr::ProveError::ClaimDoesNotHold => Self::InvalidClaim,
+            PostGkrProveError::WitnessLengthMismatch => Self::PackedWitnessLengthMismatch,
+            PostGkrProveError::ClaimDoesNotHold => Self::InvalidClaim,
         }
     }
 }
 
-impl From<post_gkr::VerifyError> for VerifyError {
-    fn from(error: post_gkr::VerifyError) -> Self {
+impl From<PostGkrVerifyError> for VerifyError {
+    fn from(error: PostGkrVerifyError) -> Self {
         match error {
-            post_gkr::VerifyError::MalformedProof => Self::MalformedProof,
-            post_gkr::VerifyError::EvaluationMismatch => Self::VerificationFailed,
+            PostGkrVerifyError::MalformedProof => Self::MalformedProof,
+            PostGkrVerifyError::EvaluationMismatch => Self::VerificationFailed,
         }
     }
 }
@@ -110,23 +115,31 @@ pub(crate) fn prove(
     statement_binding: StatementBinding,
     transcript: &mut ProverState,
 ) -> Result<(), ProveError> {
+    let commitment = data.commitment();
+    let root = commitment.root();
     match query {
         OpeningQuery::Mle { point, target } => {
             let ring_switch = mle::RingSwitch::new(point, pcs.params().m)?;
             let prover = ReducedProver::new(pcs, data, packed_witness)?;
             if statement_binding == StatementBinding::Bind {
-                bind_mle_statement(pcs, &data.commitment().root, point, *target, transcript);
+                bind_mle_statement(pcs, &root.0, point, *target, transcript);
             }
-            prove_mle(prover, ring_switch, *target, transcript)
+            prove_mle(
+                prover,
+                ring_switch,
+                *target,
+                commitment.ood.as_ref(),
+                transcript,
+            )
         }
         OpeningQuery::InnerProduct { claim } => {
             validate_inner_product_claim(pcs, claim)?;
             validate_prover_data(pcs, data)?;
             if statement_binding == StatementBinding::Bind {
-                bind_inner_product_statement(pcs, &data.commitment().root, claim, transcript);
+                bind_inner_product_statement(pcs, &root.0, claim, transcript);
             }
             transcript.public_message(SUMCHECK_LABEL);
-            let reduced = post_gkr::prove(claim, &packed_witness, transcript)?;
+            let reduced = prove_post_gkr(claim, &packed_witness, transcript)?;
             // The evaluation claim the sumcheck leaves is opened like any
             // other, and bound whatever the caller's mode: `AlreadyBound`
             // covers the original claim only.
@@ -145,26 +158,31 @@ pub(crate) fn prove(
 #[tracing::instrument(name = "Verify PCS opening", skip_all)]
 pub(crate) fn verify(
     pcs: &Pcs,
-    commitment: &Root,
+    commitment: &Commitment,
     query: &OpeningQuery,
     statement_binding: StatementBinding,
     transcript: &mut VerifierState<'_>,
 ) -> Result<(), VerifyError> {
+    if !commitment.matches(pcs) {
+        return Err(VerifyError::VerificationFailed);
+    }
+    let root = commitment.root();
+    let ood_claim = commitment.ood.as_ref();
     match query {
         OpeningQuery::Mle { point, target } => {
             let ring_switch = mle::RingSwitch::new(point, pcs.params().m)?;
             if statement_binding == StatementBinding::Bind {
-                bind_mle_statement(pcs, &commitment.0, point, *target, transcript);
+                bind_mle_statement(pcs, &root.0, point, *target, transcript);
             }
-            verify_mle(pcs, commitment, ring_switch, *target, transcript)
+            verify_mle(pcs, &root, ring_switch, *target, ood_claim, transcript)
         }
         OpeningQuery::InnerProduct { claim } => {
             validate_inner_product_claim(pcs, claim)?;
             if statement_binding == StatementBinding::Bind {
-                bind_inner_product_statement(pcs, &commitment.0, claim, transcript);
+                bind_inner_product_statement(pcs, &root.0, claim, transcript);
             }
             transcript.public_message(SUMCHECK_LABEL);
-            let reduced = post_gkr::verify(claim, transcript)?;
+            let reduced = verify_post_gkr(claim, transcript)?;
             verify(
                 pcs,
                 commitment,
@@ -194,6 +212,7 @@ fn prove_mle(
     prover: ReducedProver<'_>,
     ring_switch: mle::RingSwitch<'_>,
     target: F128,
+    ood_claim: Option<&OodClaim>,
     transcript: &mut ProverState,
 ) -> Result<(), ProveError> {
     let dense_reduction = {
@@ -202,7 +221,13 @@ fn prove_mle(
             ring_switch.prepare_claims(as_flock_f128s(prover.witness()), target)?;
         write_claims(transcript, &prepared_claims.claims);
         let batching_point = sample_challenges(transcript);
-        prepared_claims.reduce_dense(&batching_point)
+        let mut reduced = prepared_claims.reduce_dense(&batching_point);
+        if let Some(claim) = ood_claim {
+            let coefficient = batching_challenge(transcript);
+            add_dense_basis(&mut reduced.packed_basis, claim, coefficient);
+            reduced.packed_target += as_flock_f128(coefficient * claim.value);
+        }
+        reduced
     };
     prover.prove(dense_reduction, transcript)
 }
@@ -213,6 +238,7 @@ fn verify_mle(
     commitment: &Root,
     ring_switch: mle::RingSwitch<'_>,
     target: F128,
+    ood_claim: Option<&OodClaim>,
     transcript: &mut VerifierState<'_>,
 ) -> Result<(), VerifyError> {
     let proof = ligerito::read_proof(pcs, commitment, transcript)?;
@@ -225,13 +251,24 @@ fn verify_mle(
         let batching_point = sample_challenges(transcript);
         ring_switch.reduce_succinct(&claims, &batching_point)
     };
+    let ood = ood_claim.map(|claim| (claim, batching_challenge(transcript)));
+    let mut packed_target = reduction.packed_target;
+    if let Some((claim, coefficient)) = ood {
+        packed_target += as_flock_f128(coefficient * claim.value);
+    }
     ligerito::verify_succinct(
         pcs,
         commitment,
         &proof,
         ring_switch.suffix_dimension(),
-        reduction.packed_target,
-        |ris, yr_log_n| reduction.evaluate_basis(ris, yr_log_n),
+        packed_target,
+        |ris, yr_log_n| {
+            let mut basis = reduction.evaluate_basis(ris, yr_log_n);
+            if let Some((claim, coefficient)) = ood {
+                add_succinct_basis(&mut basis, claim, coefficient, ris);
+            }
+            basis
+        },
         transcript,
     )
 }

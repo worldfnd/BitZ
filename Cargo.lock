@@ -1123,8 +1123,10 @@ dependencies = [
  "field",
  "flock-core",
  "num-traits",
+ "poly",
  "post_gkr",
  "proptest",
+ "rayon",
  "tracing",
  "transcript",
 ]
