@@ -6,6 +6,8 @@ use common::Shape;
 use tests::{Instance, verifier_transcript};
 use transcript::Proof;
 
+type F = field::FqDefault;
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     const USAGE: &str = "usage: verify_bitz <log-bits> <seed> <narg-file> <hints-file>";
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -20,7 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         narg_string: std::fs::read(narg_file)?,
         hints: std::fs::read(hints_file)?,
     };
-    let instance = Instance::honest(shape, seed);
+    let instance = Instance::<F>::honest(shape, seed);
     let started = std::time::Instant::now();
     let result = instance.verifier.verify(
         &instance.claim,

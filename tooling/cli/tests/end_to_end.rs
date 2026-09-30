@@ -1,10 +1,15 @@
+use bitz_cli::ProjectBigIntToFq;
 use bitz_cli::end_to_end::{CircuitProofSystem, CircuitStatement, Error, OpeningPath, Proof};
 use circuit::Circuit;
 use pcs::VerifyError;
 
+type R = num_bigint::BigInt;
+type F = field::FqDefault;
+type Proj = ProjectBigIntToFq;
+
 fn rejects_changed_or_missing_ood(
-    system: &CircuitProofSystem<impl CircuitStatement>,
-    proof: &Proof,
+    system: &CircuitProofSystem<impl CircuitStatement, F>,
+    proof: &Proof<F>,
 ) {
     // These Fast-profile fixtures have zero initial grinding bits, so the first
     // 16 transcript bytes encode the OOD evaluation.
@@ -46,13 +51,13 @@ impl CircuitStatement for PublicBit {
 
 #[test]
 fn generic_driver_accepts_a_non_sha_circuit() {
-    let prepared = CircuitProofSystem::new(PublicBit).unwrap();
+    let prepared = CircuitProofSystem::<_, F>::new::<R, Proj>(PublicBit).unwrap();
     assert_eq!(prepared.stats().opening_path, OpeningPath::Direct);
     assert_eq!(prepared.stats().committed_bits, 2);
     let witness = prepared.witness(&[true]).unwrap();
     let data = prepared.commit(&witness).unwrap();
     let proof = prepared.prove(witness, data).unwrap();
-    CircuitProofSystem::new(PublicBit)
+    CircuitProofSystem::<_, F>::new::<R, Proj>(PublicBit)
         .unwrap()
         .verify(&proof)
         .unwrap();
@@ -62,7 +67,7 @@ fn generic_driver_accepts_a_non_sha_circuit() {
     changed.root.0[0] ^= 1;
     assert!(prepared.verify(&changed).is_err());
     let mut changed = proof.clone();
-    changed.spartan.inner.round_polynomials[0][0] += field::FqDefault::from(1u128);
+    changed.spartan.inner.round_polynomials[0][0] += F::from(1u128);
     assert!(prepared.verify(&changed).is_err());
     for hints in [false, true] {
         let mut changed = proof.clone();
@@ -83,12 +88,12 @@ fn generic_driver_accepts_a_non_sha_circuit() {
 
 #[test]
 fn benchmark_runs_a_generic_circuit_and_propagates_failure() {
-    let timings = bitz_cli::benchmark::run(PublicBit, &[true]).unwrap();
+    let timings = bitz_cli::benchmark::run::<_, F, R, Proj>(PublicBit, &[true]).unwrap();
     let output = timings.to_string();
     assert!(output.contains("total_prove_ms="));
     assert!(output.contains("verify_ms="));
     assert!(matches!(
-        bitz_cli::benchmark::run(PublicBit, &[false]),
+        bitz_cli::benchmark::run::<_, F, R, Proj>(PublicBit, &[false]),
         Err(Error::Unsatisfied)
     ));
 }
@@ -118,14 +123,14 @@ impl CircuitStatement for PublicXor {
 
 #[test]
 fn nonidentity_map_uses_virtual_opening_and_checks_xor_relation() {
-    let system = CircuitProofSystem::new(PublicXor).unwrap();
+    let system = CircuitProofSystem::<_, F>::new::<R, Proj>(PublicXor).unwrap();
     assert_eq!(system.stats().opening_path, OpeningPath::Virtual);
     assert_eq!(system.stats().assignment_bits, 3);
     assert_eq!(system.stats().committed_bits, 2);
     let witness = system.witness(&[true, false]).unwrap();
     let data = system.commit(&witness).unwrap();
     let proof = system.prove(witness, data).unwrap();
-    CircuitProofSystem::new(PublicXor)
+    CircuitProofSystem::<_, F>::new::<R, Proj>(PublicXor)
         .unwrap()
         .verify(&proof)
         .unwrap();
@@ -140,6 +145,6 @@ fn nonidentity_map_uses_virtual_opening_and_checks_xor_relation() {
     let mut changed = proof;
     changed.opening.narg_string.push(0);
     assert!(system.verify(&changed).is_err());
-    let timings = bitz_cli::benchmark::run(PublicXor, &[true, false]).unwrap();
+    let timings = bitz_cli::benchmark::run::<_, F, R, Proj>(PublicXor, &[true, false]).unwrap();
     assert_eq!(timings.circuit.opening_path, OpeningPath::Virtual);
 }

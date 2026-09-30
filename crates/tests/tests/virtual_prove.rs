@@ -9,13 +9,15 @@ use common::{
     BitZParams, LinearClaim, Root, Shape, TableError, TransposedWeights, VirtualMap,
     VirtualMapError, VirtualStatement,
 };
-use field::{F128, Fq, gf128::smallest_generator};
+use field::{F128, gf128::smallest_generator};
 use num_traits::{ConstOne, ConstZero};
 use pcs::{HashKind, LigeritoProfile, Pcs, ProverData};
 use prover::{BitZProver, ProveError, VirtualWitness};
 use tests::{Q, WINDOW, prover_transcript, verifier_transcript};
 use transcript::{Proof, ProverState};
 use verifier::{BitZVerifier, VerifyError};
+
+type F = field::Fq<Q>;
 
 /// `h[0] = 1`, `h[1] = f[0]`, `h[128] = f[1]`, `h[129] = f[0] XOR f[1]`.
 /// All other virtual bits are zero.
@@ -46,9 +48,9 @@ impl VirtualMap for Map {
 }
 
 struct Instance {
-    params: BitZParams<Q>,
+    params: BitZParams<F>,
     committed_shape: Shape,
-    claim: LinearClaim<Fq<Q>>,
+    claim: LinearClaim<F>,
     committed_bits: Vec<F128>,
     virtual_bits: Vec<F128>,
     pcs: Pcs,
@@ -61,12 +63,12 @@ impl Instance {
     fn new() -> Self {
         let claim_shape = Shape::new(7, 15).unwrap();
         let committed_shape = Shape::new(8, 14).unwrap();
-        let params = BitZParams::<Q>::new(claim_shape, smallest_generator()).unwrap();
+        let params = BitZParams::<F>::new(claim_shape, smallest_generator()).unwrap();
         let claim = LinearClaim::new(
             &params,
-            vec![Fq::ONE; claim_shape.rows()],
-            vec![Fq::ONE; claim_shape.columns()],
-            Fq::from(3u128),
+            vec![F::ONE; claim_shape.rows()],
+            vec![F::ONE; claim_shape.columns()],
+            F::from(3u128),
         )
         .unwrap();
         let mut committed_bits = vec![F128::ZERO; 1 << committed_shape.log_packed_len()];
@@ -91,7 +93,7 @@ impl Instance {
         }
     }
 
-    fn statement(&self) -> VirtualStatement<'_, Q, Map> {
+    fn statement(&self) -> VirtualStatement<'_, F, Map> {
         VirtualStatement::new(self.params, self.committed_shape, &Map(7), &self.claim).unwrap()
     }
 
@@ -114,7 +116,7 @@ impl Instance {
 
     fn verify(
         &self,
-        statement: &VirtualStatement<'_, Q, Map>,
+        statement: &VirtualStatement<'_, F, Map>,
         root: Root,
         proof: &Proof,
     ) -> Result<(), VerifyError> {
@@ -163,7 +165,7 @@ fn changed_virtual_statements_are_rejected() {
     // Changing a weight on a zero virtual row preserves the integer target.
     // Rejection must therefore depend on the statement, not a false claim.
     let mut rows = instance.claim.row_weights().to_vec();
-    rows[2] += Fq::ONE;
+    rows[2] += F::ONE;
     let changed_claim = LinearClaim::new(
         &instance.params,
         rows,
@@ -340,7 +342,7 @@ fn sha256_virtual_inner_product_opens_the_committed_bits() {
 
     let claim_shape = Shape::new(7, 15).unwrap();
     let committed_shape = Shape::new(8, 14).unwrap();
-    let params = BitZParams::<Q>::new(claim_shape, smallest_generator()).unwrap();
+    let params = BitZParams::<F>::new(claim_shape, smallest_generator()).unwrap();
     let pack = |witness: &PackedWitness, shape: Shape| {
         assert!(witness.bit_len() <= 1 << shape.log_bits());
         let mut packed: Vec<_> = witness
@@ -354,10 +356,10 @@ fn sha256_virtual_inner_product_opens_the_committed_bits() {
     let committed_bits = pack(&f, committed_shape);
     let virtual_bits = pack(&h, claim_shape);
     let rows: Vec<_> = (0..claim_shape.rows())
-        .map(|row| Fq::<Q>::from((row + 1) as u128))
+        .map(|row| F::from((row + 1) as u128))
         .collect();
     let columns: Vec<_> = (0..claim_shape.columns())
-        .map(|column| Fq::<Q>::from((column + 1) as u128))
+        .map(|column| F::from((column + 1) as u128))
         .collect();
     let target = (0..h.bit_len())
         .filter(|&index| h.bit(index))

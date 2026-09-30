@@ -1,15 +1,19 @@
 //! The protocol parameters: everything both sides fix before a claim exists.
 
-use field::{F128, gf128::is_generator};
+use crate::{BitTable, BitzClaimField, Shape, TableError, VirtualMap};
+use field::{
+    F128,
+    gf128::{MULT_ORDER, is_generator},
+};
+use num_traits::{CheckedMul, ToBytes};
 use spongefish::Encoding;
-
-use crate::{BitTable, Shape, TableError, VirtualMap};
+use std::marker::PhantomData;
 
 /// A parameter set one of the pre-claim gates rejects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParamsError {
-    /// `(k_1 + 1)(Q - 1)` reaches `ord(g)`, so two folds could collide in the
-    /// exponent.
+    /// `(k_1 + 1)(Q - 1)` reaches `ord(g)`, so a sent fold and the honest
+    /// exponent could collide in the exponent.
     FoldBoundExceeded,
     /// The generator's order is not the full group, so a fold is not the only
     /// exponent producing its image.
@@ -21,42 +25,45 @@ pub enum ParamsError {
 /// The two roles derive their own setups from this, so neither can be built
 /// against parameters the other did not see.
 ///
-/// `Q` is a const parameter, not a field: the weights are `Fq<Q>`, whose
-/// modulus lives in the type.
+/// The modulus is not a value here, it's accessible as `F::modulus()`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BitZParams<const Q: u128> {
+pub struct BitZParams<F> {
     shape: Shape,
     generator: F128,
+    _phantom: PhantomData<F>,
 }
 
-impl<const Q: u128> BitZParams<Q> {
+impl<F: BitzClaimField> BitZParams<F> {
     /// Runs the gates that need only the parameters.
     pub fn new(shape: Shape, generator: F128) -> Result<Self, ParamsError> {
-        // `Fq<Q>` asserts Q is an odd prime below 2^126 on its own behalf, so
-        // no modulus gate is needed here.
+        // The field asserts its modulus is an odd prime below 2^126 on its own
+        // behalf, so no modulus gate is needed here.
 
-        // `ord(g) > (k_1 + 1)(Q - 1)`, the paper's requisite. A fold is an
-        // integer at most `k_1 (Q - 1)` while the value it is compared against
-        // is at most `Q - 1`, so the two differ by at most the sum; the
-        // exponent is only ever seen modulo `ord(g)`, and a gap that never
-        // reaches the group order cannot close.
+        // `g^{<f_j, gamma>} = g^{eta_j}` implies integer equality only if both
+        // sides, each in `[0, k_1 (Q - 1)]`, differ by less than `ord(g)`.
+        // The paper asks for `Q < (|K| - 1) / k_1`; the PoC's slightly stricter
+        // `(k_1 + 1)(Q - 1) < ord(g)` is kept, and it implies the paper's.
         //
-        // Overflow is itself a rejection: past `2^128 - 1` there is no room
-        // left. `ord(g)` is `u128::MAX`, the full order the generator gate
-        // below establishes.
-        let Some(gap) = (Q - 1).checked_mul(shape.rows() as u128 + 1) else {
-            return Err(ParamsError::FoldBoundExceeded);
-        };
-        // A `u128` cannot exceed `ord(g)`, so equalling it is the only way
-        // left to reach it.
-        if gap == u128::MAX {
+        // `ord(g) = 2^128 - 1` is a property of `F128`, established by the
+        // generator gate below. A product that overflows exceeds it too.
+        let f128_order = F::Integer::from(MULT_ORDER);
+        let max_f = F::max_value().lift();
+        let rows_plus_one = F::Integer::from(shape.rows() as u64 + 1);
+        if !max_f
+            .checked_mul(&rows_plus_one)
+            .is_some_and(|gap| gap < f128_order)
+        {
             return Err(ParamsError::FoldBoundExceeded);
         }
         if !is_generator(generator) {
             return Err(ParamsError::GeneratorOrderNotFull);
         }
 
-        Ok(Self { shape, generator })
+        Ok(Self {
+            shape,
+            generator,
+            _phantom: PhantomData,
+        })
     }
 
     /// Views a packed witness through the configured shape.
@@ -78,25 +85,24 @@ impl<const Q: u128> BitZParams<Q> {
     /// The largest fold the verifier may accept, `k_1 (Q - 1)`.
     ///
     /// [`Self::new`]'s gate puts it below `ord(g)`.
-    pub fn fold_bound(&self) -> u128 {
-        (self.shape.rows() as u128) * (Q - 1)
+    pub fn fold_bound(&self) -> F::Integer {
+        let rows = u64::try_from(self.shape.rows()).expect("Too many rows");
+        let rows = F::Integer::from(rows);
+        let max_f = F::max_value().lift();
+        rows.checked_mul(&max_f).expect("Multiplication overflow")
     }
 }
 
-/// Every field is fixed width, so distinct parameter sets cannot encode alike.
-impl<const Q: u128> Encoding<[u8]> for BitZParams<Q> {
+/// Every field is fixed width, the modulus at `F::Integer`'s, so distinct
+/// parameter sets cannot encode alike.
+impl<F: BitzClaimField> Encoding<[u8]> for BitZParams<F> {
     fn encode(&self) -> impl AsRef<[u8]> {
-        let mut frame = [0u8; 48];
-        let mut at = 0;
-        let mut put = |bytes: &[u8]| {
-            frame[at..at + bytes.len()].copy_from_slice(bytes);
-            at += bytes.len();
-        };
-
-        put(&(self.shape.log_rows() as u64).to_le_bytes());
-        put(&(self.shape.log_columns() as u64).to_le_bytes());
-        put(&Q.to_le_bytes());
-        put(&self.generator.to_bytes());
+        let modulus = F::modulus().to_le_bytes();
+        let mut frame = Vec::with_capacity(32 + modulus.as_ref().len());
+        frame.extend_from_slice(&(self.shape.log_rows() as u64).to_le_bytes());
+        frame.extend_from_slice(&(self.shape.log_columns() as u64).to_le_bytes());
+        frame.extend_from_slice(modulus.as_ref());
+        frame.extend_from_slice(&self.generator.to_bytes());
         frame
     }
 }
@@ -120,19 +126,19 @@ pub enum VirtualParamsError {
 /// exponent, and what the claim's weights are counted against. The committed
 /// shape belongs to `f` alone and reaches only the table and the opening.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct VirtualParams<const Q: u128> {
-    claim: BitZParams<Q>,
+pub struct VirtualParams<F> {
+    claim: BitZParams<F>,
     committed: Shape,
 }
 
-impl<const Q: u128> VirtualParams<Q> {
+impl<F: BitzClaimField> VirtualParams<F> {
     /// Checks both shapes against the map before either is used.
     ///
     /// Zero padding is what makes the inequalities rather than equalities: both
     /// vectors are padded up to their shape so that they have multilinear
     /// extensions, and padding contributes nothing.
     pub fn new(
-        claim: BitZParams<Q>,
+        claim: BitZParams<F>,
         committed: Shape,
         map: &impl VirtualMap,
     ) -> Result<Self, VirtualParamsError> {
@@ -151,7 +157,7 @@ impl<const Q: u128> VirtualParams<Q> {
     }
 
     /// The parameters the fold and the reduction read, shaped to `h`.
-    pub fn claim(&self) -> &BitZParams<Q> {
+    pub fn claim(&self) -> &BitZParams<F> {
         &self.claim
     }
 
@@ -169,12 +175,11 @@ impl<const Q: u128> VirtualParams<Q> {
 
 /// Distinct from a plain [`BitZParams`] frame by length, so a proof of one
 /// cannot replay as a proof of the other.
-impl<const Q: u128> Encoding<[u8]> for VirtualParams<Q> {
+impl<F: BitzClaimField> Encoding<[u8]> for VirtualParams<F> {
     fn encode(&self) -> impl AsRef<[u8]> {
-        let mut frame = [0u8; 64];
-        frame[..48].copy_from_slice(self.claim.encode().as_ref());
-        frame[48..56].copy_from_slice(&(self.committed.log_rows() as u64).to_le_bytes());
-        frame[56..].copy_from_slice(&(self.committed.log_columns() as u64).to_le_bytes());
+        let mut frame = self.claim.encode().as_ref().to_vec();
+        frame.extend_from_slice(&(self.committed.log_rows() as u64).to_le_bytes());
+        frame.extend_from_slice(&(self.committed.log_columns() as u64).to_le_bytes());
         frame
     }
 }
@@ -187,8 +192,9 @@ mod tests {
 
     /// The largest prime below `2^114`, the top of the sampling range.
     const Q114: u128 = (1 << 114) - 11;
+    type F = field::Fq<Q114>;
 
-    fn params_at(shape: Shape) -> Result<BitZParams<Q114>, ParamsError> {
+    fn params_at(shape: Shape) -> Result<BitZParams<F>, ParamsError> {
         BitZParams::new(shape, smallest_generator())
     }
 
@@ -227,7 +233,7 @@ mod tests {
     fn virtual_params_for(
         h_len: usize,
         f_len: usize,
-    ) -> Result<VirtualParams<Q114>, VirtualParamsError> {
+    ) -> Result<VirtualParams<F>, VirtualParamsError> {
         VirtualParams::new(
             params_at(shape()).unwrap(),
             shape(),
@@ -283,8 +289,7 @@ mod tests {
     /// through.
     #[test]
     fn the_table_is_shaped_by_the_committed_bits() {
-        let claim =
-            BitZParams::<Q114>::new(Shape::new(8, 15).unwrap(), smallest_generator()).unwrap();
+        let claim = BitZParams::<F>::new(Shape::new(8, 15).unwrap(), smallest_generator()).unwrap();
         let committed = shape();
         let params =
             VirtualParams::new(claim, committed, &Dimensions { h_len: 4, f_len: 4 }).unwrap();
@@ -308,7 +313,7 @@ mod tests {
     #[test]
     fn rejects_a_generator_of_partial_order() {
         assert_eq!(
-            BitZParams::<Q114>::new(shape(), F128::ONE).err(),
+            BitZParams::<F>::new(shape(), F128::ONE).err(),
             Some(ParamsError::GeneratorOrderNotFull)
         );
     }

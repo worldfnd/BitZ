@@ -1,16 +1,18 @@
-//! Circuit constraints over Q100, reduced by Spartan and opened through direct or virtual BitZ.
+//! Circuit constraints over a prime field, reduced by Spartan and opened through direct or virtual BitZ.
 
 use circuit::{
-    Circuit,
+    BitWidth, Circuit, IntoWords,
     constraints::{ConstraintGenerator, SparseBoolMatrix},
+    matrix_products::ModularVector,
     matrix_transpose::{MTransposeGenerator, MaterializedMTranspose},
     witgen::{PackedWitness, ProductWitgen},
 };
 use common::{
-    BitZParams, LinearClaim, OpeningQuery, Root, Shape, VirtualMap, VirtualStatement,
+    BitZParams, BitzClaimField, BitzConstraintRing, LinearClaim, OpeningQuery, Root, Shape,
+    VirtualMap, VirtualStatement,
     shape::{MIN_LOG_BITS, PACK_BITS},
 };
-use field::{F128, FqDefault, Q100, gf128::smallest_generator};
+use field::{F128, gf128::smallest_generator};
 use num_traits::{ConstOne, ConstZero};
 use pcs::{CommitScheme, HashKind, LigeritoProfile, Pcs, ProverData, StatementBinding};
 use poly::{DenseMultilinearExtension, ScaledMleEvaluationClaim};
@@ -18,9 +20,10 @@ use prover::{BitZProver, VirtualWitness};
 use transcript::{ProverState, PublicTranscript, build_prover, build_verifier};
 use verifier::BitZVerifier;
 
+use crate::ProjectConstraint;
 use spartan::{
-    PreparedConstraintMatrices, R1csProductMles, SpartanPiopProof, bigint_to_fq,
-    build_assignment_mle, build_product_mles, prove_spartan_piop, verify_spartan_proof,
+    PreparedConstraintMatrices, R1csProductMles, SpartanPiopProof, build_assignment_mle,
+    build_product_mles, prove_spartan_piop, verify_spartan_proof,
 };
 
 const SESSION: &[u8] = b"bitz/circuit-e2e/v1";
@@ -28,7 +31,8 @@ const WINDOW: u32 = 8;
 
 /// A trusted, deterministic circuit and its public inputs. Implementations must
 /// emit identical operations for symbolic and concrete backends and constrain
-/// every public input/output. The proved constraints are interpreted modulo Q100.
+/// every public input/output. The proved constraints are interpreted modulo
+/// the modulus of the field the proof system is built over.
 pub trait CircuitStatement {
     fn domain(&self) -> &'static [u8];
     fn public_bytes(&self) -> Vec<u8>;
@@ -79,23 +83,24 @@ pub struct CircuitStats {
     pub padded_committed_bits: usize,
 }
 
+/// A circuit prepared for proving over the prime field `F`.
 #[derive(Debug)]
-pub struct CircuitProofSystem<S> {
+pub struct CircuitProofSystem<S, F> {
     statement: S,
     opening_path: OpeningPath,
-    matrices: PreparedConstraintMatrices<FqDefault>,
+    matrices: PreparedConstraintMatrices<F>,
     map: MaterializedMTranspose,
-    params: BitZParams<Q100>,
+    params: BitZParams<F>,
     committed_shape: Shape,
     pcs: Pcs,
 }
 
 #[derive(Debug)]
-pub struct Witness {
+pub struct Witness<F> {
     committed: Vec<F128>,
     assignment_bits: Vec<F128>,
-    assignment: DenseMultilinearExtension<FqDefault>,
-    products: R1csProductMles<FqDefault>,
+    assignment: DenseMultilinearExtension<F>,
+    products: R1csProductMles<F>,
 }
 
 /// Commitment data and the transcript that sampled its OOD claim.
@@ -105,24 +110,35 @@ pub struct CommittedWitness {
 }
 
 #[derive(Clone, Debug)]
-pub struct Proof {
+pub struct Proof<F> {
     pub root: Root,
-    pub spartan: SpartanPiopProof<FqDefault>,
+    pub spartan: SpartanPiopProof<F>,
     pub opening: transcript::Proof,
 }
 
-impl<S: CircuitStatement> CircuitProofSystem<S> {
+impl<S, F> CircuitProofSystem<S, F>
+where
+    S: CircuitStatement,
+    F: BitzClaimField,
+    F::Integer: BitWidth + IntoWords,
+    Vec<F>: for<'a> From<&'a ModularVector<2>>, // Needed for `build_product_mles`
+{
     #[tracing::instrument(name = "setup", skip_all)]
-    pub fn new(statement: S) -> Result<Self, Error> {
-        let mut constraints = ConstraintGenerator::new(statement.input_bits());
+    pub fn new<R, Proj>(statement: S) -> Result<Self, Error>
+    where
+        R: BitzConstraintRing,
+        Proj: ProjectConstraint<R, F>,
+    {
+        let mut constraints = ConstraintGenerator::<R>::new(statement.input_bits());
         let inputs: Vec<_> = (0..statement.input_bits())
             .map(|i| constraints.input(i))
             .collect();
         statement.synthesize(&mut constraints, &inputs)?;
+        let projection = Proj::prepare();
         let matrices = PreparedConstraintMatrices::new(
             constraints
                 .into_matrices()
-                .map_coefficients(|c| bigint_to_fq(&c)),
+                .map_coefficients(|c| projection.project(&c)),
         )
         .map_err(Error::Matrix)?;
         let mut generator = MTransposeGenerator::new(statement.input_bits());
@@ -174,7 +190,7 @@ impl<S: CircuitStatement> CircuitProofSystem<S> {
     }
 
     #[tracing::instrument(name = "witness", skip_all)]
-    pub fn witness(&self, inputs: &[bool]) -> Result<Witness, Error> {
+    pub fn witness(&self, inputs: &[bool]) -> Result<Witness<F>, Error> {
         if inputs.len() != self.statement.input_bits() {
             return Err(Error::Input("wrong witness input length"));
         }
@@ -212,7 +228,7 @@ impl<S: CircuitStatement> CircuitProofSystem<S> {
     /// Commits and sends the initial OOD evaluation before any PIOP challenge.
     /// The returned state retains both PCS data and the transcript for proving.
     #[tracing::instrument(name = "commit", skip_all)]
-    pub fn commit(&self, witness: &Witness) -> Result<CommittedWitness, Error> {
+    pub fn commit(&self, witness: &Witness<F>) -> Result<CommittedWitness, Error> {
         let mut transcript = build_prover(SESSION, self.statement.domain());
         let (_, data) = self
             .pcs
@@ -223,7 +239,11 @@ impl<S: CircuitStatement> CircuitProofSystem<S> {
 
     /// Continues the commitment transcript through Spartan and the BitZ opening.
     #[tracing::instrument(name = "prove", skip_all, fields(opening_path = ?self.opening_path))]
-    pub fn prove(&self, witness: Witness, commitment: CommittedWitness) -> Result<Proof, Error> {
+    pub fn prove(
+        &self,
+        witness: Witness<F>,
+        commitment: CommittedWitness,
+    ) -> Result<Proof<F>, Error> {
         let CommittedWitness {
             data,
             mut transcript,
@@ -279,7 +299,7 @@ impl<S: CircuitStatement> CircuitProofSystem<S> {
     }
 
     #[tracing::instrument(name = "verify", skip_all)]
-    pub fn verify(&self, proof: &Proof) -> Result<(), Error> {
+    pub fn verify(&self, proof: &Proof<F>) -> Result<(), Error> {
         let mut transcript = build_verifier(SESSION, self.statement.domain(), &proof.opening);
         let commitment = self
             .pcs
@@ -370,10 +390,10 @@ fn pack(witness: &PackedWitness, shape: Shape) -> Vec<F128> {
     packed
 }
 
-fn opening_claim(
-    params: &BitZParams<Q100>,
-    terminal: &ScaledMleEvaluationClaim<FqDefault>,
-) -> Result<LinearClaim<FqDefault>, Error> {
+fn opening_claim<F: BitzClaimField>(
+    params: &BitZParams<F>,
+    terminal: &ScaledMleEvaluationClaim<F>,
+) -> Result<LinearClaim<F>, Error> {
     let shape = params.shape();
     if terminal.point().len() > shape.log_bits() {
         return Err(Error::Configuration("Spartan point exceeds virtual shape"));
@@ -381,7 +401,7 @@ fn opening_claim(
     // Zero high coordinates select the original assignment inside its zero padding.
     // Put the scale in one factor, avoiding division even when the scale is zero.
     let mut point = terminal.point().to_vec();
-    point.resize(shape.log_bits(), FqDefault::ZERO);
+    point.resize(shape.log_bits(), F::zero());
     let rows = poly::eq_table(&point[..shape.log_rows()])
         .into_iter()
         .map(|weight| terminal.scale() * weight)
@@ -394,6 +414,10 @@ fn opening_claim(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ProjectBigIntToFq;
+
+    type F = field::FqDefault;
+    type Proj = ProjectBigIntToFq;
 
     #[test]
     fn only_exact_identity_maps_select_direct_opening() {
@@ -434,7 +458,7 @@ mod tests {
 
     #[test]
     fn commitment_sends_ood_before_proving() {
-        let system = CircuitProofSystem::new(IdentityBit).unwrap();
+        let system = CircuitProofSystem::<_, F>::new::<_, Proj>(IdentityBit).unwrap();
         let witness = system.witness(&[true]).unwrap();
         let committed = system.commit(&witness).unwrap();
         let proof = committed.transcript.finish();
@@ -450,7 +474,7 @@ mod tests {
 
     #[test]
     fn direct_opening_requires_constant_one_on_both_sides() {
-        let mut system = CircuitProofSystem::new(IdentityBit).unwrap();
+        let mut system = CircuitProofSystem::<_, F>::new::<_, Proj>(IdentityBit).unwrap();
         let witness = system.witness(&[true]).unwrap();
         let data = system.commit(&witness).unwrap();
         let mut proof = system.prove(witness, data).unwrap();
@@ -496,37 +520,28 @@ mod tests {
 
     #[test]
     fn scaled_claim_conversion_preserves_values_and_zero_scale() {
-        let params = BitZParams::new(Shape::new(7, 15).unwrap(), smallest_generator()).unwrap();
-        let assignment = DenseMultilinearExtension::from_evaluations(
-            2,
-            [0u128, 1, 1, 0].map(FqDefault::from).to_vec(),
-        )
-        .unwrap();
-        let point = vec![FqDefault::from(3u128), FqDefault::from(5u128)];
+        let params =
+            BitZParams::<F>::new(Shape::new(7, 15).unwrap(), smallest_generator()).unwrap();
+        let assignment =
+            DenseMultilinearExtension::from_evaluations(2, [0u128, 1, 1, 0].map(F::from).to_vec())
+                .unwrap();
+        let point = vec![F::from(3u128), F::from(5u128)];
         let evaluation = assignment.evaluate(&point).unwrap();
-        for scale in [FqDefault::ZERO, FqDefault::from(7u128)] {
+        for scale in [F::ZERO, F::from(7u128)] {
             let terminal = ScaledMleEvaluationClaim::new(
                 point.clone().into_boxed_slice(),
                 scale,
                 scale * evaluation,
             );
             let claim = opening_claim(&params, &terminal).unwrap();
-            let value: FqDefault = assignment
+            let value: F = assignment
                 .iter()
                 .enumerate()
                 .map(|(i, bit)| *bit * claim.row_weights()[i] * claim.column_weights()[0])
                 .sum();
             assert_eq!(value, claim.target());
-            assert!(
-                claim.row_weights()[4..]
-                    .iter()
-                    .all(|w| *w == FqDefault::ZERO)
-            );
-            assert!(
-                claim.column_weights()[1..]
-                    .iter()
-                    .all(|w| *w == FqDefault::ZERO)
-            );
+            assert!(claim.row_weights()[4..].iter().all(|w| *w == F::ZERO));
+            assert!(claim.column_weights()[1..].iter().all(|w| *w == F::ZERO));
         }
     }
 }

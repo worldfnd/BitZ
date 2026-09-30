@@ -9,9 +9,8 @@
 //! The fixtures live here rather than under `tests/` so they compile once
 //! rather than once per test binary.
 
-use common::{BitTable, BitZParams, LinearClaim, Root, Shape};
-use crypto_primitives::LiftElement;
-use field::{F128, Fq, gf128::smallest_generator};
+use common::{BitTable, BitZParams, BitzClaimField, LinearClaim, Root, Shape};
+use field::{F128, gf128::smallest_generator};
 use pcs::{HashKind, LigeritoProfile, Pcs, ProverData};
 use rand_chacha::ChaCha8Rng;
 use rand_core::{Rng, SeedableRng};
@@ -36,13 +35,13 @@ pub fn packed_witness(shape: Shape, rng: &mut impl Rng) -> Vec<F128> {
 /// A claim that actually holds, with the witness it is about, before any
 /// commitment. What the fold round needs and nothing the opening does.
 #[derive(Debug, Clone)]
-pub struct HonestClaim {
-    pub params: BitZParams<Q>,
-    pub claim: LinearClaim<field::Fq<Q>>,
+pub struct HonestClaim<F: BitzClaimField> {
+    pub params: BitZParams<F>,
+    pub claim: LinearClaim<F>,
     pub packed: Vec<F128>,
 }
 
-impl HonestClaim {
+impl<F: BitzClaimField> HonestClaim<F> {
     /// Builds a random witness and the target its own fold produces, so the
     /// claim is true by construction rather than by asserting the code agrees
     /// with itself.
@@ -51,25 +50,25 @@ impl HonestClaim {
     /// with `eta_j` read bit by bit — not from the reconstruction the verifier
     /// runs.
     pub fn new(shape: Shape, rng: &mut impl Rng) -> Self {
-        let params = BitZParams::<Q>::new(shape, smallest_generator()).unwrap();
+        let params = BitZParams::<F>::new(shape, smallest_generator()).unwrap();
 
         let packed = packed_witness(shape, rng);
-        let row_weights: Vec<Fq<Q>> = (0..shape.rows())
-            .map(|_| Fq::from(sample_below_q(rng)))
+        let row_weights: Vec<F> = (0..shape.rows())
+            .map(|_| F::from(sample_below_q(rng)))
             .collect();
-        let column_weights: Vec<Fq<Q>> = (0..shape.columns())
-            .map(|_| Fq::from(sample_below_q(rng)))
+        let column_weights: Vec<F> = (0..shape.columns())
+            .map(|_| F::from(sample_below_q(rng)))
             .collect();
 
         let table = params.table(&packed).unwrap();
-        let exponents: Vec<u128> = row_weights.iter().map(|weight| weight.lift()).collect();
-        let target: Fq<Q> = (0..shape.columns())
+        let exponents: Vec<F::Integer> = row_weights.iter().map(|weight| weight.lift()).collect();
+        let target: F = (0..shape.columns())
             .map(|column| {
-                let fold: u128 = (0..shape.rows())
+                let fold: F::Integer = (0..shape.rows())
                     .filter(|&row| table.bit(column, row))
-                    .map(|row| exponents[row])
+                    .map(|row| &exponents[row])
                     .sum();
-                column_weights[column] * Fq::from(fold)
+                F::from(fold) * column_weights[column]
             })
             .sum();
 
@@ -88,11 +87,11 @@ impl HonestClaim {
 }
 
 /// An instance whose claim actually holds, committed under a real scheme.
-pub struct Instance {
-    pub params: BitZParams<Q>,
-    pub prover: prover::BitZProver<Q>,
-    pub verifier: verifier::BitZVerifier<Q>,
-    pub claim: LinearClaim<field::Fq<Q>>,
+pub struct Instance<F: BitzClaimField> {
+    pub params: BitZParams<F>,
+    pub prover: prover::BitZProver<F>,
+    pub verifier: verifier::BitZVerifier<F>,
+    pub claim: LinearClaim<F>,
     pub pcs: Pcs,
     pub com: Root,
     pub data: ProverData,
@@ -100,7 +99,7 @@ pub struct Instance {
     pub packed: Vec<F128>,
 }
 
-impl Instance {
+impl<F: BitzClaimField> Instance<F> {
     /// [`HonestClaim::new`] under the `Fast` profile, with a setup per role.
     pub fn honest(shape: Shape, seed: u64) -> Self {
         let mut rng = ChaCha8Rng::seed_from_u64(seed);
@@ -132,7 +131,7 @@ impl Instance {
     }
 
     /// The same instance under a different claimed value.
-    pub fn with_target(&self, target: Fq<Q>) -> LinearClaim<field::Fq<Q>> {
+    pub fn with_target(&self, target: F) -> LinearClaim<F> {
         LinearClaim::new(
             &self.params,
             self.claim.row_weights().to_vec(),

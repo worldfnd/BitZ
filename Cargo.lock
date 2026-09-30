@@ -384,10 +384,12 @@ version = "0.1.0"
 dependencies = [
  "crypto-primitives",
  "field",
+ "num-bigint 0.4.8",
  "num-traits",
  "poly",
  "rayon",
  "spongefish",
+ "transcript",
 ]
 
 [[package]]

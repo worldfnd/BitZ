@@ -8,7 +8,6 @@
 //! This test is designed to test what's possible in under a minute.
 
 use common::LinearClaim;
-use field::Fq;
 use num_traits::ConstOne;
 use prover::BitZProver;
 use rand_chacha::ChaCha8Rng;
@@ -16,10 +15,12 @@ use rand_core::SeedableRng;
 use tests::{HonestClaim, WINDOW, large_shape, prover_transcript, verifier_transcript};
 use verifier::{BitZVerifier, ReceiveError};
 
+type F = field::FqDefault;
+
 #[test]
 fn the_fold_round_trips_on_the_large_shape() {
     let shape = large_shape();
-    let honest = HonestClaim::new(shape, &mut ChaCha8Rng::seed_from_u64(31));
+    let honest = HonestClaim::<F>::new(shape, &mut ChaCha8Rng::seed_from_u64(31));
     let prover = BitZProver::new(honest.params, WINDOW);
     let verifier = BitZVerifier::new(honest.params, WINDOW);
 
@@ -56,7 +57,7 @@ fn the_fold_round_trips_on_the_large_shape() {
         &honest.params,
         honest.claim.row_weights().to_vec(),
         honest.claim.column_weights().to_vec(),
-        honest.claim.target() + Fq::ONE,
+        honest.claim.target() + F::ONE,
     )
     .unwrap();
     assert_eq!(

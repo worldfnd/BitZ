@@ -13,6 +13,8 @@ use num_traits::ConstOne;
 use transcript::ProverState;
 
 const Q114: u128 = (1 << 114) - 11;
+type F = field::Fq<Q114>;
+
 const ITERATIONS: usize = 30;
 
 fn random_table(shape: Shape) -> BitTable<'static> {
@@ -20,8 +22,7 @@ fn random_table(shape: Shape) -> BitTable<'static> {
     let packed: Box<Vec<_>> =
         Box::new((0..n).map(|_| F128::from(rand::random::<u128>())).collect());
     let packed: &'static _ = packed.leak();
-    let params: BitZParams<Q114> =
-        BitZParams::new(shape, field::gf128::smallest_generator()).unwrap();
+    let params: BitZParams<F> = BitZParams::new(shape, field::gf128::smallest_generator()).unwrap();
 
     params.table(packed).unwrap()
 }
@@ -49,7 +50,7 @@ fn main() {
 }
 
 #[inline(never)]
-fn gkr_wrapper(mut transcript: ProverState, fold: &Fold, table: BitTable<'_>) {
+fn gkr_wrapper<S>(mut transcript: ProverState, fold: &Fold<S>, table: BitTable<'_>) {
     black_box(
         prover::gkr_reduce(&mut transcript, black_box(fold), black_box(&table))
             .expect("profiling fold matches the table shape"),

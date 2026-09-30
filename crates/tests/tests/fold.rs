@@ -1,17 +1,18 @@
 //! The fold round, prover against verifier.
 
 use common::{BitZParams, FoldError, LinearClaim};
-use field::{F128, Fq, gf128::smallest_generator};
-use num_traits::{ConstOne, ConstZero};
+use crypto_primitives::{BaseField, WithAssociatedInteger};
+use field::{F128, gf128::smallest_generator};
+use num_traits::{Bounded, ConstOne, ConstZero, ToBytes};
 use prover::{BitZProver, SendError};
-use tests::{
-    Instance, Q, WINDOW, narrow_shape, prover_transcript, verifier_transcript, wide_shape,
-};
+use tests::{Instance, WINDOW, narrow_shape, prover_transcript, verifier_transcript, wide_shape};
 use transcript::Proof;
 use verifier::{BitZVerifier, ReceiveError};
 
+type F = field::FqDefault;
+
 /// Runs an honest prover and returns the round it produced with its proof.
-fn prove(instance: &Instance) -> (common::Fold, Proof) {
+fn prove(instance: &Instance<F>) -> (common::Fold<<F as WithAssociatedInteger>::Integer>, Proof) {
     let mut transcript = prover_transcript();
     let round = instance
         .prover
@@ -22,10 +23,10 @@ fn prove(instance: &Instance) -> (common::Fold, Proof) {
 
 /// A proof carrying `folds` and nothing else, which is the whole wire format
 /// of this round.
-fn forge(folds: &[u128]) -> Proof {
+fn forge<I: ToBytes<Bytes: AsRef<[u8]>>>(folds: &[I]) -> Proof {
     let mut transcript = prover_transcript();
-    for &fold in folds {
-        transcript.prover_message(&fold.to_le_bytes());
+    for fold in folds {
+        transcript.prover_message(&fold.to_le_bytes().as_ref());
     }
     transcript.finish()
 }
@@ -33,7 +34,7 @@ fn forge(folds: &[u128]) -> Proof {
 #[test]
 fn the_two_sides_agree_on_every_shape_the_profile_admits() {
     for shape in [narrow_shape(), wide_shape()] {
-        let instance = Instance::honest(shape, 7);
+        let instance = Instance::<F>::honest(shape, 7);
         let (sent, proof) = prove(&instance);
 
         let mut transcript = verifier_transcript(&proof);
@@ -53,7 +54,7 @@ fn the_two_sides_agree_on_every_shape_the_profile_admits() {
 fn the_proof_carries_only_the_folds() {
     // Sending the images too would double this round's proof size: at
     // k_2 = 2^21 the second copy is 32 MiB.
-    let instance = Instance::honest(narrow_shape(), 2);
+    let instance = Instance::<F>::honest(narrow_shape(), 2);
     let (_, proof) = prove(&instance);
 
     assert_eq!(
@@ -68,7 +69,7 @@ fn the_challenge_depends_on_the_folds() {
     // The folds are written and absorbed by the same call, so the challenge
     // must move when they do. That is what binds the images the grand product
     // consumes, since `u -> g^u` is injective over the admitted range.
-    let instance = Instance::honest(narrow_shape(), 3);
+    let instance = Instance::<F>::honest(narrow_shape(), 3);
     let (round, _) = prove(&instance);
 
     let echoed = forge(&round.folds);
@@ -96,16 +97,17 @@ fn a_fold_at_the_bound_is_accepted_and_one_past_it_is_not() {
     let shape = narrow_shape();
     let packed = vec![F128::new(u64::MAX, u64::MAX); (1 << shape.log_bits()) / 128];
 
-    let fold = (shape.rows() as u128) * (Q - 1);
-    let params = BitZParams::<Q>::new(shape, smallest_generator()).unwrap();
+    let modulus = F::modulus();
+    let fold = (shape.rows() as u128) * (modulus - 1);
+    let params = BitZParams::<F>::new(shape, smallest_generator()).unwrap();
     let prover = BitZProver::new(params, WINDOW);
     let verifier = BitZVerifier::new(params, WINDOW);
     let table = params.table(&packed).unwrap();
     let claim = LinearClaim::new(
         &params,
-        vec![Fq::from(Q - 1); shape.rows()],
-        vec![Fq::ONE; shape.columns()],
-        Fq::from(fold) * Fq::from(shape.columns() as u128),
+        vec![F::max_value(); shape.rows()],
+        vec![F::ONE; shape.columns()],
+        F::from(fold) * F::from(shape.columns() as u128),
     )
     .unwrap();
 
@@ -129,7 +131,7 @@ fn a_fold_at_the_bound_is_accepted_and_one_past_it_is_not() {
 fn the_range_check_fires_before_the_reconstruction() {
     // A proof violating both. The order is fixed, so the earlier obligation is
     // the one that must be reported.
-    let instance = Instance::honest(narrow_shape(), 6);
+    let instance = Instance::<F>::honest(narrow_shape(), 6);
     let shape = instance.params.shape();
     let over = vec![instance.params.fold_bound() + 1; shape.columns()];
 
@@ -151,11 +153,11 @@ fn the_range_check_fires_before_the_reconstruction() {
 
 #[test]
 fn folds_that_do_not_reconstruct_the_target_are_rejected() {
-    let instance = Instance::honest(narrow_shape(), 5);
+    let instance = Instance::<F>::honest(narrow_shape(), 5);
     let (_, proof) = prove(&instance);
 
     // The proof is honest; the claim it is replayed against is not.
-    let retargeted = instance.with_target(instance.claim.target() + Fq::ONE);
+    let retargeted = instance.with_target(instance.claim.target() + F::ONE);
     let mut transcript = verifier_transcript(&proof);
     assert_eq!(
         instance.verifier.receive_fold(&retargeted, &mut transcript),
@@ -165,8 +167,8 @@ fn folds_that_do_not_reconstruct_the_target_are_rejected() {
 
 #[test]
 fn a_witness_of_a_different_shape_is_refused_before_anything_is_written() {
-    let instance = Instance::honest(narrow_shape(), 8);
-    let other = Instance::honest(wide_shape(), 8);
+    let instance = Instance::<F>::honest(narrow_shape(), 8);
+    let other = Instance::<F>::honest(wide_shape(), 8);
 
     let mut transcript = prover_transcript();
     assert_eq!(
@@ -180,7 +182,7 @@ fn a_witness_of_a_different_shape_is_refused_before_anything_is_written() {
 
 #[test]
 fn a_truncated_proof_is_refused_rather_than_read_past() {
-    let instance = Instance::honest(narrow_shape(), 10);
+    let instance = Instance::<F>::honest(narrow_shape(), 10);
     let (_, proof) = prove(&instance);
 
     let mut short = proof.clone();
@@ -198,14 +200,14 @@ fn a_truncated_proof_is_refused_rather_than_read_past() {
 fn an_all_zero_witness_folds_to_zero_and_still_round_trips() {
     let shape = narrow_shape();
     let packed = vec![F128::ZERO; (1 << shape.log_bits()) / 128];
-    let params = BitZParams::<Q>::new(shape, smallest_generator()).unwrap();
+    let params = BitZParams::<F>::new(shape, smallest_generator()).unwrap();
     let prover = BitZProver::new(params, WINDOW);
     let verifier = BitZVerifier::new(params, WINDOW);
     let claim = LinearClaim::new(
         &params,
-        vec![Fq::from(Q - 1); shape.rows()],
-        vec![Fq::from(3u128); shape.columns()],
-        Fq::from(0u128),
+        vec![F::max_value(); shape.rows()],
+        vec![F::from(3u128); shape.columns()],
+        F::from(0u128),
     )
     .unwrap();
     let table = params.table(&packed).unwrap();
@@ -231,7 +233,7 @@ fn a_round_is_refused_when_its_parts_do_not_match_the_shape() {
     assert_eq!(
         common::Fold::new(
             &shape,
-            vec![0; shape.columns()],
+            vec![0_u64; shape.columns()],
             vec![F128::ONE; shape.columns()],
             Vec::new(),
             vec![F128::ONE; shape.log_columns()],
