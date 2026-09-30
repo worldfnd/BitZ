@@ -20,6 +20,7 @@ spartan = { path = "crates/spartan" }
 transcript = { path = "crates/transcript" }
 verifier = { path = "crates/verifier" }
 gkr = { path = "crates/gkr"}
+post_gkr = { path = "crates/post_gkr" }
 
 aes = "0.9.2"
 anyhow = "1.0.93"

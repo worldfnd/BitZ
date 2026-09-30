@@ -63,7 +63,7 @@ fn operands(count: usize, seed: u64) -> Vec<F128> {
 }
 
 fn to_binius(a: F128) -> Ghash {
-    Ghash::from((a.hi as u128) << 64 | a.lo as u128)
+    Ghash::from(a.to_u128())
 }
 
 fn from_binius(a: Ghash) -> F128 {
@@ -117,7 +117,7 @@ fn check_agreement(xs: &[F128], ys: &[F128]) {
         );
         // The timed exponents are the operands read as integers, so raising the
         // generator to `x` here is the same call the `pow` row makes.
-        let e = (x.hi as u128) << 64 | x.lo as u128;
+        let e = x.to_u128();
         assert_eq!(
             F128::GENERATOR.pow(e),
             from_binius(to_binius(F128::GENERATOR).pow([e as u64, (e >> 64) as u64])),
@@ -342,10 +342,7 @@ fn main() {
 
     // Full-width exponents, square-and-multiply on both sides. This crate's
     // fixed-base comb has no counterpart in binius64, so it is left out.
-    let exps: Vec<u128> = xs
-        .iter()
-        .map(|x| (x.hi as u128) << 64 | x.lo as u128)
-        .collect();
+    let exps: Vec<u128> = xs.iter().map(|x| x.to_u128()).collect();
     let bgen = to_binius(F128::GENERATOR);
     c.run(
         "pow/square-and-multiply",

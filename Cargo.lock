@@ -246,6 +246,7 @@ dependencies = [
  "cfg-if",
  "constant_time_eq",
  "cpufeatures 0.3.0",
+ "rayon-core",
 ]
 
 [[package]]
@@ -1122,6 +1123,7 @@ dependencies = [
  "field",
  "flock-core",
  "num-traits",
+ "post_gkr",
  "proptest",
  "tracing",
  "transcript",
@@ -1143,6 +1145,21 @@ dependencies = [
  "num-traits",
  "proptest",
  "rayon",
+]
+
+[[package]]
+name = "post_gkr"
+version = "0.1.0"
+dependencies = [
+ "common",
+ "field",
+ "num-traits",
+ "poly",
+ "rand_core 0.10.1",
+ "rand_pcg 0.10.2",
+ "rayon",
+ "tracing",
+ "transcript",
 ]
 
 [[package]]

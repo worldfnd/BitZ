@@ -69,14 +69,11 @@ fn inner_product_proof_composes_sumcheck_with_a_bound_mle_opening() {
     let mut verifier = build_verifier(SESSION, INSTANCE, &proof);
     bind_inner_product_statement(&fixture.pcs, &fixture.root.0, &fixture.claim, &mut verifier);
     verifier.public_message(SUMCHECK_LABEL);
-    let reduced = sumcheck::verify(&fixture.claim, &mut verifier).unwrap();
+    let reduced = post_gkr::verify(&fixture.claim, &mut verifier).unwrap();
     verify(
         &fixture.pcs,
         &fixture.root,
-        &OpeningQuery::Mle {
-            point: reduced.point,
-            target: reduced.target,
-        },
+        &reduced,
         StatementBinding::Bind,
         &mut verifier,
     )
