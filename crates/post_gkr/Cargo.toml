@@ -1,0 +1,23 @@
+[package]
+name = "post_gkr"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = ["parallel"]
+parallel = ["dep:rayon"]
+
+[dependencies]
+common = { workspace = true }
+field = { workspace = true, features = ["spongefish"] }
+num-traits = { workspace = true }
+poly = { workspace = true }
+rayon = { workspace = true, optional = true }
+tracing = { workspace = true }
+transcript = { workspace = true }
+
+[dev-dependencies]
+rand_core = { workspace = true }
+rand_pcg = { workspace = true }

@@ -431,6 +431,22 @@ mod tests {
     }
 
     #[test]
+    fn commitment_sends_ood_before_proving() {
+        let system = CircuitProofSystem::new(IdentityBit, SecurityLevel::Bits100).unwrap();
+        let witness = system.witness(&[true]).unwrap();
+        let committed = system.commit(&witness).unwrap();
+        let proof = committed.transcript.finish();
+        assert_eq!(proof.narg_string.len(), 16);
+        assert!(proof.hints.is_empty());
+        let mut verifier = build_verifier(SESSION, system.statement.domain(), &proof);
+        system
+            .pcs
+            .receive_commitment(committed.data.root(), &mut verifier)
+            .unwrap();
+        verifier.check_eof().unwrap();
+    }
+
+    #[test]
     fn direct_opening_requires_constant_one_on_both_sides() {
         let mut system = CircuitProofSystem::new(IdentityBit, SecurityLevel::Bits100).unwrap();
         let witness = system.witness(&[true]).unwrap();

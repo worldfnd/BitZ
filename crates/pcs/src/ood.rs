@@ -14,6 +14,7 @@ use field::F128;
 use flock_core::field::F128 as FlockF128;
 use num_traits::ConstOne;
 use poly::{DenseMultilinearExtension, eq_table};
+use rayon::{current_num_threads, prelude::*};
 use transcript::{ProverState, PublicTranscript, VerifierState};
 
 use crate::bridge::{as_flock_f128, from_flock_f128};
@@ -23,6 +24,7 @@ const OOD_ROUND_TAG: &[u8] = b"bitz/pcs/ood/v1";
 const OOD_BATCHING_TAG: &[u8] = b"bitz/pcs/ood-batching/v1";
 const OOD_POW_TAG: &[u8] = b"bitz/pcs/ood-pow/v1";
 const BLOCK_LOG: usize = 12;
+const PARALLEL_MIN_LEN: usize = 1 << 18;
 
 /// An evaluation of the packed witness MLE, authenticated by the batched opening.
 #[derive(Debug)]
@@ -83,10 +85,18 @@ pub(crate) fn add_dense_basis(basis: &mut [FlockF128], claim: &OodClaim, coeffic
     let block = 1usize << low;
     let tail = eq_table(&claim.point[..low]);
     let head = eq_table(&claim.point[low..]);
-    for (chunk, &scale) in basis.chunks_exact_mut(block).zip(&head) {
+    let update = |(chunk, &scale): (&mut [FlockF128], &F128)| {
         for (basis, &weight) in chunk.iter_mut().zip(&tail) {
             *basis += as_flock_f128(coefficient * scale * weight);
         }
+    };
+    if basis.len() >= PARALLEL_MIN_LEN && current_num_threads() >= 4 {
+        basis
+            .par_chunks_exact_mut(block)
+            .zip(head.par_iter())
+            .for_each(update);
+    } else {
+        basis.chunks_exact_mut(block).zip(&head).for_each(update);
     }
 }
 
@@ -140,8 +150,50 @@ fn ood_point(zeta: F128, packed_len: usize) -> Vec<F128> {
 #[cfg(test)]
 mod tests {
     use num_traits::ConstZero;
+    use rayon::ThreadPoolBuilder;
 
     use super::*;
+
+    #[test]
+    fn dense_basis_updates_match_the_full_equality_table_across_thread_counts() {
+        let pools: Vec<_> = [1, 2, 4, 8]
+            .into_iter()
+            .map(|threads| {
+                ThreadPoolBuilder::new()
+                    .num_threads(threads)
+                    .build()
+                    .unwrap()
+            })
+            .collect();
+        for log_len in [0, 8, 12, 17, 18, 19] {
+            let len = 1usize << log_len;
+            let claim = OodClaim {
+                point: ood_point(F128::new(7, 11), len),
+                value: F128::ZERO,
+            };
+            let weights = eq_table(&claim.point);
+            let initial: Vec<_> = (0..len)
+                .map(|i| FlockF128::new(i as u64 + 1, (i as u64).rotate_left(17) + 3))
+                .collect();
+            for coefficient in [F128::ZERO, F128::ONE, F128::new(13, 17)] {
+                let expected: Vec<_> = initial
+                    .iter()
+                    .zip(&weights)
+                    .map(|(&value, &weight)| value + as_flock_f128(coefficient * weight))
+                    .collect();
+                for pool in &pools {
+                    let mut actual = initial.clone();
+                    pool.install(|| add_dense_basis(&mut actual, &claim, coefficient));
+                    assert_eq!(
+                        actual,
+                        expected,
+                        "log_len={log_len}, threads={}",
+                        pool.current_num_threads()
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn dense_and_succinct_ood_bases_agree_after_folding() {

@@ -14,7 +14,7 @@ use num_traits::{ConstOne, ConstZero};
 use pcs::{Pcs, ProverData};
 use prover::{BitZProver, ProveError, VirtualWitness};
 use tests::{Q, WINDOW, prover_transcript, verifier_transcript};
-use transcript::{Proof, SecurityLevel};
+use transcript::{Proof, ProverState, SecurityLevel};
 use verifier::{BitZVerifier, VerifyError};
 
 /// `h[0] = 1`, `h[1] = f[0]`, `h[128] = f[1]`, `h[129] = f[0] XOR f[1]`.
@@ -54,6 +54,7 @@ struct Instance {
     pcs: Pcs,
     root: Root,
     data: ProverData,
+    transcript: Option<ProverState>,
 }
 
 impl Instance {
@@ -81,9 +82,8 @@ impl Instance {
         virtual_bits[1] = F128::from(2u64);
 
         let pcs = Pcs::new(&committed_shape, security).unwrap();
-        let (root, data) = pcs
-            .commit(&committed_bits, &mut prover_transcript())
-            .unwrap();
+        let mut transcript = prover_transcript();
+        let (root, data) = pcs.commit(&committed_bits, &mut transcript).unwrap();
         Self {
             params,
             committed_shape,
@@ -93,6 +93,7 @@ impl Instance {
             pcs,
             root,
             data,
+            transcript: Some(transcript),
         }
     }
 
@@ -100,17 +101,13 @@ impl Instance {
         VirtualStatement::new(self.params, self.committed_shape, &Map(7), &self.claim).unwrap()
     }
 
-    fn prove(&self) -> Proof {
-        let mut transcript = prover_transcript();
-        let (_, data) = self
-            .pcs
-            .commit(&self.committed_bits, &mut transcript)
-            .unwrap();
+    fn prove(&mut self) -> Proof {
+        let mut transcript = self.transcript.take().unwrap();
         BitZProver::new(self.params, WINDOW)
             .prove_virtual(
                 &self.statement(),
                 &self.pcs,
-                &data,
+                &self.data,
                 VirtualWitness {
                     committed_bits: self.committed_bits.clone(),
                     virtual_bits: &self.virtual_bits,
@@ -143,7 +140,7 @@ impl Instance {
 
 #[test]
 fn virtual_inner_product_opens_the_committed_bits() {
-    let instance = Instance::new();
+    let mut instance = Instance::new();
     let proof = instance.prove();
     instance
         .verify(&instance.statement(), instance.root, &proof)
@@ -153,7 +150,7 @@ fn virtual_inner_product_opens_the_committed_bits() {
 #[test]
 fn explicit_security_targets_support_different_virtual_and_committed_sizes() {
     for level in [SecurityLevel::Bits100, SecurityLevel::Bits128] {
-        let instance = Instance::with_shapes(
+        let mut instance = Instance::with_shapes(
             Shape::new(7, 14).unwrap(),
             Shape::new(8, 12).unwrap(),
             level,
@@ -182,9 +179,9 @@ fn explicit_security_targets_support_different_virtual_and_committed_sizes() {
 
 #[test]
 fn changed_virtual_statements_are_rejected() {
-    let instance = Instance::new();
-    let statement = instance.statement();
+    let mut instance = Instance::new();
     let proof = instance.prove();
+    let statement = instance.statement();
     instance.verify(&statement, instance.root, &proof).unwrap();
 
     let mut changed_root = instance.root;
@@ -231,7 +228,7 @@ fn changed_virtual_statements_are_rejected() {
 
 #[test]
 fn malformed_virtual_proofs_are_rejected() {
-    let instance = Instance::new();
+    let mut instance = Instance::new();
     let proof = instance.prove();
     let verify = |proof: &Proof| instance.verify(&instance.statement(), instance.root, proof);
     verify(&proof).unwrap();
@@ -349,21 +346,17 @@ fn virtual_witness_lengths_and_setup_must_match_the_statement() {
 
 #[test]
 fn virtual_bits_inconsistent_with_the_map_cannot_be_opened() {
-    let instance = Instance::new();
+    let mut instance = Instance::new();
     let mut virtual_bits = instance.virtual_bits.clone();
     // Move the constant-one bit to row two. The integer sum stays three,
     // but the virtual witness no longer equals M (1 || f).
     virtual_bits[0] = F128::from(6u64);
-    let mut transcript = prover_transcript();
-    let (_, data) = instance
-        .pcs
-        .commit(&instance.committed_bits, &mut transcript)
-        .unwrap();
+    let mut transcript = instance.transcript.take().unwrap();
     assert_eq!(
         BitZProver::new(instance.params, WINDOW).prove_virtual(
             &instance.statement(),
             &instance.pcs,
-            &data,
+            &instance.data,
             VirtualWitness {
                 committed_bits: instance.committed_bits.clone(),
                 virtual_bits: &virtual_bits,

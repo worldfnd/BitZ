@@ -136,7 +136,7 @@ impl<const Q: u128> BitZProver<Q> {
             .transpose_query(query)
             .map_err(ProveError::VirtualMap)?;
 
-        // Step 6: run PCS sumcheck, ring switching, and opening on committed bits.
+        // Step 6: the post-GKR sumcheck, ring switching, and opening on committed bits.
         // Bind the PCS parameters and transposed query before its challenges.
         pcs.prove_lin(
             data,

@@ -113,10 +113,7 @@ fn inverse(bencher: Bencher) {
 /// Full-width exponents: what the fold values are.
 #[divan::bench]
 fn pow_square_and_multiply(bencher: Bencher) {
-    let exps: Vec<u128> = xs()
-        .iter()
-        .map(|x| (x.hi as u128) << 64 | x.lo as u128)
-        .collect();
+    let exps: Vec<u128> = xs().iter().map(|x| x.to_u128()).collect();
     bencher.counter(ItemsCount::new(N)).bench_local(|| {
         for &e in &exps {
             black_box(F128::GENERATOR.pow(e));
@@ -127,10 +124,7 @@ fn pow_square_and_multiply(bencher: Bencher) {
 #[divan::bench]
 fn pow_comb_w8(bencher: Bencher) {
     let comb = FixedBasePow::new(F128::GENERATOR, 8);
-    let exps: Vec<u128> = xs()
-        .iter()
-        .map(|x| (x.hi as u128) << 64 | x.lo as u128)
-        .collect();
+    let exps: Vec<u128> = xs().iter().map(|x| x.to_u128()).collect();
     bencher.counter(ItemsCount::new(N)).bench_local(|| {
         for &e in &exps {
             black_box(comb.pow(e));

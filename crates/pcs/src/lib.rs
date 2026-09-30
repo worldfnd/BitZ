@@ -22,28 +22,29 @@
 //! Ring-switching transposes `(s_v)` into `(s_u)` and samples `batching_point`.
 //! It sets `packed_target = Σ_u eq(batching_point, u) · s_u`.
 //! Recursive Ligerito proves `Σ_y B(y) · q_pkd(y) = packed_target` against the committed root.
-//! Quadratic sumcheck reduces factored inner-product claims to MLE claims before this opening protocol.
+//! The post-GKR sumcheck (`post_gkr`) reduces factored inner-product claims to MLE claims before this opening protocol.
 //!
 //! # Interface
 //!
 //! - [`Pcs`] stores trusted Flock parameters and the expected bit length.
 //! - [`Root`] is the public Merkle root.
-//! - [`Commitment`] holds the root, parameters, and optional initial OOD claim for both sides.
-//! - [`ProverData`] retains that commitment, the codeword, and the Merkle tree.
+//! - [`ProverData`] retains the commitment, codeword, and Merkle tree.
+//! - [`Commitment`] retains the root, parameters, and optional OOD claim on both sides.
 //! - [`OpeningQuery`] contains an MLE point and target, or a `common::LinearClaim<F128>`.
 //! - [`CommitScheme`] connects commitment, proving, and verification to project transcripts.
 //! - [`ConfigError`] reports configuration failures.
 //! - [`CommitError`], [`ProveError`], and [`VerifyError`] report operation-specific failures.
 //!
-//! Commitment starts the transcript before witness-dependent challenges.
 //! The 100-bit profile includes initial and recursive OOD checks.
 //! The 128-bit profile uses unique decoding without OOD checks.
-//! The verifier calls [`Pcs::receive_commitment`] before subsequent protocol challenges.
 //! The caller packs and retains the witness after [`CommitScheme::commit`].
 //! [`CommitScheme::prove_lin`] dispatches both query variants.
 //! It consumes the packed witness and borrows [`ProverData`].
 //! The caller must use matching transcript session and instance labels.
 //! The caller must also call `VerifierState::check_eof` after successful verification.
+//! Use [`Pcs::commit`] and [`Pcs::receive_commitment`] before any
+//! witness-dependent challenges. The security profile selects initial OOD sampling;
+//! opening proofs authenticate the retained claim automatically.
 //!
 //! # Example
 //!
@@ -71,7 +72,7 @@
 //! };
 //!
 //! let mut prover = build_prover(b"pcs-example", b"zero-polynomial");
-//! let (root, prover_data) = pcs.commit(&packed_witness, &mut prover).unwrap();
+//! let (commitment, prover_data) = pcs.commit(&packed_witness, &mut prover).unwrap();
 //! pcs.prove_lin(
 //!     &prover_data,
 //!     packed_witness,
@@ -83,7 +84,7 @@
 //! let proof = prover.finish();
 //!
 //! let mut verifier = build_verifier(b"pcs-example", b"zero-polynomial", &proof);
-//! let commitment = pcs.receive_commitment(root, &mut verifier).unwrap();
+//! let commitment = pcs.receive_commitment(commitment, &mut verifier).unwrap();
 //! pcs.verify_lin(
 //!     &commitment,
 //!     &query,
@@ -102,21 +103,20 @@ mod mle;
 mod ood;
 mod opening;
 mod profiles;
-mod sumcheck;
 mod transpose;
-
-pub use transcript::SecurityLevel;
 
 #[cfg(test)]
 #[path = "transpose/tests.rs"]
 mod transpose_tests;
 
 use field::F128;
+use opening::{prove, verify};
 use transcript::{ProverState, VerifierState};
 
 pub use commitment::{CommitError, Commitment, ConfigError, Pcs, ProverData};
 pub use common::{OpeningQuery, Root};
 pub use opening::{ProveError, VerifyError};
+pub use transcript::SecurityLevel;
 
 /// Controls statement binding for one opening.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -138,26 +138,34 @@ pub enum StatementBinding {
 /// `q̂(r) = Σ_{b ∈ {0,1}^m} q(b) · eq(b, r) = target`, where
 /// `eq(b, r) = ∏_i (b_i · r_i + (1 - b_i) · (1 - r_i))`.
 /// [`OpeningQuery::InnerProduct`] accepts row weights, column weights, and a target over `F128`.
-/// Quadratic sumcheck reduces this claim to an MLE claim before the opening protocol.
+/// The post-GKR sumcheck reduces this claim to an MLE claim before the opening protocol.
 pub trait CommitScheme {
     /// Commitment state shared by the prover and verifier.
     type Commitment;
     /// Private data retained by the prover after commitment.
     type ProverData;
 
-    /// Commits the caller-owned packed witness to `Enc_C(q_pkd)`, where
-    /// `q_pkd(y) = Σ_{v ∈ {0,1}^7} q(y, v) · basis[v]`.
-    /// Bit `r` of element `i` must equal logical bit `128 * i + r`.
-    /// Returns the transmitted root and private data containing the complete commitment.
+    /// Commits the packed witness and runs the security profile's initial checks.
+    /// Bit `r` of packed element `i` must equal logical bit `128 * i + r`.
+    /// Call before witness-dependent challenges and continue the same transcript.
+    /// Returns the public root and private data containing the retained commitment.
     fn commit(
         &self,
         packed_witness: &[F128],
         transcript: &mut ProverState,
     ) -> Result<(Root, Self::ProverData), CommitError>;
 
-    /// Consumes the exact packed witness and proves either opening query.
-    ///
-    /// Inner-product claims first pass through quadratic sumcheck and then the MLE opening protocol.
+    /// Receives commitment state before subsequent protocol challenges.
+    /// An opening must authenticate the retained OOD claim before accepting the proof.
+    fn receive_commitment(
+        &self,
+        root: Root,
+        transcript: &mut VerifierState<'_>,
+    ) -> Result<Self::Commitment, VerifyError>;
+
+    /// Consumes the packed witness and proves either opening query.
+    /// Inner-product claims pass through the post-GKR sumcheck before the MLE opening.
+    /// Any initial OOD claim retained by `commit` is batched into the opening.
     fn prove_lin(
         &self,
         data: &Self::ProverData,
@@ -167,9 +175,9 @@ pub trait CommitScheme {
         transcript: &mut ProverState,
     ) -> Result<(), ProveError>;
 
-    /// Verifies either opening query against the received commitment state.
-    ///
-    /// Inner-product claims first pass through quadratic sumcheck and then the MLE opening protocol.
+    /// Verifies either opening query and any retained OOD claim.
+    /// Continue the transcript used by `receive_commitment`. The commitment is
+    /// borrowed so multiple openings can authenticate the same OOD claim.
     fn verify_lin(
         &self,
         commitment: &Self::Commitment,
@@ -188,7 +196,15 @@ impl CommitScheme for Pcs {
         packed_witness: &[F128],
         transcript: &mut ProverState,
     ) -> Result<(Root, Self::ProverData), CommitError> {
-        Pcs::commit(self, packed_witness, transcript)
+        self.commit(packed_witness, transcript)
+    }
+
+    fn receive_commitment(
+        &self,
+        root: Root,
+        transcript: &mut VerifierState<'_>,
+    ) -> Result<Self::Commitment, VerifyError> {
+        self.receive_commitment(root, transcript)
     }
 
     fn prove_lin(
@@ -199,7 +215,7 @@ impl CommitScheme for Pcs {
         statement_binding: StatementBinding,
         transcript: &mut ProverState,
     ) -> Result<(), ProveError> {
-        opening::prove(
+        prove(
             self,
             data,
             packed_witness,
@@ -216,6 +232,6 @@ impl CommitScheme for Pcs {
         statement_binding: StatementBinding,
         transcript: &mut VerifierState<'_>,
     ) -> Result<(), VerifyError> {
-        opening::verify(self, commitment, query, statement_binding, transcript)
+        verify(self, commitment, query, statement_binding, transcript)
     }
 }

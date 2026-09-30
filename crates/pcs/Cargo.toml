@@ -7,13 +7,16 @@ license.workspace = true
 
 [dependencies]
 bincode = { workspace = true }
+blake3 = { workspace = true, features = ["rayon"] }
 common = { workspace = true }
 field = { workspace = true, features = ["spongefish"] }
 flock-core = { workspace = true }
+post_gkr = { workspace = true }
 transcript = { workspace = true }
 tracing = { workspace = true }
 num-traits = { workspace = true }
 poly = { workspace = true }
+rayon = { workspace = true }
 
 [dev-dependencies]
 divan = { workspace = true }

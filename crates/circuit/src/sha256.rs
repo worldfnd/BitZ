@@ -554,17 +554,16 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::iter::Sum;
-    use std::ops::{Add, AddAssign};
-
-    use num_bigint::BigInt;
-    use num_traits::Zero;
-
     use super::*;
     use crate::HintError;
     use crate::constraints::{ConstraintGenerator, ConstraintMatrices};
     use crate::stats::{Dummy, LeanStats, Stats};
     use crate::witgen::{Witgen, Z};
+    use num_traits::Zero;
+    use std::iter::Sum;
+    use std::ops::{Add, AddAssign};
+
+    type R = num_bigint::BigInt;
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     struct Bit(bool);
@@ -687,7 +686,7 @@ mod tests {
         circuit.sign_extend_z::<SHA256_Z_LIMBS, 128>(small)
     }
 
-    fn assert_m_w_matches_witgen(matrices: &ConstraintMatrices, witgen: &Witgen) {
+    fn assert_m_w_matches_witgen(matrices: &ConstraintMatrices<R>, witgen: &Witgen) {
         let from_m = matrices
             .integer_witness(witgen.witness())
             .expect("Boolean witness should have the matrix width");
@@ -696,7 +695,7 @@ mod tests {
         for (row, value) in from_m.iter().enumerate() {
             assert_eq!(
                 value,
-                &BigInt::from(recorded.bit(row)),
+                &R::from(recorded.bit(row)),
                 "integer witness differs at M row {row}"
             );
         }

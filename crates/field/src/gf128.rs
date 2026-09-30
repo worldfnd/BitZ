@@ -118,6 +118,11 @@ impl F128 {
     const fn words(self) -> [u64; 2] {
         [self.lo, self.hi]
     }
+
+    /// `lo || hi` as one `u128`.
+    pub const fn to_u128(&self) -> u128 {
+        self.lo as u128 | ((self.hi as u128) << 64)
+    }
 }
 
 /// The bit pattern as 32 hex digits, `hi` first — how the polynomial reads on

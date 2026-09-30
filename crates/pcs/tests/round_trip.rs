@@ -823,3 +823,67 @@ fn real_pcs_requires_complete_transcript_consumption() {
     .unwrap();
     assert!(verifier.check_eof().is_err());
 }
+
+#[test]
+fn real_pcs_ood_round_batches_into_opening() {
+    let pcs = Pcs::new(&shape(), SecurityLevel::Bits100).unwrap();
+    let mut packed_witness = vec![F128::ZERO; pcs.packed_len()];
+    packed_witness[SINGLETON / 128] = F128::new(0, 1 << (SINGLETON % 128 - 64));
+    let point = vec![F128::from(2u64); M];
+    let query = OpeningQuery::Mle {
+        target: singleton_target(&point, SINGLETON),
+        point,
+    };
+    ood_round_trip(&pcs, packed_witness, query);
+}
+
+fn ood_round_trip(pcs: &impl CommitScheme, packed_witness: Vec<F128>, query: OpeningQuery) {
+    let mut prover = build_prover(SESSION, b"ood-round-trip");
+    let (commitment, data) = pcs.commit(&packed_witness, &mut prover).unwrap();
+    pcs.prove_lin(
+        &data,
+        packed_witness,
+        &query,
+        StatementBinding::Bind,
+        &mut prover,
+    )
+    .unwrap();
+    let next_challenge = prover.verifier_message::<F128>();
+    let proof = prover.finish();
+
+    let mut verifier = build_verifier(SESSION, b"ood-round-trip", &proof);
+    let received = pcs.receive_commitment(commitment, &mut verifier).unwrap();
+    pcs.verify_lin(&received, &query, StatementBinding::Bind, &mut verifier)
+        .unwrap();
+    assert_eq!(verifier.verifier_message::<F128>(), next_challenge);
+    verifier.check_eof().unwrap();
+}
+
+#[test]
+fn real_pcs_ood_round_rejects_a_changed_evaluation() {
+    let pcs = Pcs::new(&shape(), SecurityLevel::Bits100).unwrap();
+    let packed_witness = vec![F128::ZERO; pcs.packed_len()];
+    let query = OpeningQuery::Mle {
+        point: vec![F128::from(2u64); M],
+        target: F128::ZERO,
+    };
+    let mut prover = build_prover(SESSION, b"ood-tampering");
+    let (commitment, data) = pcs.commit(&packed_witness, &mut prover).unwrap();
+    pcs.prove_lin(
+        &data,
+        packed_witness,
+        &query,
+        StatementBinding::Bind,
+        &mut prover,
+    )
+    .unwrap();
+    let mut proof = prover.finish();
+    proof.narg_string[0] ^= 1;
+
+    let mut verifier = build_verifier(SESSION, b"ood-tampering", &proof);
+    let received = pcs.receive_commitment(commitment, &mut verifier).unwrap();
+    assert!(
+        pcs.verify_lin(&received, &query, StatementBinding::Bind, &mut verifier,)
+            .is_err()
+    );
+}

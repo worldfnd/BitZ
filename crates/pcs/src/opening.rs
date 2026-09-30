@@ -4,16 +4,21 @@ use common::LinearClaim;
 use field::F128;
 use flock_core::field::F128 as FlockF128;
 use flock_core::pcs::pack::PACKING_WIDTH as CLAIM_COUNT;
+use post_gkr::{
+    ProveError as PostGkrProveError, VerifyError as PostGkrVerifyError, prove as prove_post_gkr,
+    verify as verify_post_gkr,
+};
 use transcript::{ProverState, PublicTranscript, SecurityLevel, VerifierState};
 
 use crate::bridge::{as_flock_f128, as_flock_f128s, from_flock_f128};
-use crate::ligerito::{self, ReducedProver};
+use crate::ligerito::{self, ReducedProver, validate_prover_data};
 use crate::ood::{OodClaim, add_dense_basis, add_succinct_basis, batching_challenge};
-use crate::{Commitment, OpeningQuery, Pcs, ProverData, Root, StatementBinding, mle, sumcheck};
+use crate::{Commitment, OpeningQuery, Pcs, ProverData, Root, StatementBinding, mle};
 
 const MLE_STATEMENT_LABEL: &[u8] = b"bitz/pcs/mle-opening/v1";
-const INNER_PRODUCT_STATEMENT_LABEL: &[u8] = b"bitz/pcs/bit-inner-product/v1";
-const SUMCHECK_LABEL: &[u8] = b"bitz/pcs/inner-product-sumcheck/v1";
+const INNER_PRODUCT_STATEMENT_LABEL: &[u8] = b"bitz/pcs/bit-inner-product/v3";
+const INNER_PRODUCT_DIGEST_CONTEXT: &str = "bitz/pcs/bit-inner-product-weights/v1";
+const SUMCHECK_LABEL: &[u8] = b"bitz/pcs/inner-product-sumcheck/v2";
 const MLE_CLAIMS_LABEL: &[u8] = b"bitz/pcs/mle-claims/v1";
 const CHALLENGES_LABEL: &[u8] = b"bitz/pcs/ring-switch-challenges/v1";
 const RING_GRINDING_LABEL: &[u8] = b"bitz/pcs/ring/v1";
@@ -84,6 +89,24 @@ impl From<QueryError> for VerifyError {
     }
 }
 
+impl From<PostGkrProveError> for ProveError {
+    fn from(error: PostGkrProveError) -> Self {
+        match error {
+            PostGkrProveError::WitnessLengthMismatch => Self::PackedWitnessLengthMismatch,
+            PostGkrProveError::ClaimDoesNotHold => Self::InvalidClaim,
+        }
+    }
+}
+
+impl From<PostGkrVerifyError> for VerifyError {
+    fn from(error: PostGkrVerifyError) -> Self {
+        match error {
+            PostGkrVerifyError::MalformedProof => Self::MalformedProof,
+            PostGkrVerifyError::EvaluationMismatch => Self::VerificationFailed,
+        }
+    }
+}
+
 #[tracing::instrument(name = "Prove PCS opening", skip_all)]
 pub(crate) fn prove(
     pcs: &Pcs,
@@ -97,12 +120,13 @@ pub(crate) fn prove(
     if !commitment.matches(pcs) {
         return Err(ProveError::ProverDataMismatch);
     }
+    let root = commitment.root();
     match query {
         OpeningQuery::Mle { point, target } => {
             let ring_switch = mle::RingSwitch::new(point, pcs.params().m)?;
             let prover = ReducedProver::new(pcs, data, packed_witness)?;
             if statement_binding == StatementBinding::Bind {
-                bind_mle_statement(pcs, &commitment.root().0, point, *target, transcript);
+                bind_mle_statement(pcs, &root.0, point, *target, transcript);
             }
             prove_mle(
                 prover,
@@ -115,28 +139,24 @@ pub(crate) fn prove(
         }
         OpeningQuery::InnerProduct { claim } => {
             validate_inner_product_claim(pcs, claim)?;
-            let prover = ReducedProver::new(pcs, data, packed_witness)?;
+            validate_prover_data(pcs, data)?;
+            if packed_witness.len() != pcs.packed_len() {
+                return Err(ProveError::PackedWitnessLengthMismatch);
+            }
             if statement_binding == StatementBinding::Bind {
-                bind_inner_product_statement(pcs, &commitment.root().0, claim, transcript);
+                bind_inner_product_statement(pcs, &root.0, claim, transcript);
             }
             transcript.public_message(SUMCHECK_LABEL);
-            let reduced =
-                sumcheck::prove(claim, prover.witness(), pcs.security_level(), transcript)?;
-            let ring_switch = mle::RingSwitch::new(&reduced.point, pcs.params().m)?;
-            // AlreadyBound covers the original claim, before the reduction produces this MLE claim.
-            bind_mle_statement(
+            let reduced = prove_post_gkr(claim, &packed_witness, pcs.security_level(), transcript)?;
+            // The evaluation claim the sumcheck leaves is opened like any
+            // other, and bound whatever the caller's mode: `AlreadyBound`
+            // covers the original claim only.
+            prove(
                 pcs,
-                &commitment.root().0,
-                &reduced.point,
-                reduced.target,
-                transcript,
-            );
-            prove_mle(
-                prover,
-                ring_switch,
-                reduced.target,
-                commitment.ood.as_ref(),
-                pcs.security_level(),
+                data,
+                packed_witness,
+                &reduced,
+                StatementBinding::Bind,
                 transcript,
             )
         }
@@ -154,21 +174,15 @@ pub(crate) fn verify(
     if !commitment.matches(pcs) {
         return Err(VerifyError::VerificationFailed);
     }
-    let root = &commitment.root;
+    let root = commitment.root();
+    let ood_claim = commitment.ood.as_ref();
     match query {
         OpeningQuery::Mle { point, target } => {
             let ring_switch = mle::RingSwitch::new(point, pcs.params().m)?;
             if statement_binding == StatementBinding::Bind {
                 bind_mle_statement(pcs, &root.0, point, *target, transcript);
             }
-            verify_mle(
-                pcs,
-                root,
-                ring_switch,
-                *target,
-                commitment.ood.as_ref(),
-                transcript,
-            )
+            verify_mle(pcs, &root, ring_switch, *target, ood_claim, transcript)
         }
         OpeningQuery::InnerProduct { claim } => {
             validate_inner_product_claim(pcs, claim)?;
@@ -176,15 +190,12 @@ pub(crate) fn verify(
                 bind_inner_product_statement(pcs, &root.0, claim, transcript);
             }
             transcript.public_message(SUMCHECK_LABEL);
-            let reduced = sumcheck::verify(claim, pcs.security_level(), transcript)?;
-            let ring_switch = mle::RingSwitch::new(&reduced.point, pcs.params().m)?;
-            bind_mle_statement(pcs, &root.0, &reduced.point, reduced.target, transcript);
-            verify_mle(
+            let reduced = verify_post_gkr(claim, pcs.security_level(), transcript)?;
+            verify(
                 pcs,
-                root,
-                ring_switch,
-                reduced.target,
-                commitment.ood.as_ref(),
+                commitment,
+                &reduced,
+                StatementBinding::Bind,
                 transcript,
             )
         }
@@ -325,7 +336,8 @@ fn bind_mle_statement(
     transcript.public_message(&target);
 }
 
-/// Binds both tensor factors before the first sumcheck challenge.
+/// Binds both tensor factors before the first sumcheck challenge: their
+/// lengths, a digest of their weights, and the target.
 fn bind_inner_product_statement(
     pcs: &Pcs,
     root: &[u8; 32],
@@ -335,7 +347,28 @@ fn bind_inner_product_statement(
     transcript.public_message(INNER_PRODUCT_STATEMENT_LABEL);
     transcript.public_message(root);
     transcript.public_message(pcs);
-    transcript.public_message(claim);
+    transcript.public_message(&(claim.row_weights().len() as u64));
+    transcript.public_message(&(claim.column_weights().len() as u64));
+
+    // Weights per digest update: `2^16` elements, one megabyte.
+    const INNER_PRODUCT_DIGEST_CHUNK: usize = 1 << 16;
+
+    // Hashing this way is much faster that going through `public_message` directly.
+    // Does not depend on the chunking.
+    let mut hasher = blake3::Hasher::new_derive_key(INNER_PRODUCT_DIGEST_CONTEXT);
+    let mut buffer = Vec::with_capacity(INNER_PRODUCT_DIGEST_CHUNK * 16);
+    for factor in [claim.row_weights(), claim.column_weights()] {
+        for chunk in factor.chunks(INNER_PRODUCT_DIGEST_CHUNK) {
+            buffer.clear();
+            for weight in chunk {
+                buffer.extend_from_slice(&weight.to_bytes());
+            }
+            hasher.update_rayon(&buffer);
+        }
+    }
+    transcript.public_message(hasher.finalize().as_bytes());
+
+    transcript.public_message(&claim.target());
 }
 
 #[cfg(test)]

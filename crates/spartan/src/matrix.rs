@@ -3,6 +3,7 @@
 use circuit::constraints::{ConstraintMatrices, SparseMatrix};
 use circuit::matrix_products::{IntegerProducts, ModularVector, RuntimeModulus};
 use circuit::witgen::PackedWitness;
+use common::BitzRing;
 use crypto_primitives::ConstField;
 use field::{FqDefault, Q100};
 use num_bigint::{BigInt, BigUint};
@@ -10,9 +11,12 @@ use num_traits::{Signed, ToPrimitive};
 use poly::DenseMultilinearExtension;
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
+use std::sync::LazyLock;
 use transcript::Encoding;
 
 use crate::sumcheck::R1csProductMles;
+
+static FQ_DEFAULT_MODULUS: LazyLock<BigInt> = LazyLock::new(|| BigInt::from(Q100));
 
 /// Failures while preparing or evaluating Spartan's R1CS matrices.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -35,8 +39,8 @@ pub enum SpartanMatrixError {
 /// the column chunking are performed once during construction rather than
 /// inside the prover or verifier.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PreparedConstraintMatrices<F> {
-    matrices: ConstraintMatrices<F>,
+pub struct PreparedConstraintMatrices<R> {
+    matrices: ConstraintMatrices<R>,
     /// Nonzeros of `a`, `b` and `c` grouped by column chunk.
     column_chunks: [ColumnChunkIndex; 3],
     digest: [u8; 32],
@@ -153,8 +157,8 @@ where
 
 /// Reduces a signed integer canonically modulo Q100.
 pub fn bigint_to_fq(value: &BigInt) -> FqDefault {
-    let modulus = BigInt::from(Q100);
-    let mut reduced = value % &modulus;
+    let modulus = &*FQ_DEFAULT_MODULUS;
+    let mut reduced = value % modulus;
     if reduced.is_negative() {
         reduced += modulus;
     }
@@ -397,8 +401,8 @@ where
     Ok(evaluation)
 }
 
-pub(crate) fn r1cs_num_vars<F>(
-    matrices: &ConstraintMatrices<F>,
+pub(crate) fn r1cs_num_vars<R: BitzRing>(
+    matrices: &ConstraintMatrices<R>,
 ) -> Result<(usize, usize), SpartanMatrixError> {
     matrices
         .validate_shape()

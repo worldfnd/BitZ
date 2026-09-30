@@ -23,3 +23,15 @@ pub use table::{BitTable, TableError, TransposeError, TransposedBitTable};
 pub use virtual_map::{
     TransposedWeights, VirtualMap, VirtualMapError, VirtualStatement, VirtualStatementError,
 };
+
+use crypto_primitives::Semiring;
+use std::ops::Neg;
+
+pub trait BitzSemiring: Semiring + From<u64> {}
+
+impl<T> BitzSemiring for T where T: Semiring + From<u64> {}
+
+// Since BigInt does not support CheckedNeg and CheckedRem, we can't use Ring here
+pub trait BitzRing: BitzSemiring + Neg<Output = Self> {}
+
+impl<T> BitzRing for T where T: BitzSemiring + Neg<Output = Self> {}

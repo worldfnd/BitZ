@@ -20,7 +20,7 @@ use transcript::{Encoding, ProverState, PublicTranscript, SecurityLevel, Verifie
 
 // Increment this version when parameter derivation or transcript rules change.
 // This includes protocol changes in Flock or the selected hash.
-const PROTOCOL_VERSION: &[u8] = b"bitz/pcs/security/v1";
+const PROTOCOL_VERSION: &[u8] = b"bitz/pcs/security/v2";
 
 /// Errors from PCS configuration.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -248,6 +248,7 @@ mod tests {
     use flock_core::pcs::pack_witness;
     use num_traits::ConstZero;
     use proptest::prelude::*;
+    use transcript::{build_prover, build_verifier};
 
     use super::*;
 
@@ -263,7 +264,7 @@ mod tests {
         // Fixed encoding: version tag, padded bit count (u64 LE), target (u32 LE).
         assert_eq!(
             low.encode().as_ref(),
-            b"bitz/pcs/security/v1\x00\x00\x10\x00\x00\x00\x00\x00\x64\x00\x00\x00"
+            b"bitz/pcs/security/v2\x00\x00\x10\x00\x00\x00\x00\x00\x64\x00\x00\x00"
         );
         assert_ne!(low.encode().as_ref(), high.encode().as_ref());
         let (_, data) = low
@@ -297,6 +298,28 @@ mod tests {
                     .sum();
                 assert_eq!(pcs.pow_schedule().len(), expected);
             }
+        }
+    }
+
+    #[test]
+    fn commitment_profiles_select_ood_and_preserve_transcript_agreement() {
+        for security in [SecurityLevel::Bits100, SecurityLevel::Bits128] {
+            let pcs = Pcs::new(&shape(), security).unwrap();
+            let witness = vec![F128::ZERO; pcs.packed_len()];
+            let mut prover = build_prover(b"commit-test", b"profile");
+            let (root, data) = pcs.commit(&witness, &mut prover).unwrap();
+            let expected_ood = security == SecurityLevel::Bits100;
+            assert_eq!(data.commitment().ood.is_some(), expected_ood);
+            let next_challenge = prover.verifier_message::<F128>();
+            let proof = prover.finish();
+            assert_eq!(proof.narg_string.is_empty(), !expected_ood);
+            let mut verifier = build_verifier(b"commit-test", b"profile", &proof);
+            let received = pcs.receive_commitment(root, &mut verifier).unwrap();
+            assert_eq!(received.root(), data.commitment().root());
+            assert_eq!(received.ood.is_some(), expected_ood);
+            assert!(received.matches(&pcs));
+            assert_eq!(verifier.verifier_message::<F128>(), next_challenge);
+            verifier.check_eof().unwrap();
         }
     }
 
@@ -359,11 +382,14 @@ mod tests {
         fn rejects_arbitrary_short_packed_witnesses(len in 0usize..4096) {
             let pcs = Pcs::new(&shape(), SecurityLevel::Bits100).unwrap();
             let packed_witness = vec![F128::ZERO; len];
+            let mut transcript = build_prover(b"commit-test", b"short");
 
             prop_assert!(matches!(
-                pcs.commit(&packed_witness, &mut transcript::build_prover(b"commit-test", b"instance")),
+                pcs.commit(&packed_witness, &mut transcript),
                 Err(CommitError::PackedWitnessLengthMismatch)
             ));
+            let proof = transcript.finish();
+            prop_assert!(proof.narg_string.is_empty() && proof.hints.is_empty());
         }
     }
 }

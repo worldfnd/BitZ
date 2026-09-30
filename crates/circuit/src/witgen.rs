@@ -8,6 +8,8 @@ use num_traits::{One, Zero};
 use crate::matrix_products::IntegerProducts;
 use crate::{BoolWitness, Circuit, HintResult, PackedBits, WitnessContext};
 
+// TODO(alex): Make into a proper ring
+
 /// A signed two's-complement integer with a compile-time capacity.
 ///
 /// Arithmetic wraps modulo `2^(64 * LIMBS)`. A witness generator must be
