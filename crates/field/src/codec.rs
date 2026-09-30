@@ -9,10 +9,11 @@
 //!   rejects anything at or above `Q`, so each element has exactly one wire
 //!   form. No `Decoding`: `Fq` is never sampled here, and sampling it would
 //!   need a wider squeeze to kill the modular bias.
+//! - `DynField`: as `Fq`, against the installed modulus.
 //!
 //! `NargSerialize` comes from spongefish's blanket impl over `Encoding`.
 
-use crypto_primitives::LiftElement;
+use crypto_primitives::{BaseField, LiftElement};
 use spongefish::{
     ByteArray, Decoding, Encoding, NargDeserialize, VerificationError, VerificationResult,
 };
@@ -46,30 +47,34 @@ impl<const Q: u128> Encoding<[u8]> for Fq<Q> {
     }
 }
 
+/// Deserialized `u128` from 16 little-endian bytes, checking that it's below given modulus.
+fn deserialized_reduced(buf: &mut &[u8], modulus: u128) -> VerificationResult<u128> {
+    // Stage the cursor: the contract requires `buf` untouched on failure,
+    // and the range check can still fail after the read succeeds.
+    let mut rest = *buf;
+    let value = u128::from_le_bytes(<[u8; 16]>::deserialize_from_narg(&mut rest)?);
+    if value >= modulus {
+        return Err(VerificationError);
+    }
+    *buf = rest;
+    Ok(value)
+}
+
 impl<const Q: u128> NargDeserialize for Fq<Q> {
     fn deserialize_from_narg(buf: &mut &[u8]) -> VerificationResult<Self> {
-        // Stage the cursor: the contract requires `buf` untouched on failure,
-        // and the range check can still fail after the read succeeds.
-        let mut rest = *buf;
-        let value = u128::from_le_bytes(<[u8; 16]>::deserialize_from_narg(&mut rest)?);
-        if value >= Q {
-            return Err(VerificationError);
-        }
-        *buf = rest;
-        Ok(Self::from(value))
+        deserialized_reduced(buf, Q).map(Self::from)
     }
 }
 
 impl Encoding<[u8]> for DynField {
     fn encode(&self) -> impl AsRef<[u8]> {
-        todo!();
-        [0]
+        self.lift().to_le_bytes()
     }
 }
 
 impl NargDeserialize for DynField {
     fn deserialize_from_narg(buf: &mut &[u8]) -> VerificationResult<Self> {
-        todo!()
+        deserialized_reduced(buf, DynField::modulus()).map(Self::from)
     }
 }
 
@@ -79,6 +84,7 @@ mod tests {
     use spongefish::NargSerialize;
 
     use super::*;
+    use crate::dynamic::test_support::with_modulus;
     use crate::{FqDefault, Q100};
 
     fn f128_cases() -> [F128; 4] {
@@ -155,5 +161,40 @@ mod tests {
             assert!(FqDefault::deserialize_from_narg(&mut buf).is_err());
             assert_eq!(buf, narg, "cursor must not move on failure");
         }
+    }
+
+    #[test]
+    fn dyn_field_wire_form_is_fq_wire_form() {
+        with_modulus(Q100, || {
+            for v in [0u128, 1, 12345, Q100 - 1] {
+                let a = DynField::from(v);
+                assert_eq!(a.encode().as_ref(), FqDefault::from(v).encode().as_ref());
+                assert_eq!(a.encode().as_ref(), v.to_le_bytes());
+
+                let mut narg = Vec::new();
+                a.serialize_into_narg(&mut narg);
+                narg.extend_from_slice(b"tail");
+
+                let mut buf = narg.as_slice();
+                assert_eq!(DynField::deserialize_from_narg(&mut buf).unwrap(), a);
+                assert_eq!(buf, b"tail");
+            }
+        });
+    }
+
+    #[test]
+    fn dyn_field_narg_rejects_non_canonical() {
+        with_modulus(Q100, || {
+            for v in [Q100, Q100 + 1, u128::MAX] {
+                let narg = v.to_le_bytes();
+                let mut buf = narg.as_slice();
+                assert!(DynField::deserialize_from_narg(&mut buf).is_err());
+                assert_eq!(buf, narg, "cursor must not move on failure");
+            }
+            let narg = [0u8; 15];
+            let mut buf = narg.as_slice();
+            assert!(DynField::deserialize_from_narg(&mut buf).is_err());
+            assert_eq!(buf, narg);
+        });
     }
 }

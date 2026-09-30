@@ -17,7 +17,9 @@ pub use fold::{
     Fold, FoldError, column_images, fold_column, fold_columns, reconstruct, row_images,
 };
 pub use opening::OpeningQuery;
-pub use params::{BitZParams, ParamsError, VirtualParams, VirtualParamsError};
+pub use params::{
+    BitZParams, MIN_PRIME_BITS, ParamsError, VirtualParams, VirtualParamsError, prime_bits,
+};
 pub use shape::{Shape, ShapeError};
 pub use table::{BitTable, TableError, TransposeError, TransposedBitTable};
 pub use virtual_map::{

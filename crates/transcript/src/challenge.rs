@@ -34,23 +34,29 @@ impl VerifierState<'_> {
     }
 }
 
+/// Sample `u128` whose residue modulo `modulus` is uniform, from successive
+/// squeezes.
+///
+/// The u128 range is not generally an exact multiple of the modulus. Reject
+/// its incomplete final interval before reducing so every residue has the
+/// same number of preimages.
+fn unbiased_u128(modulus: u128, mut next_u128: impl FnMut() -> u128) -> u128 {
+    let rejection_remainder = (u128::MAX % modulus + 1) % modulus;
+    let max_accepted = u128::MAX - rejection_remainder;
+
+    loop {
+        let candidate = next_u128();
+        if candidate <= max_accepted {
+            return candidate;
+        }
+    }
+}
+
 impl<const Q: u128> TranscriptChallenge for Fq<Q> {
-    fn from_squeezes(mut next_u128: impl FnMut() -> u128) -> Self {
+    fn from_squeezes(next_u128: impl FnMut() -> u128) -> Self {
         // Validate the const-generic modulus before using it below.
         let _ = Self::BITS;
-
-        // The u128 range is not generally an exact multiple of Q. Reject its
-        // incomplete final interval before reducing so every residue has the
-        // same number of preimages.
-        let rejection_remainder = (u128::MAX % Q + 1) % Q;
-        let max_accepted = u128::MAX - rejection_remainder;
-
-        loop {
-            let candidate = next_u128();
-            if candidate <= max_accepted {
-                return Self::from(candidate);
-            }
-        }
+        Self::from(unbiased_u128(Q, next_u128))
     }
 }
 
@@ -96,13 +102,15 @@ impl TranscriptChallenge for F128 {
 
 impl TranscriptChallenge for DynField {
     fn from_squeezes(next_u128: impl FnMut() -> u128) -> Self {
-        todo!()
+        Self::from(unbiased_u128(DynField::config().modulus(), next_u128))
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use field::dynamic::DynField;
     use field::{F128, Q100};
+    use spongefish::Encoding;
 
     use super::TranscriptChallenge;
     use crate::{build_prover, build_verifier};
@@ -129,6 +137,25 @@ mod tests {
 
         assert_eq!(squeezes, 3);
         assert_eq!(challenge, F::from(Q100 - 1));
+    }
+
+    /// Under the same modulus, the same stream gives the same element.
+    #[test]
+    fn dyn_field_squeezes_as_fq() {
+        // SAFETY: process-wide, and the only modulus this binary installs.
+        unsafe { DynField::set_modulus(Q100) };
+
+        let mut typed = build_prover(SESSION, INSTANCE);
+        let dynamic = typed.squeeze::<DynField>();
+        let mut fixed = build_prover(SESSION, INSTANCE);
+        let fq = fixed.squeeze::<F>();
+        assert_eq!(dynamic.encode().as_ref(), fq.encode().as_ref());
+
+        let rejection_remainder = (u128::MAX % Q100 + 1) % Q100;
+        let max_accepted = u128::MAX - rejection_remainder;
+        let mut candidates = [max_accepted + 1, max_accepted].into_iter();
+        let challenge = DynField::from_squeezes(|| candidates.next().unwrap());
+        assert_eq!(challenge, DynField::from(Q100 - 1));
     }
 
     #[test]

@@ -2,6 +2,7 @@
 //!
 //! We only expect to have one of those at any given time, so the modulus is shared globally.
 
+use crate::helpers;
 use crypto_primitives::{BaseField, LiftElement, WithAssociatedInteger};
 use crypto_primitives_proc_macros::InfallibleCheckedOp;
 use num_traits::{
@@ -12,22 +13,87 @@ use pastey::paste;
 use std::fmt::Display;
 use std::iter::{Product, Sum};
 use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign};
-use std::sync::{Arc, LazyLock, Mutex, RwLock, RwLockReadGuard};
 
-static CFG: LazyLock<RwLock<DynFieldConfig>> = LazyLock::new(|| {
-    RwLock::new(DynFieldConfig {
-        initialized: false,
-        modulus: 0,
-    })
-});
-
-/// Global config for [`DynField`] shared among all instances.
-#[derive(Debug, Copy, Clone)]
+/// Global config for [`DynField`] shared among all instances: the modulus and
+/// what its Barrett reduction precomputes from it.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DynFieldConfig {
-    initialized: bool,
     modulus: u128,
+    /// Bit length of the modulus.
+    bits: u32,
+    /// `floor(2^(2 * bits) / modulus)`, Barrett's reciprocal.
+    mu: u128,
 }
 
+impl DynFieldConfig {
+    /// Whether [`DynField::set_modulus`] has run.
+    fn initialized(&self) -> bool {
+        self.modulus != 0
+    }
+
+    pub fn modulus(&self) -> u128 {
+        debug_assert!(self.initialized());
+        self.modulus
+    }
+
+    /// Bit length of the modulus.
+    pub fn bits(&self) -> u32 {
+        debug_assert!(self.initialized());
+        self.bits
+    }
+}
+
+/// The config, one atomic per word.
+///
+/// Written only by [`DynField::set_modulus`], read by every operation. Its
+/// contract rules out a writer concurrent with a reader, so the words need
+/// neither a lock nor an ordering among them: `Relaxed` loads are plain
+/// loads, and every thread reads the same cache line without writing it.
+mod global {
+    use super::DynFieldConfig;
+    use std::sync::atomic::{AtomicU32, AtomicU64, Ordering::Relaxed};
+
+    static MODULUS_LO: AtomicU64 = AtomicU64::new(0);
+    static MODULUS_HI: AtomicU64 = AtomicU64::new(0);
+    static MU_LO: AtomicU64 = AtomicU64::new(0);
+    static MU_HI: AtomicU64 = AtomicU64::new(0);
+    static BITS: AtomicU32 = AtomicU32::new(0);
+
+    #[inline(always)]
+    fn load_u128(lo: &AtomicU64, hi: &AtomicU64) -> u128 {
+        u128::from(lo.load(Relaxed)) | (u128::from(hi.load(Relaxed)) << 64)
+    }
+
+    fn store_u128(lo: &AtomicU64, hi: &AtomicU64, value: u128) {
+        lo.store(value as u64, Relaxed);
+        hi.store((value >> 64) as u64, Relaxed);
+    }
+
+    #[inline(always)]
+    pub(super) fn modulus() -> u128 {
+        load_u128(&MODULUS_LO, &MODULUS_HI)
+    }
+
+    #[inline(always)]
+    pub(super) fn load() -> DynFieldConfig {
+        DynFieldConfig {
+            modulus: modulus(),
+            bits: BITS.load(Relaxed),
+            mu: load_u128(&MU_LO, &MU_HI),
+        }
+    }
+
+    pub(super) fn store(cfg: &DynFieldConfig) {
+        store_u128(&MODULUS_LO, &MODULUS_HI, cfg.modulus);
+        store_u128(&MU_LO, &MU_HI, cfg.mu);
+        BITS.store(cfg.bits, Relaxed);
+    }
+}
+
+/// An element of `Z/qZ` for the installed `q`, held reduced.
+///
+/// The modulus is process-wide, so values made under different moduli are
+/// the same Rust type; keeping them apart is the caller's job.
 #[derive(Debug, Copy, Clone, Default, PartialEq, Eq, Hash, InfallibleCheckedOp)]
 #[infallible_checked_unary_op((CheckedNeg, neg))]
 #[infallible_checked_binary_op((CheckedAdd, add), (CheckedSub, sub), (CheckedMul, mul))]
@@ -37,14 +103,38 @@ pub struct DynField {
 }
 
 impl DynField {
-    /// Set modulus globally. Marked `unsafe` to emphasize that there should be no [`DynField`] instances
-    /// remaining anywhere, or they will silently become invalid.
+    /// Set modulus globally.
+    ///
+    /// The modulus must be an odd prime below `2^126`, the bound of the
+    /// Barrett reduction shared with [`Fq`](crate::Fq); anything else panics.
+    ///
+    /// # Safety
+    ///
+    /// No [`DynField`] value may be alive, or they will silently  become invalid.
+    /// No [`DynField`] operation may be in flight on another thread: the config
+    /// is stored word by word, and a value keeps the representative it had under
+    /// the previous modulus.
     pub unsafe fn set_modulus(modulus: u128) {
-        let mut cfg = CFG
-            .write()
-            .expect("Failed to acquire write lock on DynFieldConfig");
-        cfg.initialized = true;
-        cfg.modulus = modulus;
+        assert!(modulus >= 3, "modulus must be at least 3");
+        assert_eq!(modulus % 2, 1, "modulus must be odd");
+        assert!(
+            modulus < 1u128 << helpers::MAX_MODULUS_BITS,
+            "modulus must be below 2^126"
+        );
+        // `DynField` claims to be a prime field, so it enforces that itself
+        // rather than trusting whoever drew the modulus.
+        assert!(helpers::is_prime(modulus), "modulus must be prime");
+        let bits = u128::BITS - modulus.leading_zeros();
+        let mu = helpers::barrett_mu(modulus, bits);
+        global::store(&DynFieldConfig { modulus, bits, mu });
+    }
+
+    /// The installed modulus and its reduction constants.
+    #[inline(always)]
+    pub fn config() -> DynFieldConfig {
+        let cfg = global::load();
+        debug_assert!(cfg.initialized(), "Field modulus has not been set yet!");
+        cfg
     }
 }
 
@@ -96,8 +186,15 @@ impl ConstOne for DynField {
 impl Neg for DynField {
     type Output = Self;
 
+    #[inline(always)]
     fn neg(self) -> Self::Output {
-        todo!()
+        if self.is_zero() {
+            self
+        } else {
+            DynField {
+                reduced_value: Self::modulus() - self.reduced_value,
+            }
+        }
     }
 }
 
@@ -150,36 +247,37 @@ impl_basic_op_forward_to_assign!(Sub, sub, sub_assign);
 impl_basic_op_forward_to_assign!(Mul, mul, mul_assign);
 impl_basic_op_forward_to_assign!(Div, div, div_assign);
 
+// Required by `crypto_primitives::Field`, not implemented yet.
+
 impl Pow<u32> for DynField {
     type Output = Self;
 
-    fn pow(self, exp: u32) -> Self::Output {
-        todo!()
+    fn pow(self, _exp: u32) -> Self::Output {
+        unimplemented!("exponentiation is not implemented yet")
     }
 }
 
 impl Pow<u128> for DynField {
     type Output = Self;
 
-    fn pow(self, exp: u128) -> Self::Output {
-        todo!()
+    fn pow(self, _exp: u128) -> Self::Output {
+        unimplemented!("exponentiation is not implemented yet")
     }
 }
 
 impl Pow<&u128> for DynField {
     type Output = Self;
 
-    fn pow(self, exp: &u128) -> Self::Output {
-        self.pow(*exp)
+    fn pow(self, _exp: &u128) -> Self::Output {
+        unimplemented!("exponentiation is not implemented yet")
     }
 }
 
 impl Inv for DynField {
     type Output = Option<Self>;
 
-    #[inline(always)]
     fn inv(self) -> Self::Output {
-        todo!()
+        unimplemented!("inversion is not implemented yet")
     }
 }
 
@@ -218,28 +316,36 @@ impl_op_assign_boilerplate!(DivAssign, div_assign);
 impl AddAssign for DynField {
     #[inline(always)]
     fn add_assign(&mut self, rhs: Self) {
-        todo!()
+        let modulus = Self::modulus();
+        // SAFETY: Both operands are below `modulus < 2^126`, so the sum cannot wrap.
+        let sum = unsafe { self.reduced_value.unchecked_add(rhs.reduced_value) };
+        self.reduced_value = if sum >= modulus { sum - modulus } else { sum };
     }
 }
 
 impl SubAssign for DynField {
     #[inline(always)]
     fn sub_assign(&mut self, rhs: Self) {
-        todo!()
+        self.reduced_value = if self.reduced_value >= rhs.reduced_value {
+            self.reduced_value - rhs.reduced_value
+        } else {
+            self.reduced_value + Self::modulus() - rhs.reduced_value
+        };
     }
 }
 
 impl MulAssign for DynField {
     #[inline(always)]
     fn mul_assign(&mut self, rhs: Self) {
-        todo!()
+        let cfg = Self::config();
+        let (lo, hi) = helpers::mul_wide(self.reduced_value, rhs.reduced_value);
+        self.reduced_value = helpers::barrett_reduce(lo, hi, cfg.modulus, cfg.mu, cfg.bits);
     }
 }
 
 impl DivAssign for DynField {
-    #[inline(always)]
-    fn div_assign(&mut self, rhs: Self) {
-        todo!()
+    fn div_assign(&mut self, _rhs: Self) {
+        unimplemented!("division is not implemented yet")
     }
 }
 
@@ -286,29 +392,31 @@ impl From<bool> for DynField {
 
 impl From<&u64> for DynField {
     fn from(value: &u64) -> Self {
-        todo!()
+        Self::from(*value)
     }
 }
 
+/// Reduces its input, so any `u64` is accepted.
 impl From<u64> for DynField {
     fn from(value: u64) -> Self {
-        todo!()
+        Self::from(u128::from(value))
     }
 }
 
 impl From<&u128> for DynField {
     fn from(value: &u128) -> Self {
-        todo!()
+        Self::from(*value)
     }
 }
 
+/// Reduces its input, so any `u128` is accepted.
 impl From<u128> for DynField {
     fn from(value: u128) -> Self {
-        todo!()
+        DynField {
+            reduced_value: value % Self::modulus(),
+        }
     }
 }
-
-// TODO!
 
 //
 // crypto-primitives
@@ -329,16 +437,15 @@ impl Bounded for DynField {
 }
 
 impl BaseField for DynField {
+    #[inline(always)]
     fn modulus() -> Self::Integer {
-        let cfg = CFG
-            .read()
-            .expect("Failed to acquire read lock on DynFieldConfig");
-        debug_assert!(cfg.initialized, "Field modulus has not been set yet!");
-        cfg.modulus
+        let modulus = global::modulus();
+        debug_assert!(modulus != 0, "Field modulus has not been set yet!");
+        modulus
     }
 
     fn modulus_minus_one_div_two() -> Self::Integer {
-        todo!()
+        (Self::modulus() - 1) / 2
     }
 }
 
@@ -357,7 +464,176 @@ impl LiftElement<u128> for DynField {
 //
 
 #[cfg(test)]
+pub(crate) mod test_support {
+    use super::DynField;
+    use std::sync::{Mutex, PoisonError};
+
+    /// Runs `test` under `modulus`. The modulus is process-wide and the test
+    /// harness is multi-threaded, so every test that needs one holds this
+    /// lock for its whole run.
+    pub(crate) fn with_modulus<T>(modulus: u128, test: impl FnOnce() -> T) -> T {
+        static LOCK: Mutex<()> = Mutex::new(());
+        let _guard = LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+        // SAFETY: the lock keeps every other test's values and operations out.
+        unsafe { DynField::set_modulus(modulus) };
+        test()
+    }
+}
+
+#[cfg(test)]
 mod tests {
+    use super::test_support::with_modulus;
     use super::*;
-    use crypto_primitives::{BaseField, ConstField};
+    use crate::{Fq, FqDefault, Q100};
+    use crypto_primitives::{ConstField, WithExtensionDegree};
+    use rand_core::{Rng, SeedableRng};
+    use rand_pcg::Pcg64;
+
+    /// A prime small enough to check every pair of operands.
+    const SMALL: u128 = 251;
+    /// A 114-bit prime.
+    const WIDE: u128 = (1 << 114) - 11;
+
+    fn u128_of(rng: &mut Pcg64) -> u128 {
+        (rng.next_u64() as u128) << 64 | rng.next_u64() as u128
+    }
+
+    /// Every pair of `extremes`, then `count` random pairs below `q`.
+    fn operand_pairs<'a>(
+        extremes: &'a [u128],
+        q: u128,
+        count: usize,
+        rng: &'a mut Pcg64,
+    ) -> impl Iterator<Item = (u128, u128)> + 'a {
+        extremes
+            .iter()
+            .flat_map(move |&a| extremes.iter().map(move |&b| (a, b)))
+            .chain((0..count).map(move |_| (u128_of(rng) % q, u128_of(rng) % q)))
+    }
+
+    #[test]
+    fn ensure_traits() {
+        fn assert_impl<T: BaseField + ConstField>() {}
+        assert_impl::<DynField>();
+    }
+
+    #[test]
+    #[should_panic(expected = "modulus must be odd")]
+    fn set_modulus_rejects_even() {
+        // SAFETY: rejected before anything is stored.
+        unsafe { DynField::set_modulus(Q100 + 1) };
+    }
+
+    #[test]
+    #[should_panic(expected = "modulus must be prime")]
+    fn set_modulus_rejects_composite() {
+        // SAFETY: rejected before anything is stored.
+        unsafe { DynField::set_modulus(((1u128 << 54) - 33) * ((1u128 << 53) - 111)) };
+    }
+
+    #[test]
+    #[should_panic(expected = "modulus must be below 2^126")]
+    fn set_modulus_rejects_the_barrett_bound() {
+        // SAFETY: rejected before anything is stored.
+        unsafe { DynField::set_modulus((1 << 127) - 1) };
+    }
+
+    #[test]
+    fn config_reports_the_installed_modulus() {
+        with_modulus(Q100, || {
+            let cfg = DynField::config();
+            assert_eq!(cfg.modulus(), Q100);
+            assert_eq!(cfg.bits(), FqDefault::BITS);
+            assert_eq!(DynField::modulus(), Q100);
+            assert_eq!(DynField::modulus_minus_one_div_two(), (Q100 - 1) / 2);
+            assert_eq!(DynField::min_value(), DynField::ZERO);
+            assert_eq!(DynField::max_value().lift(), Q100 - 1);
+            assert_eq!(DynField::extension_degree(), 1);
+            assert_eq!(DynField::ONE.lift(), 1);
+            assert!(DynField::ZERO.is_zero());
+        });
+    }
+
+    /// Every ring operation against `Fq<Q>`, whose Barrett is checked against
+    /// long division.
+    fn agrees_with_fq<const Q: u128>(rng: &mut Pcg64) {
+        with_modulus(Q, || {
+            for (a, b) in operand_pairs(&[0, 1, Q - 1, Q / 2], Q, 512, rng) {
+                let (x, y) = (DynField::from(a), DynField::from(b));
+                let (fx, fy) = (Fq::<Q>::from(a), Fq::<Q>::from(b));
+                assert_eq!((x + y).lift(), (fx + fy).lift(), "{a} + {b}");
+                assert_eq!((x - y).lift(), (fx - fy).lift(), "{a} - {b}");
+                assert_eq!((x * y).lift(), (fx * fy).lift(), "{a} * {b}");
+                assert_eq!((-x).lift(), (-fx).lift(), "-{a}");
+            }
+        });
+    }
+
+    #[test]
+    fn matches_the_compile_time_field() {
+        let mut rng = Pcg64::seed_from_u64(501);
+        agrees_with_fq::<SMALL>(&mut rng);
+        agrees_with_fq::<Q100>(&mut rng);
+        agrees_with_fq::<WIDE>(&mut rng);
+    }
+
+    /// The largest prime below the Barrett bound, where the quotient estimate
+    /// has the least slack, against the add-and-double multiply, which shares
+    /// nothing with Barrett.
+    #[test]
+    fn multiplies_at_the_widest_modulus() {
+        let mut q = (1u128 << 126) - 1;
+        while !helpers::is_prime(q) {
+            q -= 2;
+        }
+        let mut rng = Pcg64::seed_from_u64(502);
+        with_modulus(q, || {
+            for (a, b) in operand_pairs(&[0, 1, q - 1, q - 2, q / 2], q, 512, &mut rng) {
+                let got = (DynField::from(a) * DynField::from(b)).lift();
+                assert_eq!(got, helpers::mul_mod(a, b, q), "{a} * {b}");
+            }
+        });
+    }
+
+    #[test]
+    fn exhaustive_over_a_small_modulus() {
+        with_modulus(SMALL, || {
+            for a in 0..SMALL {
+                for b in 0..SMALL {
+                    let (x, y) = (DynField::from(a), DynField::from(b));
+                    assert_eq!((x * y).lift(), a * b % SMALL, "{a} * {b}");
+                    assert_eq!((x + y).lift(), (a + b) % SMALL, "{a} + {b}");
+                    assert_eq!((x - y).lift(), (a + SMALL - b) % SMALL, "{a} - {b}");
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn from_reduces() {
+        with_modulus(Q100, || {
+            assert_eq!(DynField::from(Q100).lift(), 0);
+            assert_eq!(DynField::from(Q100 + 1).lift(), 1);
+            assert_eq!(DynField::from(u128::MAX).lift(), u128::MAX % Q100);
+            assert_eq!(DynField::from(&u128::MAX), DynField::from(u128::MAX));
+            assert_eq!(DynField::from(u64::MAX).lift(), u128::from(u64::MAX));
+            assert_eq!(DynField::from(&u64::MAX), DynField::from(u64::MAX));
+            assert_eq!(DynField::from(true), DynField::ONE);
+            assert_eq!(DynField::from(false), DynField::ZERO);
+        });
+    }
+
+    #[test]
+    fn values_follow_the_installed_modulus() {
+        with_modulus(SMALL, || {
+            let seven = DynField::from(7u64);
+            assert_eq!((seven * seven * seven).lift(), 343 % SMALL);
+            // SAFETY: nothing made under `SMALL` is used past here; the lock
+            // is held.
+            unsafe { DynField::set_modulus(Q100) };
+            let seven = DynField::from(7u64);
+            assert_eq!((seven * seven * seven).lift(), 343);
+            assert_eq!(DynField::from(SMALL).lift(), SMALL);
+        });
+    }
 }
