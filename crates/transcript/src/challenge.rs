@@ -69,12 +69,11 @@ impl<const Q: u128> TranscriptChallenge for Fq<Q> {
 /// `[2^(bits-1), 2^bits)`: rejection-sample odd candidates from `next_u128`
 /// and test them by Miller-Rabin with bases squeezed from the same stream, as
 /// `ext_proj::sample_prime_context` does in `f2z-pcs`. Until then the fixed
-/// modulus is returned and nothing is squeezed.
+/// modulus is returned whatever width is asked for, and nothing is squeezed.
 pub fn prime_from_squeezes(_next_u128: impl FnMut() -> u128, bits: u32) -> u128 {
-    assert_eq!(
-        bits,
-        field::FqDefault::BITS,
-        "the placeholder draw only knows the fixed modulus"
+    assert!(
+        bits <= field::MAX_MODULUS_BITS,
+        "the field cannot hold a prime this wide"
     );
     field::Q100
 }

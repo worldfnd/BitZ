@@ -29,16 +29,6 @@ use spartan::{
 const SESSION: &[u8] = b"bitz/circuit-e2e/v1";
 const WINDOW: u32 = 8;
 
-/// Width of the fingerprint prime: that of `F`'s modulus until the draw exists.
-///
-/// TODO(random-prime): derive it from the claim shape as `f2z-pcs` does,
-/// `min(113, 128 - log_rows)` with the top of the interval capped by the fold
-/// gate of [`BitZParams`].
-fn prime_bits<F: BitzClaimField>() -> u32 {
-    todo!()
-    //u128::BITS - F::modulus().leading_zeros()
-}
-
 /// A trusted, deterministic circuit and its public inputs. Implementations must
 /// emit identical operations for symbolic and concrete backends and constrain
 /// every public input/output. The proved constraints are interpreted modulo
@@ -101,6 +91,8 @@ pub struct CircuitProofSystem<S, F> {
     matrices: PreparedConstraintMatrices<F>,
     map: MaterializedMTranspose,
     params: BitZParams<F>,
+    /// Width of the fingerprint prime, fixed by the claim shape.
+    prime_bits: u32,
     committed_shape: Shape,
     pcs: Pcs,
 }
@@ -173,6 +165,8 @@ where
         };
         let params = BitZParams::new(claim_shape, smallest_generator())
             .map_err(|_| Error::Configuration("inadmissible BitZ parameters"))?;
+        let prime_bits = common::prime_bits(&claim_shape)
+            .map_err(|_| Error::Configuration("shape too tall for the fingerprint prime"))?;
         let pcs = Pcs::new(&committed_shape, LigeritoProfile::Fast, HashKind::Blake3)
             .map_err(|_| Error::Configuration("unsupported PCS shape"))?;
         Ok(Self {
@@ -181,6 +175,7 @@ where
             matrices,
             map,
             params,
+            prime_bits,
             committed_shape,
             pcs,
         })
@@ -273,7 +268,7 @@ where
         }
         // TODO(random-prime): bind the integer constraint digest before the
         // draw, then build the parameters, matrices and witness under `prime`.
-        let prime = transcript.squeeze_prime(prime_bits::<F>());
+        let prime = transcript.squeeze_prime(self.prime_bits);
         let prime = F::Integer::from(prime);
         debug_assert_eq!(prime, F::modulus());
         let (spartan, terminal) = prove_spartan_piop(
@@ -333,7 +328,7 @@ where
         }
         // TODO(random-prime): as in `prove`, the parameters and matrices must
         // be built under `prime`.
-        let prime = transcript.squeeze_prime(prime_bits::<F>());
+        let prime = transcript.squeeze_prime(self.prime_bits);
         let prime = F::Integer::from(prime);
         debug_assert_eq!(prime, F::modulus());
         let terminal = verify_spartan_proof(&mut transcript, &self.matrices, &proof.spartan)

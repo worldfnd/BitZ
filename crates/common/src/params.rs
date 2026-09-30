@@ -2,7 +2,7 @@
 
 use crate::{BitTable, BitzClaimField, Shape, TableError, VirtualMap};
 use field::{
-    F128,
+    F128, FqDefault, MAX_MODULUS_BITS,
     gf128::{MULT_ORDER, is_generator},
 };
 use num_traits::{CheckedMul, ToBytes};
@@ -18,6 +18,35 @@ pub enum ParamsError {
     /// The generator's order is not the full group, so a fold is not the only
     /// exponent producing its image.
     GeneratorOrderNotFull,
+    /// The fold gate leaves the fingerprint prime narrower than
+    /// [`MIN_PRIME_BITS`]: the shape is too tall.
+    PrimeTooNarrow,
+}
+
+/// The narrowest fingerprint prime a proof is run over: the width of the
+/// default modulus. The PIOP's soundness error is of order `1/q`, so no shape
+/// may push the prime below what the fixed modulus gave.
+pub const MIN_PRIME_BITS: u32 = FqDefault::BITS;
+
+/// Width of the fingerprint prime for `shape`: the largest `bits` such that
+/// every prime in `[2^(bits-1), 2^bits)` passes the fold gate of
+/// [`BitZParams::new`], capped by the field's [`MAX_MODULUS_BITS`].
+///
+/// The prime is drawn from this interval by both sides, so the width must
+/// be fixed by the shape.
+///
+/// Wider is sounder, so the interval is the widest the gate admits. The gate
+/// is the paper's `q < (|K| - 1) / k_1`, and with `k_1 = 2^log_rows` that is
+/// exactly `128 - log_rows` bits.
+pub fn prime_bits(shape: &Shape) -> Result<u32, ParamsError> {
+    // `rows * q < ord(g)` admits `q <= (ord(g) - 1) / rows`.
+    let max_modulus = (MULT_ORDER - 1) / shape.rows() as u128;
+    // `2^bits - 1 <= max_modulus < 2^(bits + 1) - 1`.
+    let bits = (max_modulus + 1).ilog2().min(MAX_MODULUS_BITS);
+    if bits < MIN_PRIME_BITS {
+        return Err(ParamsError::PrimeTooNarrow);
+    }
+    Ok(bits)
 }
 
 /// The shape, the modulus and the generator: what a proof is fixed against.
@@ -41,17 +70,19 @@ impl<F: BitzClaimField> BitZParams<F> {
 
         // `g^{<f_j, gamma>} = g^{eta_j}` implies integer equality only if both
         // sides, each in `[0, k_1 (Q - 1)]`, differ by less than `ord(g)`.
-        // The paper asks for `Q < (|K| - 1) / k_1`; the PoC's slightly stricter
-        // `(k_1 + 1)(Q - 1) < ord(g)` is kept, and it implies the paper's.
+        // The bound is the paper's `Q < (|K| - 1) / k_1`, under which Round 1
+        // of 4.3. "The BitZ IOP for the core LinBitsRings relation" is
+        // skipped: `k_1 Q < ord(g)`. With `k_1` a power of two it admits every
+        // `(128 - log_rows)`-bit prime, so a prime of the width [`prime_bits`]
+        // derives always passes.
         //
         // `ord(g) = 2^128 - 1` is a property of `F128`, established by the
         // generator gate below. A product that overflows exceeds it too.
         let f128_order = F::Integer::from(MULT_ORDER);
-        let max_f = F::max_value().lift();
-        let rows_plus_one = F::Integer::from(shape.rows() as u64 + 1);
-        if !max_f
-            .checked_mul(&rows_plus_one)
-            .is_some_and(|gap| gap < f128_order)
+        let rows = F::Integer::from(shape.rows() as u64);
+        if !rows
+            .checked_mul(&F::modulus())
+            .is_some_and(|reach| reach < f128_order)
         {
             return Err(ParamsError::FoldBoundExceeded);
         }
@@ -300,12 +331,11 @@ mod tests {
 
     #[test]
     fn rejects_a_shape_the_modulus_is_too_large_for() {
-        // `t = 13` is the widest row count this prime admits; 14 is not. The
-        // `+1` is what separates the two: `k_1 (Q - 1)` alone would still fit
-        // at `t = 14`.
-        assert!(params_at(Shape::new(13, 22).unwrap()).is_ok());
+        // `t = 14` is the widest row count this prime admits: `2^14 Q114` is
+        // `2^128 - 11 * 2^14`, under `ord(g)`; `2^15 Q114` is not.
+        assert!(params_at(Shape::new(14, 21).unwrap()).is_ok());
         assert_eq!(
-            params_at(Shape::new(14, 21).unwrap()).err(),
+            params_at(Shape::new(15, 20).unwrap()).err(),
             Some(ParamsError::FoldBoundExceeded)
         );
     }
@@ -316,6 +346,59 @@ mod tests {
             BitZParams::<F>::new(shape(), F128::ONE).err(),
             Some(ParamsError::GeneratorOrderNotFull)
         );
+    }
+
+    /// The gate of [`BitZParams::new`] at the top of a `bits`-bit interval.
+    fn gate_admits(bits: u32, shape: &Shape) -> bool {
+        let top = (1u128 << bits) - 1;
+        top.checked_mul(shape.rows() as u128)
+            .is_some_and(|reach| reach < MULT_ORDER)
+    }
+
+    /// One shape per admissible row count.
+    fn shapes_by_rows() -> impl Iterator<Item = Shape> {
+        use crate::shape::{MAX_LOG_BITS, MIN_LOG_BITS, PACK_BITS};
+        (PACK_BITS as usize..=MAX_LOG_BITS)
+            .map(|log_rows| Shape::new(log_rows, MIN_LOG_BITS.saturating_sub(log_rows)).unwrap())
+    }
+
+    #[test]
+    fn the_prime_width_is_the_widest_interval_the_gate_admits() {
+        for shape in shapes_by_rows() {
+            match prime_bits(&shape) {
+                Ok(bits) => {
+                    assert!(bits >= MIN_PRIME_BITS, "{shape:?}");
+                    assert!(gate_admits(bits, &shape), "{shape:?}");
+                    assert!(
+                        bits == MAX_MODULUS_BITS || !gate_admits(bits + 1, &shape),
+                        "{shape:?}"
+                    );
+                }
+                Err(error) => {
+                    assert_eq!(error, ParamsError::PrimeTooNarrow, "{shape:?}");
+                    assert!(!gate_admits(MIN_PRIME_BITS, &shape), "{shape:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_prime_width_at_the_row_counts_in_use() {
+        for (log_rows, bits) in [(7, 121), (14, 114), (21, 107), (28, 100)] {
+            let shape = Shape::new(log_rows, 22usize.saturating_sub(log_rows)).unwrap();
+            assert_eq!(prime_bits(&shape), Ok(bits), "{log_rows}");
+        }
+        let shape = Shape::new(29, 0).unwrap();
+        assert_eq!(prime_bits(&shape), Err(ParamsError::PrimeTooNarrow));
+    }
+
+    /// `Q114` is admitted by exactly the shapes whose width reaches it.
+    #[test]
+    fn the_prime_width_agrees_with_the_gate() {
+        for shape in shapes_by_rows() {
+            let reaches = prime_bits(&shape).is_ok_and(|bits| bits >= F::BITS);
+            assert_eq!(params_at(shape).is_ok(), reaches, "{shape:?}");
+        }
     }
 
     #[test]
