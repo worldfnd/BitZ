@@ -31,6 +31,7 @@ fn init_circuit(table: &BitTable, fold: &Fold) -> GrandProductCircuit {
                 }
             }
         }
+        // TODO: probably should be dealt with earlier instead of relying on a fallback
         Err(TransposeError::ColumnCountTooNarrow) => {
             // Narrow tables cannot form packed columns after transposition.
             for (b, &row_image) in fold.row_images.iter().enumerate() {
