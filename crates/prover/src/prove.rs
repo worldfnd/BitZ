@@ -42,7 +42,7 @@ pub struct VirtualWitness<'a> {
 impl<const Q: u128> BitZProver<Q> {
     /// Proves the caller's linear claim about the committed bits.
     ///
-    /// Call `Pcs::commit_with_ood` on this transcript, then pass its retained
+    /// Call `Pcs::commit` on this transcript, then pass its retained
     /// `data` and the packed witness. The root is read back off
     /// `data` rather than passed alongside it, so the two cannot disagree.
     /// `pcs` must be the scheme that committed, or the opening will not verify.
@@ -82,7 +82,7 @@ impl<const Q: u128> BitZProver<Q> {
 
     /// Proves a claim on `h = M (1 || f)` against the commitment to `f`.
     ///
-    /// Build the setup from `statement.params().claim()`. Use `Pcs::commit_with_ood`
+    /// Build the setup from `statement.params().claim()`. Use `Pcs::commit`
     /// on `witness.committed_bits` and this transcript, then pass its `data`. GKR reduces
     /// the input claim to an inner product on padded virtual bits. This method
     /// transposes its coefficients before PCS opens the committed bits.

@@ -75,7 +75,9 @@ impl Instance {
         virtual_bits[1] = F128::from(2u64);
 
         let pcs = Pcs::new(&committed_shape, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
-        let (root, data) = pcs.commit(&committed_bits).unwrap();
+        let (root, data) = pcs
+            .commit(&committed_bits, &mut prover_transcript())
+            .unwrap();
         Self {
             params,
             committed_shape,
@@ -96,7 +98,7 @@ impl Instance {
         let mut transcript = prover_transcript();
         let (_, data) = self
             .pcs
-            .commit_with_ood(&self.committed_bits, &mut transcript)
+            .commit(&self.committed_bits, &mut transcript)
             .unwrap();
         BitZProver::new(self.params, WINDOW)
             .prove_virtual(
@@ -303,7 +305,7 @@ fn virtual_bits_inconsistent_with_the_map_cannot_be_opened() {
     let mut transcript = prover_transcript();
     let (_, data) = instance
         .pcs
-        .commit_with_ood(&instance.committed_bits, &mut transcript)
+        .commit(&instance.committed_bits, &mut transcript)
         .unwrap();
     assert_eq!(
         BitZProver::new(instance.params, WINDOW).prove_virtual(
@@ -372,9 +374,7 @@ fn sha256_virtual_inner_product_opens_the_committed_bits() {
     let statement = VirtualStatement::new(params, committed_shape, &map, &claim).unwrap();
     let pcs = Pcs::new(&committed_shape, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
     let mut transcript = prover_transcript();
-    let (root, data) = pcs
-        .commit_with_ood(&committed_bits, &mut transcript)
-        .unwrap();
+    let (root, data) = pcs.commit(&committed_bits, &mut transcript).unwrap();
     BitZProver::new(params, WINDOW)
         .prove_virtual(
             &statement,

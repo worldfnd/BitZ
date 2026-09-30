@@ -216,7 +216,7 @@ impl<S: CircuitStatement> CircuitProofSystem<S> {
         let mut transcript = build_prover(SESSION, self.statement.domain());
         let (_, data) = self
             .pcs
-            .commit_with_ood(&witness.committed, &mut transcript)
+            .commit(&witness.committed, &mut transcript)
             .map_err(Error::Commit)?;
         Ok(CommittedWitness { data, transcript })
     }
@@ -288,7 +288,7 @@ impl<S: CircuitStatement> CircuitProofSystem<S> {
         self.bind(&mut transcript, proof.root);
         if self.opening_path == OpeningPath::Direct {
             self.pcs
-                .verify_lin_with_ood(
+                .verify_lin(
                     &commitment,
                     &self.constant_query(),
                     StatementBinding::Bind,
@@ -470,10 +470,7 @@ mod tests {
         // A valid opening to zero must not substitute for the required one.
         let packed = vec![F128::ZERO; 1 << system.committed_shape.log_packed_len()];
         let mut transcript = build_prover(SESSION, system.statement.domain());
-        let (_, bad_data) = system
-            .pcs
-            .commit_with_ood(&packed, &mut transcript)
-            .unwrap();
+        let (_, bad_data) = system.pcs.commit(&packed, &mut transcript).unwrap();
         system.bind(&mut transcript, bad_data.root());
         let query = OpeningQuery::Mle {
             point: vec![F128::ZERO; system.committed_shape.log_bits()],

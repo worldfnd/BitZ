@@ -13,7 +13,7 @@ fn shipped(instance: &Instance) -> Vec<u8> {
     let mut transcript = prover_transcript();
     let (_, data) = instance
         .pcs
-        .commit_with_ood(&instance.packed, &mut transcript)
+        .commit(&instance.packed, &mut transcript)
         .unwrap();
     instance
         .prover

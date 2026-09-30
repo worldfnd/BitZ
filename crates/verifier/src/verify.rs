@@ -2,7 +2,7 @@
 
 use common::{LinearClaim, OpeningQuery, Root, VirtualMap, VirtualMapError, VirtualStatement};
 use field::Fq;
-use pcs::{CommitScheme, Pcs, StatementBinding, VerifierData, VerifyError as OpeningVerifyError};
+use pcs::{CommitScheme, Commitment, Pcs, StatementBinding, VerifyError as OpeningVerifyError};
 use transcript::VerifierState;
 
 use crate::{BitZVerifier, ReceiveError, ReduceError, reduce::gkr_reduce};
@@ -74,7 +74,7 @@ impl<const Q: u128> BitZVerifier<Q> {
         &self,
         statement: &VirtualStatement<'_, Q, impl VirtualMap>,
         pcs: &Pcs,
-        commitment: &VerifierData,
+        commitment: &Commitment,
         mut transcript: VerifierState<'_>,
     ) -> Result<(), VerifyError> {
         let params = statement.params();
@@ -93,7 +93,7 @@ impl<const Q: u128> BitZVerifier<Q> {
         let query = statement
             .transpose_query(query)
             .map_err(VerifyError::VirtualMap)?;
-        pcs.verify_lin_with_ood(commitment, &query, StatementBinding::Bind, &mut transcript)
+        pcs.verify_lin(commitment, &query, StatementBinding::Bind, &mut transcript)
             .map_err(VerifyError::Opening)?;
         transcript
             .check_eof()
@@ -109,7 +109,7 @@ impl<const Q: u128> BitZVerifier<Q> {
         &self,
         claim: &LinearClaim<Fq<Q>>,
         pcs: &Pcs,
-        commitment: &VerifierData,
+        commitment: &Commitment,
         mut transcript: VerifierState<'_>,
     ) -> Result<(), VerifyError> {
         // Step 1: the admissibility and precondition checks have already run --
@@ -124,7 +124,7 @@ impl<const Q: u128> BitZVerifier<Q> {
 
         // Step 6: verify the inner-product sumcheck, ring switch, and opening.
         // Acceptance requires authenticating GKR's terminal claim against the commitment.
-        pcs.verify_lin_with_ood(commitment, &query, StatementBinding::Bind, &mut transcript)
+        pcs.verify_lin(commitment, &query, StatementBinding::Bind, &mut transcript)
             .map_err(VerifyError::Opening)?;
 
         // Both streams must be spent. Taking the transcript by value is what

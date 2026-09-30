@@ -110,7 +110,7 @@ impl Instance {
         } = HonestClaim::new(shape, &mut rng);
 
         let pcs = Pcs::new(&shape, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
-        let (com, data) = pcs.commit(&packed).unwrap();
+        let (com, data) = pcs.commit(&packed, &mut prover_transcript()).unwrap();
 
         Self {
             params,

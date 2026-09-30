@@ -1,3 +1,4 @@
+use core::mem::size_of;
 use std::sync::OnceLock;
 
 use common::{LinearClaim, Shape};
@@ -16,7 +17,6 @@ const INSTANCE: &[u8] = b"singleton";
 struct Fixture {
     pcs: Pcs,
     root: Root,
-    data: ProverData,
     witness: Vec<F128>,
     claim: LinearClaim<F128>,
 }
@@ -28,7 +28,9 @@ fn fixture() -> &'static Fixture {
         let pcs = Pcs::new(&shape, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
         let mut witness = vec![F128::ZERO; pcs.packed_len()];
         witness[SINGLETON / 128].hi = 1 << (SINGLETON % 128 - 64);
-        let (root, data) = pcs.commit(&witness).unwrap();
+        let (root, _) = pcs
+            .commit(&witness, &mut build_prover(SESSION, INSTANCE))
+            .unwrap();
         let rows = (0..shape.rows())
             .map(|row| F128::from(row as u64 + 2))
             .collect::<Vec<_>>();
@@ -40,7 +42,6 @@ fn fixture() -> &'static Fixture {
         Fixture {
             pcs,
             root,
-            data,
             witness,
             claim,
         }
@@ -51,10 +52,11 @@ fn fixture() -> &'static Fixture {
 fn inner_product_proof_composes_sumcheck_with_a_bound_mle_opening() {
     let fixture = fixture();
     let mut prover = build_prover(SESSION, INSTANCE);
+    let (_, data) = fixture.pcs.commit(&fixture.witness, &mut prover).unwrap();
     bind_inner_product_statement(&fixture.pcs, &fixture.root.0, &fixture.claim, &mut prover);
     prove(
         &fixture.pcs,
-        &fixture.data,
+        &data,
         fixture.witness.clone(),
         &OpeningQuery::InnerProduct {
             claim: fixture.claim.clone(),
@@ -67,15 +69,18 @@ fn inner_product_proof_composes_sumcheck_with_a_bound_mle_opening() {
 
     // Independent composition checks stage order and binding of the derived MLE claim.
     let mut verifier = build_verifier(SESSION, INSTANCE, &proof);
+    let commitment = fixture
+        .pcs
+        .receive_commitment(fixture.root, &mut verifier)
+        .unwrap();
     bind_inner_product_statement(&fixture.pcs, &fixture.root.0, &fixture.claim, &mut verifier);
     verifier.public_message(SUMCHECK_LABEL);
     let reduced = verify_post_gkr(&fixture.claim, &mut verifier).unwrap();
     verify(
         &fixture.pcs,
-        &fixture.root,
+        &commitment,
         &reduced,
         StatementBinding::Bind,
-        None,
         &mut verifier,
     )
     .unwrap();
@@ -136,9 +141,10 @@ fn opening_leaves_matching_transcripts_for_following_protocols() {
         },
     ] {
         let mut prover = build_prover(SESSION, INSTANCE);
+        let (_, data) = fixture.pcs.commit(&fixture.witness, &mut prover).unwrap();
         prove(
             &fixture.pcs,
-            &fixture.data,
+            &data,
             fixture.witness.clone(),
             &query,
             StatementBinding::Bind,
@@ -148,16 +154,81 @@ fn opening_leaves_matching_transcripts_for_following_protocols() {
         let expected = prover.verifier_message::<F128>();
         let proof = prover.finish();
         let mut verifier = build_verifier(SESSION, INSTANCE, &proof);
+        let commitment = fixture
+            .pcs
+            .receive_commitment(fixture.root, &mut verifier)
+            .unwrap();
         verify(
             &fixture.pcs,
-            &fixture.root,
+            &commitment,
             &query,
             StatementBinding::Bind,
-            None,
             &mut verifier,
         )
         .unwrap();
         assert_eq!(verifier.verifier_message::<F128>(), expected);
         verifier.check_eof().unwrap();
+    }
+}
+
+#[test]
+fn zero_weight_factor_still_requires_the_correct_pcs_witness_evaluation() {
+    let fixture = fixture();
+    let pcs = &fixture.pcs;
+    let shape = Shape::new(7, M - 7).unwrap();
+    assert_eq!(pcs.ood_grinding_bits(), Some(0));
+
+    for zero_rows in [true, false] {
+        let mut rows = fixture.claim.row_weights().to_vec();
+        let mut columns = fixture.claim.column_weights().to_vec();
+        if zero_rows {
+            rows.fill(F128::ZERO);
+        } else {
+            columns.fill(F128::ZERO);
+        }
+        let query = OpeningQuery::InnerProduct {
+            claim: LinearClaim::from_shape(&shape, rows, columns, F128::ZERO).unwrap(),
+        };
+        let mut prover = build_prover(SESSION, b"zero-inner-product-factor");
+        let (root, data) = pcs.commit(&fixture.witness, &mut prover).unwrap();
+        prove(
+            pcs,
+            &data,
+            fixture.witness.clone(),
+            &query,
+            StatementBinding::Bind,
+            &mut prover,
+        )
+        .unwrap();
+        let proof = prover.finish();
+        let mut verifier = build_verifier(SESSION, b"zero-inner-product-factor", &proof);
+        let commitment = pcs.receive_commitment(root, &mut verifier).unwrap();
+        verify(
+            pcs,
+            &commitment,
+            &query,
+            StatementBinding::Bind,
+            &mut verifier,
+        )
+        .unwrap();
+        verifier.check_eof().unwrap();
+
+        // The OOD evaluation and two coefficients per sumcheck round precede the witness evaluation.
+        // A zero weight factor leaves that evaluation unconstrained until the PCS opening.
+        let evaluation_offset = (1 + 2 * M) * size_of::<F128>();
+        let mut changed_proof = proof;
+        changed_proof.narg_string[evaluation_offset] ^= 1;
+        let mut verifier = build_verifier(SESSION, b"zero-inner-product-factor", &changed_proof);
+        let commitment = pcs.receive_commitment(root, &mut verifier).unwrap();
+        assert_eq!(
+            verify(
+                pcs,
+                &commitment,
+                &query,
+                StatementBinding::Bind,
+                &mut verifier
+            ),
+            Err(VerifyError::VerificationFailed),
+        );
     }
 }

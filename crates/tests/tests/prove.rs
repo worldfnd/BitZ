@@ -13,7 +13,7 @@ fn prove(instance: &Instance) -> Proof {
     let mut transcript = prover_transcript();
     let (_, data) = instance
         .pcs
-        .commit_with_ood(&instance.packed, &mut transcript)
+        .commit(&instance.packed, &mut transcript)
         .unwrap();
     instance
         .prover
@@ -112,7 +112,7 @@ fn an_opening_against_another_commitment_is_refused() {
     let mut transcript = prover_transcript();
     let (_, data) = committed
         .pcs
-        .commit_with_ood(&committed.packed, &mut transcript)
+        .commit(&committed.packed, &mut transcript)
         .unwrap();
     proved
         .prover
