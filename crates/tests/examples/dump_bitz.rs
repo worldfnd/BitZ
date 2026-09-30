@@ -5,6 +5,7 @@
 mod support;
 
 use std::io::Write;
+use std::time::Instant;
 
 use common::Shape;
 use crypto_primitives::LiftElement;
@@ -27,12 +28,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (t, s) = (shape.log_rows(), shape.log_columns());
     let instance = Instance::honest(shape, seed);
 
-    let started = std::time::Instant::now();
     let mut transcript = prover_transcript();
     let (_, data) = instance
         .pcs
         .commit_with_ood(&instance.packed, &mut transcript)
         .unwrap();
+    let started = Instant::now();
     instance
         .prover
         .prove(
