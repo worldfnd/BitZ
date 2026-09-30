@@ -166,11 +166,13 @@ impl<F: Field + Copy> DenseMultilinearExtension<F> {
         Ok(Self::evaluate_exact(&self.evaluations, r))
     }
 
-    #[inline]
+    /// Evaluates an MLE table whose length is exactly `2^r.len()`.
+    ///
     /// Unrolled base cases adapted from WHIR's `eval_exact` (Apache-2.0):
     /// <https://github.com/worldfnd/whir/blob/e0aec15225fd5e63594bdc49566e080a6cab2f24/src/algebra/multilinear.rs#L31-L64>
-    fn evaluate_exact(evaluations: &[F], r: &[F]) -> F {
-        debug_assert_eq!(evaluations.len(), 1 << r.len());
+    #[inline]
+    pub fn evaluate_exact(evaluations: &[F], r: &[F]) -> F {
+        assert_eq!(evaluations.len(), 1 << r.len(), "MLE table length");
 
         let interpolate = |zero: F, one: F, challenge: F| zero + challenge * (one - zero);
 

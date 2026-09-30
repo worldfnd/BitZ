@@ -249,14 +249,7 @@ pub(crate) fn validate_verifier_config(
 }
 
 pub(crate) fn validate_prover_data(pcs: &Pcs, data: &ProverData) -> Result<(), ProveError> {
-    let expected = pcs.params();
-    let actual = &data.commitment().params;
-    if expected.m != actual.m
-        || expected.log_inv_rate != actual.log_inv_rate
-        || expected.log_batch_size != actual.log_batch_size
-        || expected.profile != actual.profile
-        || expected.merkle_hash != actual.merkle_hash
-    {
+    if !data.commitment().matches(pcs) {
         return Err(ProveError::ProverDataMismatch);
     }
     Ok(())
@@ -598,12 +591,12 @@ mod tests {
         let shape = Shape::new(7, 15).unwrap();
         let pcs = Pcs::new(&shape, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
         let packed_witness = vec![F128::ZERO; pcs.packed_len()];
-        let (commitment, data) = pcs.commit(&packed_witness).unwrap();
+        let mut prover = build_prover(SESSION, INSTANCE);
+        let (commitment, data) = pcs.commit(&packed_witness, &mut prover).unwrap();
         let query = OpeningQuery::Mle {
             point: vec![F128::from(2u64); 22],
             target: F128::ZERO,
         };
-        let mut prover = build_prover(SESSION, INSTANCE);
         pcs.prove_lin(
             &data,
             packed_witness,

@@ -95,6 +95,7 @@ pub struct Instance<F: BitzClaimField> {
     pub pcs: Pcs,
     pub com: Root,
     pub data: ProverData,
+    pub transcript: Option<ProverState>,
     pub packed: Vec<F128>,
 }
 
@@ -109,7 +110,8 @@ impl<F: BitzClaimField> Instance<F> {
         } = HonestClaim::new(shape, &mut rng);
 
         let pcs = Pcs::new(&shape, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
-        let (com, data) = pcs.commit(&packed).unwrap();
+        let mut transcript = prover_transcript();
+        let (com, data) = pcs.commit(&packed, &mut transcript).unwrap();
 
         Self {
             params,
@@ -119,6 +121,7 @@ impl<F: BitzClaimField> Instance<F> {
             pcs,
             com,
             data,
+            transcript: Some(transcript),
             packed,
         }
     }

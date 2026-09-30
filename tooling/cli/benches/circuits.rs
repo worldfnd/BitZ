@@ -63,11 +63,13 @@ fn commit(bencher: Bencher, circuit: BuiltinCircuit) {
 #[divan::bench(args = BuiltinCircuit::ALL)]
 fn prove(bencher: Bencher, circuit: BuiltinCircuit) {
     let (system, inputs) = setup(circuit);
-    let witness = system.witness(&inputs).unwrap();
-    let data = system.commit(&witness).unwrap();
     bencher
-        .with_inputs(|| system.witness(&inputs).unwrap())
-        .bench_local_values(|witness| system.prove(witness, &data).unwrap());
+        .with_inputs(|| {
+            let witness = system.witness(&inputs).unwrap();
+            let data = system.commit(&witness).unwrap();
+            (witness, data)
+        })
+        .bench_local_values(|(witness, data)| system.prove(witness, data).unwrap());
 }
 
 #[divan::bench(args = BuiltinCircuit::ALL)]
@@ -75,6 +77,6 @@ fn verify(bencher: Bencher, circuit: BuiltinCircuit) {
     let (system, inputs) = setup(circuit);
     let witness = system.witness(&inputs).unwrap();
     let data = system.commit(&witness).unwrap();
-    let proof = system.prove(witness, &data).unwrap();
+    let proof = system.prove(witness, data).unwrap();
     bencher.bench_local(|| system.verify(&proof).unwrap());
 }

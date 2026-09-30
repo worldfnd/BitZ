@@ -1,4 +1,5 @@
 pub mod eq;
+pub mod f128;
 pub mod mle;
 pub mod nat_evaluation;
 pub mod parallel;

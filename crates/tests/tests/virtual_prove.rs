@@ -9,13 +9,15 @@ use common::{
     BitZParams, LinearClaim, Root, Shape, TableError, TransposedWeights, VirtualMap,
     VirtualMapError, VirtualStatement,
 };
-use field::{F128, Fq, gf128::smallest_generator};
+use field::{F128, gf128::smallest_generator};
 use num_traits::{ConstOne, ConstZero};
 use pcs::{HashKind, LigeritoProfile, Pcs, ProverData};
 use prover::{BitZProver, ProveError, VirtualWitness};
 use tests::{Q, WINDOW, prover_transcript, verifier_transcript};
-use transcript::Proof;
+use transcript::{Proof, ProverState};
 use verifier::{BitZVerifier, VerifyError};
+
+type F = field::Fq<Q>;
 
 /// `h[0] = 1`, `h[1] = f[0]`, `h[128] = f[1]`, `h[129] = f[0] XOR f[1]`.
 /// All other virtual bits are zero.
@@ -46,26 +48,27 @@ impl VirtualMap for Map {
 }
 
 struct Instance {
-    params: BitZParams<Fq<Q>>,
+    params: BitZParams<F>,
     committed_shape: Shape,
-    claim: LinearClaim<Fq<Q>>,
+    claim: LinearClaim<F>,
     committed_bits: Vec<F128>,
     virtual_bits: Vec<F128>,
     pcs: Pcs,
     root: Root,
     data: ProverData,
+    transcript: Option<ProverState>,
 }
 
 impl Instance {
     fn new() -> Self {
         let claim_shape = Shape::new(7, 15).unwrap();
         let committed_shape = Shape::new(8, 14).unwrap();
-        let params = BitZParams::<Fq<Q>>::new(claim_shape, smallest_generator()).unwrap();
+        let params = BitZParams::<F>::new(claim_shape, smallest_generator()).unwrap();
         let claim = LinearClaim::new(
             &params,
-            vec![Fq::ONE; claim_shape.rows()],
-            vec![Fq::ONE; claim_shape.columns()],
-            Fq::from(3u128),
+            vec![F::ONE; claim_shape.rows()],
+            vec![F::ONE; claim_shape.columns()],
+            F::from(3u128),
         )
         .unwrap();
         let mut committed_bits = vec![F128::ZERO; 1 << committed_shape.log_packed_len()];
@@ -75,7 +78,8 @@ impl Instance {
         virtual_bits[1] = F128::from(2u64);
 
         let pcs = Pcs::new(&committed_shape, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
-        let (root, data) = pcs.commit(&committed_bits).unwrap();
+        let mut transcript = prover_transcript();
+        let (root, data) = pcs.commit(&committed_bits, &mut transcript).unwrap();
         Self {
             params,
             committed_shape,
@@ -85,15 +89,16 @@ impl Instance {
             pcs,
             root,
             data,
+            transcript: Some(transcript),
         }
     }
 
-    fn statement(&self) -> VirtualStatement<'_, Fq<Q>, Map> {
+    fn statement(&self) -> VirtualStatement<'_, F, Map> {
         VirtualStatement::new(self.params, self.committed_shape, &Map(7), &self.claim).unwrap()
     }
 
-    fn prove(&self) -> Proof {
-        let mut transcript = prover_transcript();
+    fn prove(&mut self) -> Proof {
+        let mut transcript = self.transcript.take().unwrap();
         BitZProver::new(self.params, WINDOW)
             .prove_virtual(
                 &self.statement(),
@@ -111,7 +116,7 @@ impl Instance {
 
     fn verify(
         &self,
-        statement: &VirtualStatement<'_, Fq<Q>, Map>,
+        statement: &VirtualStatement<'_, F, Map>,
         root: Root,
         proof: &Proof,
     ) -> Result<(), VerifyError> {
@@ -126,7 +131,7 @@ impl Instance {
 
 #[test]
 fn virtual_inner_product_opens_the_committed_bits() {
-    let instance = Instance::new();
+    let mut instance = Instance::new();
     let proof = instance.prove();
     instance
         .verify(&instance.statement(), instance.root, &proof)
@@ -135,9 +140,9 @@ fn virtual_inner_product_opens_the_committed_bits() {
 
 #[test]
 fn changed_virtual_statements_are_rejected() {
-    let instance = Instance::new();
-    let statement = instance.statement();
+    let mut instance = Instance::new();
     let proof = instance.prove();
+    let statement = instance.statement();
     instance.verify(&statement, instance.root, &proof).unwrap();
 
     let mut changed_root = instance.root;
@@ -160,7 +165,7 @@ fn changed_virtual_statements_are_rejected() {
     // Changing a weight on a zero virtual row preserves the integer target.
     // Rejection must therefore depend on the statement, not a false claim.
     let mut rows = instance.claim.row_weights().to_vec();
-    rows[2] += Fq::ONE;
+    rows[2] += F::ONE;
     let changed_claim = LinearClaim::new(
         &instance.params,
         rows,
@@ -184,7 +189,7 @@ fn changed_virtual_statements_are_rejected() {
 
 #[test]
 fn malformed_virtual_proofs_are_rejected() {
-    let instance = Instance::new();
+    let mut instance = Instance::new();
     let proof = instance.prove();
     let verify = |proof: &Proof| instance.verify(&instance.statement(), instance.root, proof);
     verify(&proof).unwrap();
@@ -291,12 +296,12 @@ fn virtual_witness_lengths_and_setup_must_match_the_statement() {
 
 #[test]
 fn virtual_bits_inconsistent_with_the_map_cannot_be_opened() {
-    let instance = Instance::new();
+    let mut instance = Instance::new();
     let mut virtual_bits = instance.virtual_bits.clone();
     // Move the constant-one bit to row two. The integer sum stays three,
     // but the virtual witness no longer equals M (1 || f).
     virtual_bits[0] = F128::from(6u64);
-    let mut transcript = prover_transcript();
+    let mut transcript = instance.transcript.take().unwrap();
     assert_eq!(
         BitZProver::new(instance.params, WINDOW).prove_virtual(
             &instance.statement(),
@@ -337,7 +342,7 @@ fn sha256_virtual_inner_product_opens_the_committed_bits() {
 
     let claim_shape = Shape::new(7, 15).unwrap();
     let committed_shape = Shape::new(8, 14).unwrap();
-    let params = BitZParams::<Fq<Q>>::new(claim_shape, smallest_generator()).unwrap();
+    let params = BitZParams::<F>::new(claim_shape, smallest_generator()).unwrap();
     let pack = |witness: &PackedWitness, shape: Shape| {
         assert!(witness.bit_len() <= 1 << shape.log_bits());
         let mut packed: Vec<_> = witness
@@ -351,10 +356,10 @@ fn sha256_virtual_inner_product_opens_the_committed_bits() {
     let committed_bits = pack(&f, committed_shape);
     let virtual_bits = pack(&h, claim_shape);
     let rows: Vec<_> = (0..claim_shape.rows())
-        .map(|row| Fq::<Q>::from((row + 1) as u128))
+        .map(|row| F::from((row + 1) as u128))
         .collect();
     let columns: Vec<_> = (0..claim_shape.columns())
-        .map(|column| Fq::<Q>::from((column + 1) as u128))
+        .map(|column| F::from((column + 1) as u128))
         .collect();
     let target = (0..h.bit_len())
         .filter(|&index| h.bit(index))
@@ -363,8 +368,8 @@ fn sha256_virtual_inner_product_opens_the_committed_bits() {
     let claim = LinearClaim::new(&params, rows, columns, target).unwrap();
     let statement = VirtualStatement::new(params, committed_shape, &map, &claim).unwrap();
     let pcs = Pcs::new(&committed_shape, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
-    let (root, data) = pcs.commit(&committed_bits).unwrap();
     let mut transcript = prover_transcript();
+    let (root, data) = pcs.commit(&committed_bits, &mut transcript).unwrap();
     BitZProver::new(params, WINDOW)
         .prove_virtual(
             &statement,

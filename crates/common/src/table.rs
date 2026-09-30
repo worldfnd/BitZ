@@ -346,7 +346,7 @@ mod tests {
         for (index, element) in packed.iter().enumerate() {
             let column = index / groups_per_column;
             let i_hi = index % groups_per_column;
-            let bits = u128::from(element.lo) | (u128::from(element.hi) << 64);
+            let bits = element.to_u128();
             for v in 0..PACKED_BITS {
                 assert_eq!(
                     (bits >> v) & 1 == 1,
@@ -401,7 +401,7 @@ mod tests {
         let table = BitTable::new(shape, &packed).unwrap();
 
         for (index, element) in table.column(2).iter().enumerate() {
-            let bits = u128::from(element.lo) | (u128::from(element.hi) << 64);
+            let bits = element.to_u128();
             for offset in 0..PACKED_BITS {
                 let row = index * PACKED_BITS + offset;
                 assert_eq!(table.bit(2, row), (bits >> offset) & 1 == 1, "row {row}");

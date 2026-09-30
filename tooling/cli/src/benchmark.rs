@@ -50,7 +50,7 @@ where
     let data = prepared.commit(&witness)?;
     let commit = started.elapsed();
     let started = Instant::now();
-    let proof = prepared.prove(witness, &data)?;
+    let proof = prepared.prove(witness, data)?;
     let prove = started.elapsed();
     let started = Instant::now();
     prepared.verify(&proof)?;

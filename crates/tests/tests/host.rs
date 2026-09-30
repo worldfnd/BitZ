@@ -6,13 +6,13 @@
 //! than shipped, so there is no encoding of it to round-trip.
 
 use host::wire_proof;
-use tests::{Instance, narrow_shape, prover_transcript, verifier_transcript, wide_shape};
+use tests::{Instance, narrow_shape, verifier_transcript, wide_shape};
 
 type F = field::FqDefault;
 
 /// Runs an honest prover and hands back what a caller would ship.
-fn shipped(instance: &Instance<F>) -> Vec<u8> {
-    let mut transcript = prover_transcript();
+fn shipped(instance: &mut Instance<F>) -> Vec<u8> {
+    let mut transcript = instance.transcript.take().unwrap();
     instance
         .prover
         .prove(
@@ -30,8 +30,8 @@ fn shipped(instance: &Instance<F>) -> Vec<u8> {
 #[test]
 fn a_proof_survives_the_round_trip_through_bytes() {
     for shape in [narrow_shape(), wide_shape()] {
-        let instance = Instance::<F>::honest(shape, 41);
-        let proof_bytes = shipped(&instance);
+        let mut instance = Instance::<F>::honest(shape, 41);
+        let proof_bytes = shipped(&mut instance);
 
         let proof = wire_proof::decode(&proof_bytes).expect("its own encoding");
 
@@ -60,8 +60,8 @@ fn a_tampered_fold_is_left_for_the_verifier_to_catch() {
     // The container frames but does not authenticate: a tampered fold decodes
     // cleanly and the sponge refuses it on replay.
     let shape = wide_shape();
-    let instance = Instance::<F>::honest(shape, 43);
-    let proof_bytes = shipped(&instance);
+    let mut instance = Instance::<F>::honest(shape, 43);
+    let proof_bytes = shipped(&mut instance);
 
     let mut tampered = proof_bytes.clone();
     let last_fold_byte = 32 + 16 * shape.columns() - 1;

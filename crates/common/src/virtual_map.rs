@@ -13,6 +13,8 @@
 
 use field::F128;
 use num_traits::ConstZero;
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
 
 use crate::{
     BitZParams, BitzClaimField, ClaimError, LinearClaim, OpeningQuery, Shape, VirtualParams,
@@ -48,6 +50,8 @@ pub enum VirtualMapError {
     ClaimWeightCountMismatch,
     /// The input omits coordinates of `h`, or the output does not have one weight per bit of `f`.
     WeightCountMismatch,
+    /// The map's weights on `f` outnumber the committed bits.
+    CommittedShapeTooSmall,
 }
 
 /// What the protocol asks of `M`.
@@ -154,8 +158,9 @@ impl<'a, F: BitzClaimField, M: VirtualMap> VirtualStatement<'a, F, M> {
     ///
     /// Coefficients use `column * row_count + row` order. The map drops weights on
     /// virtual padding. The opening subtracts the constant-column weight from the
-    /// target and zero-pads the remaining weights to the commitment size. A
-    /// single-column `InnerProduct` holds the dense weights with column weight one.
+    /// target and zero-pads the remaining weights to the commitment size, refusing
+    /// more weights than it has. A single-column `InnerProduct` holds the dense
+    /// weights with column weight one.
     pub fn transpose_query(&self, query: OpeningQuery) -> Result<OpeningQuery, VirtualMapError> {
         let shape = self.params.claim().shape();
         let (weights, target) = match query {
@@ -171,12 +176,10 @@ impl<'a, F: BitzClaimField, M: VirtualMap> VirtualStatement<'a, F, M> {
                 {
                     return Err(VirtualMapError::ClaimWeightCountMismatch);
                 }
-                let weights = claim
-                    .column_weights()
-                    .iter()
-                    .flat_map(|column| claim.row_weights().iter().map(move |row| *row * *column))
-                    .collect();
-                (weights, claim.target())
+                (
+                    flatten(claim.row_weights(), claim.column_weights()),
+                    claim.target(),
+                )
             }
         };
         let transposed = self.map.transpose(&weights)?;
@@ -186,13 +189,39 @@ impl<'a, F: BitzClaimField, M: VirtualMap> VirtualStatement<'a, F, M> {
         }
         let target = transposed.adjusted_target(target);
         let mut weights = transposed.into_weights();
-        weights.resize(1 << self.params.committed_shape().log_bits(), F128::ZERO);
+        let committed_bits = 1 << self.params.committed_shape().log_bits();
+        if weights.len() > committed_bits {
+            return Err(VirtualMapError::CommittedShapeTooSmall);
+        }
+        weights.resize(committed_bits, F128::ZERO);
         let shape = Shape::new(self.params.committed_shape().log_bits(), 0)
             .expect("a valid committed bit count permits a single-column shape");
         let claim = LinearClaim::from_shape(&shape, weights, vec![F128::from(1u64)], target)
             .map_err(|_| VirtualMapError::WeightCountMismatch)?;
         Ok(OpeningQuery::InnerProduct { claim })
     }
+}
+
+/// `row_weights (x) column_weights` written out per bit of `h`, one column
+/// after another.
+fn flatten(row_weights: &[F128], column_weights: &[F128]) -> Vec<F128> {
+    let mut weights = vec![F128::ZERO; row_weights.len() * column_weights.len()];
+    let process_column = |(slot, &scale): (&mut [F128], &F128)| {
+        for (weight, &row) in slot.iter_mut().zip(row_weights) {
+            *weight = scale * row;
+        }
+    };
+    #[cfg(feature = "parallel")]
+    weights
+        .par_chunks_mut(row_weights.len())
+        .zip(column_weights)
+        .for_each(process_column);
+    #[cfg(not(feature = "parallel"))]
+    weights
+        .chunks_mut(row_weights.len())
+        .zip(column_weights)
+        .for_each(process_column);
+    weights
 }
 
 #[cfg(test)]

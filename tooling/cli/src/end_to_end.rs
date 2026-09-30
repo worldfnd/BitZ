@@ -17,7 +17,7 @@ use num_traits::{ConstOne, ConstZero};
 use pcs::{CommitScheme, HashKind, LigeritoProfile, Pcs, ProverData, StatementBinding};
 use poly::{DenseMultilinearExtension, ScaledMleEvaluationClaim};
 use prover::{BitZProver, VirtualWitness};
-use transcript::{PublicTranscript, build_prover, build_verifier};
+use transcript::{ProverState, PublicTranscript, build_prover, build_verifier};
 use verifier::BitZVerifier;
 
 use crate::ProjectConstraint;
@@ -54,6 +54,8 @@ pub enum Error {
     Spartan(spartan::SpartanError),
     #[error("commitment failed: {0:?}")]
     Commit(pcs::CommitError),
+    #[error("OOD commitment binding verification failed: {0:?}")]
+    OodVerify(pcs::VerifyError),
     #[error("constant-one opening failed: {0:?}")]
     ConstantProve(pcs::ProveError),
     #[error("constant-one verification failed: {0:?}")]
@@ -99,6 +101,12 @@ pub struct Witness<F> {
     assignment_bits: Vec<F128>,
     assignment: DenseMultilinearExtension<F>,
     products: R1csProductMles<F>,
+}
+
+/// Commitment data and the transcript that sampled its OOD claim.
+pub struct CommittedWitness {
+    data: ProverData,
+    transcript: ProverState,
 }
 
 #[derive(Clone, Debug)]
@@ -217,23 +225,35 @@ where
         })
     }
 
+    /// Commits and sends the initial OOD evaluation before any PIOP challenge.
+    /// The returned state retains both PCS data and the transcript for proving.
     #[tracing::instrument(name = "commit", skip_all)]
-    pub fn commit(&self, witness: &Witness<F>) -> Result<ProverData, Error> {
-        self.pcs
-            .commit(&witness.committed)
-            .map(|(_, data)| data)
-            .map_err(Error::Commit)
+    pub fn commit(&self, witness: &Witness<F>) -> Result<CommittedWitness, Error> {
+        let mut transcript = build_prover(SESSION, self.statement.domain());
+        let (_, data) = self
+            .pcs
+            .commit(&witness.committed, &mut transcript)
+            .map_err(Error::Commit)?;
+        Ok(CommittedWitness { data, transcript })
     }
 
+    /// Continues the commitment transcript through Spartan and the BitZ opening.
     #[tracing::instrument(name = "prove", skip_all, fields(opening_path = ?self.opening_path))]
-    pub fn prove(&self, witness: Witness<F>, data: &ProverData) -> Result<Proof<F>, Error> {
+    pub fn prove(
+        &self,
+        witness: Witness<F>,
+        commitment: CommittedWitness,
+    ) -> Result<Proof<F>, Error> {
+        let CommittedWitness {
+            data,
+            mut transcript,
+        } = commitment;
         let root = data.root();
-        let mut transcript = build_prover(SESSION, self.statement.domain());
         self.bind(&mut transcript, root);
         if self.opening_path == OpeningPath::Direct {
             self.pcs
                 .prove_lin(
-                    data,
+                    &data,
                     witness.committed.clone(),
                     &self.constant_query(),
                     StatementBinding::Bind,
@@ -252,7 +272,7 @@ where
         let prover = BitZProver::new(self.params, WINDOW);
         match self.opening_path {
             OpeningPath::Direct => {
-                prover.prove(&claim, &self.pcs, data, witness.committed, &mut transcript)
+                prover.prove(&claim, &self.pcs, &data, witness.committed, &mut transcript)
             }
             OpeningPath::Virtual => {
                 let statement =
@@ -261,7 +281,7 @@ where
                 prover.prove_virtual(
                     &statement,
                     &self.pcs,
-                    data,
+                    &data,
                     VirtualWitness {
                         committed_bits: witness.committed,
                         virtual_bits: &witness.assignment_bits,
@@ -281,11 +301,15 @@ where
     #[tracing::instrument(name = "verify", skip_all)]
     pub fn verify(&self, proof: &Proof<F>) -> Result<(), Error> {
         let mut transcript = build_verifier(SESSION, self.statement.domain(), &proof.opening);
+        let commitment = self
+            .pcs
+            .receive_commitment(proof.root, &mut transcript)
+            .map_err(Error::OodVerify)?;
         self.bind(&mut transcript, proof.root);
         if self.opening_path == OpeningPath::Direct {
             self.pcs
                 .verify_lin(
-                    &proof.root,
+                    &commitment,
                     &self.constant_query(),
                     StatementBinding::Bind,
                     &mut transcript,
@@ -297,12 +321,19 @@ where
         let claim = opening_claim(&self.params, &terminal)?;
         let verifier = BitZVerifier::new(self.params, WINDOW);
         match self.opening_path {
-            OpeningPath::Direct => verifier.verify(&claim, &self.pcs, proof.root, transcript),
+            OpeningPath::Direct => {
+                verifier.verify_with_commitment(&claim, &self.pcs, &commitment, transcript)
+            }
             OpeningPath::Virtual => {
                 let statement =
                     VirtualStatement::new(self.params, self.committed_shape, &self.map, &claim)
                         .map_err(|_| Error::Configuration("invalid virtual statement"))?;
-                verifier.verify_virtual(&statement, &self.pcs, proof.root, transcript)
+                verifier.verify_virtual_with_commitment(
+                    &statement,
+                    &self.pcs,
+                    &commitment,
+                    transcript,
+                )
             }
         }
         .map_err(Error::Verify)
@@ -386,6 +417,7 @@ mod tests {
     use crate::ProjectBigIntToFq;
 
     type F = field::FqDefault;
+    type Proj = ProjectBigIntToFq;
 
     #[test]
     fn only_exact_identity_maps_select_direct_opening() {
@@ -425,12 +457,27 @@ mod tests {
     }
 
     #[test]
+    fn commitment_sends_ood_before_proving() {
+        let system = CircuitProofSystem::<_, F>::new::<_, Proj>(IdentityBit).unwrap();
+        let witness = system.witness(&[true]).unwrap();
+        let committed = system.commit(&witness).unwrap();
+        let proof = committed.transcript.finish();
+        assert_eq!(proof.narg_string.len(), 16);
+        assert!(proof.hints.is_empty());
+        let mut verifier = build_verifier(SESSION, system.statement.domain(), &proof);
+        system
+            .pcs
+            .receive_commitment(committed.data.root(), &mut verifier)
+            .unwrap();
+        verifier.check_eof().unwrap();
+    }
+
+    #[test]
     fn direct_opening_requires_constant_one_on_both_sides() {
-        let mut system =
-            CircuitProofSystem::<_, F>::new::<_, ProjectBigIntToFq>(IdentityBit).unwrap();
+        let mut system = CircuitProofSystem::<_, F>::new::<_, Proj>(IdentityBit).unwrap();
         let witness = system.witness(&[true]).unwrap();
         let data = system.commit(&witness).unwrap();
-        let mut proof = system.prove(witness, &data).unwrap();
+        let mut proof = system.prove(witness, data).unwrap();
         system.verify(&proof).unwrap();
         system.opening_path = OpeningPath::Virtual;
         assert!(system.verify(&proof).is_err());
@@ -440,13 +487,14 @@ mod tests {
         bad_witness.committed.fill(F128::ZERO);
         let bad_data = system.commit(&bad_witness).unwrap();
         assert!(matches!(
-            system.prove(bad_witness, &bad_data),
+            system.prove(bad_witness, bad_data),
             Err(Error::ConstantProve(_))
         ));
 
         // A valid opening to zero must not substitute for the required one.
         let packed = vec![F128::ZERO; 1 << system.committed_shape.log_packed_len()];
         let mut transcript = build_prover(SESSION, system.statement.domain());
+        let (_, bad_data) = system.pcs.commit(&packed, &mut transcript).unwrap();
         system.bind(&mut transcript, bad_data.root());
         let query = OpeningQuery::Mle {
             point: vec![F128::ZERO; system.committed_shape.log_bits()],
