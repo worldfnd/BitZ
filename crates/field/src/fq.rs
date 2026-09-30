@@ -1,6 +1,6 @@
 //! Arithmetic modulo a prime fixed at compile time.
 
-use crate::helpers;
+use crate::helpers::{self, FieldMetadata};
 use crypto_primitives::{ConstBaseField, LiftElement, WithAssociatedInteger};
 use crypto_primitives_proc_macros::InfallibleCheckedOp;
 use num_traits::{
@@ -37,35 +37,17 @@ pub type FqDefault = Fq<Q100>;
 pub struct Fq<const Q: u128>(u128);
 
 impl<const Q: u128> Fq<Q> {
-    /// Bit length of the modulus, derived so it cannot disagree with `Q`.
-    ///
-    /// Its asserts are the only check on `Q`, and an associated constant is
-    /// evaluated where it is used, so an operation that does not need the
-    /// value reads it anyway rather than accept a modulus out of range.
-    pub const BITS: u32 = {
+    pub const META: FieldMetadata = {
         assert!(Q >= 3, "modulus must be at least 3");
-        assert!(Q % 2 == 1, "modulus must be odd");
-        assert!(
-            Q < 1u128 << helpers::MAX_MODULUS_BITS,
-            "modulus must be below 2^126"
-        );
-        // `Fq` claims to be a prime field, so it enforces that itself rather
-        // than trusting whoever names the constant.
+        // `Fq` claims to be a prime field, so it enforces that itself
         assert!(helpers::is_prime(Q), "modulus must be prime");
-        128 - Q.leading_zeros()
+        FieldMetadata::new(Q)
     };
 
     /// Constructs an element from two little-endian `u64` limbs and reduces it
     /// modulo `Q`.
     pub fn from_limbs(low: u64, high: u64) -> Self {
         Self::from(u128::from(low) | (u128::from(high) << 64))
-    }
-
-    const MU: u128 = helpers::barrett_mu(Q, Self::BITS);
-
-    /// `(lo, hi) mod Q` by [`barrett_reduce`].
-    const fn reduce_wide(lo: u128, hi: u128) -> Self {
-        Self(helpers::barrett_reduce(lo, hi, Q, Self::MU, Self::BITS))
     }
 }
 
@@ -79,7 +61,7 @@ impl<const Q: u128> Display for Fq<Q> {
 impl<const Q: u128> Distribution<Fq<Q>> for StandardUniform {
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> Fq<Q> {
         // Force validation of the const-generic modulus before using it below.
-        let _ = Fq::<Q>::BITS;
+        let _ = Fq::<Q>::META;
 
         // A u128 range is not generally an exact multiple of Q. Reject its
         // incomplete final interval before reducing so every residue has the
@@ -123,7 +105,7 @@ impl<const Q: u128> ConstOne for Fq<Q> {
 /// Reduces its input, so any `u128` is accepted.
 impl<const Q: u128> From<u128> for Fq<Q> {
     fn from(value: u128) -> Self {
-        let _ = Self::BITS;
+        let _ = Self::META;
         Self(value % Q)
     }
 }
@@ -150,7 +132,7 @@ impl<const Q: u128> From<bool> for Fq<Q> {
 impl<const Q: u128> Neg for Fq<Q> {
     type Output = Self;
     fn neg(self) -> Self {
-        let _ = Self::BITS;
+        let _ = Self::META;
         Self(if self.0 == 0 { 0 } else { Q - self.0 })
     }
 }
@@ -158,7 +140,7 @@ impl<const Q: u128> Neg for Fq<Q> {
 impl<const Q: u128> Add for Fq<Q> {
     type Output = Self;
     fn add(self, rhs: Self) -> Self {
-        let _ = Self::BITS;
+        let _ = Self::META;
         // Both operands are below `Q < 2^126`, so the sum cannot wrap.
         let s = self.0 + rhs.0;
         Self(if s >= Q { s - Q } else { s })
@@ -168,7 +150,7 @@ impl<const Q: u128> Add for Fq<Q> {
 impl<const Q: u128> Sub for Fq<Q> {
     type Output = Self;
     fn sub(self, rhs: Self) -> Self {
-        let _ = Self::BITS;
+        let _ = Self::META;
         Self(if self.0 >= rhs.0 {
             self.0 - rhs.0
         } else {
@@ -179,9 +161,9 @@ impl<const Q: u128> Sub for Fq<Q> {
 
 impl<const Q: u128> Mul for Fq<Q> {
     type Output = Self;
-    fn mul(self, rhs: Self) -> Self {
-        let (lo, hi) = helpers::mul_wide(self.0, rhs.0);
-        Self::reduce_wide(lo, hi)
+    fn mul(mut self, rhs: Self) -> Self {
+        self.0 = Self::META.mul(self.0, rhs.0);
+        self
     }
 }
 
@@ -345,14 +327,14 @@ impl<const Q: u128> Bounded for Fq<Q> {
 
     /// The largest residue, `Q - 1`.
     fn max_value() -> Self {
-        let _ = Self::BITS;
+        let _ = Self::META;
         Self(Q - 1)
     }
 }
 
 impl<const Q: u128> ConstBaseField for Fq<Q> {
     const MODULUS: Self::Integer = {
-        let _ = Self::BITS;
+        let _ = Self::META;
         Q
     };
     const MODULUS_MINUS_ONE_DIV_TWO: Self::Integer = (Q - 1) / 2;
@@ -377,7 +359,7 @@ mod tests {
 
     #[test]
     fn base_field_metadata() {
-        assert_eq!(FqDefault::MODULUS, Q100);
+        assert_eq!(FqDefault::META.modulus, Q100);
         assert_eq!(FqDefault::MODULUS_MINUS_ONE_DIV_TWO, (Q100 - 1) / 2);
         assert_eq!(FqDefault::modulus(), Q100);
         assert_eq!(FqDefault::min_value(), FqDefault::ZERO);
@@ -451,11 +433,11 @@ mod tests {
 
     #[test]
     fn bits_matches_the_modulus() {
-        assert_eq!(Fq::<Q100>::BITS, 100);
-        assert_eq!(Fq::<SMALL>::BITS, 8);
+        assert_eq!(Fq::<Q100>::META.bits, 100);
+        assert_eq!(Fq::<SMALL>::META.bits, 8);
         // The defining bracket, `2^(BITS-1) <= Q < 2^BITS`.
-        const { assert!(1u128 << (Fq::<Q100>::BITS - 1) <= Q100) };
-        const { assert!(Q100 < 1u128 << Fq::<Q100>::BITS) };
+        const { assert!(1u128 << (Fq::<Q100>::META.bits - 1) <= Q100) };
+        const { assert!(Q100 < 1u128 << Fq::<Q100>::META.bits) };
     }
 
     #[test]

@@ -26,7 +26,7 @@ pub enum ParamsError {
 /// The narrowest fingerprint prime a proof is run over: the width of the
 /// default modulus. The PIOP's soundness error is of order `1/q`, so no shape
 /// may push the prime below what the fixed modulus gave.
-pub const MIN_PRIME_BITS: u32 = FqDefault::BITS;
+pub const MIN_PRIME_BITS: u32 = FqDefault::META.bits;
 
 /// Width of the fingerprint prime for `shape`: the largest `bits` such that
 /// every prime in `[2^(bits-1), 2^bits)` passes the fold gate of
@@ -396,7 +396,7 @@ mod tests {
     #[test]
     fn the_prime_width_agrees_with_the_gate() {
         for shape in shapes_by_rows() {
-            let reaches = prime_bits(&shape).is_ok_and(|bits| bits >= F::BITS);
+            let reaches = prime_bits(&shape).is_ok_and(|bits| bits >= F::META.bits);
             assert_eq!(params_at(shape).is_ok(), reaches, "{shape:?}");
         }
     }

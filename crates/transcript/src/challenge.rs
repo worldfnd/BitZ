@@ -57,7 +57,7 @@ fn unbiased_u128(modulus: u128, mut next_u128: impl FnMut() -> u128) -> u128 {
 impl<const Q: u128> TranscriptChallenge for Fq<Q> {
     fn from_squeezes(next_u128: impl FnMut() -> u128) -> Self {
         // Validate the const-generic modulus before using it below.
-        let _ = Self::BITS;
+        let _ = Self::META;
         Self::from(unbiased_u128(Q, next_u128))
     }
 }
@@ -67,11 +67,9 @@ impl<const Q: u128> TranscriptChallenge for Fq<Q> {
 /// any finitely generated ring", Step 2, drawn once per proof after the
 /// commitment and the statement are absorbed and before the PIOP.
 ///
-/// TODO(random-prime): draw it. Uniform among the primes in
-/// `[2^(bits-1), 2^bits)`: rejection-sample odd candidates from `next_u128`
-/// and test them by Miller-Rabin with bases squeezed from the same stream, as
-/// `ext_proj::sample_prime_context` does in `f2z-pcs`. Until then the fixed
-/// modulus is returned whatever width is asked for, and nothing is squeezed.
+/// TODO(random-prime): draw it with [`prime::sample`] once the e2e builds its
+/// parameters under the drawn prime. Until then the fixed modulus is returned
+/// whatever width is asked for, and nothing is squeezed.
 pub fn prime_from_squeezes(_next_u128: impl FnMut() -> u128, bits: u32) -> u128 {
     assert!(
         bits <= field::MAX_MODULUS_BITS,
@@ -103,7 +101,7 @@ impl TranscriptChallenge for F128 {
 
 impl TranscriptChallenge for DynField {
     fn from_squeezes(next_u128: impl FnMut() -> u128) -> Self {
-        Self::from(unbiased_u128(DynField::config().modulus(), next_u128))
+        Self::from(unbiased_u128(DynField::config().modulus, next_u128))
     }
 }
 
@@ -178,12 +176,12 @@ mod tests {
     #[test]
     fn prover_and_verifier_squeeze_the_same_prime() {
         let mut prover = build_prover(SESSION, INSTANCE);
-        let prime = prover.squeeze_prime(F::BITS);
+        let prime = prover.squeeze_prime(F::META.bits);
         let after = prover.squeeze::<F>();
         let proof = prover.finish();
 
         let mut verifier = build_verifier(SESSION, INSTANCE, &proof);
-        assert_eq!(verifier.squeeze_prime(F::BITS), prime);
+        assert_eq!(verifier.squeeze_prime(F::META.bits), prime);
         assert_eq!(verifier.squeeze::<F>(), after);
         verifier.check_eof().unwrap();
     }

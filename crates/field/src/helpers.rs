@@ -4,72 +4,58 @@
 /// below `2^81.4`.
 const PRIMALITY_BASES: [u128; 13] = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41];
 
-/// Whether `candidate` is prime.
-///
-/// `const` because [`Fq`] asserts it on its own modulus, which makes a
-/// composite `Q` a build failure rather than a type that quietly is not a
-/// field. The loops are written out for the same reason: iterator combinators
-/// are not available in a const context.
-///
-/// # What this does not decide
-///
-/// Miller-Rabin against a fixed base set is **proven** only for
-/// `n < 3_317_044_064_679_887_385_961_981`, about `2^81.4`. Moduli above that
-/// are not decided by any theorem here, and because the bases are public,
-/// someone choosing `Q` could in principle construct a composite that passes
-/// all of them. Since `Q` is a compile-time constant, doing so means editing
-/// the source rather than forging a proof.
-pub const fn is_prime(candidate: u128) -> bool {
-    if candidate < 2 {
-        return false;
-    }
+/// Every modulus is below `2^MAX_MODULUS_BITS`: the bound of
+/// [`barrett_reduce`], which every prime field here reduces by.
+pub const MAX_MODULUS_BITS: u32 = 126;
 
+/// `Some` when trial division by [`PRIMALITY_BASES`] decides
+/// `candidate`.
+pub const fn sieve(candidate: u128) -> Option<bool> {
+    if candidate < 2 {
+        return Some(false);
+    }
     let mut index = 0;
     while index < PRIMALITY_BASES.len() {
-        let base = PRIMALITY_BASES[index];
-        if candidate == base {
-            return true;
+        let prime = PRIMALITY_BASES[index];
+        if candidate == prime {
+            return Some(true);
         }
-        if candidate.is_multiple_of(base) {
-            return false;
+        if candidate.is_multiple_of(prime) {
+            return Some(false);
         }
         index += 1;
     }
+    None
+}
 
-    // `candidate - 1 = odd * 2^shift`.
-    let shift = (candidate - 1).trailing_zeros();
-    let odd = (candidate - 1) >> shift;
-
+/// Whether `candidate`, below `2^MAX_MODULUS_BITS`, is prime.
+///
+/// Note that **this is not supposed to be used for testing adversarial primes**!
+/// (See [`transcript::challenge::prime::sample`])
+pub const fn is_prime(candidate: u128) -> bool {
+    if let Some(decided) = sieve(candidate) {
+        return decided;
+    }
+    let modulus = FieldMetadata::new(candidate);
     let mut index = 0;
     while index < PRIMALITY_BASES.len() {
-        let mut witness = pow_mod(PRIMALITY_BASES[index], odd, candidate);
-        if witness != 1 && witness != candidate - 1 {
-            let mut round = 1;
-            loop {
-                if round >= shift {
-                    return false;
-                }
-                witness = mul_mod(witness, witness, candidate);
-                if witness == candidate - 1 {
-                    break;
-                }
-                round += 1;
-            }
+        if !modulus.strong_round(PRIMALITY_BASES[index]) {
+            return false;
         }
         index += 1;
     }
     true
 }
 
-/// `(a + b) mod q`, for `a, b < q < 2^126`. The sum stays below `2^127`.
-pub const fn add_mod(a: u128, b: u128, q: u128) -> u128 {
+/// `(a + b) mod q`, for `a, b < q < 2^127`. The sum cannot wrap.
+const fn add_mod(a: u128, b: u128, q: u128) -> u128 {
     let sum = a + b;
     if sum >= q { sum - q } else { sum }
 }
 
-/// `(a * b) mod q` by doubling, avoiding the 256-bit product a u128 cannot
-/// hold. Barrett is not an option here: `MU` depends on `BITS`, which is the
-/// constant this feeds.
+/// `(a * b) mod q` by doubling, for any `q` below `2^127`: slow, but
+/// independent of Barrett, so it is the reference [`FieldMetadata`] is checked
+/// against.
 pub const fn mul_mod(a: u128, b: u128, q: u128) -> u128 {
     let mut result = 0u128;
     let mut addend = a % q;
@@ -79,21 +65,6 @@ pub const fn mul_mod(a: u128, b: u128, q: u128) -> u128 {
             result = add_mod(result, addend, q);
         }
         addend = add_mod(addend, addend, q);
-        remaining >>= 1;
-    }
-    result
-}
-
-/// `(base ^ exponent) mod q`, by square-and-multiply.
-pub const fn pow_mod(base: u128, exponent: u128, q: u128) -> u128 {
-    let mut result = 1u128 % q;
-    let mut square = base % q;
-    let mut remaining = exponent;
-    while remaining != 0 {
-        if remaining & 1 == 1 {
-            result = mul_mod(result, square, q);
-        }
-        square = mul_mod(square, square, q);
         remaining >>= 1;
     }
     result
@@ -145,10 +116,6 @@ pub const fn barrett_mu(q: u128, k: u32) -> u128 {
     }
 }
 
-/// Every modulus is below `2^MAX_MODULUS_BITS`: the bound of
-/// [`barrett_reduce`], which every prime field here reduces by.
-pub const MAX_MODULUS_BITS: u32 = 126;
-
 /// `(lo, hi) mod q` for `q` of `k` bits and `mu` its reciprocal from
 /// [`barrett_mu`]: Barrett reduction, Handbook of Applied Cryptography
 /// Algorithm 14.42, after Barrett, CRYPTO '86, LNCS 263:311-323. Estimate the
@@ -174,6 +141,77 @@ pub const fn barrett_reduce(lo: u128, hi: u128, q: u128, mu: u128, k: u32) -> u1
         r -= q;
     }
     r
+}
+
+/// A modulus in `[2, 2^MAX_MODULUS_BITS)` with its Barrett reciprocal: the
+/// arithmetic of a modulus that is a value rather than a type, in `const` and
+/// at runtime alike. What [`DynField`](crate::dynamic::DynField) installs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldMetadata {
+    pub modulus: u128,
+    /// Bit length of the modulus.
+    pub bits: u32,
+    /// `floor(2^(2 * bits) / modulus)`.
+    pub mu: u128,
+}
+
+impl FieldMetadata {
+    pub const fn new(modulus: u128) -> Self {
+        assert!(
+            modulus >= 2 && modulus < 1 << MAX_MODULUS_BITS,
+            "modulus out of range"
+        );
+        assert!(modulus == 2 || modulus % 2 == 1, "modulus > 2 must be odd");
+        let bits = u128::BITS - modulus.leading_zeros();
+        Self {
+            modulus,
+            bits,
+            mu: barrett_mu(modulus, bits),
+        }
+    }
+
+    /// `(a * b) mod q` for `a, b < q`.
+    #[inline]
+    pub const fn mul(&self, a: u128, b: u128) -> u128 {
+        let (lo, hi) = mul_wide(a, b);
+        barrett_reduce(lo, hi, self.modulus, self.mu, self.bits)
+    }
+
+    /// `(base ^ exponent) mod q` for `base < q`, by square-and-multiply.
+    pub const fn pow(&self, base: u128, exponent: u128) -> u128 {
+        let mut result = 1 % self.modulus;
+        let mut bit = u128::BITS - exponent.leading_zeros();
+        while bit > 0 {
+            bit -= 1;
+            result = self.mul(result, result);
+            if (exponent >> bit) & 1 == 1 {
+                result = self.mul(result, base);
+            }
+        }
+        result
+    }
+
+    /// One strong probable-prime round of `q`, odd and at least 3, at `base`
+    /// in `[1, q - 1]`: with `q - 1 = odd * 2^shift`, `base^odd` is `±1` or
+    /// one of its next `shift - 1` squarings is `-1`. A prime passes every
+    /// base; a composite passes at most a quarter of them.
+    pub const fn strong_round(&self, base: u128) -> bool {
+        let shift = (self.modulus - 1).trailing_zeros();
+        let odd = (self.modulus - 1) >> shift;
+        let mut witness = self.pow(base, odd);
+        if witness == 1 || witness == self.modulus - 1 {
+            return true;
+        }
+        let mut round = 1;
+        while round < shift {
+            witness = self.mul(witness, witness);
+            if witness == self.modulus - 1 {
+                return true;
+            }
+            round += 1;
+        }
+        false
+    }
 }
 
 #[cfg(test)]
@@ -214,6 +252,31 @@ pub mod tests {
         }
     }
 
+    #[test]
+    fn the_sieve_decides_only_what_trial_division_can() {
+        assert_eq!(sieve(0), Some(false));
+        assert_eq!(sieve(1), Some(false));
+        assert_eq!(sieve(2), Some(true));
+        assert_eq!(sieve(41), Some(true));
+        assert_eq!(sieve(43), None);
+        assert_eq!(sieve(1 << 100), Some(false));
+        assert_eq!(sieve((1 << 100) - 15), None);
+    }
+
+    #[test]
+    fn a_strong_round_catches_what_its_base_witnesses() {
+        // `2047 = 23 * 89` is a strong pseudoprime to base 2 and nothing else
+        // small; `1_373_653` is one to bases 2 and 3.
+        assert!(FieldMetadata::new(2047).strong_round(2));
+        assert!(!FieldMetadata::new(2047).strong_round(3));
+        assert!(FieldMetadata::new(1_373_653).strong_round(2));
+        assert!(FieldMetadata::new(1_373_653).strong_round(3));
+        assert!(!FieldMetadata::new(1_373_653).strong_round(5));
+        // A prime passes every base.
+        let prime = FieldMetadata::new((1 << 61) - 1);
+        assert!((1..64).all(|base| prime.strong_round(base)));
+    }
+
     /// `(hi:lo) mod q` by binary long division — the independent reference
     /// Barrett is checked against. Structurally unlike Barrett, which
     /// estimates a quotient and corrects.
@@ -236,6 +299,43 @@ pub mod tests {
     pub fn mulmod_reference(a: u128, b: u128, q: u128) -> u128 {
         let (lo, hi) = mul_wide(a, b);
         mod_reference(lo, hi, q)
+    }
+
+    fn u128_of(rng: &mut Pcg64) -> u128 {
+        (rng.next_u64() as u128) << 64 | rng.next_u64() as u128
+    }
+
+    #[test]
+    fn the_modulus_multiplies_and_exponentiates_like_the_references() {
+        let mut rng = Pcg64::seed_from_u64(405);
+        for q in [
+            2u128,
+            3,
+            59,
+            251,
+            (1 << 100) - 15,
+            (1 << 114) - 11,
+            (1 << 126) - 1,
+        ] {
+            let modulus = FieldMetadata::new(q);
+            for _ in 0..64 {
+                let (a, b) = (u128_of(&mut rng) % q, u128_of(&mut rng) % q);
+                assert_eq!(
+                    modulus.mul(a, b),
+                    mulmod_reference(a, b, q),
+                    "{a} * {b} mod {q}"
+                );
+                assert_eq!(modulus.mul(a, b), mul_mod(a, b, q), "{a} * {b} mod {q}");
+            }
+            for a in [0, 1, q - 1] {
+                assert_eq!(modulus.mul(a, a), mul_mod(a, a, q), "{a}^2 mod {q}");
+                let mut power = 1 % q;
+                for exponent in 0..20u128 {
+                    assert_eq!(modulus.pow(a, exponent), power, "{a}^{exponent} mod {q}");
+                    power = mul_mod(power, a, q);
+                }
+            }
+        }
     }
 
     #[test]

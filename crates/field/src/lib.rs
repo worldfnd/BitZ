@@ -5,7 +5,7 @@ mod codec;
 pub mod dynamic;
 pub mod fq;
 pub mod gf128;
-pub(crate) mod helpers;
+pub mod helpers;
 
 pub use fq::{Fq, FqDefault, Q100};
 pub use gf128::{F128, FixedBasePow, Wide256};

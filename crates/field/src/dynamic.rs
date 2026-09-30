@@ -14,43 +14,15 @@ use std::fmt::Display;
 use std::iter::{Product, Sum};
 use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 
-/// Global config for [`DynField`] shared among all instances: the modulus and
-/// what its Barrett reduction precomputes from it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DynFieldConfig {
-    modulus: u128,
-    /// Bit length of the modulus.
-    bits: u32,
-    /// `floor(2^(2 * bits) / modulus)`, Barrett's reciprocal.
-    mu: u128,
-}
-
-impl DynFieldConfig {
-    /// Whether [`DynField::set_modulus`] has run.
-    fn initialized(&self) -> bool {
-        self.modulus != 0
-    }
-
-    pub fn modulus(&self) -> u128 {
-        debug_assert!(self.initialized());
-        self.modulus
-    }
-
-    /// Bit length of the modulus.
-    pub fn bits(&self) -> u32 {
-        debug_assert!(self.initialized());
-        self.bits
-    }
-}
-
-/// The config, one atomic per word.
+/// The installed [`FieldMetadata`], one atomic per word: the config shared by
+/// every [`DynField`].
 ///
 /// Written only by [`DynField::set_modulus`], read by every operation. Its
 /// contract rules out a writer concurrent with a reader, so the words need
 /// neither a lock nor an ordering among them: `Relaxed` loads are plain
 /// loads, and every thread reads the same cache line without writing it.
 mod global {
-    use super::DynFieldConfig;
+    use crate::helpers::FieldMetadata;
     use std::sync::atomic::{AtomicU32, AtomicU64, Ordering::Relaxed};
 
     static MODULUS_LO: AtomicU64 = AtomicU64::new(0);
@@ -75,15 +47,15 @@ mod global {
     }
 
     #[inline(always)]
-    pub(super) fn load() -> DynFieldConfig {
-        DynFieldConfig {
+    pub(super) fn load() -> FieldMetadata {
+        FieldMetadata {
             modulus: modulus(),
             bits: BITS.load(Relaxed),
             mu: load_u128(&MU_LO, &MU_HI),
         }
     }
 
-    pub(super) fn store(cfg: &DynFieldConfig) {
+    pub(super) fn store(cfg: &FieldMetadata) {
         store_u128(&MODULUS_LO, &MODULUS_HI, cfg.modulus);
         store_u128(&MU_LO, &MU_HI, cfg.mu);
         BITS.store(cfg.bits, Relaxed);
@@ -124,16 +96,14 @@ impl DynField {
         // `DynField` claims to be a prime field, so it enforces that itself
         // rather than trusting whoever drew the modulus.
         assert!(helpers::is_prime(modulus), "modulus must be prime");
-        let bits = u128::BITS - modulus.leading_zeros();
-        let mu = helpers::barrett_mu(modulus, bits);
-        global::store(&DynFieldConfig { modulus, bits, mu });
+        global::store(&helpers::FieldMetadata::new(modulus));
     }
 
     /// The installed modulus and its reduction constants.
     #[inline(always)]
-    pub fn config() -> DynFieldConfig {
+    pub fn config() -> helpers::FieldMetadata {
         let cfg = global::load();
-        debug_assert!(cfg.initialized(), "Field modulus has not been set yet!");
+        debug_assert!(cfg.modulus != 0, "Field modulus has not been set yet!");
         cfg
     }
 }
@@ -337,9 +307,7 @@ impl SubAssign for DynField {
 impl MulAssign for DynField {
     #[inline(always)]
     fn mul_assign(&mut self, rhs: Self) {
-        let cfg = Self::config();
-        let (lo, hi) = helpers::mul_wide(self.reduced_value, rhs.reduced_value);
-        self.reduced_value = helpers::barrett_reduce(lo, hi, cfg.modulus, cfg.mu, cfg.bits);
+        self.reduced_value = Self::config().mul(self.reduced_value, rhs.reduced_value);
     }
 }
 
@@ -542,8 +510,8 @@ mod tests {
     fn config_reports_the_installed_modulus() {
         with_modulus(Q100, || {
             let cfg = DynField::config();
-            assert_eq!(cfg.modulus(), Q100);
-            assert_eq!(cfg.bits(), FqDefault::BITS);
+            assert_eq!(cfg.modulus, Q100);
+            assert_eq!(cfg.bits, FqDefault::META.bits);
             assert_eq!(DynField::modulus(), Q100);
             assert_eq!(DynField::modulus_minus_one_div_two(), (Q100 - 1) / 2);
             assert_eq!(DynField::min_value(), DynField::ZERO);
