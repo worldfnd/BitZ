@@ -185,24 +185,10 @@ impl<S: Deref<Target = [Word]>> BitTableBase<S> {
     }
 }
 
-// Bits packed into machine words
-// out of place variant.
-// dim1 and dim2 should be given in bits
-// dim2 is the axis over which the data is adjacent, think xs[dim1][dim2].
-//
-// A block is always BITS words, built from `d = min(dim1, BITS)` rows of
-// `r = BITS / d` consecutive words each: word i = c * d + a is row a, word c.
-// Writing a block's index bits as (word | bit), the input is
-// ([c | a] | [p_hi | p_lo]) with a and p_hi log2(d) bits wide, and the
-// output needs ([c | p_hi] | [p_lo | a]).
-//
-// p_lo only moves within its word, up by log2(d), so that is done first:
-// each gathered word's bit index is rotated to [p_lo | p_hi], which
-// transposes the word read as d rows of r bits. That leaves a and p_hi to
-// trade places bit for bit: log2(d) butterfly stages, stage s swapping word
-// index bit s with bit index bit s, which transposes every d x d tile of the
-// block. The stages commute and run coarse to fine. For d = BITS the
-// rotation is the identity and this is the plain blocked transpose.
+/// out of place variant.
+/// dim1 and dim2 are in bits
+/// dim2 is the axis over which the data is adjacent, think xs[dim1][dim2].
+/// dim1 < WORD::Bits dim2 >= WORD::Bits
 fn bit_transpose(xs: &[Word], dim1: usize, dim2: usize) -> Vec<Word> {
     assert_eq!(xs.len() * BitTable::BITS, dim1 * dim2);
     assert!(dim1.is_power_of_two(), "dim1 {dim1} is not a power of two");
