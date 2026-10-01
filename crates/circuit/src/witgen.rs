@@ -612,8 +612,8 @@ impl ProductWitgen {
 
     /// Consumes the runner into `w`, `M * w`, and exact matrix products.
     pub fn into_parts(self) -> (PackedWitness, PackedWitness, IntegerProducts) {
-        let (witness, integer_witness) = self.witgen.into_witnesses();
-        (witness, integer_witness, self.products)
+        let (bool_witness, integer_witness) = self.witgen.into_witnesses();
+        (bool_witness, integer_witness, self.products)
     }
 }
 

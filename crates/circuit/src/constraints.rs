@@ -96,7 +96,7 @@ impl<C> SparseMatrix<C> {
 }
 
 impl<C: Send + Sync> SparseMatrix<C> {
-    fn map_values_with<D, M>(self, map: M) -> SparseMatrix<D>
+    fn map_values<D, M>(self, map: M) -> SparseMatrix<D>
     where
         D: Send + Sync,
         M: Fn(C) -> D + Send + Sync,
@@ -110,6 +110,27 @@ impl<C: Send + Sync> SparseMatrix<C> {
                         .entries
                         .into_iter()
                         .map(|(column, coefficient)| (column, map(coefficient)))
+                        .collect(),
+                })
+                .collect(),
+            columns: self.columns,
+        }
+    }
+
+    fn map_values_ref<D, M>(&self, map: M) -> SparseMatrix<D>
+    where
+        D: Send + Sync,
+        M: Fn(&C) -> D + Send + Sync,
+    {
+        SparseMatrix {
+            rows: self
+                .rows
+                .par_iter()
+                .map(|row| SparseRow {
+                    entries: row
+                        .entries
+                        .iter()
+                        .map(|(column, coefficient)| (*column, map(coefficient)))
                         .collect(),
                 })
                 .collect(),
@@ -279,9 +300,25 @@ impl<R: Send + Sync> ConstraintMatrices<R> {
     {
         ConstraintMatrices {
             m: self.m,
-            a: self.a.map_values_with(map),
-            b: self.b.map_values_with(map),
-            c: self.c.map_values_with(map),
+            a: self.a.map_values(map),
+            b: self.b.map_values(map),
+            c: self.c.map_values(map),
+        }
+    }
+
+    /// Maps every A/B/C coefficient, keeping the matrices.
+    ///
+    /// The Boolean `M` matrix and sparse topology are cloned unchanged.
+    pub fn map_coefficients_ref<D, M>(&self, map: M) -> ConstraintMatrices<D>
+    where
+        D: Send + Sync,
+        M: Fn(&R) -> D + Copy + Send + Sync,
+    {
+        ConstraintMatrices {
+            m: self.m.clone(),
+            a: self.a.map_values_ref(map),
+            b: self.b.map_values_ref(map),
+            c: self.c.map_values_ref(map),
         }
     }
 }

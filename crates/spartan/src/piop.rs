@@ -5,7 +5,7 @@ use common::BitzField;
 use poly::{
     DenseMultilinearExtension, MleClaimError, ScaledMleEvaluationClaim, make_equality_factors,
 };
-use transcript::{ProverState, VerifierState};
+use transcript::{ProverState, SqueezableTranscript, VerifierState};
 
 use crate::matrix::{PreparedConstraintMatrices, SpartanMatrixError, build_assignment_mle};
 use crate::sumcheck::{

@@ -22,17 +22,31 @@ pub trait TranscriptChallenge: Sized {
     fn from_squeezes(next_u128: impl FnMut() -> u128) -> Self;
 }
 
-impl ProverState {
+pub trait SqueezableTranscript {
     /// Samples a typed Fiat–Shamir challenge from this transcript.
-    pub fn squeeze<T: TranscriptChallenge>(&mut self) -> T {
+    fn squeeze<T: TranscriptChallenge>(&mut self) -> T;
+
+    /// Squeezes a `bits`-bit prime from this transcript.
+    fn squeeze_prime(&mut self, bits: u32) -> u128;
+}
+
+impl SqueezableTranscript for ProverState {
+    fn squeeze<T: TranscriptChallenge>(&mut self) -> T {
         T::from_squeezes(|| self.verifier_message::<u128>())
+    }
+
+    fn squeeze_prime(&mut self, bits: u32) -> u128 {
+        prime::sample(|| self.verifier_message::<u128>(), bits)
     }
 }
 
-impl VerifierState<'_> {
-    /// Samples a typed Fiat–Shamir challenge from this transcript.
-    pub fn squeeze<T: TranscriptChallenge>(&mut self) -> T {
+impl SqueezableTranscript for VerifierState<'_> {
+    fn squeeze<T: TranscriptChallenge>(&mut self) -> T {
         T::from_squeezes(|| self.verifier_message::<u128>())
+    }
+
+    fn squeeze_prime(&mut self, bits: u32) -> u128 {
+        prime::sample(|| self.verifier_message::<u128>(), bits)
     }
 }
 
@@ -62,33 +76,9 @@ impl<const Q: u128> TranscriptChallenge for Fq<Q> {
     }
 }
 
-/// A `bits`-bit prime from successive `u128` squeezes, the same on both
-/// sides: the fingerprint prime of 5. "An end-to-end BitZ-based SNARK over
-/// any finitely generated ring", Step 2, drawn once per proof after the
-/// commitment and the statement are absorbed and before the PIOP.
-///
-/// TODO(random-prime): draw it with [`prime::sample`] once the e2e builds its
-/// parameters under the drawn prime. Until then the fixed modulus is returned
-/// whatever width is asked for, and nothing is squeezed.
-pub fn prime_from_squeezes(_next_u128: impl FnMut() -> u128, bits: u32) -> u128 {
-    assert!(
-        bits <= field::MAX_MODULUS_BITS,
-        "the field cannot hold a prime this wide"
-    );
-    field::Q100
-}
-
-impl ProverState {
-    /// Squeezes a `bits`-bit prime from this transcript.
-    pub fn squeeze_prime(&mut self, bits: u32) -> u128 {
-        prime_from_squeezes(|| self.verifier_message::<u128>(), bits)
-    }
-}
-
-impl VerifierState<'_> {
-    /// Squeezes a `bits`-bit prime from this transcript.
-    pub fn squeeze_prime(&mut self, bits: u32) -> u128 {
-        prime_from_squeezes(|| self.verifier_message::<u128>(), bits)
+impl TranscriptChallenge for DynField {
+    fn from_squeezes(next_u128: impl FnMut() -> u128) -> Self {
+        Self::from(unbiased_u128(DynField::config().modulus, next_u128))
     }
 }
 
@@ -99,20 +89,12 @@ impl TranscriptChallenge for F128 {
     }
 }
 
-impl TranscriptChallenge for DynField {
-    fn from_squeezes(next_u128: impl FnMut() -> u128) -> Self {
-        Self::from(unbiased_u128(DynField::config().modulus, next_u128))
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use field::dynamic::DynField;
-    use field::{F128, Q100};
-    use spongefish::Encoding;
-
-    use super::TranscriptChallenge;
+    use super::*;
     use crate::{build_prover, build_verifier};
+    use field::Q100;
+    use spongefish::Encoding;
 
     const SESSION: &[u8] = b"transcript/typed-challenge/test";
     const INSTANCE: &[u8] = b"fq-rejection-sampling";
@@ -141,20 +123,19 @@ mod tests {
     /// Under the same modulus, the same stream gives the same element.
     #[test]
     fn dyn_field_squeezes_as_fq() {
-        // SAFETY: process-wide, and the only modulus this binary installs.
-        unsafe { DynField::set_modulus(Q100) };
+        field::dynamic::test_support::with_modulus(Q100, || {
+            let mut typed = build_prover(SESSION, INSTANCE);
+            let dynamic = typed.squeeze::<DynField>();
+            let mut fixed = build_prover(SESSION, INSTANCE);
+            let fq = fixed.squeeze::<F>();
+            assert_eq!(dynamic.encode().as_ref(), fq.encode().as_ref());
 
-        let mut typed = build_prover(SESSION, INSTANCE);
-        let dynamic = typed.squeeze::<DynField>();
-        let mut fixed = build_prover(SESSION, INSTANCE);
-        let fq = fixed.squeeze::<F>();
-        assert_eq!(dynamic.encode().as_ref(), fq.encode().as_ref());
-
-        let rejection_remainder = (u128::MAX % Q100 + 1) % Q100;
-        let max_accepted = u128::MAX - rejection_remainder;
-        let mut candidates = [max_accepted + 1, max_accepted].into_iter();
-        let challenge = DynField::from_squeezes(|| candidates.next().unwrap());
-        assert_eq!(challenge, DynField::from(Q100 - 1));
+            let rejection_remainder = (u128::MAX % Q100 + 1) % Q100;
+            let max_accepted = u128::MAX - rejection_remainder;
+            let mut candidates = [max_accepted + 1, max_accepted].into_iter();
+            let challenge = DynField::from_squeezes(|| candidates.next().unwrap());
+            assert_eq!(challenge, DynField::from(Q100 - 1));
+        });
     }
 
     #[test]
@@ -179,6 +160,8 @@ mod tests {
         let prime = prover.squeeze_prime(F::META.bits);
         let after = prover.squeeze::<F>();
         let proof = prover.finish();
+        assert_eq!(u128::BITS - prime.leading_zeros(), F::META.bits);
+        assert!(field::helpers::is_prime(prime));
 
         let mut verifier = build_verifier(SESSION, INSTANCE, &proof);
         assert_eq!(verifier.squeeze_prime(F::META.bits), prime);

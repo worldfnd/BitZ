@@ -1,15 +1,15 @@
 //! End-to-end and per-stage benchmarks; instance generation is outside timing.
 
 use bitz_cli::{
-    ProjectBigIntToFq, benchmark,
+    ProjectBigIntToField, benchmark,
     circuits::{BuiltinCircuit, CircuitInstance},
     end_to_end::CircuitProofSystem,
 };
 use divan::Bencher;
 
 type R = num_bigint::BigInt;
-type F = field::FqDefault;
-type Proj = ProjectBigIntToFq;
+type F = field::DynField;
+type Proj = ProjectBigIntToField;
 
 fn main() {
     divan::main();
@@ -21,10 +21,10 @@ fn instance(circuit: BuiltinCircuit) -> (CircuitInstance, Vec<bool>) {
     (statement, inputs)
 }
 
-fn setup(circuit: BuiltinCircuit) -> (CircuitProofSystem<CircuitInstance, F>, Vec<bool>) {
+fn setup(circuit: BuiltinCircuit) -> (CircuitProofSystem<CircuitInstance, F, R, Proj>, Vec<bool>) {
     let (statement, inputs) = instance(circuit);
     (
-        CircuitProofSystem::<_, F>::new::<R, Proj>(statement).unwrap(),
+        CircuitProofSystem::<_, F, _, Proj>::new(statement).unwrap(),
         inputs,
     )
 }
@@ -43,7 +43,7 @@ fn circuit_setup(bencher: Bencher, circuit: BuiltinCircuit) {
     bencher
         .with_inputs(|| CircuitInstance::random(circuit, None, None).unwrap())
         .bench_local_values(|statement| {
-            CircuitProofSystem::<_, F>::new::<R, Proj>(statement).unwrap()
+            CircuitProofSystem::<_, F, _, Proj>::new(statement).unwrap()
         });
 }
 

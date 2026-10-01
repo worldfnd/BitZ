@@ -143,8 +143,8 @@ impl<F: BitzClaimField> BitZVerifier<F> {
         claim: &LinearClaim<F>,
         transcript: &mut VerifierState<'_>,
     ) -> Result<OpeningQuery, VerifyError> {
-        // Step 2 is absent: the field modulus is fixed, and BitZParams::new
-        // checks its fold bound.
+        // Step 2 is skipped: BitZParams::new checks the claim field bound
+        // `q < (|K| - 1) / k_1`, so a fold cannot wrap in the exponent.
 
         // Step 3: read the folds, range-check them, reconstruct against mu.
         let fold = self

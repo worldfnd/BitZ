@@ -2,7 +2,7 @@
 //!
 //! We only expect to have one of those at any given time, so the modulus is shared globally.
 
-use crate::helpers;
+use crate::{FieldWithDynamicModulus, helpers};
 use crypto_primitives::{BaseField, LiftElement, WithAssociatedInteger};
 use crypto_primitives_proc_macros::InfallibleCheckedOp;
 use num_traits::{
@@ -75,18 +75,21 @@ pub struct DynField {
 }
 
 impl DynField {
+    /// The installed modulus and its reduction constants.
+    #[inline(always)]
+    pub fn config() -> helpers::FieldMetadata {
+        let cfg = global::load();
+        debug_assert!(cfg.modulus != 0, "Field modulus has not been set yet!");
+        cfg
+    }
+}
+
+impl FieldWithDynamicModulus for DynField {
     /// Set modulus globally.
     ///
     /// The modulus must be an odd prime below `2^126`, the bound of the
     /// Barrett reduction shared with [`Fq`](crate::Fq); anything else panics.
-    ///
-    /// # Safety
-    ///
-    /// No [`DynField`] value may be alive, or they will silently  become invalid.
-    /// No [`DynField`] operation may be in flight on another thread: the config
-    /// is stored word by word, and a value keeps the representative it had under
-    /// the previous modulus.
-    pub unsafe fn set_modulus(modulus: u128) {
+    unsafe fn set_modulus(modulus: u128) {
         assert!(modulus >= 3, "modulus must be at least 3");
         assert_eq!(modulus % 2, 1, "modulus must be odd");
         assert!(
@@ -97,14 +100,6 @@ impl DynField {
         // rather than trusting whoever drew the modulus.
         assert!(helpers::is_prime(modulus), "modulus must be prime");
         global::store(&helpers::FieldMetadata::new(modulus));
-    }
-
-    /// The installed modulus and its reduction constants.
-    #[inline(always)]
-    pub fn config() -> helpers::FieldMetadata {
-        let cfg = global::load();
-        debug_assert!(cfg.modulus != 0, "Field modulus has not been set yet!");
-        cfg
     }
 }
 
@@ -431,20 +426,20 @@ impl LiftElement<u128> for DynField {
 // Other
 //
 
-#[cfg(test)]
-pub(crate) mod test_support {
-    use super::DynField;
+#[allow(dead_code)] // Cannot be gated for #[cfg(test)] or it won't be accessible to other crates
+pub mod test_support {
+    use super::*;
     use std::sync::{Mutex, PoisonError};
 
-    /// Runs `test` under `modulus`. The modulus is process-wide and the test
+    /// Runs `test_code` under `modulus`. The modulus is process-wide and the test
     /// harness is multi-threaded, so every test that needs one holds this
     /// lock for its whole run.
-    pub(crate) fn with_modulus<T>(modulus: u128, test: impl FnOnce() -> T) -> T {
+    pub fn with_modulus<T>(modulus: u128, test_code: impl FnOnce() -> T) -> T {
         static LOCK: Mutex<()> = Mutex::new(());
         let _guard = LOCK.lock().unwrap_or_else(PoisonError::into_inner);
         // SAFETY: the lock keeps every other test's values and operations out.
         unsafe { DynField::set_modulus(modulus) };
-        test()
+        test_code()
     }
 }
 

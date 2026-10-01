@@ -9,6 +9,7 @@
 
 use crate::witgen::Z as Integer;
 use crate::{BitWidth, IntoWords};
+use common::BitzConstraintRing;
 use num_traits::{One, Zero};
 use rayon::prelude::*;
 use std::cmp::Ordering;
@@ -242,6 +243,7 @@ fn add_mod_words<const LIMBS: usize>(
 /// A dense vector of canonical runtime-field elements.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ModularVector<const PRIME_LIMBS: usize> {
+    /// Vector of canonical field element in little-endian limbs form, in row order.
     values: Vec<[u64; PRIME_LIMBS]>,
 }
 
@@ -256,7 +258,7 @@ impl<const PRIME_LIMBS: usize> ModularVector<PRIME_LIMBS> {
         self.values.is_empty()
     }
 
-    /// Dense canonical field elements in row order.
+    /// Vector of canonical field element in little-endian limbs form, in row order.
     pub fn values(&self) -> &[[u64; PRIME_LIMBS]] {
         &self.values
     }
@@ -267,12 +269,13 @@ impl<const PRIME_LIMBS: usize> ModularVector<PRIME_LIMBS> {
     }
 }
 
-impl From<&ModularVector<2>> for Vec<field::FqDefault> {
+/// Converts two little-endian limbs, treating them as one `u128`.
+impl<T: From<u128>> From<&ModularVector<2>> for Vec<T> {
     fn from(values: &ModularVector<2>) -> Self {
         values
             .values()
             .iter()
-            .map(|&[low, high]| field::FqDefault::from_limbs(low, high))
+            .map(|&[low, high]| T::from(u128::from(low) | (u128::from(high) << 64)))
             .collect()
     }
 }
@@ -354,6 +357,17 @@ impl From<&num_bigint::BigInt> for StoredInteger {
     }
 }
 
+impl From<&StoredInteger> for num_bigint::BigInt {
+    fn from(value: &StoredInteger) -> Self {
+        let bytes = value
+            .words()
+            .iter()
+            .flat_map(|word| word.to_le_bytes())
+            .collect::<Vec<_>>();
+        Self::from_signed_bytes_le(&bytes)
+    }
+}
+
 impl<const LIMBS: usize> From<&Integer<LIMBS>> for StoredInteger {
     /// Stores a gadget-local fixed integer without changing its value.
     fn from(value: &Integer<LIMBS>) -> Self {
@@ -401,6 +415,22 @@ impl IntegerProducts {
         self.c_mw.push(StoredInteger::from(&c));
     }
 
+    /// Whether `A(Mw) * B(Mw) = C(Mw)` holds row by row over the integers
+    /// (hence modulo every prime).
+    pub fn is_satisfied<R>(&self) -> bool
+    where
+        R: BitzConstraintRing + for<'a> From<&'a StoredInteger>,
+    {
+        self.a_mw.len() == self.b_mw.len()
+            && self.a_mw.len() == self.c_mw.len()
+            && self
+                .a_mw
+                .par_iter()
+                .zip(&self.b_mw)
+                .zip(&self.c_mw)
+                .all(|((a, b), c)| R::from(a) * R::from(b) == R::from(c))
+    }
+
     /// Reduces every materialized element modulo `modulus`.
     ///
     /// Vectors with at least 32,768 entries use Rayon. Smaller vectors remain
@@ -446,12 +476,7 @@ mod tests {
     type R = num_bigint::BigInt;
 
     fn stored_ring(value: &StoredInteger) -> R {
-        let bytes = value
-            .words()
-            .iter()
-            .flat_map(|word| word.to_le_bytes())
-            .collect::<Vec<_>>();
-        R::from_signed_bytes_le(&bytes)
+        R::from(value)
     }
 
     fn direct_row(row: &SparseRow<R>, integer_witness: &PackedWitness) -> R {
@@ -538,6 +563,27 @@ mod tests {
                 expected.to_biguint().unwrap().into_words()
             );
         }
+    }
+
+    #[test]
+    fn products_are_satisfied_over_the_integers_only_when_exact() {
+        let mut products = IntegerProducts::default();
+        assert!(products.is_satisfied::<R>());
+        let z = |value: i128| Integer::<2>::from(value);
+        products.push(z(-3), z(5), z(-15));
+        products.push(
+            z(i128::from(i64::MIN)),
+            z(i128::from(i64::MIN)),
+            z(1 << 126),
+        );
+        assert!(products.is_satisfied::<R>());
+        products.push(z(2), z(2), z(5));
+        assert!(!products.is_satisfied::<R>());
+        products.c_mw.pop();
+        assert!(
+            !products.is_satisfied::<R>(),
+            "a missing row is not satisfied"
+        );
     }
 
     #[test]

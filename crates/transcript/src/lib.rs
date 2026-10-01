@@ -33,7 +33,7 @@ mod proof;
 mod prover;
 mod verifier;
 
-pub use challenge::{TranscriptChallenge, prime};
+pub use challenge::{SqueezableTranscript, TranscriptChallenge};
 pub use domain::{PROTOCOL_LABEL, build_prover, build_verifier};
 pub use proof::Proof;
 pub use prover::ProverState;

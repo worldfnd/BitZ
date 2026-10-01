@@ -1,14 +1,14 @@
-use bitz_cli::ProjectBigIntToFq;
+use bitz_cli::ProjectBigIntToField;
 use bitz_cli::end_to_end::{CircuitProofSystem, CircuitStatement, Error, OpeningPath, Proof};
 use circuit::Circuit;
 use pcs::VerifyError;
 
 type R = num_bigint::BigInt;
-type F = field::FqDefault;
-type Proj = ProjectBigIntToFq;
+type F = field::DynField;
+type Proj = ProjectBigIntToField;
 
 fn rejects_changed_or_missing_ood(
-    system: &CircuitProofSystem<impl CircuitStatement, F>,
+    system: &CircuitProofSystem<impl CircuitStatement, F, R, Proj>,
     proof: &Proof<F>,
 ) {
     // These Fast-profile fixtures have zero initial grinding bits, so the first
@@ -51,13 +51,13 @@ impl CircuitStatement for PublicBit {
 
 #[test]
 fn generic_driver_accepts_a_non_sha_circuit() {
-    let prepared = CircuitProofSystem::<_, F>::new::<R, Proj>(PublicBit).unwrap();
+    let prepared = CircuitProofSystem::<_, F, R, Proj>::new(PublicBit).unwrap();
     assert_eq!(prepared.stats().opening_path, OpeningPath::Direct);
     assert_eq!(prepared.stats().committed_bits, 2);
     let witness = prepared.witness(&[true]).unwrap();
     let data = prepared.commit(&witness).unwrap();
     let proof = prepared.prove(witness, data).unwrap();
-    CircuitProofSystem::<_, F>::new::<R, Proj>(PublicBit)
+    CircuitProofSystem::<_, F, R, Proj>::new(PublicBit)
         .unwrap()
         .verify(&proof)
         .unwrap();
@@ -123,14 +123,14 @@ impl CircuitStatement for PublicXor {
 
 #[test]
 fn nonidentity_map_uses_virtual_opening_and_checks_xor_relation() {
-    let system = CircuitProofSystem::<_, F>::new::<R, Proj>(PublicXor).unwrap();
+    let system = CircuitProofSystem::<_, F, R, Proj>::new(PublicXor).unwrap();
     assert_eq!(system.stats().opening_path, OpeningPath::Virtual);
     assert_eq!(system.stats().assignment_bits, 3);
     assert_eq!(system.stats().committed_bits, 2);
     let witness = system.witness(&[true, false]).unwrap();
     let data = system.commit(&witness).unwrap();
     let proof = system.prove(witness, data).unwrap();
-    CircuitProofSystem::<_, F>::new::<R, Proj>(PublicXor)
+    CircuitProofSystem::<_, F, R, Proj>::new(PublicXor)
         .unwrap()
         .verify(&proof)
         .unwrap();

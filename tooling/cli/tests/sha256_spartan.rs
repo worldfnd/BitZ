@@ -1,4 +1,5 @@
-use bitz_cli::{ProjectBigIntToFq, ProjectConstraint};
+use bitz_cli::{ProjectBigIntToField, ProjectConstraint};
+use circuit::constraints::ConstraintMatrices;
 use circuit::{
     constraints::ConstraintGenerator,
     sha256::{
@@ -16,7 +17,7 @@ use transcript::{build_prover, build_verifier};
 
 type R = num_bigint::BigInt;
 type F = field::FqDefault;
-type Proj = ProjectBigIntToFq;
+type Proj = ProjectBigIntToField;
 
 const SESSION: &[u8] = b"spartan/piop/sha256-compression/v1";
 const INSTANCE: &[u8] = b"abc-single-compression";
@@ -55,7 +56,8 @@ fn sha256_compression_verifies_through_spartan_piop() {
     assert_assignment_matches(&recomputed_assignment, &recorded_assignment);
 
     let projection = <Proj as ProjectConstraint<R, F>>::prepare();
-    let matrices = integer_matrices.map_coefficients(|c| projection.project(&c));
+    let matrices: ConstraintMatrices<F> =
+        integer_matrices.map_coefficients(|c| projection.project(&c));
     let products = build_product_mles(&exact_products, matrices.a.row_count()).unwrap();
     let assignment = build_assignment_mle(&recorded_assignment, matrices.a.column_count()).unwrap();
     let matrices = PreparedConstraintMatrices::new(matrices).unwrap();
