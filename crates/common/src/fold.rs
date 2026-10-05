@@ -5,7 +5,7 @@ use poly::DenseMultilinearExtension;
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
-use crate::{BitTable, LinearClaim, Shape};
+use crate::{BitTable, LinearClaim, Shape, WordColumns};
 
 /// A round whose parts do not describe the shape they belong to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,7 +26,10 @@ pub enum FoldError {
 /// `exponents` must be the claim's own — [`LinearClaim::row_exponents`].
 /// That is what makes the sum safe: each is below `q` and there are `k_1` of
 /// them, so it is at most `k_1 (q - 1)`, which admissibility put below `|K|`.
-pub fn fold_column(table: &BitTable<'_>, exponents: &[u128], column: usize) -> u128 {
+///
+/// Reads the table as whole-element columns, which the `t >= 7` gate in
+/// [`crate::BitZParams::new`] guarantees for the table it shapes.
+pub fn fold_column(table: &WordColumns<'_>, exponents: &[u128], column: usize) -> u128 {
     table
         .column(column)
         .iter()
@@ -46,8 +49,8 @@ pub fn fold_column(table: &BitTable<'_>, exponents: &[u128], column: usize) -> u
 ///
 /// Columns are independent and read disjoint slices of the witness, so the
 /// only sharing is the read-only `exponents`.
-pub fn fold_columns(table: &BitTable<'_>, exponents: &[u128]) -> Vec<u128> {
-    let columns = 0..table.shape().columns();
+pub fn fold_columns(table: &WordColumns<'_>, exponents: &[u128]) -> Vec<u128> {
+    let columns = 0..table.columns();
     #[cfg(feature = "parallel")]
     {
         columns
@@ -232,13 +235,17 @@ mod tests {
 
         let packed = witness(&shape, &[(1, 0), (5, 0), (127, 0), (64, 4)]);
         let table = BitTable::new(shape, bytemuck::cast_slice(&packed)).unwrap();
+        let columns = table.word_columns().unwrap();
 
         assert_eq!(
-            fold_column(&table, &claim.row_exponents(), 0),
+            fold_column(&columns, &claim.row_exponents(), 0),
             weights[1] + weights[5] + weights[127]
         );
-        assert_eq!(fold_column(&table, &claim.row_exponents(), 4), weights[64]);
-        assert_eq!(fold_column(&table, &claim.row_exponents(), 9), 0);
+        assert_eq!(
+            fold_column(&columns, &claim.row_exponents(), 4),
+            weights[64]
+        );
+        assert_eq!(fold_column(&columns, &claim.row_exponents(), 9), 0);
     }
 
     #[test]
@@ -252,9 +259,10 @@ mod tests {
         let all: Vec<(usize, usize)> = (0..shape.rows()).map(|row| (row, 0)).collect();
         let packed = witness(&shape, &all);
         let table = BitTable::new(shape, bytemuck::cast_slice(&packed)).unwrap();
+        let columns = table.word_columns().unwrap();
 
         assert_eq!(
-            fold_column(&table, &claim.row_exponents(), 0),
+            fold_column(&columns, &claim.row_exponents(), 0),
             params().fold_bound()
         );
     }
@@ -273,12 +281,13 @@ mod tests {
             .collect();
         let packed = witness(&shape, &bits);
         let table = BitTable::new(shape, bytemuck::cast_slice(&packed)).unwrap();
+        let columns = table.word_columns().unwrap();
 
         let expected: u128 = (0..shape.rows())
             .filter(|&row| table.bit(6, row))
             .map(|row| claim.row_exponents()[row])
             .sum();
-        assert_eq!(fold_column(&table, &claim.row_exponents(), 6), expected);
+        assert_eq!(fold_column(&columns, &claim.row_exponents(), 6), expected);
     }
 
     #[test]

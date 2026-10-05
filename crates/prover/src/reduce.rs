@@ -5,7 +5,7 @@
 //! `sum(row, column) u1[row] * u2[column] * table.bit(column, row)`.
 //! The caller must discharge this claim through the commitment opening.
 
-use common::{BitTable, ClaimError, Fold, LinearClaim, OpeningQuery, TransposeError};
+use common::{BitTable, ClaimError, Fold, LinearClaim, OpeningQuery};
 use field::F128;
 use gkr::{GrandProductCircuit, gpgkr_prove};
 use num_traits::ConstOne;
@@ -21,29 +21,15 @@ fn init_circuit(table: &BitTable, fold: &Fold) -> GrandProductCircuit {
 
     // TODO optimisation: Handle the leafs and the two layers above it lazily.
     // Columns occupy the low index bits, so each product tree reduces one column.
-    match table.transpose() {
-        Ok(transposed) => {
-            // Transpose wide tables so each row can be read sequentially.
-            for (b, &row_image) in fold.row_images.iter().enumerate() {
-                let leafs = &mut leafs[b * columns..(b + 1) * columns];
-                for (leaf, bit) in leafs.iter_mut().zip(transposed.column_bits(b)) {
-                    *leaf = if bit == 1 { row_image } else { F128::ONE };
-                }
-            }
-        }
-        // TODO: probably should be dealt with earlier instead of relying on a fallback
-        Err(TransposeError::ColumnCountTooNarrow) => {
-            // Narrow tables cannot form packed columns after transposition.
-            for (b, &row_image) in fold.row_images.iter().enumerate() {
-                let leafs = &mut leafs[b * columns..(b + 1) * columns];
-                for (c, leaf) in leafs.iter_mut().enumerate() {
-                    *leaf = if table.bit(c, b) {
-                        row_image
-                    } else {
-                        F128::ONE
-                    };
-                }
-            }
+    // Transposed so each row can be read sequentially.
+    let transposed = table
+        .word_columns()
+        .expect("the fold's table, whose gate admits only t >= 7")
+        .transpose();
+    for (b, &row_image) in fold.row_images.iter().enumerate() {
+        let leafs = &mut leafs[b * columns..(b + 1) * columns];
+        for (leaf, bit) in leafs.iter_mut().zip(transposed.column_bits(b)) {
+            *leaf = if bit == 1 { row_image } else { F128::ONE };
         }
     }
 

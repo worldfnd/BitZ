@@ -1,6 +1,6 @@
 //! The top-level prove and verify, through the real opening.
 
-use common::{Root, TableError};
+use common::{Root, Shape, TableError};
 use field::{F128, Fq};
 use num_traits::{ConstOne, ConstZero};
 use pcs::{HashKind, LigeritoProfile, Pcs, VerifyError as PcsVerifyError};
@@ -40,6 +40,24 @@ fn an_honest_proof_verifies_on_both_floor_shapes() {
             )
             .unwrap_or_else(|error| panic!("t = {}: {error:?}", shape.log_rows()));
     }
+}
+
+/// Fewer columns than one element holds: the leaves are read from a
+/// transpose whose rows share elements.
+#[test]
+fn an_honest_proof_verifies_with_fewer_than_128_columns() {
+    let instance = Instance::honest(Shape::new(16, 6).unwrap(), 31);
+    let proof = prove(&instance);
+
+    instance
+        .verifier
+        .verify(
+            &instance.claim,
+            &instance.pcs,
+            instance.com,
+            verifier_transcript(&proof),
+        )
+        .unwrap();
 }
 
 #[test]

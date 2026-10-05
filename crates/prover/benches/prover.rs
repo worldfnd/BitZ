@@ -29,10 +29,10 @@ fn random_table(shape: Shape) -> BitTable<'static> {
 #[divan::bench]
 fn gkr(bencher: Bencher) {
     // `Shape::new(log_rows, log_columns)` rejects fewer than `2^22` committed
-    // bits total (`MIN_LOG_BITS`) and a row width under 7 (`PACK_BITS`), so
-    // the two args must sum to at least 22. That floor isn't a security bound
-    // computed here -- it's the range flock-core ships precomputed Ligerito
-    // configs for (see the comment on `MIN_LOG_BITS`).
+    // bits total (`MIN_LOG_BITS`), and `BitZParams::new` a row width under 7
+    // (`PACK_BITS`), so the two args must sum to at least 22. That floor
+    // isn't a security bound computed here -- it's the range flock-core ships
+    // precomputed Ligerito configs for (see the comment on `MIN_LOG_BITS`).
     let shape = Shape::new(10, 15).unwrap();
     let table = random_table(shape);
 
