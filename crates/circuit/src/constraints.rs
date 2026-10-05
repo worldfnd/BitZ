@@ -117,7 +117,8 @@ impl<C: Send + Sync> SparseMatrix<C> {
         }
     }
 
-    fn map_values_ref<D, M>(&self, map: M) -> SparseMatrix<D>
+    /// Maps every coefficient, keeping this matrix.
+    pub fn map_values_ref<D, M>(&self, map: M) -> SparseMatrix<D>
     where
         D: Send + Sync,
         M: Fn(&C) -> D + Send + Sync,
@@ -303,22 +304,6 @@ impl<R: Send + Sync> ConstraintMatrices<R> {
             a: self.a.map_values(map),
             b: self.b.map_values(map),
             c: self.c.map_values(map),
-        }
-    }
-
-    /// Maps every A/B/C coefficient, keeping the matrices.
-    ///
-    /// The Boolean `M` matrix and sparse topology are cloned unchanged.
-    pub fn map_coefficients_ref<D, M>(&self, map: M) -> ConstraintMatrices<D>
-    where
-        D: Send + Sync,
-        M: Fn(&R) -> D + Copy + Send + Sync,
-    {
-        ConstraintMatrices {
-            m: self.m.clone(),
-            a: self.a.map_values_ref(map),
-            b: self.b.map_values_ref(map),
-            c: self.c.map_values_ref(map),
         }
     }
 }

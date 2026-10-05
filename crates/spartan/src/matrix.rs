@@ -1,6 +1,6 @@
 //! R1CS matrix preparation and the sparse kernels used by Spartan.
 
-use circuit::constraints::{ConstraintMatrices, SparseMatrix};
+use circuit::constraints::{ConstraintMatrices, SparseBoolMatrix, SparseMatrix};
 use circuit::matrix_products::{IntegerProducts, ModularVector, RuntimeModulus};
 use circuit::witgen::PackedWitness;
 use circuit::{BitWidth, IntoWords};
@@ -8,6 +8,7 @@ use common::{BitzClaimField, BitzField};
 use poly::DenseMultilinearExtension;
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
+use std::sync::Arc;
 use transcript::Encoding;
 
 use crate::sumcheck::R1csProductMles;
@@ -26,17 +27,31 @@ pub enum SpartanMatrixError {
     InvalidMleOperation,
 }
 
-/// Immutable field-valued constraint matrices prepared for repeated Spartan
-/// proofs and verification.
-///
-/// Shape validation, Boolean-domain sizing, canonical statement hashing and
-/// the column chunking are performed once during construction rather than
-/// inside the prover or verifier.
+/// Constraint matrices over their coefficient ring, prepared once for every
+/// proof: shape validated, Boolean domains sized, nonzeros chunked by column.
+/// None of that depends on a modulus, so [`Self::project`] shares it and
+/// only reduces the coefficients.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PreparedConstraintMatrices<R> {
+pub struct PreparedIntegerMatrices<R> {
     matrices: ConstraintMatrices<R>,
     /// Nonzeros of `a`, `b` and `c` grouped by column chunk.
-    column_chunks: [ColumnChunkIndex; 3],
+    column_chunks: Arc<[ColumnChunkIndex; 3]>,
+    num_row_vars: usize,
+    num_column_vars: usize,
+}
+
+/// Immutable field-valued constraint matrices prepared for repeated Spartan
+/// proofs and verification: `A`, `B` and `C` over the field, their column
+/// chunking, the Boolean domain sizes and the canonical statement digest.
+///
+/// Built by [`PreparedIntegerMatrices::project`] under a drawn modulus, or by
+/// [`Self::new`] from matrices already over the field.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreparedConstraintMatrices<F> {
+    a: SparseMatrix<F>,
+    b: SparseMatrix<F>,
+    c: SparseMatrix<F>,
+    column_chunks: Arc<[ColumnChunkIndex; 3]>,
     digest: [u8; 32],
     num_row_vars: usize,
     num_column_vars: usize,
@@ -92,20 +107,68 @@ impl ColumnChunkIndex {
     }
 }
 
-impl<F: BitzField> PreparedConstraintMatrices<F> {
-    pub fn new(matrices: ConstraintMatrices<F>) -> Result<Self, SpartanMatrixError> {
+/// Groups `a`, `b` and `c` by column chunk over the padded column domain.
+fn column_chunks<C>(
+    matrices: &ConstraintMatrices<C>,
+    num_column_vars: usize,
+) -> [ColumnChunkIndex; 3] {
+    let num_columns = 1_usize << num_column_vars;
+    let chunk_len = num_columns.min(1_usize << BIND_CHUNK_COLUMN_VARS);
+    let chunk_count = num_columns / chunk_len;
+    [&matrices.a, &matrices.b, &matrices.c]
+        .map(|matrix| ColumnChunkIndex::new(matrix, chunk_len, chunk_count))
+}
+
+impl<R: Send + Sync> PreparedIntegerMatrices<R> {
+    pub fn new(matrices: ConstraintMatrices<R>) -> Result<Self, SpartanMatrixError> {
         let (num_row_vars, num_column_vars) = r1cs_num_vars(&matrices)?;
-
-        let num_columns = 1_usize << num_column_vars;
-        let chunk_len = num_columns.min(1_usize << BIND_CHUNK_COLUMN_VARS);
-        let chunk_count = num_columns / chunk_len;
-
-        let column_chunks = [&matrices.a, &matrices.b, &matrices.c]
-            .map(|matrix| ColumnChunkIndex::new(matrix, chunk_len, chunk_count));
-        let digest = constraint_matrix_digest(&matrices)?;
-
+        let column_chunks = Arc::new(column_chunks(&matrices, num_column_vars));
         Ok(Self {
             matrices,
+            column_chunks,
+            num_row_vars,
+            num_column_vars,
+        })
+    }
+
+    pub fn matrices(&self) -> &ConstraintMatrices<R> {
+        &self.matrices
+    }
+
+    /// The matrices with `map` applied to every coefficient of `A`, `B` and
+    /// `C`: the per-proof work. The chunking is shared; the digest is over the
+    /// projected coefficients, as in [`PreparedConstraintMatrices::new`].
+    pub fn project<F, M>(&self, map: M) -> Result<PreparedConstraintMatrices<F>, SpartanMatrixError>
+    where
+        F: BitzField,
+        M: Fn(&R) -> F + Copy + Send + Sync,
+    {
+        let [a, b, c] = [&self.matrices.a, &self.matrices.b, &self.matrices.c]
+            .map(|matrix| matrix.map_values_ref(map));
+        let digest = constraint_matrix_digest(&self.matrices.m, [&a, &b, &c])?;
+        Ok(PreparedConstraintMatrices {
+            a,
+            b,
+            c,
+            column_chunks: Arc::clone(&self.column_chunks),
+            digest,
+            num_row_vars: self.num_row_vars,
+            num_column_vars: self.num_column_vars,
+        })
+    }
+}
+
+impl<F: BitzField> PreparedConstraintMatrices<F> {
+    /// Prepares matrices already over the field, without copying them.
+    pub fn new(matrices: ConstraintMatrices<F>) -> Result<Self, SpartanMatrixError> {
+        let (num_row_vars, num_column_vars) = r1cs_num_vars(&matrices)?;
+        let column_chunks = Arc::new(column_chunks(&matrices, num_column_vars));
+        let ConstraintMatrices { m, a, b, c } = matrices;
+        let digest = constraint_matrix_digest(&m, [&a, &b, &c])?;
+        Ok(Self {
+            a,
+            b,
+            c,
             column_chunks,
             digest,
             num_row_vars,
@@ -115,22 +178,34 @@ impl<F: BitzField> PreparedConstraintMatrices<F> {
 
     /// Returns human-readable info about R1CS matrices and their nonzero entries.
     pub fn short_debug_info(&self) -> String {
-        let nonzeros: usize = [&self.matrices.a, &self.matrices.b, &self.matrices.c]
+        let nonzeros: usize = self
+            .matrices()
             .iter()
             .flat_map(|matrix| matrix.rows())
             .map(|row| row.entries().len())
             .sum();
         format!(
             "{} r1cs rows -> 2^{}, {} h entries -> 2^{}, {nonzeros} nonzeros",
-            self.matrices.a.row_count(),
+            self.row_count(),
             self.num_row_vars(),
-            self.matrices.a.column_count(),
+            self.column_count(),
             self.num_column_vars(),
         )
     }
 
-    pub fn matrices(&self) -> &ConstraintMatrices<F> {
-        &self.matrices
+    /// `A`, `B` and `C`.
+    pub fn matrices(&self) -> [&SparseMatrix<F>; 3] {
+        [&self.a, &self.b, &self.c]
+    }
+
+    /// Number of R1CS rows before padding.
+    pub fn row_count(&self) -> usize {
+        self.a.row_count()
+    }
+
+    /// Number of assignment entries before padding, the constant included.
+    pub const fn column_count(&self) -> usize {
+        self.a.column_count()
     }
 
     pub const fn digest(&self) -> &[u8; 32] {
@@ -249,7 +324,7 @@ impl<F: BitzField> PreparedConstraintMatrices<F> {
         rho: F,
     ) -> Result<DenseMultilinearExtension<F>, SpartanMatrixError> {
         bind_and_batch_with_num_vars(
-            &self.matrices,
+            self.matrices(),
             &self.column_chunks,
             row_point,
             rho,
@@ -272,7 +347,7 @@ impl<F: BitzField> PreparedConstraintMatrices<F> {
         column_point: &[F],
     ) -> Result<F, SpartanMatrixError> {
         evaluate_batched_with_num_vars(
-            &self.matrices,
+            self.matrices(),
             &self.column_chunks,
             row_point,
             rho,
@@ -284,7 +359,7 @@ impl<F: BitzField> PreparedConstraintMatrices<F> {
 }
 
 fn bind_and_batch_with_num_vars<F: BitzField>(
-    matrices: &ConstraintMatrices<F>,
+    matrices: [&SparseMatrix<F>; 3],
     column_chunks: &[ColumnChunkIndex; 3],
     row_point: &[F],
     rho: F,
@@ -300,9 +375,9 @@ fn bind_and_batch_with_num_vars<F: BitzField>(
 
     let row_weights = poly::eq_table(row_point);
     let batched = [
-        (&matrices.a, &column_chunks[0], F::one()),
-        (&matrices.b, &column_chunks[1], rho),
-        (&matrices.c, &column_chunks[2], rho * rho),
+        (matrices[0], &column_chunks[0], F::one()),
+        (matrices[1], &column_chunks[1], rho),
+        (matrices[2], &column_chunks[2], rho * rho),
     ];
     let chunk_len = column_chunks[0].chunk_len;
 
@@ -332,7 +407,7 @@ fn bind_and_batch_with_num_vars<F: BitzField>(
 }
 
 fn evaluate_batched_with_num_vars<F: BitzField>(
-    matrices: &ConstraintMatrices<F>,
+    matrices: [&SparseMatrix<F>; 3],
     column_chunks: &[ColumnChunkIndex; 3],
     row_point: &[F],
     rho: F,
@@ -355,9 +430,9 @@ fn evaluate_batched_with_num_vars<F: BitzField>(
 
     let row_weights = poly::eq_table(row_point);
     let batched = [
-        (&matrices.a, &column_chunks[0], F::one()),
-        (&matrices.b, &column_chunks[1], rho),
-        (&matrices.c, &column_chunks[2], rho * rho),
+        (matrices[0], &column_chunks[0], F::one()),
+        (matrices[1], &column_chunks[1], rho),
+        (matrices[2], &column_chunks[2], rho * rho),
     ];
 
     // All tasks share one cache-sized `low` table and a per-chunk factor.
@@ -413,30 +488,23 @@ pub(crate) fn r1cs_num_vars<R: Send + Sync>(
 /// more than one field must bind the field choice in its transcript session or
 /// instance; canonical coefficient encodings need not identify their field.
 pub(crate) fn constraint_matrix_digest<F: BitzField>(
-    matrices: &ConstraintMatrices<F>,
+    m: &SparseBoolMatrix,
+    matrices: [&SparseMatrix<F>; 3],
 ) -> Result<[u8; 32], SpartanMatrixError> {
-    matrices
-        .validate_shape()
-        .map_err(|_| SpartanMatrixError::InvalidR1csShape)?;
-
     let mut hash = Sha256::new();
     hash.update(b"bitz/spartan/constraint-matrices/v1");
 
     hash.update(b"M");
-    hash_usize(&mut hash, matrices.m.row_count())?;
-    hash_usize(&mut hash, matrices.m.column_count())?;
-    for row in matrices.m.rows() {
+    hash_usize(&mut hash, m.row_count())?;
+    hash_usize(&mut hash, m.column_count())?;
+    for row in m.rows() {
         hash_usize(&mut hash, row.positions().len())?;
         for &column in row.positions() {
             hash_usize(&mut hash, column)?;
         }
     }
 
-    for (label, matrix) in [
-        (b"A", &matrices.a),
-        (b"B", &matrices.b),
-        (b"C", &matrices.c),
-    ] {
+    for (label, matrix) in [b"A", b"B", b"C"].into_iter().zip(matrices) {
         hash.update(label);
         hash_sparse_matrix(&mut hash, matrix)?;
     }
@@ -482,13 +550,12 @@ pub(crate) fn padded_num_vars(logical_len: usize) -> Result<usize, SpartanMatrix
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use circuit::constraints::{ConstraintMatrices, SparseBoolMatrix, SparseMatrix};
     use rand::{Rng, SeedableRng};
     use rand_pcg::Pcg64;
 
     type F = field::FqDefault;
-
-    use super::{BIND_CHUNK_COLUMN_VARS, PreparedConstraintMatrices};
 
     /// Three chunks of columns plus one chunk of padding, so rows straddle
     /// chunk boundaries and the last chunk holds no nonzeros.
@@ -513,12 +580,16 @@ mod tests {
         SparseMatrix::try_from_rows(COLUMNS, rows).unwrap()
     }
 
-    fn random_prepared_matrices(rng: &mut Pcg64) -> PreparedConstraintMatrices<F> {
+    fn random_matrices(rng: &mut Pcg64) -> ConstraintMatrices<F> {
         let m = SparseBoolMatrix::try_from_rows(1, vec![Vec::new(); COLUMNS]).unwrap();
         let a = random_sparse_matrix(rng);
         let b = random_sparse_matrix(rng);
         let c = random_sparse_matrix(rng);
-        PreparedConstraintMatrices::new(ConstraintMatrices { m, a, b, c }).unwrap()
+        ConstraintMatrices { m, a, b, c }
+    }
+
+    fn random_prepared_matrices(rng: &mut Pcg64) -> PreparedConstraintMatrices<F> {
+        PreparedConstraintMatrices::new(random_matrices(rng)).unwrap()
     }
 
     fn random_point(rng: &mut Pcg64, len: usize) -> Vec<F> {
@@ -529,7 +600,7 @@ mod tests {
 
     /// `D(r_y)` by the direct triple loop over every nonzero.
     fn reference_evaluation(
-        matrices: &ConstraintMatrices<F>,
+        matrices: [&SparseMatrix<F>; 3],
         row_point: &[F],
         rho: F,
         column_point: &[F],
@@ -537,11 +608,7 @@ mod tests {
         let row_weights = poly::eq_table(row_point);
         let column_weights = poly::eq_table(column_point);
         let mut evaluation = F::from(0u128);
-        for (matrix, batch_scale) in [
-            (&matrices.a, F::from(1u128)),
-            (&matrices.b, rho),
-            (&matrices.c, rho * rho),
-        ] {
+        for (matrix, batch_scale) in matrices.into_iter().zip([F::from(1u128), rho, rho * rho]) {
             for (row, entries) in matrix.rows().iter().enumerate() {
                 for &(column, coefficient) in entries.entries() {
                     evaluation +=
@@ -556,11 +623,11 @@ mod tests {
     fn column_chunks_partition_every_row() {
         let mut rng = Pcg64::seed_from_u64(7);
         let prepared = random_prepared_matrices(&mut rng);
-        let matrices = prepared.matrices();
 
-        for (matrix, index) in [&matrices.a, &matrices.b, &matrices.c]
+        for (matrix, index) in prepared
+            .matrices()
             .into_iter()
-            .zip(&prepared.column_chunks)
+            .zip(prepared.column_chunks.iter())
         {
             let mut spans: Vec<_> = index
                 .spans
@@ -603,5 +670,58 @@ mod tests {
 
         let bound = prepared.bind_and_batch(&row_point, rho).unwrap();
         assert_eq!(bound.evaluate(&column_point).unwrap(), expected);
+    }
+
+    /// Projecting integer matrices prepared once gives exactly what preparing
+    /// the projected matrices gives, and the chunking is shared, not rebuilt.
+    #[test]
+    fn projecting_prepared_integer_matrices_matches_preparing_the_projection() {
+        let mut rng = Pcg64::seed_from_u64(13);
+        let mut random_integer_matrix = || {
+            let rows = (0..ROWS)
+                .map(|_| {
+                    let mut columns: Vec<usize> = (0..ENTRIES_PER_ROW)
+                        .map(|_| rng.random_range(0..COLUMNS))
+                        .collect();
+                    columns.sort_unstable();
+                    columns.dedup();
+                    columns
+                        .into_iter()
+                        .map(|column| (column, i128::from(rng.random::<i64>())))
+                        .collect()
+                })
+                .collect();
+            SparseMatrix::try_from_rows(COLUMNS, rows).unwrap()
+        };
+        let project = |coefficient: &i128| {
+            let magnitude = F::from(coefficient.unsigned_abs());
+            if *coefficient < 0 {
+                -magnitude
+            } else {
+                magnitude
+            }
+        };
+
+        let integer_matrices = ConstraintMatrices {
+            m: SparseBoolMatrix::try_from_rows(1, vec![Vec::new(); COLUMNS]).unwrap(),
+            a: random_integer_matrix(),
+            b: random_integer_matrix(),
+            c: random_integer_matrix(),
+        };
+        let prepared = PreparedIntegerMatrices::new(integer_matrices.clone()).unwrap();
+        let projected = prepared.project(project).unwrap();
+        let direct =
+            PreparedConstraintMatrices::new(integer_matrices.map_coefficients(|c| project(&c)))
+                .unwrap();
+        assert_eq!(projected, direct);
+        assert!(Arc::ptr_eq(
+            &projected.column_chunks,
+            &prepared.project(project).unwrap().column_chunks
+        ));
+        assert_eq!(prepared.matrices().a.row_count(), projected.row_count());
+        assert_eq!(
+            prepared.matrices().a.column_count(),
+            projected.column_count()
+        );
     }
 }

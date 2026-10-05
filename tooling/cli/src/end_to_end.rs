@@ -7,7 +7,7 @@
 use circuit::matrix_products::StoredInteger;
 use circuit::{
     BitWidth, Circuit, IntoWords,
-    constraints::{ConstraintGenerator, ConstraintMatrices, SparseBoolMatrix},
+    constraints::{ConstraintGenerator, SparseBoolMatrix},
     matrix_products::IntegerProducts,
     matrix_transpose::{MTransposeGenerator, MaterializedMTranspose},
     witgen::{PackedWitness, ProductWitgen},
@@ -31,8 +31,8 @@ use verifier::BitZVerifier;
 
 use crate::ProjectConstraint;
 use spartan::{
-    PreparedConstraintMatrices, SpartanMatrixError, SpartanPiopProof, build_assignment_mle,
-    build_product_mles, prove_spartan_piop, verify_spartan_proof,
+    PreparedConstraintMatrices, PreparedIntegerMatrices, SpartanMatrixError, SpartanPiopProof,
+    build_assignment_mle, build_product_mles, prove_spartan_piop, verify_spartan_proof,
 };
 
 const SESSION: &[u8] = b"bitz/circuit-e2e/v2";
@@ -106,8 +106,8 @@ pub struct CircuitStats {
 pub struct CircuitProofSystem<S, F, R, Proj> {
     statement: S,
     opening_path: OpeningPath,
-    /// Exact, projected onto `F` under the drawn prime.
-    matrices: ConstraintMatrices<R>,
+    /// Prepared once over the integers; projected onto `F` under the drawn prime.
+    matrices: PreparedIntegerMatrices<R>,
     map: MaterializedMTranspose,
     claim_shape: Shape,
     generator: F128,
@@ -157,22 +157,20 @@ where
             .map(|i| constraints.input(i))
             .collect();
         statement.synthesize(&mut constraints, &inputs)?;
-        let matrices = constraints.into_matrices();
-        matrices
-            .validate_shape()
-            .map_err(|_| Error::Matrix(SpartanMatrixError::InvalidR1csShape))?;
+        let matrices =
+            PreparedIntegerMatrices::new(constraints.into_matrices()).map_err(Error::Matrix)?;
         let mut generator = MTransposeGenerator::new(statement.input_bits());
         let inputs = generator.take_inputs();
         statement.synthesize(&mut generator, &inputs)?;
         let map = generator.finish();
-        if map.h_len() != matrices.a.column_count() {
+        if map.h_len() != matrices.matrices().a.column_count() {
             return Err(Error::Configuration("map and assignment dimensions differ"));
         }
-        if map.f_len() != matrices.m.column_count() {
+        if map.f_len() != matrices.matrices().m.column_count() {
             return Err(Error::Configuration("map and witness dimensions differ"));
         }
         let claim_shape = shape_for(map.h_len())?;
-        let opening_path = if is_identity(&matrices.m) {
+        let opening_path = if is_identity(&matrices.matrices().m) {
             OpeningPath::Direct
         } else {
             OpeningPath::Virtual
@@ -202,7 +200,7 @@ where
     pub fn stats(&self) -> CircuitStats {
         CircuitStats {
             opening_path: self.opening_path,
-            constraints: self.matrices.a.row_count(),
+            constraints: self.matrices.matrices().a.row_count(),
             assignment_bits: self.map.h_len(),
             committed_bits: match self.opening_path {
                 OpeningPath::Direct => self.map.h_len(),
@@ -224,7 +222,7 @@ where
         if f.bit_len() + 1 != self.map.f_len() || h.bit_len() != self.map.h_len() {
             return Err(Error::Input("circuit replay changed witness dimensions"));
         }
-        if products.a_mw.len() != self.matrices.a.row_count() {
+        if products.a_mw.len() != self.matrices.matrices().a.row_count() {
             return Err(Error::Input("circuit replay changed constraint count"));
         }
         // Over the integers, so modulo whichever prime is drawn.
@@ -282,8 +280,8 @@ where
         }
         let prime = transcript.squeeze_prime(self.prime_bits);
         let (params, matrices) = self.under_prime(prime, &prime_lock, &mut transcript)?;
-        let products = build_product_mles(&witness.products, self.matrices.a.row_count())
-            .map_err(Error::Matrix)?;
+        let products =
+            build_product_mles(&witness.products, matrices.row_count()).map_err(Error::Matrix)?;
         let assignment =
             build_assignment_mle(&witness.assignment, self.map.h_len()).map_err(Error::Matrix)?;
         let (spartan, terminal) =
@@ -390,8 +388,8 @@ where
         let projection = Proj::prepare();
         let matrices = self
             .matrices
-            .map_coefficients_ref(|c| projection.project(c));
-        let matrices = PreparedConstraintMatrices::new(matrices).map_err(Error::Matrix)?;
+            .project(|c| projection.project(c))
+            .map_err(Error::Matrix)?;
         Ok((params, matrices))
     }
 
