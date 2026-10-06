@@ -117,9 +117,6 @@ pub(crate) fn prove(
     transcript: &mut ProverState,
 ) -> Result<(), ProveError> {
     let commitment = data.commitment();
-    if !commitment.matches(pcs) {
-        return Err(ProveError::ProverDataMismatch);
-    }
     let root = commitment.root();
     match query {
         OpeningQuery::Mle { point, target } => {

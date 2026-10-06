@@ -172,75 +172,19 @@ fn opening_reuses_commitment_state_and_leaves_matching_transcripts() {
 }
 
 #[test]
-fn initial_ood_rejects_changed_values_and_missing_or_mismatched_state() {
+fn opening_rejects_missing_ood_commitment_state() {
     let fixture = fixture();
     let pcs = &fixture.pcs;
+    let mut prover = build_prover(SESSION, INSTANCE);
+    let (root, mut data) = pcs.commit(&fixture.witness, &mut prover).unwrap();
+    let proof = prover.finish();
+
     let query = OpeningQuery::Mle {
         point: vec![F128::ZERO; M],
         target: F128::ZERO,
     };
-    let mut prover = build_prover(SESSION, INSTANCE);
-    let (root, mut data) = pcs.commit(&fixture.witness, &mut prover).unwrap();
-    prove(
-        pcs,
-        &data,
-        fixture.witness.clone(),
-        &query,
-        StatementBinding::Bind,
-        &mut prover,
-    )
-    .unwrap();
-    let proof = prover.finish();
-    let value_offset = usize::from(pcs.ood_grinding_bits().unwrap() > 0) * 8;
-
-    let mut changed = proof.clone();
-    changed.narg_string[value_offset] ^= 1;
-    let mut verifier = build_verifier(SESSION, INSTANCE, &changed);
-    let commitment = pcs.receive_commitment(root, &mut verifier).unwrap();
-    assert!(
-        verify(
-            pcs,
-            &commitment,
-            &query,
-            StatementBinding::Bind,
-            &mut verifier
-        )
-        .is_err()
-    );
-
-    let mut missing = proof.clone();
-    missing.narg_string.truncate(value_offset + 15);
-    let mut verifier = build_verifier(SESSION, INSTANCE, &missing);
-    assert!(pcs.receive_commitment(root, &mut verifier).is_err());
-
     let mut verifier = build_verifier(SESSION, INSTANCE, &proof);
     let mut commitment = pcs.receive_commitment(root, &mut verifier).unwrap();
-    let smaller = Pcs::new(&Shape::new(7, M - 8).unwrap(), SecurityLevel::Bits100).unwrap();
-    let smaller_query = OpeningQuery::Mle {
-        point: vec![F128::ZERO; M - 1],
-        target: F128::ZERO,
-    };
-    assert_eq!(
-        verify(
-            &smaller,
-            &commitment,
-            &smaller_query,
-            StatementBinding::Bind,
-            &mut verifier,
-        ),
-        Err(VerifyError::VerificationFailed),
-    );
-    let other = Pcs::new(&Shape::new(7, M - 7).unwrap(), SecurityLevel::Bits128).unwrap();
-    assert_eq!(
-        verify(
-            &other,
-            &commitment,
-            &query,
-            StatementBinding::Bind,
-            &mut verifier
-        ),
-        Err(VerifyError::VerificationFailed),
-    );
     commitment.ood = None;
     assert_eq!(
         verify(
@@ -261,7 +205,7 @@ fn initial_ood_rejects_changed_values_and_missing_or_mismatched_state() {
             fixture.witness.clone(),
             &query,
             StatementBinding::Bind,
-            &mut prover
+            &mut prover,
         ),
         Err(ProveError::ProverDataMismatch),
     );

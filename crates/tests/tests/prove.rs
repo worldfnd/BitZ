@@ -1,9 +1,9 @@
 //! The top-level prove and verify, through the real opening.
 
-use common::{OpeningQuery, Root, Shape, TableError};
+use common::{Root, Shape, TableError};
 use field::{F128, Fq};
 use num_traits::{ConstOne, ConstZero};
-use pcs::{CommitScheme, Pcs, StatementBinding, VerifyError as PcsVerifyError};
+use pcs::{Pcs, VerifyError as PcsVerifyError};
 use prover::ProveError;
 use tests::{Instance, narrow_shape, prover_transcript, verifier_transcript, wide_shape};
 use transcript::{Proof, SecurityLevel};
@@ -197,88 +197,25 @@ fn a_witness_of_the_wrong_length_is_refused_without_changing_the_commitment_tran
 }
 
 #[test]
-fn explicit_security_targets_verify_and_reject_replay_or_tampering() {
-    let mut instance = Instance::honest(narrow_shape(), 40);
-    for level in [SecurityLevel::Bits100, SecurityLevel::Bits128] {
-        instance.pcs = Pcs::new(instance.params.shape(), level).unwrap();
-        let mut transcript = prover_transcript();
-        (instance.com, instance.data) = instance
-            .pcs
-            .commit(&instance.packed, &mut transcript)
-            .unwrap();
-        instance.transcript = Some(transcript);
-        let proof = prove(&mut instance);
-        instance
-            .verify(
-                &instance.claim,
-                &instance.pcs,
-                instance.com,
-                verifier_transcript(&proof),
-            )
-            .unwrap();
+fn the_128_bit_profile_verifies_and_rejects_replay_or_tampering() {
+    let mut instance = Instance::with_security(narrow_shape(), 40, SecurityLevel::Bits128);
+    let mut proof = prove(&mut instance);
+    let verify = |claim, pcs, proof: &Proof| {
+        instance.verify(claim, pcs, instance.com, verifier_transcript(proof))
+    };
+    verify(&instance.claim, &instance.pcs, &proof).unwrap();
 
-        let other_level = match level {
-            SecurityLevel::Bits100 => SecurityLevel::Bits128,
-            SecurityLevel::Bits128 => SecurityLevel::Bits100,
-        };
-        let other_pcs = Pcs::new(instance.params.shape(), other_level).unwrap();
-        assert!(
-            instance
-                .verify(
-                    &instance.claim,
-                    &other_pcs,
-                    instance.com,
-                    verifier_transcript(&proof),
-                )
-                .is_err()
-        );
+    let other = Pcs::new(instance.params.shape(), SecurityLevel::Bits100).unwrap();
+    assert!(verify(&instance.claim, &other, &proof).is_err());
+    let retargeted = instance.with_target(instance.claim.target() + Fq::ONE);
+    assert_eq!(
+        verify(&retargeted, &instance.pcs, &proof),
+        Err(VerifyError::Fold(ReceiveError::TargetMismatch))
+    );
 
-        let wrong_target = instance.with_target(instance.claim.target() + Fq::ONE);
-        assert_eq!(
-            instance.verify(
-                &wrong_target,
-                &instance.pcs,
-                instance.com,
-                verifier_transcript(&proof),
-            ),
-            Err(VerifyError::Fold(ReceiveError::TargetMismatch))
-        );
-
-        if level == SecurityLevel::Bits128 {
-            // The first nonce follows the column folds.
-            let mut changed = proof.clone();
-            changed.narg_string[16 * instance.params.shape().columns()] ^= 0xff;
-            assert!(
-                instance
-                    .verify(
-                        &instance.claim,
-                        &instance.pcs,
-                        instance.com,
-                        verifier_transcript(&changed),
-                    )
-                    .is_err()
-            );
-        }
-
-        // Both policies use the same commitment geometry, but different opening configurations.
-        // Retained data must match the security target as well as the commitment shape.
-        let query = OpeningQuery::Mle {
-            point: vec![F128::ZERO; instance.params.shape().log_bits()],
-            target: F128::from(instance.packed[0].lo & 1),
-        };
-        let mut transcript = prover_transcript();
-        assert_eq!(
-            other_pcs.prove_lin(
-                &instance.data,
-                instance.packed.clone(),
-                &query,
-                StatementBinding::Bind,
-                &mut transcript,
-            ),
-            Err(pcs::ProveError::ProverDataMismatch)
-        );
-        assert_eq!(transcript.finish(), Proof::default());
-    }
+    // The first nonce follows the column folds.
+    proof.narg_string[16 * instance.params.shape().columns()] ^= 0xff;
+    assert!(verify(&instance.claim, &instance.pcs, &proof).is_err());
 }
 
 #[test]

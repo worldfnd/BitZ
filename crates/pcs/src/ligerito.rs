@@ -25,7 +25,6 @@ const PROOF_HINT_LIMIT: usize = 64 * 1024 * 1024;
 pub(crate) struct CheckedLigerito {
     prover_config: ProverConfig,
     verifier_config: VerifierConfig,
-    log_n_u32: u32,
     final_log_n: usize,
     pow_schedule: Vec<(u32, u32)>,
 }
@@ -39,8 +38,6 @@ impl CheckedLigerito {
             .m
             .checked_sub(LOG_PACKING)
             .ok_or(ConfigError::Invalid("m below packing width"))?;
-        let log_n_u32 =
-            u32::try_from(log_n).map_err(|_| ConfigError::Invalid("log_n exceeds u32"))?;
         let (prover_config, verifier_config) = security
             .to_prover_verifier_configs()
             .map_err(|_| ConfigError::Invalid("prover config"))?;
@@ -71,7 +68,6 @@ impl CheckedLigerito {
         Ok(Self {
             prover_config,
             verifier_config,
-            log_n_u32,
             final_log_n,
             pow_schedule,
         })
@@ -83,10 +79,6 @@ impl CheckedLigerito {
 
     pub(crate) fn verifier_config(&self) -> &VerifierConfig {
         &self.verifier_config
-    }
-
-    pub(crate) fn log_n_u32(&self) -> u32 {
-        self.log_n_u32
     }
 
     pub(crate) fn final_log_n(&self) -> usize {

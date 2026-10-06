@@ -10,7 +10,6 @@ pub type Field = F128;
 type Point = VecDeque<Field>;
 
 const CUBIC_GRINDING_LABEL: &[u8] = b"gkr/cubic/v1";
-const AFFINE_GRINDING_LABEL: &[u8] = b"gkr/affine/v1";
 
 /// Proves the layer-by-layer sumcheck reduction from a claim at `point`
 /// (an evaluation point on the output layer) down to a claim on the leaves.
@@ -20,6 +19,7 @@ pub fn gpgkr_prove(
     ps: &mut ProverState,
     log_bits: usize,
     point: &[F128],
+    // All the intermediate witnesses + the input layer. Doesn't contain the output layer
     witnesses: LayerWitnesses,
     security: SecurityLevel,
 ) -> (Vec<F128>, Field) {
@@ -145,7 +145,6 @@ fn prove_layer(
     }
 
     ps.prover_message(&[mle_l[0], mle_r[0]]);
-    ps.grind(AFFINE_GRINDING_LABEL, security.grinding_bits(1));
     let r = ps.verifier_message();
     next_point.push_front(r);
     let claim = mle_l[0] + r * (mle_r[0] - mle_l[0]);
@@ -341,8 +340,6 @@ fn verify_layer(
     if (prefix * elem_lr[0] * elem_lr[1]) != claim {
         None
     } else {
-        vs.grind(AFFINE_GRINDING_LABEL, security.grinding_bits(1))
-            .ok()?;
         let r = vs.verifier_message();
         next_point.push_front(r);
 
@@ -411,6 +408,7 @@ impl IntoIterator for LayerWitnesses {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+    use transcript::SecurityLevel::{Bits100, Bits128};
 
     fn field() -> impl Strategy<Value = Field> {
         any::<u128>().prop_map(Field::from)
@@ -524,7 +522,7 @@ mod tests {
         let instance = (leaves.clone(), point.to_vec());
         let mut unground_len = 0;
 
-        for security in [SecurityLevel::Bits100, SecurityLevel::Bits128] {
+        for security in [Bits100, Bits128] {
             let circuit = GrandProductCircuit::new(leaves.clone());
             let (output, witnesses) = circuit.batched_eval(4);
             let claim = mle(output, &point);
@@ -547,8 +545,8 @@ mod tests {
             verifier.check_eof().unwrap();
 
             match security {
-                SecurityLevel::Bits100 => unground_len = proof.narg_string.len(),
-                SecurityLevel::Bits128 => {
+                Bits100 => unground_len = proof.narg_string.len(),
+                Bits128 => {
                     // Two layers have five cubic challenges and five eight-byte nonces.
                     assert_eq!(proof.narg_string.len(), unground_len + 40);
                     // The first cubic message occupies two canonical field elements.
@@ -582,29 +580,20 @@ mod tests {
                 leaves.len().ilog2() as usize,
                 &point,
                 witnesses,
-                SecurityLevel::Bits100,
+                Bits100,
             );
             assert_eq!(terminal.1, mle(leaves.clone(), &terminal.0));
             let proof = prover.finish();
 
             let mut verifier = transcript::build_verifier("gkr-zero", &instance, &proof);
             assert_eq!(
-                gpgkr_verify(&mut verifier, claim, &point, 2, SecurityLevel::Bits100),
+                gpgkr_verify(&mut verifier, claim, &point, 2, Bits100),
                 Some(terminal)
             );
             verifier.check_eof().unwrap();
 
             let mut verifier = transcript::build_verifier("gkr-zero", &instance, &proof);
-            assert!(
-                gpgkr_verify(
-                    &mut verifier,
-                    claim + Field::ONE,
-                    &point,
-                    2,
-                    SecurityLevel::Bits100
-                )
-                .is_none()
-            );
+            assert!(gpgkr_verify(&mut verifier, claim + Field::ONE, &point, 2, Bits100).is_none());
         }
     }
 
@@ -647,13 +636,7 @@ mod tests {
         let log_groups = last_value.len().max(1).ilog2();
         let point: Vec<Field> = (0..log_groups).map(|_| prover.verifier_message()).collect();
 
-        gpgkr_prove(
-            &mut prover,
-            log_bits,
-            &point,
-            witnesses,
-            SecurityLevel::Bits100,
-        );
+        gpgkr_prove(&mut prover, log_bits, &point, witnesses, Bits100);
         (last_value, prover.finish())
     }
 
@@ -672,7 +655,7 @@ mod tests {
         let log_leafs = circuit.leafs.len().max(1).ilog2();
         let rounds = log_leafs.saturating_sub(log_groups);
 
-        match gpgkr_verify(&mut verifier, claim, &point, rounds, SecurityLevel::Bits100) {
+        match gpgkr_verify(&mut verifier, claim, &point, rounds, Bits100) {
             Some((point, claim)) => {
                 let leaf_check = mle(circuit.leafs, &point);
 

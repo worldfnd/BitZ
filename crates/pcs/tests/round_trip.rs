@@ -16,6 +16,17 @@ const INSTANCE: &[u8] = b"m22-singleton-opening";
 const INNER_PRODUCT_INSTANCE: &[u8] = b"m22-factored-inner-product";
 const INNER_PRODUCT_SET_BITS: [usize; 8] = [0, 63, 64, 127, 128, 255, 256, (1 << M) - 1];
 
+fn verify_opening(
+    pcs: &Pcs,
+    root: &Root,
+    query: &OpeningQuery,
+    binding: StatementBinding,
+    transcript: &mut VerifierState<'_>,
+) -> Result<(), VerifyError> {
+    let commitment = pcs.receive_commitment(*root, transcript)?;
+    pcs.verify_lin(&commitment, query, binding, transcript)
+}
+
 fn shape() -> Shape {
     Shape::new(7, M - 7).unwrap()
 }
@@ -54,7 +65,6 @@ impl RealFixture {
 
         let mut prover = build_prover(SESSION, INSTANCE);
         let (commitment, data) = pcs.commit(&packed_witness, &mut prover).unwrap();
-
         pcs.prove_lin(
             &data,
             packed_witness,
@@ -71,17 +81,6 @@ impl RealFixture {
             proof: prover.finish(),
         }
     }
-}
-
-fn verify_opening(
-    pcs: &Pcs,
-    root: &Root,
-    query: &OpeningQuery,
-    binding: StatementBinding,
-    transcript: &mut VerifierState<'_>,
-) -> Result<(), VerifyError> {
-    let data = pcs.receive_commitment(*root, transcript)?;
-    pcs.verify_lin(&data, query, binding, transcript)
 }
 
 fn fixture() -> &'static RealFixture {
@@ -202,18 +201,19 @@ impl InnerProductFixture {
         let target = inner_product_target(&shape);
         assert_ne!(target, F128::ZERO);
         let query = factored_query(&shape, target);
-        let mut commitment = Root([0; 32]);
         let proofs = [StatementBinding::Bind, StatementBinding::AlreadyBound].map(|binding| {
             let mut prover = build_prover(SESSION, INNER_PRODUCT_INSTANCE);
-            let (root, data) = pcs.commit(&witness, &mut prover).unwrap();
-            commitment = root;
+            let (commitment, data) = pcs.commit(&witness, &mut prover).unwrap();
             if binding == StatementBinding::AlreadyBound {
                 bind_outer_inner_product_statement(&mut prover, &pcs, &commitment, &query);
             }
             pcs.prove_lin(&data, witness.clone(), &query, binding, &mut prover)
                 .unwrap();
-            prover.finish()
+            (commitment, prover.finish())
         });
+        let [(commitment, bound), (other_root, already_bound)] = proofs;
+        assert_eq!(commitment, other_root);
+        let proofs = [bound, already_bound];
         Self {
             pcs,
             commitment,
@@ -234,11 +234,11 @@ impl InnerProductFixture {
         binding: StatementBinding,
     ) -> Result<(Commitment, VerifierState<'proof>), VerifyError> {
         let mut verifier = build_verifier(SESSION, INNER_PRODUCT_INSTANCE, proof);
-        let data = self.pcs.receive_commitment(*commitment, &mut verifier)?;
+        let received = self.pcs.receive_commitment(*commitment, &mut verifier)?;
         if binding == StatementBinding::AlreadyBound {
             bind_outer_inner_product_statement(&mut verifier, &self.pcs, commitment, query);
         }
-        Ok((data, verifier))
+        Ok((received, verifier))
     }
 
     fn verify(
@@ -248,8 +248,9 @@ impl InnerProductFixture {
         proof: &Proof,
         binding: StatementBinding,
     ) -> Result<(), VerifyError> {
-        let (data, mut verifier) = self.verifier(commitment, query, proof, binding)?;
-        self.pcs.verify_lin(&data, query, binding, &mut verifier)
+        let (received, mut verifier) = self.verifier(commitment, query, proof, binding)?;
+        self.pcs
+            .verify_lin(&received, query, binding, &mut verifier)
     }
 }
 
@@ -314,11 +315,75 @@ fn real_pcs_opening_round_trip_succeeds() {
 }
 
 #[test]
+fn real_pcs_ood_round_batches_into_opening() {
+    let pcs = Pcs::new(&shape(), SecurityLevel::Bits100).unwrap();
+    let mut packed_witness = vec![F128::ZERO; pcs.packed_len()];
+    packed_witness[SINGLETON / 128] = F128::new(0, 1 << (SINGLETON % 128 - 64));
+    let point = vec![F128::from(2u64); M];
+    let query = OpeningQuery::Mle {
+        target: singleton_target(&point, SINGLETON),
+        point,
+    };
+    ood_round_trip(&pcs, packed_witness, query);
+}
+
+fn ood_round_trip(pcs: &impl CommitScheme, packed_witness: Vec<F128>, query: OpeningQuery) {
+    let mut prover = build_prover(SESSION, b"ood-round-trip");
+    let (commitment, data) = pcs.commit(&packed_witness, &mut prover).unwrap();
+    pcs.prove_lin(
+        &data,
+        packed_witness,
+        &query,
+        StatementBinding::Bind,
+        &mut prover,
+    )
+    .unwrap();
+    let next_challenge = prover.verifier_message::<F128>();
+    let proof = prover.finish();
+
+    let mut verifier = build_verifier(SESSION, b"ood-round-trip", &proof);
+    let received = pcs.receive_commitment(commitment, &mut verifier).unwrap();
+    pcs.verify_lin(&received, &query, StatementBinding::Bind, &mut verifier)
+        .unwrap();
+    assert_eq!(verifier.verifier_message::<F128>(), next_challenge);
+    verifier.check_eof().unwrap();
+}
+
+#[test]
+fn real_pcs_ood_round_rejects_a_changed_evaluation() {
+    let pcs = Pcs::new(&shape(), SecurityLevel::Bits100).unwrap();
+    let packed_witness = vec![F128::ZERO; pcs.packed_len()];
+    let query = OpeningQuery::Mle {
+        point: vec![F128::from(2u64); M],
+        target: F128::ZERO,
+    };
+    let mut prover = build_prover(SESSION, b"ood-tampering");
+    let (commitment, data) = pcs.commit(&packed_witness, &mut prover).unwrap();
+    pcs.prove_lin(
+        &data,
+        packed_witness,
+        &query,
+        StatementBinding::Bind,
+        &mut prover,
+    )
+    .unwrap();
+    let mut proof = prover.finish();
+    proof.narg_string[0] ^= 1;
+
+    let mut verifier = build_verifier(SESSION, b"ood-tampering", &proof);
+    let received = pcs.receive_commitment(commitment, &mut verifier).unwrap();
+    assert!(
+        pcs.verify_lin(&received, &query, StatementBinding::Bind, &mut verifier,)
+            .is_err()
+    );
+}
+
+#[test]
 fn factored_inner_product_round_trip_succeeds_for_both_security_levels_and_bindings() {
     for security in [SecurityLevel::Bits100, SecurityLevel::Bits128] {
         let fixture = inner_product_fixture(security);
         for binding in [StatementBinding::Bind, StatementBinding::AlreadyBound] {
-            let (data, mut verifier) = fixture
+            let (received, mut verifier) = fixture
                 .verifier(
                     &fixture.commitment,
                     &fixture.query,
@@ -328,7 +393,7 @@ fn factored_inner_product_round_trip_succeeds_for_both_security_levels_and_bindi
                 .unwrap();
             fixture
                 .pcs
-                .verify_lin(&data, &fixture.query, binding, &mut verifier)
+                .verify_lin(&received, &fixture.query, binding, &mut verifier)
                 .unwrap();
             verifier.check_eof().unwrap();
         }
@@ -408,12 +473,12 @@ fn factored_inner_product_requires_complete_transcript_consumption() {
             } else {
                 proof.narg_string.push(0);
             }
-            let (data, mut verifier) = fixture
+            let (received, mut verifier) = fixture
                 .verifier(&fixture.commitment, &fixture.query, &proof, binding)
                 .unwrap();
             fixture
                 .pcs
-                .verify_lin(&data, &fixture.query, binding, &mut verifier)
+                .verify_lin(&received, &fixture.query, binding, &mut verifier)
                 .unwrap();
             assert!(verifier.check_eof().is_err());
         }
@@ -465,7 +530,6 @@ fn factored_inner_product_rejects_invalid_prover_inputs_before_sumcheck() {
 
     let mut short_witness = packed_witness.clone();
     short_witness.pop();
-
     assert_eq!(
         pcs.prove_lin(
             &data,
@@ -530,20 +594,25 @@ fn real_pcs_accepts_an_already_bound_statement() {
     let proof = prover.finish();
 
     let mut verifier = build_verifier(SESSION, b"already-bound", &proof);
-    let data = pcs.receive_commitment(commitment, &mut verifier).unwrap();
+    let received = pcs.receive_commitment(commitment, &mut verifier).unwrap();
     bind_outer_statement(&mut verifier, &pcs, &commitment, &query);
-    pcs.verify_lin(&data, &query, StatementBinding::AlreadyBound, &mut verifier)
-        .unwrap();
+    pcs.verify_lin(
+        &received,
+        &query,
+        StatementBinding::AlreadyBound,
+        &mut verifier,
+    )
+    .unwrap();
     verifier.check_eof().unwrap();
 
     let mut mismatched_verifier = build_verifier(SESSION, b"already-bound", &proof);
-    let data = pcs
+    let received = pcs
         .receive_commitment(commitment, &mut mismatched_verifier)
         .unwrap();
     bind_outer_statement(&mut mismatched_verifier, &pcs, &commitment, &query);
     assert!(
         pcs.verify_lin(
-            &data,
+            &received,
             &query,
             StatementBinding::Bind,
             &mut mismatched_verifier,
@@ -557,7 +626,7 @@ fn real_pcs_rejects_point_length_mismatches() {
     let pcs = Pcs::new(&shape(), SecurityLevel::Bits100).unwrap();
     let packed_witness = vec![F128::ZERO; pcs.packed_len()];
     let mut prover = build_prover(SESSION, b"wrong-prover-point");
-    let (commitment, data) = pcs.commit(&packed_witness, &mut prover).unwrap();
+    let (_, data) = pcs.commit(&packed_witness, &mut prover).unwrap();
     let short_query = OpeningQuery::Mle {
         point: vec![F128::from(2u64); M - 1],
         target: F128::from(0u64),
@@ -578,15 +647,11 @@ fn real_pcs_rejects_point_length_mismatches() {
         point: vec![F128::from(2u64); M + 1],
         target: F128::from(0u64),
     };
-    let mut initial = build_prover(SESSION, b"wrong-verifier-point");
-    let packed = vec![F128::ZERO; pcs.packed_len()];
-    pcs.commit(&packed, &mut initial).unwrap();
-    let proof = initial.finish();
+    let proof = Proof::default();
     let mut verifier = build_verifier(SESSION, b"wrong-verifier-point", &proof);
     assert_eq!(
-        verify_opening(
-            &pcs,
-            &commitment,
+        pcs.verify_lin(
+            data.commitment(),
             &long_query,
             StatementBinding::Bind,
             &mut verifier,
@@ -644,6 +709,27 @@ fn real_pcs_rejects_mismatched_prover_parameters() {
 }
 
 #[test]
+fn real_pcs_rejects_commitment_state_from_different_parameters() {
+    let fixture = fixture();
+    for (m, security) in [(M - 1, SecurityLevel::Bits100), (M, SecurityLevel::Bits128)] {
+        let other = Pcs::new(&Shape::new(7, m - 7).unwrap(), security).unwrap();
+        let query = OpeningQuery::Mle {
+            point: vec![F128::ZERO; m],
+            target: F128::ZERO,
+        };
+        let mut verifier = build_verifier(SESSION, INSTANCE, &fixture.proof);
+        let commitment = fixture
+            .pcs
+            .receive_commitment(fixture.commitment, &mut verifier)
+            .unwrap();
+        assert_eq!(
+            other.verify_lin(&commitment, &query, StatementBinding::Bind, &mut verifier,),
+            Err(VerifyError::VerificationFailed),
+        );
+    }
+}
+
+#[test]
 fn real_pcs_prover_rejects_a_false_evaluation_without_consuming_prover_data() {
     let pcs = Pcs::new(&shape(), SecurityLevel::Bits100).unwrap();
     let packed_witness = vec![F128::ZERO; pcs.packed_len()];
@@ -653,7 +739,6 @@ fn real_pcs_prover_rejects_a_false_evaluation_without_consuming_prover_data() {
         point: vec![F128::from(2u64); M],
         target: F128::from(1u64),
     };
-
     let codeword_len = data.codeword_len();
 
     assert_eq!(
@@ -684,7 +769,6 @@ fn real_pcs_rejects_an_opening_for_a_different_packed_witness() {
         target: singleton_target(&point, 0),
         point,
     };
-
     pcs.prove_lin(
         &data,
         different_witness,
@@ -822,68 +906,4 @@ fn real_pcs_requires_complete_transcript_consumption() {
     )
     .unwrap();
     assert!(verifier.check_eof().is_err());
-}
-
-#[test]
-fn real_pcs_ood_round_batches_into_opening() {
-    let pcs = Pcs::new(&shape(), SecurityLevel::Bits100).unwrap();
-    let mut packed_witness = vec![F128::ZERO; pcs.packed_len()];
-    packed_witness[SINGLETON / 128] = F128::new(0, 1 << (SINGLETON % 128 - 64));
-    let point = vec![F128::from(2u64); M];
-    let query = OpeningQuery::Mle {
-        target: singleton_target(&point, SINGLETON),
-        point,
-    };
-    ood_round_trip(&pcs, packed_witness, query);
-}
-
-fn ood_round_trip(pcs: &impl CommitScheme, packed_witness: Vec<F128>, query: OpeningQuery) {
-    let mut prover = build_prover(SESSION, b"ood-round-trip");
-    let (commitment, data) = pcs.commit(&packed_witness, &mut prover).unwrap();
-    pcs.prove_lin(
-        &data,
-        packed_witness,
-        &query,
-        StatementBinding::Bind,
-        &mut prover,
-    )
-    .unwrap();
-    let next_challenge = prover.verifier_message::<F128>();
-    let proof = prover.finish();
-
-    let mut verifier = build_verifier(SESSION, b"ood-round-trip", &proof);
-    let received = pcs.receive_commitment(commitment, &mut verifier).unwrap();
-    pcs.verify_lin(&received, &query, StatementBinding::Bind, &mut verifier)
-        .unwrap();
-    assert_eq!(verifier.verifier_message::<F128>(), next_challenge);
-    verifier.check_eof().unwrap();
-}
-
-#[test]
-fn real_pcs_ood_round_rejects_a_changed_evaluation() {
-    let pcs = Pcs::new(&shape(), SecurityLevel::Bits100).unwrap();
-    let packed_witness = vec![F128::ZERO; pcs.packed_len()];
-    let query = OpeningQuery::Mle {
-        point: vec![F128::from(2u64); M],
-        target: F128::ZERO,
-    };
-    let mut prover = build_prover(SESSION, b"ood-tampering");
-    let (commitment, data) = pcs.commit(&packed_witness, &mut prover).unwrap();
-    pcs.prove_lin(
-        &data,
-        packed_witness,
-        &query,
-        StatementBinding::Bind,
-        &mut prover,
-    )
-    .unwrap();
-    let mut proof = prover.finish();
-    proof.narg_string[0] ^= 1;
-
-    let mut verifier = build_verifier(SESSION, b"ood-tampering", &proof);
-    let received = pcs.receive_commitment(commitment, &mut verifier).unwrap();
-    assert!(
-        pcs.verify_lin(&received, &query, StatementBinding::Bind, &mut verifier,)
-            .is_err()
-    );
 }

@@ -15,7 +15,7 @@ use field::{F128, Fq, gf128::smallest_generator};
 use pcs::{Pcs, ProverData};
 use rand_chacha::ChaCha8Rng;
 use rand_core::{Rng, SeedableRng};
-use transcript::{Proof, ProverState, VerifierState, build_prover, build_verifier};
+use transcript::{Proof, ProverState, SecurityLevel, VerifierState, build_prover, build_verifier};
 
 /// The specification's fixed modulus, `2^100 − 15`. Under it the fold bound
 /// admits every row width up to `t = 27`, so the reference split
@@ -103,6 +103,11 @@ pub struct Instance {
 impl Instance {
     /// Commits [`HonestClaim::new`] under the 100-bit policy, with a setup per role.
     pub fn honest(shape: Shape, seed: u64) -> Self {
+        Self::with_security(shape, seed, SecurityLevel::Bits100)
+    }
+
+    /// Builds and commits an honest instance at the requested security level.
+    pub fn with_security(shape: Shape, seed: u64, security: SecurityLevel) -> Self {
         let mut rng = ChaCha8Rng::seed_from_u64(seed);
         let HonestClaim {
             params,
@@ -110,7 +115,7 @@ impl Instance {
             packed,
         } = HonestClaim::new(shape, &mut rng);
 
-        let pcs = Pcs::new(&shape, transcript::SecurityLevel::Bits100).unwrap();
+        let pcs = Pcs::new(&shape, security).unwrap();
         let mut transcript = prover_transcript();
         let (com, data) = pcs.commit(&packed, &mut transcript).unwrap();
 

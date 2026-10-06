@@ -15,7 +15,7 @@ use common::{Root, Shape};
 use field::F128;
 use flock_core::hash::HashKind;
 use flock_core::pcs::ligerito::LigeritoProfile;
-use flock_core::pcs::{PcsParams, ProverData as FlockProverData};
+use flock_core::pcs::{LOG_PACKING, PcsParams, ProverData as FlockProverData, commit};
 use transcript::{Encoding, ProverState, PublicTranscript, SecurityLevel, VerifierState};
 
 // Increment this version when parameter derivation or transcript rules change.
@@ -44,11 +44,10 @@ pub struct Pcs {
     checked_ligerito: CheckedLigerito,
     ood_grinding_bits: Option<u32>,
     bit_len: usize,
-    packed_len: usize,
     security_level: SecurityLevel,
 }
 
-/// The commitment and private Flock data retained for proving openings.
+/// Commitment and private Flock data retained for proving openings.
 pub struct ProverData {
     pub(crate) commitment: Commitment,
     flock_prover_data: FlockProverData,
@@ -60,9 +59,9 @@ pub struct ProverData {
 /// An opening must authenticate its OOD claim before the verifier accepts the proof.
 #[derive(Debug)]
 pub struct Commitment {
-    pub(crate) root: Root,
-    pub(crate) bit_len: usize,
-    pub(crate) security_level: SecurityLevel,
+    root: Root,
+    bit_len: usize,
+    security_level: SecurityLevel,
     pub(crate) ood: Option<OodClaim>,
 }
 
@@ -100,15 +99,11 @@ impl Pcs {
             merkle_hash: HashKind::Blake3,
         };
         let checked_ligerito = CheckedLigerito::new(&params, &security)?;
-        let packed_len = 1usize
-            .checked_shl(checked_ligerito.log_n_u32())
-            .ok_or(ConfigError::Invalid("packed length overflow"))?;
         Ok(Self {
             params,
             checked_ligerito,
             ood_grinding_bits,
             bit_len,
-            packed_len,
             security_level,
         })
     }
@@ -128,24 +123,23 @@ impl Pcs {
 
         // 2. Commit Packed Witness
         let (flock_commitment, flock_prover_data) =
-            flock_core::pcs::commit(as_flock_f128s(packed_witness), &self.params);
+            commit(as_flock_f128s(packed_witness), &self.params);
 
         // 3. Build Public Commitment
         let root = Root(flock_commitment.root);
         self.bind_commitment(root, transcript);
         let ood = ood::prove(self, &root.0, packed_witness, transcript);
-        let commitment = Commitment {
-            root,
-            bit_len: self.bit_len,
-            security_level: self.security_level,
-            ood,
-        };
 
         // 4. Retain Opening Data
         Ok((
             root,
             ProverData {
-                commitment,
+                commitment: Commitment {
+                    root,
+                    bit_len: self.bit_len,
+                    security_level: self.security_level,
+                    ood,
+                },
                 flock_prover_data,
             },
         ))
@@ -174,17 +168,21 @@ impl Pcs {
         transcript.public_message(self);
     }
 
-    pub(crate) fn ood_grinding_bits(&self) -> Option<u32> {
-        self.ood_grinding_bits
-    }
-
     pub fn bit_len(&self) -> usize {
         self.bit_len
     }
 
     /// Returns the required number of packed `F128` elements.
     pub fn packed_len(&self) -> usize {
-        self.packed_len
+        self.bit_len >> LOG_PACKING
+    }
+
+    pub(crate) fn params(&self) -> &PcsParams {
+        &self.params
+    }
+
+    pub(crate) fn ood_grinding_bits(&self) -> Option<u32> {
+        self.ood_grinding_bits
     }
 
     /// Returns the selected classical PCS round budget.
@@ -193,12 +191,8 @@ impl Pcs {
     }
 
     /// Maps each native PoW call to its checked effective difficulty.
-    pub(crate) fn pow_schedule(&self) -> Vec<(u32, u32)> {
-        self.checked_ligerito.pow_schedule().to_vec()
-    }
-
-    pub(crate) fn params(&self) -> &PcsParams {
-        &self.params
+    pub(crate) fn pow_schedule(&self) -> &[(u32, u32)] {
+        self.checked_ligerito.pow_schedule()
     }
 
     pub(crate) fn prover_config(&self) -> &flock_core::pcs::ligerito::ProverConfig {
@@ -257,34 +251,6 @@ mod tests {
     }
 
     #[test]
-    fn explicit_profiles_bind_the_target_and_witness_size() {
-        let shape = Shape::new(7, 13).unwrap();
-        let low = Pcs::new(&shape, SecurityLevel::Bits100).unwrap();
-        let high = Pcs::new(&shape, SecurityLevel::Bits128).unwrap();
-        // Fixed encoding: version tag, padded bit count (u64 LE), target (u32 LE).
-        assert_eq!(
-            low.encode().as_ref(),
-            b"bitz/pcs/security/v2\x00\x00\x10\x00\x00\x00\x00\x00\x64\x00\x00\x00"
-        );
-        assert_ne!(low.encode().as_ref(), high.encode().as_ref());
-        let (_, data) = low
-            .commit(
-                &vec![F128::ZERO; low.packed_len()],
-                &mut transcript::build_prover(b"commit-test", b"instance"),
-            )
-            .unwrap();
-        assert_eq!(crate::ligerito::validate_prover_data(&low, &data), Ok(()));
-        assert_eq!(
-            crate::ligerito::validate_prover_data(&high, &data),
-            Err(crate::ProveError::ProverDataMismatch)
-        );
-        let larger_shape = Shape::new(7, 14).unwrap();
-        let changed = Pcs::new(&larger_shape, SecurityLevel::Bits100).unwrap();
-        assert_ne!(low.encode().as_ref(), changed.encode().as_ref());
-        assert!(crate::ligerito::validate_prover_data(&changed, &data).is_err());
-    }
-
-    #[test]
     fn every_dynamic_size_builds_a_complete_native_pow_schedule() {
         for m in 20..=35 {
             let shape = Shape::new(7, m - 7).unwrap();
@@ -334,13 +300,13 @@ mod tests {
         let (commitment, data) = scheme
             .commit(
                 &packed_witness,
-                &mut transcript::build_prover(b"commit-test", b"instance"),
+                &mut build_prover(b"commit-test", b"witness"),
             )
             .unwrap();
         let (second_commitment, _) = scheme
             .commit(
                 &packed_witness,
-                &mut transcript::build_prover(b"commit-test", b"instance"),
+                &mut build_prover(b"commit-test", b"witness"),
             )
             .unwrap();
         let mut changed_witness = packed_witness.clone();
@@ -348,7 +314,7 @@ mod tests {
         let (changed_commitment, _) = scheme
             .commit(
                 &changed_witness,
-                &mut transcript::build_prover(b"commit-test", b"instance"),
+                &mut build_prover(b"commit-test", b"witness"),
             )
             .unwrap();
 
@@ -373,6 +339,34 @@ mod tests {
             (packed.last().unwrap().lo, packed.last().unwrap().hi),
             (0, 1 << 63)
         );
+    }
+
+    #[test]
+    fn explicit_profiles_bind_the_target_and_witness_size() {
+        let shape = Shape::new(7, 13).unwrap();
+        let low = Pcs::new(&shape, SecurityLevel::Bits100).unwrap();
+        let high = Pcs::new(&shape, SecurityLevel::Bits128).unwrap();
+        // Fixed encoding: version tag, padded bit count (u64 LE), target (u32 LE).
+        assert_eq!(
+            low.encode().as_ref(),
+            b"bitz/pcs/security/v2\x00\x00\x10\x00\x00\x00\x00\x00\x64\x00\x00\x00"
+        );
+        assert_ne!(low.encode().as_ref(), high.encode().as_ref());
+        let (_, data) = low
+            .commit(
+                &vec![F128::ZERO; low.packed_len()],
+                &mut build_prover(b"commit-test", b"witness"),
+            )
+            .unwrap();
+        assert_eq!(crate::ligerito::validate_prover_data(&low, &data), Ok(()));
+        assert_eq!(
+            crate::ligerito::validate_prover_data(&high, &data),
+            Err(crate::ProveError::ProverDataMismatch)
+        );
+        let larger_shape = Shape::new(7, 14).unwrap();
+        let changed = Pcs::new(&larger_shape, SecurityLevel::Bits100).unwrap();
+        assert_ne!(low.encode().as_ref(), changed.encode().as_ref());
+        assert!(crate::ligerito::validate_prover_data(&changed, &data).is_err());
     }
 
     proptest! {

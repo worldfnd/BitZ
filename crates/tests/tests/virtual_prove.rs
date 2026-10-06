@@ -321,23 +321,12 @@ fn virtual_witness_lengths_and_setup_must_match_the_statement() {
             Err(ProveError::ParameterMismatch)
         );
         assert_eq!(transcript.finish(), Proof::default());
-        let mut prefix = prover_transcript();
-        let (root, _) = instance
-            .pcs
-            .commit(&instance.committed_bits, &mut prefix)
-            .unwrap();
-        let prefix = prefix.finish();
-        let mut verifier = verifier_transcript(&prefix);
-        let commitment = instance
-            .pcs
-            .receive_commitment(root, &mut verifier)
-            .unwrap();
         assert_eq!(
             BitZVerifier::new(params, WINDOW).verify_virtual(
                 &statement,
                 &instance.pcs,
-                &commitment,
-                verifier,
+                instance.data.commitment(),
+                verifier_transcript(&Proof::default()),
             ),
             Err(VerifyError::ParameterMismatch)
         );

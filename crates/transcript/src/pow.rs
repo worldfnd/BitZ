@@ -78,15 +78,8 @@ pub fn valid(seed: &[u8; 16], nonce: u64, bits: u32) -> bool {
     hasher.update(seed);
     hasher.update(&nonce.to_le_bytes());
     let digest = hasher.finalize();
-    let mut zeros = 0;
-    for byte in digest.as_bytes() {
-        let current = byte.leading_zeros();
-        zeros += current;
-        if current != 8 {
-            break;
-        }
-    }
-    zeros >= bits
+    // The 32-bit cap makes the first four hash bytes sufficient.
+    u32::from_be_bytes(digest.as_bytes()[..4].try_into().unwrap()).leading_zeros() >= bits
 }
 
 #[cfg(test)]

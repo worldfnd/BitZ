@@ -12,26 +12,10 @@ const POW_TAG: &[u8] = b"pcs/flock/pow/v1";
 const LIGERITO_BASIS_LABEL: &[u8] = b"flock-ligerito-basis-v0";
 const MAX_OBSERVED_BYTES: usize = 32;
 
-/// Checks the backend call order and enforces the selected fold difficulties.
-struct PowSchedule {
-    calls: std::vec::IntoIter<(u32, u32)>,
-    failed: bool,
-}
-
-impl PowSchedule {
-    fn difficulty(&mut self, native: u32) -> u32 {
-        match self.calls.next() {
-            Some((expected, effective)) if native == expected => effective,
-            _ => {
-                self.failed = true;
-                0
-            }
-        }
-    }
-
-    fn failed(&self) -> bool {
-        self.failed || self.calls.len() != 0
-    }
+/// Checks the backend call order before applying the selected difficulty.
+fn pow_difficulty(calls: &mut std::slice::Iter<'_, (u32, u32)>, native: u32) -> Option<u32> {
+    let &(expected, effective) = calls.next()?;
+    (native == expected).then_some(effective)
 }
 
 #[derive(Clone, Copy)]
@@ -44,19 +28,16 @@ pub(crate) struct ProverChallenger<'a> {
     transcript: &'a mut ProverState,
     failed: bool,
     opening_target: Option<OpeningTargetPrefix>,
-    pow_schedule: PowSchedule,
+    pow_schedule: std::slice::Iter<'a, (u32, u32)>,
 }
 
 impl<'a> ProverChallenger<'a> {
     #[cfg(test)]
-    pub(crate) fn new(transcript: &'a mut ProverState, calls: Vec<(u32, u32)>) -> Self {
+    pub(crate) fn new(transcript: &'a mut ProverState, calls: &'a [(u32, u32)]) -> Self {
         Self {
             transcript,
             failed: false,
-            pow_schedule: PowSchedule {
-                calls: calls.into_iter(),
-                failed: false,
-            },
+            pow_schedule: calls.iter(),
             opening_target: None,
         }
     }
@@ -64,15 +45,12 @@ impl<'a> ProverChallenger<'a> {
     pub(crate) fn new_ligerito(
         transcript: &'a mut ProverState,
         expected_target: FlockF128,
-        calls: Vec<(u32, u32)>,
+        calls: &'a [(u32, u32)],
     ) -> Self {
         Self {
             transcript,
             failed: false,
-            pow_schedule: PowSchedule {
-                calls: calls.into_iter(),
-                failed: false,
-            },
+            pow_schedule: calls.iter(),
             opening_target: Some(OpeningTargetPrefix {
                 expected_target,
                 label_seen: false,
@@ -81,7 +59,7 @@ impl<'a> ProverChallenger<'a> {
     }
 
     pub(crate) fn failed(&self) -> bool {
-        self.failed || self.opening_target.is_some() || self.pow_schedule.failed()
+        self.failed || self.opening_target.is_some() || self.pow_schedule.len() != 0
     }
 }
 
@@ -89,19 +67,16 @@ pub(crate) struct VerifierChallenger<'a, 'proof> {
     transcript: &'a mut VerifierState<'proof>,
     failed: bool,
     opening_target: Option<OpeningTargetPrefix>,
-    pow_schedule: PowSchedule,
+    pow_schedule: std::slice::Iter<'a, (u32, u32)>,
 }
 
 impl<'a, 'proof> VerifierChallenger<'a, 'proof> {
     #[cfg(test)]
-    pub(crate) fn new(transcript: &'a mut VerifierState<'proof>, calls: Vec<(u32, u32)>) -> Self {
+    pub(crate) fn new(transcript: &'a mut VerifierState<'proof>, calls: &'a [(u32, u32)]) -> Self {
         Self {
             transcript,
             failed: false,
-            pow_schedule: PowSchedule {
-                calls: calls.into_iter(),
-                failed: false,
-            },
+            pow_schedule: calls.iter(),
             opening_target: None,
         }
     }
@@ -109,15 +84,12 @@ impl<'a, 'proof> VerifierChallenger<'a, 'proof> {
     pub(crate) fn new_ligerito(
         transcript: &'a mut VerifierState<'proof>,
         expected_target: FlockF128,
-        calls: Vec<(u32, u32)>,
+        calls: &'a [(u32, u32)],
     ) -> Self {
         Self {
             transcript,
             failed: false,
-            pow_schedule: PowSchedule {
-                calls: calls.into_iter(),
-                failed: false,
-            },
+            pow_schedule: calls.iter(),
             opening_target: Some(OpeningTargetPrefix {
                 expected_target,
                 label_seen: false,
@@ -126,7 +98,7 @@ impl<'a, 'proof> VerifierChallenger<'a, 'proof> {
     }
 
     pub(crate) fn failed(&self) -> bool {
-        self.failed || self.opening_target.is_some() || self.pow_schedule.failed()
+        self.failed || self.opening_target.is_some() || self.pow_schedule.len() != 0
     }
 
     fn read<T>(&mut self) -> Option<T>
@@ -191,7 +163,10 @@ impl Challenger for ProverChallenger<'_> {
     }
 
     fn grind_pow(&mut self, bits: u32) -> u64 {
-        let bits = self.pow_schedule.difficulty(bits);
+        let Some(bits) = pow_difficulty(&mut self.pow_schedule, bits) else {
+            self.failed = true;
+            return 0;
+        };
         self.transcript.public_message(POW_TAG);
         self.transcript.public_message(&bits);
         let seed = self.transcript.verifier_message::<LocalF128>().to_bytes();
@@ -263,7 +238,10 @@ impl Challenger for VerifierChallenger<'_, '_> {
     }
 
     fn verify_pow(&mut self, nonce: u64, bits: u32) -> bool {
-        let bits = self.pow_schedule.difficulty(bits);
+        let Some(bits) = pow_difficulty(&mut self.pow_schedule, bits) else {
+            self.failed = true;
+            return false;
+        };
         self.transcript.public_message(POW_TAG);
         self.transcript.public_message(&bits);
         let seed = self.transcript.verifier_message::<LocalF128>().to_bytes();
@@ -288,7 +266,7 @@ mod tests {
     fn constant_schedule_replays_and_rejects_changed_call_order() {
         let calls = vec![(5, 5), (4, 5), (3, 5), (0, 0)];
         let mut transcript = build_prover(b"schedule", b"instance");
-        let mut prover = ProverChallenger::new(&mut transcript, calls.clone());
+        let mut prover = ProverChallenger::new(&mut transcript, &calls);
         assert!(prover.failed()); // An incomplete schedule cannot succeed.
         let nonces: Vec<_> = calls
             .iter()
@@ -298,7 +276,7 @@ mod tests {
         let proof = transcript.finish();
 
         let mut transcript = build_verifier(b"schedule", b"instance", &proof);
-        let mut verifier = VerifierChallenger::new(&mut transcript, calls.clone());
+        let mut verifier = VerifierChallenger::new(&mut transcript, &calls);
         for (&nonce, &(native, _)) in nonces.iter().zip(&calls) {
             assert!(verifier.verify_pow(nonce, native));
         }
@@ -306,7 +284,7 @@ mod tests {
         transcript.check_eof().unwrap();
 
         let mut transcript = build_verifier(b"schedule", b"instance", &proof);
-        let mut verifier = VerifierChallenger::new(&mut transcript, calls);
+        let mut verifier = VerifierChallenger::new(&mut transcript, &calls);
         verifier.verify_pow(nonces[0], 4);
         assert!(verifier.failed());
     }
@@ -314,7 +292,7 @@ mod tests {
     #[test]
     fn extra_pow_calls_fail_after_schedule_completion() {
         let mut transcript = build_prover(b"schedule", b"instance");
-        let mut prover = ProverChallenger::new(&mut transcript, vec![(0, 0)]);
+        let mut prover = ProverChallenger::new(&mut transcript, &[(0, 0)]);
         prover.grind_pow(0);
         assert!(!prover.failed());
         prover.grind_pow(0);
@@ -343,7 +321,7 @@ mod tests {
     fn observed_root_changes_the_following_challenge() {
         fn sample_after_root(root: &[u8; 32]) -> FlockF128 {
             let mut transcript = build_prover(b"pcs-challenger-test", b"root-binding");
-            let mut challenger = ProverChallenger::new(&mut transcript, vec![]);
+            let mut challenger = ProverChallenger::new(&mut transcript, &[]);
             challenger.observe_bytes(root);
             challenger.sample_f128()
         }
@@ -370,7 +348,7 @@ mod tests {
 
         let mut prover = build_prover(SESSION, INSTANCE);
         let nonce = {
-            let mut challenger = ProverChallenger::new(&mut prover, vec![(BITS, BITS)]);
+            let mut challenger = ProverChallenger::new(&mut prover, &[(BITS, BITS)]);
             challenger.grind_pow(BITS)
         };
         let mut proof = prover.finish();
@@ -385,7 +363,7 @@ mod tests {
 
         let mut verifier = build_verifier(SESSION, INSTANCE, &proof);
         {
-            let mut challenger = VerifierChallenger::new(&mut verifier, vec![(BITS, BITS)]);
+            let mut challenger = VerifierChallenger::new(&mut verifier, &[(BITS, BITS)]);
             assert!(!challenger.verify_pow(changed_nonce, BITS));
             assert!(challenger.failed());
         }
@@ -398,7 +376,7 @@ mod tests {
         let next_message = FlockF128::new(3, 4);
         let mut prover = build_prover(b"pcs-challenger-test", b"public-opening-target");
         {
-            let mut challenger = ProverChallenger::new_ligerito(&mut prover, target, vec![]);
+            let mut challenger = ProverChallenger::new_ligerito(&mut prover, target, &[]);
             challenger.observe_label(LIGERITO_BASIS_LABEL);
             challenger.observe_f128(target);
             challenger.observe_f128(next_message);
@@ -409,7 +387,7 @@ mod tests {
 
         let mut verifier = build_verifier(b"pcs-challenger-test", b"public-opening-target", &proof);
         {
-            let mut challenger = VerifierChallenger::new_ligerito(&mut verifier, target, vec![]);
+            let mut challenger = VerifierChallenger::new_ligerito(&mut verifier, target, &[]);
             challenger.observe_label(LIGERITO_BASIS_LABEL);
             challenger.observe_f128(target);
             challenger.observe_f128(next_message);
@@ -422,7 +400,7 @@ mod tests {
     fn ligerito_public_target_changes_the_challenge() {
         fn sample(target: FlockF128) -> FlockF128 {
             let mut prover = build_prover(b"pcs-challenger-test", b"public-opening-target");
-            let mut challenger = ProverChallenger::new_ligerito(&mut prover, target, vec![]);
+            let mut challenger = ProverChallenger::new_ligerito(&mut prover, target, &[]);
             challenger.observe_label(LIGERITO_BASIS_LABEL);
             challenger.observe_f128(target);
             challenger.sample_f128()
@@ -448,9 +426,10 @@ mod tests {
                 .map(|&(lo, hi)| FlockF128::new(lo, hi))
                 .collect::<Vec<_>>();
 
+            let calls = [(pow_bits, pow_bits)];
             let mut prover = build_prover(b"pcs-challenger-test", b"method-round-trip");
             let (sampled_scalar, sampled_vector, nonce) = {
-                let mut challenger = ProverChallenger::new(&mut prover, vec![(pow_bits, pow_bits)]);
+                let mut challenger = ProverChallenger::new(&mut prover, &calls);
                 challenger.observe_label(b"test-label");
                 challenger.observe_f128(scalar);
                 challenger.observe_f128_slice(&slice);
@@ -469,7 +448,7 @@ mod tests {
                 &proof,
             );
             {
-                let mut challenger = VerifierChallenger::new(&mut verifier, vec![(pow_bits, pow_bits)]);
+                let mut challenger = VerifierChallenger::new(&mut verifier, &calls);
                 challenger.observe_label(b"test-label");
                 challenger.observe_f128(scalar);
                 challenger.observe_f128_slice(&slice);

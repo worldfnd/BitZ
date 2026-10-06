@@ -14,7 +14,7 @@ use prover::BitZProver;
 use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;
 use tests::{HonestClaim, WINDOW, large_shape, prover_transcript, verifier_transcript};
-use transcript::SecurityLevel;
+use transcript::SecurityLevel::Bits100;
 use verifier::{BitZVerifier, ReceiveError};
 
 #[test]
@@ -26,12 +26,7 @@ fn the_fold_round_trips_on_the_large_shape() {
 
     let mut transcript = prover_transcript();
     let sent = prover
-        .send_fold(
-            &honest.claim,
-            &honest.table(),
-            &mut transcript,
-            SecurityLevel::Bits100,
-        )
+        .send_fold(&honest.claim, &honest.table(), &mut transcript, Bits100)
         .unwrap();
     let proof = transcript.finish();
     assert_eq!(proof.narg_string.len(), 16 * shape.columns());
@@ -39,7 +34,7 @@ fn the_fold_round_trips_on_the_large_shape() {
 
     let mut transcript = verifier_transcript(&proof);
     let received = verifier
-        .receive_fold(&honest.claim, &mut transcript, SecurityLevel::Bits100)
+        .receive_fold(&honest.claim, &mut transcript, Bits100)
         .expect("honest proof");
     assert_eq!(sent, received);
     assert_eq!(received.row_images.len(), shape.rows());
@@ -53,11 +48,7 @@ fn the_fold_round_trips_on_the_large_shape() {
     }
     let over = transcript.finish();
     assert_eq!(
-        verifier.receive_fold(
-            &honest.claim,
-            &mut verifier_transcript(&over),
-            SecurityLevel::Bits100,
-        ),
+        verifier.receive_fold(&honest.claim, &mut verifier_transcript(&over), Bits100),
         Err(ReceiveError::FoldOutOfRange)
     );
 
@@ -70,11 +61,7 @@ fn the_fold_round_trips_on_the_large_shape() {
     )
     .unwrap();
     assert_eq!(
-        verifier.receive_fold(
-            &retargeted,
-            &mut verifier_transcript(&proof),
-            SecurityLevel::Bits100,
-        ),
+        verifier.receive_fold(&retargeted, &mut verifier_transcript(&proof), Bits100),
         Err(ReceiveError::TargetMismatch)
     );
 }

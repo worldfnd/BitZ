@@ -228,11 +228,11 @@ impl<S: CircuitStatement> CircuitProofSystem<S> {
 
     /// Continues the commitment transcript through Spartan and the BitZ opening.
     #[tracing::instrument(name = "prove", skip_all, fields(opening_path = ?self.opening_path))]
-    pub fn prove(&self, witness: Witness, committed: CommittedWitness) -> Result<Proof, Error> {
+    pub fn prove(&self, witness: Witness, commitment: CommittedWitness) -> Result<Proof, Error> {
         let CommittedWitness {
             data,
             mut transcript,
-        } = committed;
+        } = commitment;
         let root = data.root();
         self.bind(&mut transcript, root);
         if self.opening_path == OpeningPath::Direct {

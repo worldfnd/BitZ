@@ -10,7 +10,7 @@ Select the PCS round budget with `--pcs-security-bits 100` or `128`; the default
 The implementation derives all internal parameters from the padded witness size.
 The `100` target uses list decoding and an initial out-of-domain (OOD) check.
 The `128` target uses unique decoding and omits that check.
-Spartan still uses `Q100`; selecting `128` does not include spartan yet
+Spartan still uses `Q100`; this option does not set Spartan security.
 
 `--circuit` selects one of these compiled-in adapters:
 
@@ -24,11 +24,6 @@ Variable-length cases default to one input block. The 2 KiB case uses 32 input b
 Every proof checks R1CS constraints modulo Q100. SHA-256 constraint residuals are bounded below Q100 in absolute value for Boolean assignments, so reduction preserves their integer equalities. P-256 and combined ECDSA/SHA are excluded until the driver supports integer projection.
 
 The output reports the selected opening path, constraint and witness sizes, and setup/witness/commit/prove/verify timings. `total_prove_ms` includes commitment and proving only. Input generation and thread-pool initialization are excluded.
-
-Commitment timing includes the initial OOD check when the selected target requires it.
-`CircuitProofSystem::commit` retains the transcript and commitment data together.
-`CircuitProofSystem::prove` consumes that state and continues the same transcript.
-Verification receives the commitment before public-input binding, constant checks, or Spartan challenges.
 
 Run the four circuits through end-to-end and individual setup, witness, commitment, proving, and verification benchmarks:
 

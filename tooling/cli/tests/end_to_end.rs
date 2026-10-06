@@ -144,9 +144,16 @@ fn nonidentity_map_uses_virtual_opening_and_checks_xor_relation() {
     let mut changed = proof;
     changed.opening.narg_string.push(0);
     assert!(system.verify(&changed).is_err());
-    let timings =
-        bitz_cli::benchmark::run(PublicXor, &[true, false], SecurityLevel::Bits100).unwrap();
-    assert_eq!(timings.circuit.opening_path, OpeningPath::Virtual);
+    for security in [SecurityLevel::Bits100, SecurityLevel::Bits128] {
+        let timings = bitz_cli::benchmark::run(PublicXor, &[true, false], security).unwrap();
+        assert_eq!(timings.circuit.opening_path, OpeningPath::Virtual);
+        assert_eq!(timings.circuit.pcs_security, security);
+        assert!(
+            timings
+                .to_string()
+                .contains(&format!("pcs_round_target_bits={}", security.bits()))
+        );
+    }
 }
 
 #[test]
@@ -170,13 +177,4 @@ fn explicit_128_budget_binds_the_policy_and_public_statement() {
             .verify(&proof)
             .is_err()
     );
-}
-
-#[test]
-fn explicit_128_budget_supports_virtual_openings() {
-    let timings =
-        bitz_cli::benchmark::run(PublicXor, &[true, false], SecurityLevel::Bits128).unwrap();
-    assert_eq!(timings.circuit.opening_path, OpeningPath::Virtual);
-    assert_eq!(timings.circuit.pcs_security, SecurityLevel::Bits128);
-    assert!(timings.to_string().contains("pcs_round_target_bits=128"));
 }

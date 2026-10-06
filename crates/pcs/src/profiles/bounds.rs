@@ -8,7 +8,8 @@ use flock_core::pcs::ligerito::{LigeritoLevelConfig, SoundnessRegime};
 use super::JOHNSON_ETA;
 use crate::ConfigError;
 
-const MAX_GRINDING_BITS: usize = 32;
+const MAX_GRINDING_BITS: usize = transcript::pow::MAX_GRINDING_BITS as usize;
+const JOHNSON_SLACK_BITS: i32 = 128 - 100;
 
 /// Selects query and grinding parameters for the supplied canonical level.
 /// Only the first Johnson level returns an initial OOD grinding requirement.
@@ -19,10 +20,11 @@ pub(super) fn configure_level(
 ) -> Result<Option<u32>, ConfigError> {
     let target = level.target_security_bits;
     let johnson = matches!(level.regime, SoundnessRegime::JohnsonOod);
+    let positions = 1usize << (level.log_msg_cols + level.log_inv_rate);
     let mut initial_ood = None;
-    let (positions, miss_upper, query_list) = match level.regime {
+    let (miss_upper, query_list) = match level.regime {
         SoundnessRegime::JohnsonOod => {
-            let probability = JohnsonProbability::new(level);
+            let probability = JohnsonProbability::new(level, positions);
             level.fold_grinding_bits = (0..=MAX_GRINDING_BITS)
                 .find(|&bits| probability.folds_meet_target(level.k_recursive, bits, first))
                 .ok_or(ConfigError::Invalid("Johnson fold grinding exceeds cap"))?;
@@ -38,15 +40,9 @@ pub(super) fn configure_level(
             } else {
                 mul_up(probability.list_upper, sqrt_bounds(2.0).1)
             };
-            (probability.positions, probability.miss_upper, query_list)
+            (probability.miss_upper, query_list)
         }
-        SoundnessRegime::Udr => {
-            let probability = UdrProbability::new(level)?;
-            level.fold_grinding_bits = (0..=MAX_GRINDING_BITS)
-                .find(|&bits| probability.fold_meets_target(target, bits, first))
-                .ok_or(ConfigError::Invalid("UDR fold grinding exceeds cap"))?;
-            (probability.positions, probability.miss_upper, 1.0)
-        }
+        SoundnessRegime::Udr => (configure_udr(level, positions, first)?, 1.0),
     };
     let target_error = 2f64.powi(-(target as i32));
     let mut query_miss = 1.0;
@@ -81,16 +77,14 @@ pub(super) fn configure_level(
 }
 
 struct JohnsonProbability {
-    positions: usize,
     fold_coefficient_upper: f64,
     miss_upper: f64,
     list_upper: f64,
 }
 
 impl JohnsonProbability {
-    fn new(level: &LigeritoLevelConfig) -> Self {
+    fn new(level: &LigeritoLevelConfig, positions: usize) -> Self {
         // All inputs have the checked canonical geometry and eta=0.02.
-        let positions = 1usize << (level.log_msg_cols + level.log_inv_rate);
         let rho = 2f64.powi(-(level.log_inv_rate as i32));
         let (sqrt_lower, sqrt_upper) = sqrt_bounds(rho);
         let eta_lower = JOHNSON_ETA.next_down();
@@ -107,7 +101,6 @@ impl JohnsonProbability {
         // Retain the pinned backend's row multiplier as a conservative bound.
         let row_union = 2f64.powi(level.log_num_interleaved as i32 - 1);
         Self {
-            positions,
             fold_coefficient_upper: mul_up(base, row_union),
             miss_upper: add_up(sqrt_upper, eta_upper),
             list_upper: div_up(1.0, (2.0 * eta_lower * sqrt_lower).next_down()),
@@ -123,13 +116,13 @@ impl JohnsonProbability {
         } else {
             mul_up(mul_up(self.list_upper, self.list_upper), mu * 0.5)
         };
-        if coefficient > 2f64.powi(28) {
+        if coefficient > 2f64.powi(JOHNSON_SLACK_BITS) {
             return Err(ConfigError::Invalid("Johnson recursive OOD bound"));
         }
         // Initial ring switching and OOD mixing cost at most 8L/F.
         // Later introduction beta costs L/F before any fold grinding starts.
         let batching = if first { 8.0 } else { 1.0 };
-        if mul_up(batching, self.list_upper) > 2f64.powi(28) {
+        if mul_up(batching, self.list_upper) > 2f64.powi(JOHNSON_SLACK_BITS) {
             return Err(ConfigError::Invalid("Johnson unground batching bound"));
         }
         Ok(())
@@ -140,7 +133,7 @@ impl JohnsonProbability {
         let degree = ((1u64 << log_n) - 1) as f64;
         let coefficient = mul_up(pairs, degree);
         (0..=MAX_GRINDING_BITS)
-            .find(|&bits| coefficient <= 2f64.powi(28 + bits as i32))
+            .find(|&bits| coefficient <= 2f64.powi(JOHNSON_SLACK_BITS + bits as i32))
             .map(|bits| bits as u32)
             .ok_or(ConfigError::Invalid(
                 "Johnson initial OOD grinding exceeds cap",
@@ -159,7 +152,7 @@ impl JohnsonProbability {
                 self.fold_coefficient_upper * 2f64.powi(-(round as i32)),
                 extra,
             );
-            coefficient <= 2f64.powi(28 + effective as i32)
+            coefficient <= 2f64.powi(JOHNSON_SLACK_BITS + effective as i32)
         })
     }
 }
@@ -190,46 +183,35 @@ fn sqrt_bounds(value: f64) -> (f64, f64) {
     (lower, upper)
 }
 
-struct UdrProbability {
+/// Selects constant UDR fold grinding and returns the per-query miss bound.
+fn configure_udr(
+    level: &mut LigeritoLevelConfig,
     positions: usize,
-    coefficient_numerator: u128,
-    coefficient_denominator: u128,
-    miss_upper: f64,
-}
-
-impl UdrProbability {
-    fn new(level: &LigeritoLevelConfig) -> Result<Self, ConfigError> {
-        // Callers first check the canonical ladder. Its largest exponent is 25.
-        let positions = 1usize << (level.log_msg_cols + level.log_inv_rate);
-        let n = positions as u128;
-        let d = 1u128 << level.log_inv_rate;
-        let distance_square = (d - 1).pow(2) * n;
-        // BCHKS25 Corollary 1.4: delta >= 3*sqrt(2/n).
-        // This also ensures gamma >= delta/3 at the selected upper endpoint.
-        if distance_square < 18 * d * d {
-            return Err(ConfigError::Invalid("UDR theorem range"));
-        }
-        let denominator = 2 * d * (d - 1);
-        let gamma_n_numerator = distance_square - 6 * d * d;
-        let miss_numerator = denominator * n - gamma_n_numerator;
-        // Outward conversion and division keep this probability an upper bound.
-        let miss_upper =
-            ((miss_numerator as f64).next_up() / ((denominator * n) as f64).next_down()).next_up();
-        Ok(Self {
-            positions,
-            coefficient_numerator: gamma_n_numerator + denominator,
-            coefficient_denominator: denominator,
-            miss_upper,
+    first: bool,
+) -> Result<f64, ConfigError> {
+    // Callers first check the canonical ladder. Its largest exponent is 25.
+    let n = positions as u128;
+    let d = 1u128 << level.log_inv_rate;
+    let distance_square = (d - 1).pow(2) * n;
+    // BCHKS25 Corollary 1.4: delta >= 3*sqrt(2/n).
+    // This also ensures gamma >= delta/3 at the selected upper endpoint.
+    if distance_square < 18 * d * d {
+        return Err(ConfigError::Invalid("UDR theorem range"));
+    }
+    let denominator = 2 * d * (d - 1);
+    let gamma_n_numerator = distance_square - 6 * d * d;
+    level.fold_grinding_bits = (0..=MAX_GRINDING_BITS)
+        .find(|&bits| {
+            // The fold and its quadratic cost gamma*n + 3 field errors.
+            // An unground first recursive fold also shares the preceding introduction beta.
+            let beta = u128::from(!first && bits == 0);
+            gamma_n_numerator + (3 + beta) * denominator
+                <= denominator * (1u128 << (128 - level.target_security_bits + bits))
         })
-    }
-
-    fn fold_meets_target(&self, target: usize, grinding: usize, first: bool) -> bool {
-        // A quadratic shares each fold. An unground first recursive fold also
-        // shares the preceding introduction beta, adding one more field error.
-        let extras = 2 + u128::from(!first && grinding == 0);
-        self.coefficient_numerator + extras * self.coefficient_denominator
-            <= self.coefficient_denominator * (1u128 << (128 - target + grinding))
-    }
+        .ok_or(ConfigError::Invalid("UDR fold grinding exceeds cap"))?;
+    let miss_numerator = denominator * n - gamma_n_numerator;
+    // Outward conversion and division keep this probability an upper bound.
+    Ok(((miss_numerator as f64).next_up() / ((denominator * n) as f64).next_down()).next_up())
 }
 
 fn combined_query_error(
@@ -253,7 +235,6 @@ mod tests {
     #[test]
     fn list_union_can_exhaust_the_remaining_fold_budget() {
         let probability = JohnsonProbability {
-            positions: 512,
             fold_coefficient_upper: 2f64.powi(28) - 100.0,
             miss_upper: 0.5,
             list_upper: 40.0,

@@ -219,6 +219,7 @@ mod tests {
     use poly::DenseMultilinearExtension;
     use poly::eq_table;
     use poly::f128::{evaluate, inner_product};
+    use transcript::SecurityLevel::Bits100;
     use transcript::{build_prover, build_verifier};
 
     use super::*;
@@ -264,8 +265,7 @@ mod tests {
         let claim = inner_product(&weights, &values);
 
         let mut prover = build_prover("post_gkr-tests", "sumcheck");
-        let (point, running) =
-            prove_rounds(&mut pair, 6, claim, SecurityLevel::Bits100, &mut prover);
+        let (point, running) = prove_rounds(&mut pair, 6, claim, Bits100, &mut prover);
         let evaluation = prove_evaluation(&pair, running, &mut prover);
         let proof = prover.finish();
         assert_eq!(proof.narg_string.len(), (2 * 6 + 1) * 16);
@@ -281,8 +281,7 @@ mod tests {
         assert_eq!(evaluate(&weights, &point), extension(&weights));
 
         let mut verifier = build_verifier("post_gkr-tests", "sumcheck", &proof);
-        let (same_point, same_running) =
-            verify_rounds(6, claim, SecurityLevel::Bits100, &mut verifier).unwrap();
+        let (same_point, same_running) = verify_rounds(6, claim, Bits100, &mut verifier).unwrap();
         assert_eq!(same_point, point);
         assert_eq!(same_running, running);
         assert_eq!(
@@ -294,8 +293,7 @@ mod tests {
         // The same records against a claim one off: the gap survives every
         // round and the closing check catches it.
         let mut verifier = build_verifier("post_gkr-tests", "sumcheck", &proof);
-        let (_, running) =
-            verify_rounds(6, claim + F128::ONE, SecurityLevel::Bits100, &mut verifier).unwrap();
+        let (_, running) = verify_rounds(6, claim + F128::ONE, Bits100, &mut verifier).unwrap();
         assert_eq!(
             verify_evaluation(evaluate(&weights, &point), running, &mut verifier),
             Err(VerifyError::EvaluationMismatch)
@@ -324,12 +322,12 @@ mod tests {
         let mut pair = pair(3, &mut rng(10));
         let claim = inner_product(&pair.weights, &pair.values);
         let mut prover = build_prover("post_gkr-tests", "sumcheck");
-        prove_rounds(&mut pair, 3, claim, SecurityLevel::Bits100, &mut prover);
+        prove_rounds(&mut pair, 3, claim, Bits100, &mut prover);
         let mut proof = prover.finish();
         proof.narg_string.truncate(proof.narg_string.len() - 16);
         let mut verifier = build_verifier("post_gkr-tests", "sumcheck", &proof);
         assert_eq!(
-            verify_rounds(3, claim, SecurityLevel::Bits100, &mut verifier).err(),
+            verify_rounds(3, claim, Bits100, &mut verifier).err(),
             Some(VerifyError::MalformedProof)
         );
     }

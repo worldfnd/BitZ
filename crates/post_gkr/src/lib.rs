@@ -295,6 +295,7 @@ fn advance(claim: F128, [a0, a2]: RoundMessage, challenge: F128) -> F128 {
 mod tests {
     use common::Shape;
     use poly::DenseMultilinearExtension;
+    use transcript::SecurityLevel::{Bits100, Bits128};
     use transcript::{Proof, build_prover, build_verifier};
 
     use super::*;
@@ -357,11 +358,11 @@ mod tests {
     fn the_two_sides_agree_on_a_true_claim() {
         for (log_rows, log_columns, seed) in [(8, 2, 63), (10, 0, 64)] {
             let leaf = Leaf::random(log_rows, log_columns, seed);
-            let (sent, proof) = reduced(&leaf, SecurityLevel::Bits100);
+            let (sent, proof) = reduced(&leaf, Bits100);
             assert_eq!(proof.narg_string.len(), (2 * 10 + 1) * 16);
             assert!(proof.hints.is_empty());
 
-            let received = verified(&leaf, &proof, SecurityLevel::Bits100).unwrap();
+            let received = verified(&leaf, &proof, Bits100).unwrap();
             assert_eq!(sent, received);
             let (point, target) = mle(&received);
             assert_eq!(point.len(), 10);
@@ -385,13 +386,10 @@ mod tests {
         )
         .unwrap();
         let mut prover = build_prover("post_gkr-tests", "reduce");
-        let sent = prove(&claim, &leaf.packed, SecurityLevel::Bits100, &mut prover).unwrap();
+        let sent = prove(&claim, &leaf.packed, Bits100, &mut prover).unwrap();
         let proof = prover.finish();
         let mut verifier = build_verifier("post_gkr-tests", "reduce", &proof);
-        assert_eq!(
-            verify(&claim, SecurityLevel::Bits100, &mut verifier),
-            Ok(sent.clone())
-        );
+        assert_eq!(verify(&claim, Bits100, &mut verifier), Ok(sent.clone()));
         let (point, target) = mle(&sent);
         assert_eq!(leaf.evaluate(point), target);
     }
@@ -414,12 +412,7 @@ mod tests {
 
         let mut generic = Pair::new(weights.clone(), written_out.clone());
         let mut prover = build_prover("post_gkr-tests", "reduce");
-        let (point, _) = sumcheck::prove(
-            &mut generic,
-            leaf.target,
-            SecurityLevel::Bits100,
-            &mut prover,
-        );
+        let (point, _) = sumcheck::prove(&mut generic, leaf.target, Bits100, &mut prover);
         let proof = prover.finish();
         let message = factors.first_message(&leaf.packed);
         assert_eq!(
@@ -441,14 +434,14 @@ mod tests {
     #[test]
     fn a_reduction_altered_in_transit_is_caught() {
         let mut leaf = Leaf::random(7, 1, 66);
-        let (_, proof) = reduced(&leaf, SecurityLevel::Bits100);
+        let (_, proof) = reduced(&leaf, Bits100);
         let records = 2 * 8 + 1;
         assert_eq!(proof.narg_string.len(), records * 16);
         for record in 0..records {
             let mut altered = proof.clone();
             altered.narg_string[record * 16] ^= 1;
             assert_eq!(
-                verified(&leaf, &altered, SecurityLevel::Bits100),
+                verified(&leaf, &altered, Bits100),
                 Err(VerifyError::EvaluationMismatch),
                 "record {record}"
             );
@@ -456,13 +449,13 @@ mod tests {
         let mut short = proof.clone();
         short.narg_string.truncate(proof.narg_string.len() - 16);
         assert_eq!(
-            verified(&leaf, &short, SecurityLevel::Bits100),
+            verified(&leaf, &short, Bits100),
             Err(VerifyError::MalformedProof)
         );
 
         leaf.target += F128::ONE;
         assert_eq!(
-            verified(&leaf, &proof, SecurityLevel::Bits100),
+            verified(&leaf, &proof, Bits100),
             Err(VerifyError::EvaluationMismatch)
         );
     }
@@ -471,17 +464,17 @@ mod tests {
     fn security_targets_cover_every_quadratic_round() {
         let leaf = Leaf::random(7, 1, 68);
         let rounds = 8;
-        for security in [SecurityLevel::Bits100, SecurityLevel::Bits128] {
+        for security in [Bits100, Bits128] {
             let (sent, proof) = reduced(&leaf, security);
-            let nonce_bytes = usize::from(security == SecurityLevel::Bits128) * 8;
+            let nonce_bytes = usize::from(security == Bits128) * 8;
             assert_eq!(proof.narg_string.len(), rounds * (32 + nonce_bytes) + 16);
             assert_eq!(verified(&leaf, &proof, security), Ok(sent.clone()));
             let (point, target) = mle(&sent);
             assert_eq!(leaf.evaluate(point), target);
 
             let other = match security {
-                SecurityLevel::Bits100 => SecurityLevel::Bits128,
-                SecurityLevel::Bits128 => SecurityLevel::Bits100,
+                Bits100 => Bits128,
+                Bits128 => Bits100,
             };
             assert!(verified(&leaf, &proof, other).is_err());
 
@@ -523,7 +516,7 @@ mod tests {
                 &leaf.columns,
                 leaf.target + random(&mut rng(57)),
                 &leaf.packed,
-                SecurityLevel::Bits100,
+                Bits100,
                 &mut transcript
             ),
             Err(ProveError::ClaimDoesNotHold)
@@ -534,7 +527,7 @@ mod tests {
                 &leaf.columns,
                 leaf.target,
                 &leaf.packed[1..],
-                SecurityLevel::Bits100,
+                Bits100,
                 &mut transcript
             ),
             Err(ProveError::WitnessLengthMismatch)
