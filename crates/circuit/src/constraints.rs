@@ -29,6 +29,11 @@ impl<C> SparseRow<C> {
     pub fn entries(&self) -> &[(usize, C)] {
         &self.entries
     }
+
+    /// The entries, consuming the row.
+    pub fn into_entries(self) -> Vec<(usize, C)> {
+        self.entries
+    }
 }
 
 /// A row-major sparse matrix.
@@ -84,6 +89,11 @@ impl<C> SparseMatrix<C> {
         &self.rows
     }
 
+    /// The rows, consuming the matrix.
+    pub fn into_rows(self) -> Vec<SparseRow<C>> {
+        self.rows
+    }
+
     /// Number of rows.
     pub fn row_count(&self) -> usize {
         self.rows.len()
@@ -96,7 +106,7 @@ impl<C> SparseMatrix<C> {
 }
 
 impl<C: Send + Sync> SparseMatrix<C> {
-    fn map_values_with<D, M>(self, map: M) -> SparseMatrix<D>
+    fn map_values<D, M>(self, map: M) -> SparseMatrix<D>
     where
         D: Send + Sync,
         M: Fn(C) -> D + Send + Sync,
@@ -110,6 +120,28 @@ impl<C: Send + Sync> SparseMatrix<C> {
                         .entries
                         .into_iter()
                         .map(|(column, coefficient)| (column, map(coefficient)))
+                        .collect(),
+                })
+                .collect(),
+            columns: self.columns,
+        }
+    }
+
+    /// Maps every coefficient, keeping this matrix.
+    pub fn map_values_ref<D, M>(&self, map: M) -> SparseMatrix<D>
+    where
+        D: Send + Sync,
+        M: Fn(&C) -> D + Send + Sync,
+    {
+        SparseMatrix {
+            rows: self
+                .rows
+                .par_iter()
+                .map(|row| SparseRow {
+                    entries: row
+                        .entries
+                        .iter()
+                        .map(|(column, coefficient)| (*column, map(coefficient)))
                         .collect(),
                 })
                 .collect(),
@@ -279,9 +311,9 @@ impl<R: Send + Sync> ConstraintMatrices<R> {
     {
         ConstraintMatrices {
             m: self.m,
-            a: self.a.map_values_with(&map),
-            b: self.b.map_values_with(&map),
-            c: self.c.map_values_with(&map),
+            a: self.a.map_values(&map),
+            b: self.b.map_values(&map),
+            c: self.c.map_values(&map),
         }
     }
 }

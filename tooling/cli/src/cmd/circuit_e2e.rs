@@ -8,10 +8,10 @@ use {
     },
 };
 
-type F = field::FqDefault;
-type Proj = bitz_cli::ProjectBigIntToFq;
+type F = field::DynField;
+type Proj = bitz_cli::ProjectBigIntToField;
 
-/// Prove generated circuit constraints over Q100 and verify the proof.
+/// Prove generated circuit constraints over a transcript-drawn prime and verify the proof.
 #[derive(FromArgs, PartialEq, Debug)]
 #[argh(subcommand, name = "circuit-e2e")]
 pub struct Args {
@@ -48,7 +48,7 @@ impl Command for Args {
                 "circuit_e2e",
                 circuit = %self.circuit,
                 threads = rayon::current_num_threads(),
-                field = "Q100",
+                field = "random-prime",
                 pcs = "Fast",
                 hash = "Blake3",
             ).entered();
@@ -58,7 +58,7 @@ impl Command for Args {
             let inputs = statement.inputs.clone();
             let timings = benchmark::run::<_, F, _, Proj>(statement, &inputs)?;
             tracing::info!("Proof verified successfully");
-            println!("circuit={} threads={} field=Q100 pcs=Fast hash=Blake3 relation=Q100-r1cs constraints_verified=true", self.circuit, rayon::current_num_threads());
+            println!("circuit={} threads={} field=random-prime pcs=Fast hash=Blake3 relation=r1cs constraints_verified=true", self.circuit, rayon::current_num_threads());
             println!("{timings}");
             Ok(())
         })

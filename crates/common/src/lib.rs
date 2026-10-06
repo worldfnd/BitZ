@@ -17,7 +17,9 @@ pub use fold::{
     Fold, FoldError, column_images, fold_column, fold_columns, reconstruct, row_images,
 };
 pub use opening::OpeningQuery;
-pub use params::{BitZParams, ParamsError, VirtualParams, VirtualParamsError};
+pub use params::{
+    BitZParams, MIN_PRIME_BITS, ParamsError, VirtualParams, VirtualParamsError, prime_bits,
+};
 pub use shape::{Shape, ShapeError};
 pub use table::{BitTable, TableError, TransposeError, TransposedBitTable};
 pub use virtual_map::{
@@ -89,6 +91,7 @@ define_blanket_trait! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use field::dynamic::DynField;
     use field::{F128, FqDefault};
 
     #[test]
@@ -105,8 +108,10 @@ mod tests {
         fn assert_impl_field<T: BitzField>() {}
         assert_impl_field::<FqDefault>();
         assert_impl_field::<F128>();
+        assert_impl_field::<DynField>();
 
         fn assert_impl_claim_field<T: BitzClaimField>() {}
         assert_impl_claim_field::<FqDefault>();
+        assert_impl_claim_field::<DynField>();
     }
 }

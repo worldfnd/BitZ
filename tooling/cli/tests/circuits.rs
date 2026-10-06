@@ -1,5 +1,5 @@
 use bitz_cli::{
-    ProjectBigIntToFq,
+    ProjectBigIntToField,
     circuits::{BuiltinCircuit, CircuitInstance},
     end_to_end::{CircuitProofSystem, CircuitStatement, Error},
 };
@@ -10,11 +10,14 @@ use circuit::{
 use num_traits::{Signed, ToPrimitive};
 
 type R = num_bigint::BigInt;
-type F = field::FqDefault;
-type Proj = ProjectBigIntToFq;
+type F = field::DynField;
+type Proj = ProjectBigIntToField;
 
+/// Every residual is below the narrowest prime a proof may draw, so no
+/// Boolean assignment satisfies a row modulo the prime without satisfying it
+/// over the integers.
 #[test]
-fn sha_constraint_residuals_cannot_wrap_modulo_q100() {
+fn sha_constraint_residuals_cannot_wrap_modulo_the_prime() {
     for circuit in BuiltinCircuit::ALL {
         let statement = CircuitInstance::random(circuit, None, None).unwrap();
         let mut generator = ConstraintGenerator::<R>::new(statement.input_bits());
@@ -45,7 +48,10 @@ fn sha_constraint_residuals_cannot_wrap_modulo_q100() {
                 .unwrap()
                 .checked_add(bound(c))
                 .unwrap();
-            assert!(residual_bound < field::Q100, "{circuit}: residual may wrap");
+            assert!(
+                residual_bound < 1u128 << (common::MIN_PRIME_BITS - 1),
+                "{circuit}: residual may wrap"
+            );
         }
     }
 }
@@ -55,7 +61,7 @@ fn supported_sha_circuits_prove_and_verify() {
     for circuit in BuiltinCircuit::ALL {
         let statement = CircuitInstance::random(circuit, None, None).unwrap();
         let inputs = statement.inputs.clone();
-        let system = CircuitProofSystem::<_, F>::new::<R, Proj>(statement).unwrap();
+        let system = CircuitProofSystem::<_, F, R, Proj>::new(statement).unwrap();
         let witness = system.witness(&inputs).unwrap();
         let data = system.commit(&witness).unwrap();
         let proof = system.prove(witness, data).unwrap();
@@ -78,17 +84,17 @@ fn sha_compression_matches_abc_and_binds_public_values() {
         inputs: inputs.clone(),
         output: bits(&ABC_DIGEST),
     };
-    let system = CircuitProofSystem::<_, F>::new::<R, Proj>(statement.clone()).unwrap();
+    let system = CircuitProofSystem::<_, F, R, Proj>::new(statement.clone()).unwrap();
     let witness = system.witness(&inputs).unwrap();
     let data = system.commit(&witness).unwrap();
     let proof = system.prove(witness, data).unwrap();
-    CircuitProofSystem::<_, F>::new::<R, Proj>(statement.clone())
+    CircuitProofSystem::<_, F, R, Proj>::new(statement.clone())
         .unwrap()
         .verify(&proof)
         .unwrap();
     let mut changed = statement.clone();
     changed.output[0] ^= true;
-    let wrong_output = CircuitProofSystem::<_, F>::new::<R, Proj>(changed).unwrap();
+    let wrong_output = CircuitProofSystem::<_, F, R, Proj>::new(changed).unwrap();
     assert!(wrong_output.verify(&proof).is_err());
     assert!(matches!(
         wrong_output.witness(&inputs),
@@ -97,7 +103,7 @@ fn sha_compression_matches_abc_and_binds_public_values() {
     let mut changed = statement;
     changed.inputs[0] ^= true;
     assert!(
-        CircuitProofSystem::<_, F>::new::<R, Proj>(changed)
+        CircuitProofSystem::<_, F, R, Proj>::new(changed)
             .unwrap()
             .verify(&proof)
             .is_err()
@@ -114,7 +120,7 @@ fn variable_lengths_custom_state_and_invalid_dimensions() {
     ] {
         let statement = CircuitInstance::random(circuit, count, state).unwrap();
         let inputs = statement.inputs.clone();
-        let system = CircuitProofSystem::<_, F>::new::<R, Proj>(statement).unwrap();
+        let system = CircuitProofSystem::<_, F, R, Proj>::new(statement).unwrap();
         system.witness(&inputs).unwrap();
     }
     for (circuit, count) in [
@@ -131,5 +137,5 @@ fn variable_lengths_custom_state_and_invalid_dimensions() {
     let mut malformed =
         CircuitInstance::random(BuiltinCircuit::Sha256Compression, None, None).unwrap();
     malformed.inputs.pop();
-    assert!(CircuitProofSystem::<_, F>::new::<R, Proj>(malformed).is_err());
+    assert!(CircuitProofSystem::<_, F, R, Proj>::new(malformed).is_err());
 }

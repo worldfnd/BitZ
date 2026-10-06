@@ -5,7 +5,7 @@ use common::BitzField;
 use poly::{
     DenseMultilinearExtension, MleClaimError, ScaledMleEvaluationClaim, make_equality_factors,
 };
-use transcript::{ProverState, VerifierState};
+use transcript::{ProverState, SqueezableTranscript, VerifierState};
 
 use crate::matrix::{PreparedConstraintMatrices, SpartanMatrixError, build_assignment_mle};
 use crate::sumcheck::{
@@ -160,7 +160,7 @@ pub fn verify_spartan_with_mle_claim<F: BitzField>(
     mle_claim: &ScaledMleEvaluationClaim<F>,
     assignment: &PackedWitness,
 ) -> Result<(), SpartanError> {
-    let assignment = build_assignment_mle::<F>(assignment, matrices.matrices().a.column_count())?;
+    let assignment = build_assignment_mle::<F>(assignment, matrices.column_count())?;
     let expected_claim = verify_spartan_proof(transcript, matrices, proof)?;
     if mle_claim != &expected_claim {
         return Err(SpartanError::InvalidMleClaim);
