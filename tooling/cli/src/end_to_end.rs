@@ -148,6 +148,7 @@ where
     F: BitzClaimField + FieldWithDynamicModulus,
     F::Integer: BitWidth + IntoWords,
     R: BitzConstraintRing + for<'a> From<&'a StoredInteger>,
+    for<'a> StoredInteger: From<&'a R>,
     Proj: ProjectConstraint<R, F>,
 {
     #[tracing::instrument(name = "setup", skip_all)]
@@ -386,10 +387,7 @@ where
             .map_err(|_| Error::Configuration("inadmissible BitZ parameters"))?;
         transcript.public_message(&params);
         let projection = Proj::prepare();
-        let matrices = self
-            .matrices
-            .project(|c| projection.project(c))
-            .map_err(Error::Matrix)?;
+        let matrices = self.matrices.project(|c| projection.project(c));
         Ok((params, matrices))
     }
 

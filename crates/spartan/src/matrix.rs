@@ -1,15 +1,15 @@
 //! R1CS matrix preparation and the sparse kernels used by Spartan.
 
 use circuit::constraints::{ConstraintMatrices, SparseBoolMatrix, SparseMatrix};
-use circuit::matrix_products::{IntegerProducts, ModularVector, RuntimeModulus};
+use circuit::matrix_products::{IntegerProducts, ModularVector, RuntimeModulus, StoredInteger};
 use circuit::witgen::PackedWitness;
 use circuit::{BitWidth, IntoWords};
 use common::{BitzClaimField, BitzField};
+use num_traits::ToPrimitive;
 use poly::DenseMultilinearExtension;
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
-use transcript::Encoding;
 
 use crate::sumcheck::R1csProductMles;
 
@@ -28,14 +28,17 @@ pub enum SpartanMatrixError {
 }
 
 /// Constraint matrices over their coefficient ring, prepared once for every
-/// proof: shape validated, Boolean domains sized, nonzeros chunked by column.
-/// None of that depends on a modulus, so [`Self::project`] shares it and
-/// only reduces the coefficients.
+/// proof: shape validated, Boolean domains sized, nonzeros chunked by column,
+/// statement digested. None of that depends on a modulus, so
+/// [`Self::project`] shares it and only reduces the coefficients.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreparedIntegerMatrices<R> {
     matrices: ConstraintMatrices<R>,
     /// Nonzeros of `a`, `b` and `c` grouped by column chunk.
     column_chunks: Arc<[ColumnChunkIndex; 3]>,
+    /// [`integer_matrix_digest`]: over the integers, so it exists before a
+    /// modulus does.
+    digest: [u8; 32],
     num_row_vars: usize,
     num_column_vars: usize,
 }
@@ -52,6 +55,8 @@ pub struct PreparedConstraintMatrices<F> {
     b: SparseMatrix<F>,
     c: SparseMatrix<F>,
     column_chunks: Arc<[ColumnChunkIndex; 3]>,
+    /// If this struct produced by an integer matrix, digest carries over,
+    /// otherwise it's built by hashing field elements via [`constraint_matrix_digest`]
     digest: [u8; 32],
     num_row_vars: usize,
     num_column_vars: usize,
@@ -119,13 +124,19 @@ fn column_chunks<C>(
         .map(|matrix| ColumnChunkIndex::new(matrix, chunk_len, chunk_count))
 }
 
-impl<R: Send + Sync> PreparedIntegerMatrices<R> {
+impl<R> PreparedIntegerMatrices<R>
+where
+    R: Send + Sync + ToPrimitive,
+    for<'a> StoredInteger: From<&'a R>,
+{
     pub fn new(matrices: ConstraintMatrices<R>) -> Result<Self, SpartanMatrixError> {
         let (num_row_vars, num_column_vars) = r1cs_num_vars(&matrices)?;
         let column_chunks = Arc::new(column_chunks(&matrices, num_column_vars));
+        let digest = integer_matrix_digest(&matrices)?;
         Ok(Self {
             matrices,
             column_chunks,
+            digest,
             num_row_vars,
             num_column_vars,
         })
@@ -135,31 +146,34 @@ impl<R: Send + Sync> PreparedIntegerMatrices<R> {
         &self.matrices
     }
 
+    pub const fn digest(&self) -> &[u8; 32] {
+        &self.digest
+    }
+
     /// The matrices with `map` applied to every coefficient of `A`, `B` and
-    /// `C`: the per-proof work. The chunking is shared; the digest is over the
-    /// projected coefficients, as in [`PreparedConstraintMatrices::new`].
-    pub fn project<F, M>(&self, map: M) -> Result<PreparedConstraintMatrices<F>, SpartanMatrixError>
+    /// `C`: the per-proof work. The chunking and the digest are shared.
+    pub fn project<F, M>(&self, map: M) -> PreparedConstraintMatrices<F>
     where
         F: BitzField,
         M: Fn(&R) -> F + Copy + Send + Sync,
     {
         let [a, b, c] = [&self.matrices.a, &self.matrices.b, &self.matrices.c]
             .map(|matrix| matrix.map_values_ref(map));
-        let digest = constraint_matrix_digest(&self.matrices.m, [&a, &b, &c])?;
-        Ok(PreparedConstraintMatrices {
+        PreparedConstraintMatrices {
             a,
             b,
             c,
             column_chunks: Arc::clone(&self.column_chunks),
-            digest,
+            digest: self.digest,
             num_row_vars: self.num_row_vars,
             num_column_vars: self.num_column_vars,
-        })
+        }
     }
 }
 
 impl<F: BitzField> PreparedConstraintMatrices<F> {
-    /// Prepares matrices already over the field, without copying them.
+    /// Prepares matrices already over the field, without copying them; the
+    /// digest is `constraint_matrix_digest`.
     pub fn new(matrices: ConstraintMatrices<F>) -> Result<Self, SpartanMatrixError> {
         let (num_row_vars, num_column_vars) = r1cs_num_vars(&matrices)?;
         let column_chunks = Arc::new(column_chunks(&matrices, num_column_vars));
@@ -482,17 +496,16 @@ pub(crate) fn r1cs_num_vars<R: Send + Sync>(
 }
 
 /// Canonically commits the complete public matrix statement before any
-/// Fiat--Shamir challenge is sampled.
-///
-/// The digest domain is intentionally field-neutral. A protocol that supports
-/// more than one field must bind the field choice in its transcript session or
-/// instance; canonical coefficient encodings need not identify their field.
-pub(crate) fn constraint_matrix_digest<F: BitzField>(
+/// Fiat--Shamir challenge is sampled: `domain`, the positions of `M`, then
+/// `A`, `B` and `C` with every coefficient written by `encode`.
+fn matrix_digest<C>(
+    domain: &[u8],
     m: &SparseBoolMatrix,
-    matrices: [&SparseMatrix<F>; 3],
+    matrices: [&SparseMatrix<C>; 3],
+    encode: impl Fn(&mut Sha256, &C) -> Result<(), SpartanMatrixError>,
 ) -> Result<[u8; 32], SpartanMatrixError> {
     let mut hash = Sha256::new();
-    hash.update(b"bitz/spartan/constraint-matrices/v1");
+    hash.update(domain);
 
     hash.update(b"M");
     hash_usize(&mut hash, m.row_count())?;
@@ -506,30 +519,90 @@ pub(crate) fn constraint_matrix_digest<F: BitzField>(
 
     for (label, matrix) in [b"A", b"B", b"C"].into_iter().zip(matrices) {
         hash.update(label);
-        hash_sparse_matrix(&mut hash, matrix)?;
+        hash_usize(&mut hash, matrix.row_count())?;
+        hash_usize(&mut hash, matrix.column_count())?;
+        for row in matrix.rows() {
+            hash_usize(&mut hash, row.entries().len())?;
+            for (column, coefficient) in row.entries() {
+                hash_usize(&mut hash, *column)?;
+                encode(&mut hash, coefficient)?;
+            }
+        }
     }
 
     Ok(hash.finalize().into())
 }
 
-fn hash_sparse_matrix<F>(
-    hash: &mut Sha256,
-    matrix: &SparseMatrix<F>,
-) -> Result<(), SpartanMatrixError>
-where
-    F: Encoding<[u8]>,
-{
-    hash_usize(hash, matrix.row_count())?;
-    hash_usize(hash, matrix.column_count())?;
-    for row in matrix.rows() {
-        hash_usize(hash, row.entries().len())?;
-        for (column, coefficient) in row.entries() {
-            hash_usize(hash, *column)?;
-            let encoding = coefficient.encode();
+/// The statement digest over coefficients already in the field, encoded as
+/// the transcript encodes them.
+///
+/// The digest domain is intentionally field-neutral. A protocol that supports
+/// more than one field must bind the field choice in its transcript session or
+/// instance; canonical coefficient encodings need not identify their field.
+pub(crate) fn constraint_matrix_digest<F: BitzField>(
+    m: &SparseBoolMatrix,
+    matrices: [&SparseMatrix<F>; 3],
+) -> Result<[u8; 32], SpartanMatrixError> {
+    matrix_digest(
+        b"bitz/spartan/constraint-matrices/v1",
+        m,
+        matrices,
+        |hash, coefficient| {
+            let encoding = transcript::Encoding::encode(coefficient);
             let bytes = encoding.as_ref();
             hash_usize(hash, bytes.len())?;
             hash.update(bytes);
-        }
+            Ok(())
+        },
+    )
+}
+
+/// The statement digest over integer coefficients, each in its normalized
+/// two's-complement words, so it is fixed before any modulus is drawn and
+/// shared by every projection. Its own domain: it never equals the digest of
+/// the projected matrices. A protocol that projects must bind the modulus in
+/// its transcript before Spartan reads this digest, as the e2e does by
+/// absorbing its parameters right after the draw.
+pub(crate) fn integer_matrix_digest<R>(
+    matrices: &ConstraintMatrices<R>,
+) -> Result<[u8; 32], SpartanMatrixError>
+where
+    R: ToPrimitive,
+    for<'a> StoredInteger: From<&'a R>,
+{
+    matrix_digest(
+        b"bitz/spartan/integer-constraint-matrices/v1",
+        &matrices.m,
+        [&matrices.a, &matrices.b, &matrices.c],
+        |hash, coefficient| {
+            // Coefficients are small in practice; spare them the heap.
+            if let Some(value) = coefficient.to_i128() {
+                let (words, len) = canonical_words(value);
+                hash_words(hash, &words[..len])
+            } else {
+                hash_words(hash, StoredInteger::from(coefficient).words())
+            }
+        },
+    )
+}
+
+/// The words [`StoredInteger`] holds for `value`, and how many: little-endian
+/// two's complement with a redundant sign word dropped, none for zero.
+fn canonical_words(value: i128) -> ([u64; 2], usize) {
+    let (low, high) = (value as u64, (value >> 64) as u64);
+    let sign_extended = (high == 0 && low >> 63 == 0) || (high == u64::MAX && low >> 63 == 1);
+    let len = match (value == 0, sign_extended) {
+        (true, _) => 0,
+        (false, true) => 1,
+        (false, false) => 2,
+    };
+    ([low, high], len)
+}
+
+fn hash_words(hash: &mut Sha256, words: &[u64]) -> Result<(), SpartanMatrixError> {
+    hash_usize(hash, words.len())?;
+    for word in words {
+        hash.update(word.to_le_bytes());
     }
     Ok(())
 }
@@ -672,10 +745,35 @@ mod tests {
         assert_eq!(bound.evaluate(&column_point).unwrap(), expected);
     }
 
-    /// Projecting integer matrices prepared once gives exactly what preparing
-    /// the projected matrices gives, and the chunking is shared, not rebuilt.
     #[test]
-    fn projecting_prepared_integer_matrices_matches_preparing_the_projection() {
+    fn canonical_words_are_the_stored_integers() {
+        for value in [
+            0_i128,
+            1,
+            -1,
+            i128::from(i64::MAX),
+            i128::from(i64::MIN),
+            i128::from(i64::MAX) + 1,
+            i128::from(i64::MIN) - 1,
+            i128::from(u64::MAX),
+            -i128::from(u64::MAX),
+            i128::MAX,
+            i128::MIN,
+        ] {
+            let (words, len) = super::canonical_words(value);
+            assert_eq!(
+                &words[..len],
+                circuit::matrix_products::StoredInteger::from(&value).words(),
+                "{value}"
+            );
+        }
+    }
+
+    /// Projecting integer matrices prepared once gives what preparing the
+    /// projected matrices gives, the chunking shared rather than rebuilt; only
+    /// the digest differs, each over its own coefficients and domain.
+    #[test]
+    fn projection_matches_direct_preparation_up_to_the_digest_domain() {
         let mut rng = Pcg64::seed_from_u64(13);
         let mut random_integer_matrix = || {
             let rows = (0..ROWS)
@@ -709,19 +807,47 @@ mod tests {
             c: random_integer_matrix(),
         };
         let prepared = PreparedIntegerMatrices::new(integer_matrices.clone()).unwrap();
-        let projected = prepared.project(project).unwrap();
-        let direct =
-            PreparedConstraintMatrices::new(integer_matrices.map_coefficients(|c| project(&c)))
-                .unwrap();
-        assert_eq!(projected, direct);
+        let projected = prepared.project(project);
+        let direct = PreparedConstraintMatrices::new(
+            integer_matrices.clone().map_coefficients(|c| project(&c)),
+        )
+        .unwrap();
+        assert_eq!(projected.matrices(), direct.matrices());
+        assert_eq!(projected.column_chunks, direct.column_chunks);
+        assert_eq!(projected.num_row_vars(), direct.num_row_vars());
+        assert_eq!(projected.num_column_vars(), direct.num_column_vars());
+        assert_ne!(
+            projected.digest(),
+            direct.digest(),
+            "the integer digest is its own domain"
+        );
+        assert_eq!(projected.digest(), prepared.digest());
         assert!(Arc::ptr_eq(
             &projected.column_chunks,
-            &prepared.project(project).unwrap().column_chunks
+            &prepared.project(project).column_chunks
         ));
         assert_eq!(prepared.matrices().a.row_count(), projected.row_count());
         assert_eq!(
             prepared.matrices().a.column_count(),
             projected.column_count()
+        );
+
+        // The integer digest is the integer matrices': the same under every
+        // projection, different as soon as a coefficient or a position is.
+        type Wide = field::Fq<{ (1 << 114) - 11 }>;
+        let wide = |coefficient: &i128| Wide::from(coefficient.unsigned_abs());
+        assert_eq!(prepared.project(wide).digest(), prepared.digest());
+        let mut negated = integer_matrices.clone();
+        negated.a = negated.a.map_values_ref(|c| -c);
+        assert_ne!(
+            PreparedIntegerMatrices::new(negated).unwrap().digest(),
+            prepared.digest()
+        );
+        let mut moved = integer_matrices;
+        moved.m = SparseBoolMatrix::try_from_rows(2, vec![vec![1]; COLUMNS]).unwrap();
+        assert_ne!(
+            PreparedIntegerMatrices::new(moved).unwrap().digest(),
+            prepared.digest()
         );
     }
 }

@@ -29,6 +29,7 @@ where
     F: BitzClaimField + FieldWithDynamicModulus,
     F::Integer: BitWidth + IntoWords,
     R: BitzConstraintRing + for<'a> From<&'a StoredInteger>,
+    for<'a> StoredInteger: From<&'a R>,
     Proj: ProjectConstraint<R, F>,
 {
     let started = Instant::now();

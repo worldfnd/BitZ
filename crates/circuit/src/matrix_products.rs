@@ -368,6 +368,12 @@ impl From<&StoredInteger> for num_bigint::BigInt {
     }
 }
 
+impl From<&i128> for StoredInteger {
+    fn from(value: &i128) -> Self {
+        Self::from(&Integer::<2>::from(*value))
+    }
+}
+
 impl<const LIMBS: usize> From<&Integer<LIMBS>> for StoredInteger {
     /// Stores a gadget-local fixed integer without changing its value.
     fn from(value: &Integer<LIMBS>) -> Self {
@@ -584,6 +590,30 @@ mod tests {
             !products.is_satisfied::<R>(),
             "a missing row is not satisfied"
         );
+    }
+
+    #[test]
+    fn every_source_stores_an_integer_alike() {
+        for value in [
+            0_i128,
+            1,
+            -1,
+            7,
+            -7,
+            i128::from(i64::MAX),
+            i128::from(i64::MIN),
+            1 << 100,
+            -(1 << 100),
+        ] {
+            let from_bigint = StoredInteger::from(&R::from(value));
+            assert_eq!(StoredInteger::from(&value), from_bigint, "{value}");
+            assert_eq!(
+                StoredInteger::from(&Integer::<2>::from(value)),
+                from_bigint,
+                "{value}"
+            );
+            assert_eq!(stored_ring(&from_bigint), R::from(value));
+        }
     }
 
     #[test]
