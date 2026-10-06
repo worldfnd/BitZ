@@ -1,6 +1,8 @@
 //! `VerifyBitZ`.
 
-use common::{LinearClaim, OpeningQuery, Root, VirtualMap, VirtualMapError, VirtualStatement};
+use common::{
+    LinearClaim, OpeningQuery, SecurityLevel, VirtualMap, VirtualMapError, VirtualStatement,
+};
 use field::Fq;
 use pcs::{CommitScheme, Commitment, Pcs, StatementBinding, VerifyError as OpeningVerifyError};
 use transcript::VerifierState;
@@ -10,7 +12,7 @@ use crate::{BitZVerifier, ReceiveError, ReduceError, reduce::gkr_reduce};
 /// A proof the verifier rejects.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VerifyError {
-    /// The setup or PCS bit count differs from the virtual parameters.
+    /// The setup or PCS bit count differs from the statement parameters.
     ParameterMismatch,
     /// The reduced claim cannot be transposed onto the committed bits.
     VirtualMap(VirtualMapError),
@@ -25,39 +27,6 @@ pub enum VerifyError {
 }
 
 impl<const Q: u128> BitZVerifier<Q> {
-    /// Receives the commitment's OOD claim and verifies the virtual BitZ proof.
-    pub fn verify_virtual(
-        &self,
-        statement: &VirtualStatement<'_, Q, impl VirtualMap>,
-        pcs: &Pcs,
-        root: Root,
-        mut transcript: VerifierState<'_>,
-    ) -> Result<(), VerifyError> {
-        if self.params() != statement.params().claim()
-            || pcs.bit_len() != 1 << statement.params().committed_shape().log_bits()
-        {
-            return Err(VerifyError::ParameterMismatch);
-        }
-        let commitment = pcs
-            .receive_commitment(root, &mut transcript)
-            .map_err(VerifyError::Opening)?;
-        self.verify_virtual_with_commitment(statement, pcs, &commitment, transcript)
-    }
-
-    /// Receives the commitment's OOD claim and verifies the BitZ proof.
-    pub fn verify(
-        &self,
-        claim: &LinearClaim<Fq<Q>>,
-        pcs: &Pcs,
-        root: Root,
-        mut transcript: VerifierState<'_>,
-    ) -> Result<(), VerifyError> {
-        let commitment = pcs
-            .receive_commitment(root, &mut transcript)
-            .map_err(VerifyError::Opening)?;
-        self.verify_with_commitment(claim, pcs, &commitment, transcript)
-    }
-
     /// Verifies a claim on `h = M (1 || f)` against the commitment to `f`.
     ///
     /// Build the setup from `statement.params().claim()` and match the commitment's
@@ -65,12 +34,11 @@ impl<const Q: u128> BitZVerifier<Q> {
     /// padded virtual bits. Supply the public circuit's map; its digest must cover
     /// its shape and entries.
     ///
-    /// Continue the transcript that produced `commitment` through
-    /// [`Pcs::receive_commitment`], using the prover's public-input events.
+    /// Call `Pcs::receive_commitment` before witness-dependent challenges and continue its transcript.
     /// This method binds the inputs in [`VirtualStatement`], transposes the reduced
     /// claim, verifies the PCS opening, and rejects trailing proof or hint bytes.
     #[tracing::instrument(name = "Verify virtual BitZ", skip_all)]
-    pub fn verify_virtual_with_commitment(
+    pub fn verify_virtual(
         &self,
         statement: &VirtualStatement<'_, Q, impl VirtualMap>,
         pcs: &Pcs,
@@ -89,7 +57,8 @@ impl<const Q: u128> BitZVerifier<Q> {
         transcript.public_message(params);
         transcript.public_message(&statement.map().digest());
         transcript.public_message(claim);
-        let query = self.fold_and_reduce(claim, &mut transcript)?;
+        transcript.public_message(pcs);
+        let query = self.fold_and_reduce(claim, &mut transcript, pcs.security_level())?;
         let query = statement
             .transpose_query(query)
             .map_err(VerifyError::VirtualMap)?;
@@ -102,25 +71,30 @@ impl<const Q: u128> BitZVerifier<Q> {
 
     /// Replays the proof of the caller's linear claim about the committed bits.
     ///
-    /// `pcs` must be the scheme the commitment was made under. Continue the
-    /// transcript used by [`Pcs::receive_commitment`]; this consumes it and checks EOF.
+    /// Call `Pcs::receive_commitment` before witness-dependent challenges and continue its transcript.
+    /// `pcs` must match the commitment parameters. This method consumes the transcript and checks EOF.
     #[tracing::instrument(name = "Verify BitZ", skip_all)]
-    pub fn verify_with_commitment(
+    pub fn verify(
         &self,
         claim: &LinearClaim<Fq<Q>>,
         pcs: &Pcs,
         commitment: &Commitment,
         mut transcript: VerifierState<'_>,
     ) -> Result<(), VerifyError> {
+        if pcs.bit_len() != 1 << self.params().shape().log_bits() {
+            return Err(VerifyError::ParameterMismatch);
+        }
         // Step 1: the admissibility and precondition checks have already run --
         // the shape gates in Shape::new, the modulus in Fq's own const assertions,
         // the generator's order in BitZParams::new and the weight counts in
         // LinearClaim::new. What is left is binding, before any challenge.
         transcript.public_message(&commitment.root().0);
         transcript.public_message(self.params());
+        transcript.public_message(pcs);
+        transcript.public_message(claim);
 
         // Steps 3 and 4: check integer folds and replay GKR to obtain a bit claim.
-        let query = self.fold_and_reduce(claim, &mut transcript)?;
+        let query = self.fold_and_reduce(claim, &mut transcript, pcs.security_level())?;
 
         // Step 6: verify the inner-product sumcheck, ring switch, and opening.
         // Acceptance requires authenticating GKR's terminal claim against the commitment.
@@ -142,16 +116,18 @@ impl<const Q: u128> BitZVerifier<Q> {
         &self,
         claim: &LinearClaim<field::Fq<Q>>,
         transcript: &mut VerifierState<'_>,
+        security: SecurityLevel,
     ) -> Result<OpeningQuery, VerifyError> {
         // Step 2 is absent: Q is fixed, and BitZParams::new checks its fold bound.
 
         // Step 3: read the folds, range-check them, reconstruct against mu.
         let fold = self
-            .receive_fold(claim, transcript)
+            .receive_fold(claim, transcript, security)
             .map_err(VerifyError::Fold)?;
 
         // Step 4: replay GKR from fold.e0 at fold.zeta to obtain the bit claim.
         // Step 5 needs no separate batching: fold.zeta already batches the columns.
-        gkr_reduce(transcript, &fold, self.params().shape()).map_err(VerifyError::Reduction)
+        gkr_reduce(transcript, &fold, self.params().shape(), security)
+            .map_err(VerifyError::Reduction)
     }
 }

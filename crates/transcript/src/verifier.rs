@@ -23,6 +23,24 @@ impl PublicTranscript for VerifierState<'_> {
 }
 
 impl VerifierState<'_> {
+    /// Checks a labeled grinding boundary before the next challenge block.
+    ///
+    /// Zero difficulty leaves the transcript unchanged. Difficulties above 32 fail.
+    pub fn grind(&mut self, label: &[u8], bits: u32) -> VerificationResult<()> {
+        if bits > crate::pow::MAX_GRINDING_BITS {
+            return Err(VerificationError);
+        }
+        if bits == 0 {
+            return Ok(());
+        }
+        crate::pow::absorb_header(self, label, bits);
+        let seed = self.verifier_message::<F128>().to_bytes();
+        let nonce = u64::from_le_bytes(self.prover_message::<[u8; 8]>()?);
+        crate::pow::valid(&seed, nonce, bits)
+            .then_some(())
+            .ok_or(VerificationError)
+    }
+
     /// Absorbs a message both parties already know; nothing is read.
     pub fn public_message<T: Encoding<[u8]> + ?Sized>(&mut self, message: &T) {
         self.inner.public_message(message);

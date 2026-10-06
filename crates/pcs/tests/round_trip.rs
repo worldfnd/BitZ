@@ -4,8 +4,8 @@ use common::{LinearClaim, Shape};
 use field::F128;
 use num_traits::ConstZero;
 use pcs::{
-    CommitScheme, Commitment, HashKind, LigeritoProfile, OpeningQuery, Pcs, ProveError, Root,
-    StatementBinding, VerifyError,
+    CommitScheme, Commitment, OpeningQuery, Pcs, ProveError, Root, SecurityLevel, StatementBinding,
+    VerifyError,
 };
 use transcript::{Proof, PublicTranscript, VerifierState, build_prover, build_verifier};
 
@@ -43,8 +43,8 @@ struct RealFixture {
 }
 
 impl RealFixture {
-    fn build(profile: LigeritoProfile) -> Self {
-        let pcs = Pcs::new(&shape(), profile, HashKind::Blake3).unwrap();
+    fn build(security: SecurityLevel) -> Self {
+        let pcs = Pcs::new(&shape(), security).unwrap();
         // One nonzero bit gives the expected MLE value a simple independent formula.
         let mut packed_witness = vec![F128::ZERO; pcs.packed_len()];
         let packed_index = SINGLETON / 128;
@@ -85,7 +85,7 @@ impl RealFixture {
 
 fn fixture() -> &'static RealFixture {
     static FIXTURE: OnceLock<RealFixture> = OnceLock::new();
-    FIXTURE.get_or_init(|| RealFixture::build(LigeritoProfile::Fast))
+    FIXTURE.get_or_init(|| RealFixture::build(SecurityLevel::Bits100))
 }
 
 fn singleton_target(point: &[F128], index: usize) -> F128 {
@@ -102,6 +102,45 @@ fn singleton_target(point: &[F128], index: usize) -> F128 {
             };
             target * weight
         })
+}
+
+#[test]
+fn dynamic_shapes_open_nonzero_witnesses_across_ladder_shapes() {
+    use pcs::SecurityLevel::{Bits100, Bits128};
+    // These sizes exercise final folds of one, two, and three variables.
+    // Size 23 also adds a recursive level.
+    for m in 20..=23 {
+        let shape = Shape::new(7, m - 7).unwrap();
+        for level in [Bits100, Bits128] {
+            let pcs = Pcs::new(&shape, level).unwrap();
+            let index = (1usize << m) - 1;
+            let mut witness = vec![F128::ZERO; pcs.packed_len()];
+            witness[index / 128].hi = 1 << 63;
+            let point: Vec<_> = (0..m).map(|i| F128::from(i as u64 + 2)).collect();
+            let query = OpeningQuery::Mle {
+                target: singleton_target(&point, index),
+                point,
+            };
+            let mut prover = build_prover(SESSION, b"dynamic");
+            let (root, data) = pcs.commit(&witness, &mut prover).unwrap();
+
+            pcs.prove_lin(&data, witness, &query, StatementBinding::Bind, &mut prover)
+                .unwrap();
+            let continuation = prover.verifier_message::<F128>();
+            let proof = prover.finish();
+            let mut verifier = build_verifier(SESSION, b"dynamic", &proof);
+            verify_opening(&pcs, &root, &query, StatementBinding::Bind, &mut verifier).unwrap();
+            assert_eq!(verifier.verifier_message::<F128>(), continuation);
+            verifier.check_eof().unwrap();
+
+            let mut truncated = proof.clone();
+            truncated.narg_string.pop();
+            let mut verifier = build_verifier(SESSION, b"dynamic", &truncated);
+            assert!(
+                verify_opening(&pcs, &root, &query, StatementBinding::Bind, &mut verifier).is_err()
+            );
+        }
+    }
 }
 
 fn factor_weight(index: usize) -> F128 {
@@ -155,9 +194,9 @@ struct InnerProductFixture {
 }
 
 impl InnerProductFixture {
-    fn build(profile: LigeritoProfile) -> Self {
+    fn build(security: SecurityLevel) -> Self {
         let shape = inner_product_shape();
-        let pcs = Pcs::new(&shape, profile, HashKind::Blake3).unwrap();
+        let pcs = Pcs::new(&shape, security).unwrap();
         let witness = inner_product_witness(pcs.packed_len());
         let target = inner_product_target(&shape);
         assert_ne!(target, F128::ZERO);
@@ -193,16 +232,13 @@ impl InnerProductFixture {
         query: &OpeningQuery,
         proof: &'proof Proof,
         binding: StatementBinding,
-    ) -> (Commitment, VerifierState<'proof>) {
+    ) -> Result<(Commitment, VerifierState<'proof>), VerifyError> {
         let mut verifier = build_verifier(SESSION, INNER_PRODUCT_INSTANCE, proof);
-        let received = self
-            .pcs
-            .receive_commitment(*commitment, &mut verifier)
-            .unwrap();
+        let received = self.pcs.receive_commitment(*commitment, &mut verifier)?;
         if binding == StatementBinding::AlreadyBound {
             bind_outer_inner_product_statement(&mut verifier, &self.pcs, commitment, query);
         }
-        (received, verifier)
+        Ok((received, verifier))
     }
 
     fn verify(
@@ -212,22 +248,20 @@ impl InnerProductFixture {
         proof: &Proof,
         binding: StatementBinding,
     ) -> Result<(), VerifyError> {
-        let (received, mut verifier) = self.verifier(commitment, query, proof, binding);
+        let (received, mut verifier) = self.verifier(commitment, query, proof, binding)?;
         self.pcs
             .verify_lin(&received, query, binding, &mut verifier)
     }
 }
 
-fn inner_product_fixture(profile: LigeritoProfile) -> &'static InnerProductFixture {
-    static FAST: OnceLock<InnerProductFixture> = OnceLock::new();
-    static SLIM: OnceLock<InnerProductFixture> = OnceLock::new();
-    static SECURE: OnceLock<InnerProductFixture> = OnceLock::new();
-    let fixture = match profile {
-        LigeritoProfile::Fast => &FAST,
-        LigeritoProfile::Slim => &SLIM,
-        LigeritoProfile::Secure => &SECURE,
+fn inner_product_fixture(security: SecurityLevel) -> &'static InnerProductFixture {
+    static BITS100: OnceLock<InnerProductFixture> = OnceLock::new();
+    static BITS128: OnceLock<InnerProductFixture> = OnceLock::new();
+    let fixture = match security {
+        SecurityLevel::Bits100 => &BITS100,
+        SecurityLevel::Bits128 => &BITS128,
     };
-    fixture.get_or_init(|| InnerProductFixture::build(profile))
+    fixture.get_or_init(|| InnerProductFixture::build(security))
 }
 
 fn bind_outer_inner_product_statement(
@@ -282,7 +316,7 @@ fn real_pcs_opening_round_trip_succeeds() {
 
 #[test]
 fn real_pcs_ood_round_batches_into_opening() {
-    let pcs = Pcs::new(&shape(), LigeritoProfile::Fast, HashKind::Blake3).unwrap();
+    let pcs = Pcs::new(&shape(), SecurityLevel::Bits100).unwrap();
     let mut packed_witness = vec![F128::ZERO; pcs.packed_len()];
     packed_witness[SINGLETON / 128] = F128::new(0, 1 << (SINGLETON % 128 - 64));
     let point = vec![F128::from(2u64); M];
@@ -317,7 +351,7 @@ fn ood_round_trip(pcs: &impl CommitScheme, packed_witness: Vec<F128>, query: Ope
 
 #[test]
 fn real_pcs_ood_round_rejects_a_changed_evaluation() {
-    let pcs = Pcs::new(&shape(), LigeritoProfile::Fast, HashKind::Blake3).unwrap();
+    let pcs = Pcs::new(&shape(), SecurityLevel::Bits100).unwrap();
     let packed_witness = vec![F128::ZERO; pcs.packed_len()];
     let query = OpeningQuery::Mle {
         point: vec![F128::from(2u64); M],
@@ -345,20 +379,18 @@ fn real_pcs_ood_round_rejects_a_changed_evaluation() {
 }
 
 #[test]
-fn factored_inner_product_round_trip_succeeds_for_all_profiles_and_bindings() {
-    for profile in [
-        LigeritoProfile::Fast,
-        LigeritoProfile::Slim,
-        LigeritoProfile::Secure,
-    ] {
-        let fixture = inner_product_fixture(profile);
+fn factored_inner_product_round_trip_succeeds_for_both_security_levels_and_bindings() {
+    for security in [SecurityLevel::Bits100, SecurityLevel::Bits128] {
+        let fixture = inner_product_fixture(security);
         for binding in [StatementBinding::Bind, StatementBinding::AlreadyBound] {
-            let (received, mut verifier) = fixture.verifier(
-                &fixture.commitment,
-                &fixture.query,
-                fixture.proof(binding),
-                binding,
-            );
+            let (received, mut verifier) = fixture
+                .verifier(
+                    &fixture.commitment,
+                    &fixture.query,
+                    fixture.proof(binding),
+                    binding,
+                )
+                .unwrap();
             fixture
                 .pcs
                 .verify_lin(&received, &fixture.query, binding, &mut verifier)
@@ -371,7 +403,7 @@ fn factored_inner_product_round_trip_succeeds_for_all_profiles_and_bindings() {
 #[test]
 fn factored_inner_product_prover_rejects_a_false_target() {
     let shape = inner_product_shape();
-    let pcs = Pcs::new(&shape, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
+    let pcs = Pcs::new(&shape, SecurityLevel::Bits100).unwrap();
     let witness = inner_product_witness(pcs.packed_len());
     let query = factored_query(&shape, inner_product_target(&shape) + F128::from(1u64));
 
@@ -390,7 +422,7 @@ fn factored_inner_product_prover_rejects_a_false_target() {
 
 #[test]
 fn factored_inner_product_rejects_statement_mutations() {
-    let fixture = inner_product_fixture(LigeritoProfile::Fast);
+    let fixture = inner_product_fixture(SecurityLevel::Bits100);
     let OpeningQuery::InnerProduct { claim } = &fixture.query else {
         unreachable!();
     };
@@ -432,7 +464,7 @@ fn factored_inner_product_rejects_statement_mutations() {
 
 #[test]
 fn factored_inner_product_requires_complete_transcript_consumption() {
-    let fixture = inner_product_fixture(LigeritoProfile::Fast);
+    let fixture = inner_product_fixture(SecurityLevel::Bits100);
     for binding in [StatementBinding::Bind, StatementBinding::AlreadyBound] {
         for append_hint in [false, true] {
             let mut proof = fixture.proof(binding).clone();
@@ -441,8 +473,9 @@ fn factored_inner_product_requires_complete_transcript_consumption() {
             } else {
                 proof.narg_string.push(0);
             }
-            let (received, mut verifier) =
-                fixture.verifier(&fixture.commitment, &fixture.query, &proof, binding);
+            let (received, mut verifier) = fixture
+                .verifier(&fixture.commitment, &fixture.query, &proof, binding)
+                .unwrap();
             fixture
                 .pcs
                 .verify_lin(&received, &fixture.query, binding, &mut verifier)
@@ -454,7 +487,7 @@ fn factored_inner_product_requires_complete_transcript_consumption() {
 
 #[test]
 fn factored_inner_product_rejects_wrong_weight_lengths() {
-    let pcs = Pcs::new(&shape(), LigeritoProfile::Secure, HashKind::Blake3).unwrap();
+    let pcs = Pcs::new(&shape(), SecurityLevel::Bits128).unwrap();
     let packed_witness = vec![F128::ZERO; pcs.packed_len()];
     let mut prover = build_prover(SESSION, b"wrong-inner-product-weight-count");
     let (commitment, data) = pcs.commit(&packed_witness, &mut prover).unwrap();
@@ -489,7 +522,7 @@ fn factored_inner_product_rejects_wrong_weight_lengths() {
 #[test]
 fn factored_inner_product_rejects_invalid_prover_inputs_before_sumcheck() {
     let shape = inner_product_shape();
-    let pcs = Pcs::new(&shape, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
+    let pcs = Pcs::new(&shape, SecurityLevel::Bits100).unwrap();
     let packed_witness = vec![F128::ZERO; pcs.packed_len()];
     let mut prover = build_prover(SESSION, b"inner-product-wrong-packed-length");
     let (_, data) = pcs.commit(&packed_witness, &mut prover).unwrap();
@@ -508,7 +541,7 @@ fn factored_inner_product_rejects_invalid_prover_inputs_before_sumcheck() {
         Err(ProveError::PackedWitnessLengthMismatch),
     );
 
-    let other = Pcs::new(&shape, LigeritoProfile::Slim, HashKind::Blake3).unwrap();
+    let other = Pcs::new(&shape, SecurityLevel::Bits128).unwrap();
     let mut prover = build_prover(SESSION, b"inner-product-mismatched-parameters");
     assert_eq!(
         other.prove_lin(
@@ -523,8 +556,8 @@ fn factored_inner_product_rejects_invalid_prover_inputs_before_sumcheck() {
 }
 
 #[test]
-fn slim_profile_opening_round_trip_exercises_pow() {
-    let fixture = RealFixture::build(LigeritoProfile::Slim);
+fn bits128_opening_round_trip_exercises_pow() {
+    let fixture = RealFixture::build(SecurityLevel::Bits128);
     let mut verifier = build_verifier(SESSION, INSTANCE, &fixture.proof);
 
     verify_opening(
@@ -540,7 +573,7 @@ fn slim_profile_opening_round_trip_exercises_pow() {
 
 #[test]
 fn real_pcs_accepts_an_already_bound_statement() {
-    let pcs = Pcs::new(&shape(), LigeritoProfile::Fast, HashKind::Blake3).unwrap();
+    let pcs = Pcs::new(&shape(), SecurityLevel::Bits100).unwrap();
     let packed_witness = vec![F128::ZERO; pcs.packed_len()];
     let query = OpeningQuery::Mle {
         point: vec![F128::from(2u64); M],
@@ -590,7 +623,7 @@ fn real_pcs_accepts_an_already_bound_statement() {
 
 #[test]
 fn real_pcs_rejects_point_length_mismatches() {
-    let pcs = Pcs::new(&shape(), LigeritoProfile::Fast, HashKind::Blake3).unwrap();
+    let pcs = Pcs::new(&shape(), SecurityLevel::Bits100).unwrap();
     let packed_witness = vec![F128::ZERO; pcs.packed_len()];
     let mut prover = build_prover(SESSION, b"wrong-prover-point");
     let (_, data) = pcs.commit(&packed_witness, &mut prover).unwrap();
@@ -629,7 +662,7 @@ fn real_pcs_rejects_point_length_mismatches() {
 
 #[test]
 fn real_pcs_rejects_packed_witness_length_mismatches_during_opening() {
-    let pcs = Pcs::new(&shape(), LigeritoProfile::Fast, HashKind::Blake3).unwrap();
+    let pcs = Pcs::new(&shape(), SecurityLevel::Bits100).unwrap();
     let mut packed_witness = vec![F128::ZERO; pcs.packed_len()];
     let mut prover = build_prover(SESSION, b"wrong-packed-length");
     let (_, data) = pcs.commit(&packed_witness, &mut prover).unwrap();
@@ -653,11 +686,11 @@ fn real_pcs_rejects_packed_witness_length_mismatches_during_opening() {
 
 #[test]
 fn real_pcs_rejects_mismatched_prover_parameters() {
-    let source = Pcs::new(&shape(), LigeritoProfile::Fast, HashKind::Blake3).unwrap();
+    let source = Pcs::new(&shape(), SecurityLevel::Bits100).unwrap();
     let packed_witness = vec![F128::ZERO; source.packed_len()];
     let mut prover = build_prover(SESSION, b"mismatched-parameters");
     let (_, data) = source.commit(&packed_witness, &mut prover).unwrap();
-    let other = Pcs::new(&shape(), LigeritoProfile::Slim, HashKind::Blake3).unwrap();
+    let other = Pcs::new(&shape(), SecurityLevel::Bits128).unwrap();
     let query = OpeningQuery::Mle {
         point: vec![F128::from(2u64); M],
         target: F128::from(0u64),
@@ -678,23 +711,19 @@ fn real_pcs_rejects_mismatched_prover_parameters() {
 #[test]
 fn real_pcs_rejects_commitment_state_from_different_parameters() {
     let fixture = fixture();
-    for (profile, hash) in [
-        (LigeritoProfile::Slim, HashKind::Blake3),
-        (LigeritoProfile::Fast, HashKind::Sha256),
-    ] {
-        let other = Pcs::new(&shape(), profile, hash).unwrap();
+    for (m, security) in [(M - 1, SecurityLevel::Bits100), (M, SecurityLevel::Bits128)] {
+        let other = Pcs::new(&Shape::new(7, m - 7).unwrap(), security).unwrap();
+        let query = OpeningQuery::Mle {
+            point: vec![F128::ZERO; m],
+            target: F128::ZERO,
+        };
         let mut verifier = build_verifier(SESSION, INSTANCE, &fixture.proof);
         let commitment = fixture
             .pcs
             .receive_commitment(fixture.commitment, &mut verifier)
             .unwrap();
         assert_eq!(
-            other.verify_lin(
-                &commitment,
-                &fixture.query,
-                StatementBinding::Bind,
-                &mut verifier
-            ),
+            other.verify_lin(&commitment, &query, StatementBinding::Bind, &mut verifier,),
             Err(VerifyError::VerificationFailed),
         );
     }
@@ -702,7 +731,7 @@ fn real_pcs_rejects_commitment_state_from_different_parameters() {
 
 #[test]
 fn real_pcs_prover_rejects_a_false_evaluation_without_consuming_prover_data() {
-    let pcs = Pcs::new(&shape(), LigeritoProfile::Fast, HashKind::Blake3).unwrap();
+    let pcs = Pcs::new(&shape(), SecurityLevel::Bits100).unwrap();
     let packed_witness = vec![F128::ZERO; pcs.packed_len()];
     let mut prover = build_prover(SESSION, b"false-evaluation");
     let (_, data) = pcs.commit(&packed_witness, &mut prover).unwrap();
@@ -727,7 +756,7 @@ fn real_pcs_prover_rejects_a_false_evaluation_without_consuming_prover_data() {
 
 #[test]
 fn real_pcs_rejects_an_opening_for_a_different_packed_witness() {
-    let pcs = Pcs::new(&shape(), LigeritoProfile::Fast, HashKind::Blake3).unwrap();
+    let pcs = Pcs::new(&shape(), SecurityLevel::Bits100).unwrap();
     let packed_witness = vec![F128::ZERO; pcs.packed_len()];
     let mut prover = build_prover(SESSION, b"different-packed-witness");
     let (commitment, data) = pcs.commit(&packed_witness, &mut prover).unwrap();

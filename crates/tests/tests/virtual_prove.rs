@@ -6,12 +6,12 @@ use circuit::{
     witgen::{PackedWitness, Witgen},
 };
 use common::{
-    BitZParams, LinearClaim, Root, Shape, TableError, TransposedWeights, VirtualMap,
+    BitZParams, LinearClaim, Root, SecurityLevel, Shape, TableError, TransposedWeights, VirtualMap,
     VirtualMapError, VirtualStatement,
 };
 use field::{F128, Fq, gf128::smallest_generator};
 use num_traits::{ConstOne, ConstZero};
-use pcs::{HashKind, LigeritoProfile, Pcs, ProverData};
+use pcs::{Pcs, ProverData};
 use prover::{BitZProver, ProveError, VirtualWitness};
 use tests::{Q, WINDOW, prover_transcript, verifier_transcript};
 use transcript::{Proof, ProverState};
@@ -59,8 +59,14 @@ struct Instance {
 
 impl Instance {
     fn new() -> Self {
-        let claim_shape = Shape::new(7, 15).unwrap();
-        let committed_shape = Shape::new(8, 14).unwrap();
+        Self::with_shapes(
+            Shape::new(7, 15).unwrap(),
+            Shape::new(8, 14).unwrap(),
+            SecurityLevel::Bits100,
+        )
+    }
+
+    fn with_shapes(claim_shape: Shape, committed_shape: Shape, security: SecurityLevel) -> Self {
         let params = BitZParams::<Q>::new(claim_shape, smallest_generator()).unwrap();
         let claim = LinearClaim::new(
             &params,
@@ -75,7 +81,7 @@ impl Instance {
         virtual_bits[0] = F128::from(3u64);
         virtual_bits[1] = F128::from(2u64);
 
-        let pcs = Pcs::new(&committed_shape, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
+        let pcs = Pcs::new(&committed_shape, security).unwrap();
         let mut transcript = prover_transcript();
         let (root, data) = pcs.commit(&committed_bits, &mut transcript).unwrap();
         Self {
@@ -118,11 +124,16 @@ impl Instance {
         root: Root,
         proof: &Proof,
     ) -> Result<(), VerifyError> {
+        let mut transcript = verifier_transcript(proof);
+        let commitment = self
+            .pcs
+            .receive_commitment(root, &mut transcript)
+            .map_err(VerifyError::Opening)?;
         BitZVerifier::new(self.params, WINDOW).verify_virtual(
             statement,
             &self.pcs,
-            root,
-            verifier_transcript(proof),
+            &commitment,
+            transcript,
         )
     }
 }
@@ -134,6 +145,36 @@ fn virtual_inner_product_opens_the_committed_bits() {
     instance
         .verify(&instance.statement(), instance.root, &proof)
         .unwrap();
+}
+
+#[test]
+fn explicit_security_targets_support_different_virtual_and_committed_sizes() {
+    for level in [SecurityLevel::Bits100, SecurityLevel::Bits128] {
+        let mut instance = Instance::with_shapes(
+            Shape::new(7, 14).unwrap(),
+            Shape::new(8, 12).unwrap(),
+            level,
+        );
+        assert_eq!(instance.params.shape().log_bits(), 21);
+        assert_eq!(instance.committed_shape.log_bits(), 20);
+        let proof = instance.prove();
+        instance
+            .verify(&instance.statement(), instance.root, &proof)
+            .unwrap();
+
+        let changed_map = VirtualStatement::new(
+            instance.params,
+            instance.committed_shape,
+            &Map(8),
+            &instance.claim,
+        )
+        .unwrap();
+        assert!(
+            instance
+                .verify(&changed_map, instance.root, &proof)
+                .is_err()
+        );
+    }
 }
 
 #[test]
@@ -284,7 +325,7 @@ fn virtual_witness_lengths_and_setup_must_match_the_statement() {
             BitZVerifier::new(params, WINDOW).verify_virtual(
                 &statement,
                 &instance.pcs,
-                instance.root,
+                instance.data.commitment(),
                 verifier_transcript(&Proof::default()),
             ),
             Err(VerifyError::ParameterMismatch)
@@ -365,7 +406,7 @@ fn sha256_virtual_inner_product_opens_the_committed_bits() {
         .sum();
     let claim = LinearClaim::new(&params, rows, columns, target).unwrap();
     let statement = VirtualStatement::new(params, committed_shape, &map, &claim).unwrap();
-    let pcs = Pcs::new(&committed_shape, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
+    let pcs = Pcs::new(&committed_shape, common::SecurityLevel::Bits100).unwrap();
     let mut transcript = prover_transcript();
     let (root, data) = pcs.commit(&committed_bits, &mut transcript).unwrap();
     BitZProver::new(params, WINDOW)
@@ -380,12 +421,10 @@ fn sha256_virtual_inner_product_opens_the_committed_bits() {
             &mut transcript,
         )
         .unwrap();
+    let proof = transcript.finish();
+    let mut transcript = verifier_transcript(&proof);
+    let commitment = pcs.receive_commitment(root, &mut transcript).unwrap();
     BitZVerifier::new(params, WINDOW)
-        .verify_virtual(
-            &statement,
-            &pcs,
-            root,
-            verifier_transcript(&transcript.finish()),
-        )
+        .verify_virtual(&statement, &pcs, &commitment, transcript)
         .unwrap();
 }

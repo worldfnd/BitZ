@@ -9,10 +9,10 @@
 //! The fixtures live here rather than under `tests/` so they compile once
 //! rather than once per test binary.
 
-use common::{BitTable, BitZParams, LinearClaim, Root, Shape};
+use common::{BitTable, BitZParams, LinearClaim, Root, SecurityLevel, Shape};
 use crypto_primitives::LiftElement;
 use field::{F128, Fq, gf128::smallest_generator};
-use pcs::{HashKind, LigeritoProfile, Pcs, ProverData};
+use pcs::{Pcs, ProverData};
 use rand_chacha::ChaCha8Rng;
 use rand_core::{Rng, SeedableRng};
 use transcript::{Proof, ProverState, VerifierState, build_prover, build_verifier};
@@ -101,8 +101,13 @@ pub struct Instance {
 }
 
 impl Instance {
-    /// [`HonestClaim::new`] under the `Fast` profile, with a setup per role.
+    /// Commits [`HonestClaim::new`] under the 100-bit policy, with a setup per role.
     pub fn honest(shape: Shape, seed: u64) -> Self {
+        Self::with_security(shape, seed, SecurityLevel::Bits100)
+    }
+
+    /// Builds and commits an honest instance at the requested security level.
+    pub fn with_security(shape: Shape, seed: u64, security: SecurityLevel) -> Self {
         let mut rng = ChaCha8Rng::seed_from_u64(seed);
         let HonestClaim {
             params,
@@ -110,7 +115,7 @@ impl Instance {
             packed,
         } = HonestClaim::new(shape, &mut rng);
 
-        let pcs = Pcs::new(&shape, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
+        let pcs = Pcs::new(&shape, security).unwrap();
         let mut transcript = prover_transcript();
         let (com, data) = pcs.commit(&packed, &mut transcript).unwrap();
 
@@ -125,6 +130,20 @@ impl Instance {
             transcript: Some(transcript),
             packed,
         }
+    }
+
+    /// Receives the commitment before the BitZ proof draws witness-dependent challenges.
+    pub fn verify(
+        &self,
+        claim: &LinearClaim<Fq<Q>>,
+        pcs: &Pcs,
+        root: Root,
+        mut transcript: VerifierState<'_>,
+    ) -> Result<(), verifier::VerifyError> {
+        let commitment = pcs
+            .receive_commitment(root, &mut transcript)
+            .map_err(verifier::VerifyError::Opening)?;
+        self.verifier.verify(claim, pcs, &commitment, transcript)
     }
 
     pub fn table(&self) -> BitTable<'_> {

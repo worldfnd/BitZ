@@ -7,7 +7,7 @@
 //!
 //! This test is designed to test what's possible in under a minute.
 
-use common::LinearClaim;
+use common::{LinearClaim, SecurityLevel::Bits100};
 use field::Fq;
 use num_traits::ConstOne;
 use prover::BitZProver;
@@ -25,7 +25,7 @@ fn the_fold_round_trips_on_the_large_shape() {
 
     let mut transcript = prover_transcript();
     let sent = prover
-        .send_fold(&honest.claim, &honest.table(), &mut transcript)
+        .send_fold(&honest.claim, &honest.table(), &mut transcript, Bits100)
         .unwrap();
     let proof = transcript.finish();
     assert_eq!(proof.narg_string.len(), 16 * shape.columns());
@@ -33,7 +33,7 @@ fn the_fold_round_trips_on_the_large_shape() {
 
     let mut transcript = verifier_transcript(&proof);
     let received = verifier
-        .receive_fold(&honest.claim, &mut transcript)
+        .receive_fold(&honest.claim, &mut transcript, Bits100)
         .expect("honest proof");
     assert_eq!(sent, received);
     assert_eq!(received.row_images.len(), shape.rows());
@@ -47,7 +47,7 @@ fn the_fold_round_trips_on_the_large_shape() {
     }
     let over = transcript.finish();
     assert_eq!(
-        verifier.receive_fold(&honest.claim, &mut verifier_transcript(&over)),
+        verifier.receive_fold(&honest.claim, &mut verifier_transcript(&over), Bits100),
         Err(ReceiveError::FoldOutOfRange)
     );
 
@@ -60,7 +60,7 @@ fn the_fold_round_trips_on_the_large_shape() {
     )
     .unwrap();
     assert_eq!(
-        verifier.receive_fold(&retargeted, &mut verifier_transcript(&proof)),
+        verifier.receive_fold(&retargeted, &mut verifier_transcript(&proof), Bits100),
         Err(ReceiveError::TargetMismatch)
     );
 }

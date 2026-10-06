@@ -7,7 +7,7 @@
 //! column coordinates first; `alfa_b` contains the remaining row coordinates.
 //! The caller must verify the returned claim against the commitment.
 
-use common::{ClaimError, Fold, LinearClaim, OpeningQuery, Shape};
+use common::{ClaimError, Fold, LinearClaim, OpeningQuery, SecurityLevel, Shape};
 use field::F128;
 use num_traits::ConstOne;
 use transcript::VerifierState;
@@ -25,12 +25,13 @@ pub(crate) fn gkr_reduce(
     transcript: &mut VerifierState,
     fold: &Fold,
     shape: &Shape,
+    security: SecurityLevel,
 ) -> Result<OpeningQuery, ReduceError> {
     // Each layer halves the row count, leaving one product per column.
     let r1 = fold.row_images.len().max(1).ilog2();
 
     let (point, mle_leaf_claim) =
-        gkr::gpgkr_verify(transcript, fold.e0, &fold.zeta, r1).ok_or(ReduceError::GKR)?;
+        gkr::gpgkr_verify(transcript, fold.e0, &fold.zeta, r1, security).ok_or(ReduceError::GKR)?;
 
     let r2 = point.len() - r1 as usize;
     // Columns occupy the low index bits of the GKR leaf table.
@@ -119,8 +120,13 @@ mod round_trip_ai_test {
         let fold = Fold::new(&shape, folds, top_layer, row_images.clone(), zeta.clone()).unwrap();
 
         let mut prover = transcript::build_prover("verifier-round-trip", &F128::ZERO);
-        let (mut point, claim) =
-            gpgkr_prove(&mut prover, table.shape().log_bits(), &zeta, witnesses);
+        let (mut point, claim) = gpgkr_prove(
+            &mut prover,
+            table.shape().log_bits(),
+            &zeta,
+            witnesses,
+            SecurityLevel::Bits100,
+        );
         let proof = prover.finish();
 
         // Derive the expected factors from the prover's terminal point.
@@ -135,7 +141,7 @@ mod round_trip_ai_test {
         let expected_inner_product_claim = claim - F128::ONE;
 
         let mut verifier = transcript::build_verifier("verifier-round-trip", &F128::ZERO, &proof);
-        let query = gkr_reduce(&mut verifier, &fold, &shape).unwrap();
+        let query = gkr_reduce(&mut verifier, &fold, &shape, SecurityLevel::Bits100).unwrap();
         verifier.check_eof().unwrap();
         let expected = LinearClaim::from_shape(
             &shape,

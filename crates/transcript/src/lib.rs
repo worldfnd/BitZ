@@ -29,6 +29,7 @@
 mod bytes;
 mod challenge;
 mod domain;
+pub mod pow;
 mod proof;
 mod prover;
 mod verifier;
