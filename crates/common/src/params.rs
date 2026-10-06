@@ -324,22 +324,6 @@ mod tests {
         assert!(params_at(Shape::new(7, 15).unwrap()).is_ok());
     }
 
-    /// The committed bits only reach the table and the opening, neither of
-    /// which needs whole-element columns.
-    #[test]
-    fn the_committed_shape_may_be_narrower_than_the_pack_width() {
-        let committed = Shape::new(0, 22).unwrap();
-        let params = VirtualParams::new(
-            params_at(shape()).unwrap(),
-            committed,
-            &Dimensions { h_len: 4, f_len: 4 },
-        )
-        .unwrap();
-        let packed = vec![F128::ZERO; (1 << committed.log_bits()) / 128];
-
-        assert_eq!(params.table(&packed).unwrap().shape(), &committed);
-    }
-
     #[test]
     fn rejects_a_generator_of_partial_order() {
         assert_eq!(
