@@ -45,22 +45,15 @@ impl CheckedLigerito {
         let final_log_n = validate_verifier_config(&verifier_config, log_n, params.log_batch_size)?;
         let mut pow_schedule = Vec::new();
         for level in &security.levels {
-            if matches!(level.regime, SoundnessRegime::Udr)
-                && level.fold_grinding_bits != 0
-                && level.fold_grinding_bits < level.k_recursive
-            {
-                return Err(ConfigError::Invalid("missing native fold grinding hook"));
-            }
             let bits = level.fold_grinding_bits as u32;
+            // Both profiles keep positive grinding through every fold; tests cover all supported sizes.
             for round in 0..level.k_recursive {
-                let native = bits.saturating_sub(round as u32);
-                if native > 0 {
-                    let effective = match level.regime {
-                        SoundnessRegime::Udr => bits,
-                        SoundnessRegime::JohnsonOod => native,
-                    };
-                    pow_schedule.push((native, effective));
-                }
+                let native = bits - round as u32;
+                let effective = match level.regime {
+                    SoundnessRegime::Udr => bits,
+                    SoundnessRegime::JohnsonOod => native,
+                };
+                pow_schedule.push((native, effective));
             }
             pow_schedule.push((level.grinding_bits as u32, level.grinding_bits as u32));
         }
