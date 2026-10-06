@@ -275,13 +275,13 @@ impl<R: Send + Sync> ConstraintMatrices<R> {
     pub fn map_coefficients<D, M>(self, map: M) -> ConstraintMatrices<D>
     where
         D: Send + Sync,
-        M: Fn(R) -> D + Copy + Send + Sync,
+        M: Fn(R) -> D + Send + Sync,
     {
         ConstraintMatrices {
             m: self.m,
-            a: self.a.map_values_with(map),
-            b: self.b.map_values_with(map),
-            c: self.c.map_values_with(map),
+            a: self.a.map_values_with(&map),
+            b: self.b.map_values_with(&map),
+            c: self.c.map_values_with(&map),
         }
     }
 }
