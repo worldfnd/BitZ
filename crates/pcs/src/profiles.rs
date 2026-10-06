@@ -9,10 +9,10 @@
 //!
 //! The 100-bit profile uses Johnson list decoding, OOD checks, and no query grinding.
 //! The 128-bit profile uses unique decoding, no OOD checks, and query grinding.
-//! Flock supplies folding, query, and recursive OOD estimates. We add our combined error costs.
+//! Flock supplies folding, query, and multilinear OOD estimates. We add our combined error costs.
 //!
 //! These targets concern classical challenge blocks. They assume uniform transcript challenges and classical PoW costs.
-//! Sources: BitZ Remark A.2 and Lemma B.2; Flock Appendix C.3; BCHKS25 Corollary 1.4.
+//! Sources: BitZ Remark A.2; Flock Appendix C.3; BCHKS25 Corollary 1.4.
 
 use flock_core::pcs::LOG_PACKING;
 use flock_core::pcs::ligerito::{
@@ -31,11 +31,10 @@ const MAX_GRINDING_BITS: usize = transcript::pow::MAX_GRINDING_BITS as usize;
 ///
 /// Per level: choose the shape, ask Flock for base estimates, then select queries and grinding.
 /// We use one query initially to measure its contribution. We store only the completed configuration.
-/// The separate initial OOD result uses `None` for no check and `Some(0)` for a check without grinding.
 pub(crate) fn security_config(
     m: usize,
     security_level: SecurityLevel,
-) -> Result<(LigeritoSecurityConfig, Option<u32>), ConfigError> {
+) -> Result<LigeritoSecurityConfig, ConfigError> {
     if !(20..=35).contains(&m) {
         return Err(ConfigError::Invalid("unsupported PCS size"));
     }
@@ -43,7 +42,6 @@ pub(crate) fn security_config(
     let log_n = m - LOG_PACKING;
     let mut remaining = log_n;
     let mut levels = Vec::new();
-    let mut initial_ood = None;
 
     while remaining > FINAL_LOG_N {
         // 1. Choose folds. Leave five variables for the explicit final message.
@@ -81,7 +79,7 @@ pub(crate) fn security_config(
             // Starting values. The selected profile sets the final query count and grinding below.
             grinding_bits: 0,
             fold_grinding_bits: 0,
-            // Later Johnson levels use one OOD sample. The initial OOD check has separate configuration.
+            // Later Johnson levels use one OOD sample. The commitment performs the initial check.
             ood_samples: usize::from(johnson && !first),
             target_security_bits: security_level.bits() as usize,
             expected_eps_pg_bits: 0.0,
@@ -90,15 +88,9 @@ pub(crate) fn security_config(
         };
 
         // 4. Select parameters using Flock's estimates and our combined error costs.
-        let ood = match security_level {
+        match security_level {
             SecurityLevel::Bits100 => configure_100(&mut level, first, remaining == FINAL_LOG_N)?,
-            SecurityLevel::Bits128 => {
-                configure_128(&mut level, first, remaining == FINAL_LOG_N)?;
-                None
-            }
-        };
-        if first {
-            initial_ood = ood;
+            SecurityLevel::Bits128 => configure_128(&mut level, first, remaining == FINAL_LOG_N)?,
         }
         if level.queries > 1usize << (remaining + log_inv_rate) {
             return Err(ConfigError::Invalid("queries exceed codeword length"));
@@ -112,28 +104,25 @@ pub(crate) fn security_config(
         levels.push(level);
     }
 
-    Ok((
-        LigeritoSecurityConfig {
-            m,
-            log_n,
-            initial_k: INITIAL_K,
-            target_security_bits: security_level.bits() as usize,
-            analysis_version: if johnson {
-                "bitz_johnson_combined_blocks_v1"
-            } else {
-                "bitz_udr_combined_blocks_v1"
-            }
-            .into(),
-            field: "f128".into(),
-            hash: "blake3".into(),
-            grinding_step: GrindingStep::PostCommitPreQueries,
-            levels,
-            final_block: FinalBlockConfig {
-                yr_log_n: remaining,
-            },
+    Ok(LigeritoSecurityConfig {
+        m,
+        log_n,
+        initial_k: INITIAL_K,
+        target_security_bits: security_level.bits() as usize,
+        analysis_version: if johnson {
+            "bitz_johnson_combined_blocks_v2"
+        } else {
+            "bitz_udr_combined_blocks_v1"
+        }
+        .into(),
+        field: "f128".into(),
+        hash: "blake3".into(),
+        grinding_step: GrindingStep::PostCommitPreQueries,
+        levels,
+        final_block: FinalBlockConfig {
+            yr_log_n: remaining,
         },
-        initial_ood,
-    ))
+    })
 }
 
 /// Selects the 100-bit parameters with Johnson list decoding.
@@ -141,8 +130,7 @@ fn configure_100(
     level: &mut LigeritoLevelConfig,
     first: bool,
     final_level: bool,
-) -> Result<Option<u32>, ConfigError> {
-    let variables = level.log_msg_cols + level.log_num_interleaved;
+) -> Result<(), ConfigError> {
     // Error coefficient C represents probability C / 2^128. The 100-bit target permits C <= 2^28.
     let allowed_coefficient = 2f64.powi(28);
 
@@ -167,27 +155,19 @@ fn configure_100(
         .ok_or(ConfigError::Invalid("Johnson fold grinding exceeds cap"))?;
 
     // 3. Check OOD selection and batching. Their challenges precede fold grinding.
-    if level.paper_predicted_ood_bits().unwrap() < 100.0 {
-        return Err(ConfigError::Invalid("Johnson recursive OOD bound"));
+    // Independent coordinates give degree at most mu. Pair collisions cost at most L^2 * mu / (2 * |F|).
+    // The commitment performs the initial check. Its backend sample count stays zero.
+    let explicit_ood = LigeritoLevelConfig {
+        ood_samples: 1,
+        ..level.clone()
+    };
+    if explicit_ood.paper_predicted_ood_bits().unwrap() < 100.0 {
+        return Err(ConfigError::Invalid("Johnson OOD bound"));
     }
     let batching_challenges = if first { 8.0 } else { 1.0 };
     if batching_challenges * list_size > allowed_coefficient {
         return Err(ConfigError::Invalid("Johnson unground batching bound"));
     }
-    let initial_ood_grinding = if first {
-        // BitZ Lemma B.2: each candidate pair can collide at at most degree points.
-        let candidate_pairs = list_size * (list_size - 1.0) * 0.5;
-        let degree = ((1u64 << variables) - 1) as f64;
-        let collision_coefficient = candidate_pairs * degree;
-        let bits = (0..=MAX_GRINDING_BITS)
-            .find(|&bits| collision_coefficient <= 2f64.powi(28 + bits as i32))
-            .ok_or(ConfigError::Invalid(
-                "Johnson initial OOD grinding exceeds cap",
-            ))?;
-        Some(bits as u32)
-    } else {
-        None
-    };
 
     // 4. Add queries until query misses and batching together meet 2^-100, without query grinding.
     // The next commitment halves the rate, increasing its list bound by sqrt(2).
@@ -208,7 +188,7 @@ fn configure_100(
         level.queries += 1;
     }
     level.grinding_bits = 0;
-    Ok(initial_ood_grinding)
+    Ok(())
 }
 
 /// Selects the 128-bit parameters with unique decoding and no OOD checks.
@@ -277,7 +257,7 @@ mod tests {
 
     #[test]
     fn udr_m22_matches_audited_parameters() {
-        let (config, initial_ood) = security_config(22, SecurityLevel::Bits128).unwrap();
+        let config = security_config(22, SecurityLevel::Bits128).unwrap();
         assert_eq!(config.initial_k, 4);
         assert_eq!(config.final_block.yr_log_n, 5);
         assert_eq!(config.hash, "blake3");
@@ -288,14 +268,12 @@ mod tests {
             assert_eq!(level.grinding_bits, 4);
             assert_eq!(level.ood_samples, 0);
         }
-        assert_eq!(initial_ood, None);
     }
 
     #[test]
     fn udr_all_supported_sizes_cover_combined_errors() {
         for m in 20..=35 {
-            let (config, initial_ood) = security_config(m, SecurityLevel::Bits128).unwrap();
-            assert_eq!(initial_ood, None);
+            let config = security_config(m, SecurityLevel::Bits128).unwrap();
             assert_eq!(config.hash, "blake3");
             config.to_prover_verifier_configs().unwrap();
             for (index, level) in config.levels.iter().enumerate() {
@@ -338,9 +316,8 @@ mod tests {
     #[test]
     fn johnson_queries_replace_query_grinding() {
         for (m, folds) in [(20, [7, 4, 1]), (22, [9, 6, 3])] {
-            let (config, initial_ood) = security_config(m, SecurityLevel::Bits100).unwrap();
+            let config = security_config(m, SecurityLevel::Bits100).unwrap();
             assert_eq!(config.target_security_bits, 100);
-            assert_eq!(initial_ood, Some(0));
             for (index, level) in config.levels.iter().enumerate() {
                 assert_eq!(level.queries, [218, 106, 71][index]);
                 assert_eq!(level.fold_grinding_bits, folds[index]);
@@ -353,16 +330,8 @@ mod tests {
     #[test]
     fn johnson_all_sizes_cover_combined_blocks() {
         for m in 20..=35 {
-            let (config, initial_ood) = security_config(m, SecurityLevel::Bits100).unwrap();
+            let config = security_config(m, SecurityLevel::Bits100).unwrap();
             config.to_prover_verifier_configs().unwrap();
-            let initial_grinding = initial_ood.unwrap();
-            let list = 1.0 / (0.04 * 0.5f64.sqrt());
-            let initial = list * (list - 1.0) * 0.5 * (2f64.powi(m as i32 - 7) - 1.0);
-            assert!(initial <= 2f64.powi(28 + initial_grinding as i32));
-            assert!(initial_grinding <= 32);
-            if initial_grinding > 0 {
-                assert!(initial > 2f64.powi(27 + initial_grinding as i32));
-            }
             for (index, level) in config.levels.iter().enumerate() {
                 // Reconstruct the published formulas independently of the bound helpers.
                 let rho = 2f64.powi(-(level.log_inv_rate as i32));
@@ -400,11 +369,8 @@ mod tests {
                         * 2f64.powi(-128);
                 assert!(previous_query > 2f64.powi(-100));
                 let mu = (level.log_msg_cols + level.log_num_interleaved) as f64;
-                let ood = if index == 0 {
-                    list * mu
-                } else {
-                    list * list * mu * 0.5
-                };
+                // Initial and recursive OOD points use independent coordinates, with total degree at most mu.
+                let ood = list * list * mu * 0.5;
                 assert!(ood <= 2f64.powi(28));
                 assert!((if index == 0 { 8.0 } else { 1.0 }) * list <= 2f64.powi(28));
                 assert!(level.queries <= n as usize);
@@ -420,7 +386,7 @@ mod tests {
     fn both_profiles_keep_a_five_variable_residual() {
         for security in [SecurityLevel::Bits100, SecurityLevel::Bits128] {
             for m in 20..=35 {
-                let (config, _) = security_config(m, security).unwrap();
+                let config = security_config(m, security).unwrap();
                 assert_eq!(config.levels[0].k_recursive, 4);
                 assert_eq!(config.final_block.yr_log_n, 5);
                 let total_folds: usize = config.levels.iter().map(|level| level.k_recursive).sum();

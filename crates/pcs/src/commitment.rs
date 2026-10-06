@@ -20,7 +20,7 @@ use transcript::{Encoding, ProverState, PublicTranscript, VerifierState};
 
 // Increment this version when parameter derivation or transcript rules change.
 // This includes protocol changes in Flock or the selected hash.
-const PROTOCOL_VERSION: &[u8] = b"bitz/pcs/security/v2";
+const PROTOCOL_VERSION: &[u8] = b"bitz/pcs/security/v1";
 
 /// Errors from PCS configuration.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -42,7 +42,6 @@ pub enum CommitError {
 pub struct Pcs {
     params: PcsParams,
     checked_ligerito: CheckedLigerito,
-    ood_grinding_bits: Option<u32>,
     bit_len: usize,
     security_level: SecurityLevel,
 }
@@ -74,7 +73,7 @@ impl Commitment {
     pub(crate) fn matches(&self, pcs: &Pcs) -> bool {
         self.bit_len == pcs.bit_len()
             && self.security_level == pcs.security_level()
-            && self.ood.is_some() == pcs.ood_grinding_bits().is_some()
+            && self.ood.is_some() == (pcs.security_level() == SecurityLevel::Bits100)
     }
 }
 
@@ -83,7 +82,7 @@ impl Pcs {
     /// The 100-bit profile uses Johnson decoding; the 128-bit profile uses unique decoding.
     pub fn new(shape: &Shape, security_level: SecurityLevel) -> Result<Self, ConfigError> {
         let m = shape.log_bits();
-        let (security, ood_grinding_bits) = security_config(m, security_level)?;
+        let security = security_config(m, security_level)?;
         let bit_len = 1usize
             .checked_shl(m as u32)
             .ok_or(ConfigError::Invalid("bit length overflow"))?;
@@ -102,7 +101,6 @@ impl Pcs {
         Ok(Self {
             params,
             checked_ligerito,
-            ood_grinding_bits,
             bit_len,
             security_level,
         })
@@ -128,7 +126,7 @@ impl Pcs {
         // 3. Build Public Commitment
         let root = Root(flock_commitment.root);
         self.bind_commitment(root, transcript);
-        let ood = ood::prove(self, &root.0, packed_witness, transcript);
+        let ood = ood::prove(self, packed_witness, transcript);
 
         // 4. Retain Opening Data
         Ok((
@@ -153,7 +151,7 @@ impl Pcs {
         transcript: &mut VerifierState<'_>,
     ) -> Result<Commitment, VerifyError> {
         self.bind_commitment(root, transcript);
-        let ood = ood::verify(self, &root.0, transcript)?;
+        let ood = ood::verify(self, transcript)?;
         Ok(Commitment {
             root,
             bit_len: self.bit_len,
@@ -179,10 +177,6 @@ impl Pcs {
 
     pub(crate) fn params(&self) -> &PcsParams {
         &self.params
-    }
-
-    pub(crate) fn ood_grinding_bits(&self) -> Option<u32> {
-        self.ood_grinding_bits
     }
 
     /// Returns the selected classical PCS round budget.
@@ -256,7 +250,7 @@ mod tests {
             let shape = Shape::new(7, m - 7).unwrap();
             for level in [SecurityLevel::Bits100, SecurityLevel::Bits128] {
                 let pcs = Pcs::new(&shape, level).unwrap();
-                let (config, _) = security_config(m, level).unwrap();
+                let config = security_config(m, level).unwrap();
                 let expected: usize = config
                     .levels
                     .iter()
@@ -278,11 +272,15 @@ mod tests {
             assert_eq!(data.commitment().ood.is_some(), expected_ood);
             let next_challenge = prover.verifier_message::<F128>();
             let proof = prover.finish();
-            assert_eq!(proof.narg_string.is_empty(), !expected_ood);
+            assert_eq!(proof.narg_string.len(), if expected_ood { 16 } else { 0 });
             let mut verifier = build_verifier(b"commit-test", b"profile", &proof);
             let received = pcs.receive_commitment(root, &mut verifier).unwrap();
             assert_eq!(received.root(), data.commitment().root());
             assert_eq!(received.ood.is_some(), expected_ood);
+            if let Some(claim) = received.ood.as_ref() {
+                assert_eq!(claim.point, data.commitment().ood.as_ref().unwrap().point);
+                assert_eq!(claim.point.len(), pcs.packed_len().ilog2() as usize);
+            }
             assert!(received.matches(&pcs));
             assert_eq!(verifier.verifier_message::<F128>(), next_challenge);
             verifier.check_eof().unwrap();
@@ -349,7 +347,7 @@ mod tests {
         // Fixed encoding: version tag, padded bit count (u64 LE), target (u32 LE).
         assert_eq!(
             low.encode().as_ref(),
-            b"bitz/pcs/security/v2\x00\x00\x10\x00\x00\x00\x00\x00\x64\x00\x00\x00"
+            b"bitz/pcs/security/v1\x00\x00\x10\x00\x00\x00\x00\x00\x64\x00\x00\x00"
         );
         assert_ne!(low.encode().as_ref(), high.encode().as_ref());
         let (_, data) = low

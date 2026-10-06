@@ -216,7 +216,7 @@ fn zero_weight_factor_still_requires_the_correct_pcs_witness_evaluation() {
     let fixture = fixture();
     let pcs = &fixture.pcs;
     let shape = Shape::new(7, M - 7).unwrap();
-    assert_eq!(pcs.ood_grinding_bits(), Some(0));
+    assert_eq!(pcs.security_level(), SecurityLevel::Bits100);
 
     for zero_rows in [true, false] {
         let mut rows = fixture.claim.row_weights().to_vec();
