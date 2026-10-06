@@ -164,14 +164,14 @@ where
         let inputs = generator.take_inputs();
         statement.synthesize(&mut generator, &inputs)?;
         let map = generator.finish();
-        if map.h_len() != matrices.matrices().a.column_count() {
+        if map.h_len() != matrices.column_count() {
             return Err(Error::Configuration("map and assignment dimensions differ"));
         }
-        if map.f_len() != matrices.matrices().m.column_count() {
+        if map.f_len() != matrices.m().column_count() {
             return Err(Error::Configuration("map and witness dimensions differ"));
         }
         let claim_shape = shape_for(map.h_len())?;
-        let opening_path = if is_identity(&matrices.matrices().m) {
+        let opening_path = if is_identity(matrices.m()) {
             OpeningPath::Direct
         } else {
             OpeningPath::Virtual
@@ -201,7 +201,7 @@ where
     pub fn stats(&self) -> CircuitStats {
         CircuitStats {
             opening_path: self.opening_path,
-            constraints: self.matrices.matrices().a.row_count(),
+            constraints: self.matrices.row_count(),
             assignment_bits: self.map.h_len(),
             committed_bits: match self.opening_path {
                 OpeningPath::Direct => self.map.h_len(),
@@ -223,7 +223,7 @@ where
         if f.bit_len() + 1 != self.map.f_len() || h.bit_len() != self.map.h_len() {
             return Err(Error::Input("circuit replay changed witness dimensions"));
         }
-        if products.a_mw.len() != self.matrices.matrices().a.row_count() {
+        if products.a_mw.len() != self.matrices.row_count() {
             return Err(Error::Input("circuit replay changed constraint count"));
         }
         // Over the integers, so modulo whichever prime is drawn.

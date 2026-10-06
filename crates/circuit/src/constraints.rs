@@ -29,6 +29,11 @@ impl<C> SparseRow<C> {
     pub fn entries(&self) -> &[(usize, C)] {
         &self.entries
     }
+
+    /// The entries, consuming the row.
+    pub fn into_entries(self) -> Vec<(usize, C)> {
+        self.entries
+    }
 }
 
 /// A row-major sparse matrix.
@@ -82,6 +87,11 @@ impl<C> SparseMatrix<C> {
     /// Matrix rows.
     pub fn rows(&self) -> &[SparseRow<C>] {
         &self.rows
+    }
+
+    /// The rows, consuming the matrix.
+    pub fn into_rows(self) -> Vec<SparseRow<C>> {
+        self.rows
     }
 
     /// Number of rows.

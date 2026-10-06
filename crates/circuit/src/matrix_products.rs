@@ -258,7 +258,7 @@ impl<const PRIME_LIMBS: usize> ModularVector<PRIME_LIMBS> {
         self.values.is_empty()
     }
 
-    /// Vector of canonical field element in little-endian limbs form, in row order.
+    /// Slice of canonical field element in little-endian limbs form, in row order.
     pub fn values(&self) -> &[[u64; PRIME_LIMBS]] {
         &self.values
     }
