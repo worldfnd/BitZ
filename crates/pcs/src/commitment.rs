@@ -14,6 +14,7 @@ use crate::profiles::security_config;
 use common::{Root, SecurityLevel, Shape};
 use field::F128;
 use flock_core::hash::HashKind;
+use flock_core::pcs::Commitment as FlockCommitment;
 use flock_core::pcs::ligerito::LigeritoProfile;
 use flock_core::pcs::{LOG_PACKING, PcsParams, ProverData as FlockProverData, commit};
 use transcript::{Encoding, ProverState, PublicTranscript, VerifierState};
@@ -43,6 +44,7 @@ pub struct Pcs {
     params: PcsParams,
     checked_ligerito: CheckedLigerito,
     bit_len: usize,
+    packed_len: usize,
     security_level: SecurityLevel,
 }
 
@@ -52,14 +54,12 @@ pub struct ProverData {
     flock_prover_data: FlockProverData,
 }
 
-/// The PCS commitment: its root, parameters, and optional initial OOD claim.
-/// Both prover and verifier use this type after the commitment phase.
-/// Verifiers construct it with [`Pcs::receive_commitment`] before subsequent challenges.
-/// An opening must authenticate its OOD claim before the verifier accepts the proof.
+/// Root, parameters, and optional out-of-domain claim retained after commitment.
+/// Both prover and verifier use this state for openings on the commitment transcript.
+/// The verifier authenticates the claim when [`CommitScheme::verify_lin`](crate::CommitScheme::verify_lin) succeeds.
 #[derive(Debug)]
 pub struct Commitment {
-    root: Root,
-    bit_len: usize,
+    flock: FlockCommitment,
     security_level: SecurityLevel,
     pub(crate) ood: Option<OodClaim>,
 }
@@ -67,11 +67,17 @@ pub struct Commitment {
 impl Commitment {
     /// Returns the public commitment root.
     pub fn root(&self) -> Root {
-        self.root
+        Root(self.flock.root)
     }
 
     pub(crate) fn matches(&self, pcs: &Pcs) -> bool {
-        self.bit_len == pcs.bit_len()
+        let expected = pcs.params();
+        let actual = &self.flock.params;
+        expected.m == actual.m
+            && expected.log_inv_rate == actual.log_inv_rate
+            && expected.log_batch_size == actual.log_batch_size
+            && expected.profile == actual.profile
+            && expected.merkle_hash == actual.merkle_hash
             && self.security_level == pcs.security_level()
             && self.ood.is_some() == (pcs.security_level() == SecurityLevel::Bits100)
     }
@@ -98,16 +104,18 @@ impl Pcs {
             merkle_hash: HashKind::Blake3,
         };
         let checked_ligerito = CheckedLigerito::new(&params, &security)?;
+        let packed_len = bit_len >> LOG_PACKING;
         Ok(Self {
             params,
             checked_ligerito,
             bit_len,
+            packed_len,
             security_level,
         })
     }
 
-    /// Commits and samples any initial OOD claim before subsequent protocol challenges.
-    /// Continue with this transcript for every opening of the retained data.
+    /// Commits and samples the initial OOD claim when the security profile requires it.
+    /// Call before witness-dependent challenges and continue with the same transcript.
     #[tracing::instrument(name = "Commit witness", skip_all)]
     pub fn commit(
         &self,
@@ -133,8 +141,7 @@ impl Pcs {
             root,
             ProverData {
                 commitment: Commitment {
-                    root,
-                    bit_len: self.bit_len,
+                    flock: flock_commitment,
                     security_level: self.security_level,
                     ood,
                 },
@@ -153,8 +160,10 @@ impl Pcs {
         self.bind_commitment(root, transcript);
         let ood = ood::verify(self, transcript)?;
         Ok(Commitment {
-            root,
-            bit_len: self.bit_len,
+            flock: FlockCommitment {
+                root: root.0,
+                params: self.params.clone(),
+            },
             security_level: self.security_level,
             ood,
         })
@@ -172,7 +181,7 @@ impl Pcs {
 
     /// Returns the required number of packed `F128` elements.
     pub fn packed_len(&self) -> usize {
-        self.bit_len >> LOG_PACKING
+        self.packed_len
     }
 
     pub(crate) fn params(&self) -> &PcsParams {
