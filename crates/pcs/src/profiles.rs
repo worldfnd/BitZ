@@ -26,10 +26,7 @@ const RECURSIVE_K: usize = 3;
 const FINAL_LOG_N: usize = 5;
 const JOHNSON_ETA: f64 = 0.02;
 
-/// Derives every level from `m` and the selected target.
-///
-/// Per level: choose the shape, ask Flock for base estimates, then select queries and grinding.
-/// We use one query initially to measure its contribution. We store only the completed configuration.
+/// Builds the fold schedule and configures each level for the selected target.
 pub(crate) fn security_config(
     m: usize,
     security_level: SecurityLevel,
@@ -37,81 +34,39 @@ pub(crate) fn security_config(
     if !(20..=35).contains(&m) {
         return Err(ConfigError::Invalid("unsupported PCS size"));
     }
-    let johnson = security_level == SecurityLevel::Bits100;
     let log_n = m - LOG_PACKING;
     let mut remaining = log_n;
     let mut levels = Vec::new();
 
     while remaining > FINAL_LOG_N {
         // 1. Choose folds. Leave five variables for the explicit final message.
-        let first = levels.is_empty();
-        let folds = if first {
+        let folds = if levels.is_empty() {
             INITIAL_K
         } else {
             RECURSIVE_K.min(remaining - FINAL_LOG_N)
         };
         remaining -= folds;
 
-        // 2. Choose the code rate: message columns / encoded columns.
-        // log_inv_rate = log2(encoded columns / message columns).
-        // levels.len() counts completed levels: 0, 1, 2, ...
-        // Adding 1 selects our fixed expansion schedule: 2x, 4x, 8x, ...
-        // The corresponding code rates are 1/2, 1/4, 1/8, ...
-        // More redundancy improves query detection bounds, so later levels need fewer queries.
+        // 2. log_inv_rate = log2(encoded columns / message columns).
+        // Completed levels start at zero; adding one gives rates 1/2, 1/4, 1/8, ...
         let log_inv_rate = levels.len() + 1;
-
-        // 3. Give Flock the shape and decoding policy. One query measures the contribution per query.
-        let mut level = LigeritoLevelConfig {
+        levels.push(configure_level(
+            remaining,
+            folds,
             log_inv_rate,
-            log_msg_cols: remaining,
-            log_num_interleaved: folds,
-            k_recursive: folds,
-            regime: if johnson {
-                SoundnessRegime::JohnsonOod
-            } else {
-                SoundnessRegime::Udr
-            },
-            eta: johnson.then_some(JOHNSON_ETA),
-            // Zero is the fixed backend policy for unique decoding.
-            proximity_loss: (!johnson).then_some(0.0),
-            queries: 1,
-            // Starting values. The selected profile sets the final query count and grinding below.
-            grinding_bits: 0,
-            fold_grinding_bits: 0,
-            // Later Johnson levels use one OOD sample. The commitment performs the initial check.
-            ood_samples: usize::from(johnson && !first),
-            target_security_bits: security_level.bits() as usize,
-            expected_eps_pg_bits: 0.0,
-            expected_eps_query_bits: 0.0,
-            expected_eps_ood_bits: None,
-        };
-
-        // 4. Select parameters using Flock's estimates and our combined error costs.
-        match security_level {
-            SecurityLevel::Bits100 => configure_100(&mut level),
-            SecurityLevel::Bits128 => configure_128(&mut level),
-        }
-        if level.queries > 1usize << (remaining + log_inv_rate) {
-            return Err(ConfigError::Invalid("queries exceed codeword length"));
-        }
-
-        // 5. Refresh backend diagnostics with the final query count.
-        let (fold_bits, query_bits) = level.paper_predicted_bits();
-        level.expected_eps_pg_bits = fold_bits;
-        level.expected_eps_query_bits = query_bits;
-        level.expected_eps_ood_bits = level.paper_predicted_ood_bits();
-        levels.push(level);
+            security_level,
+        )?);
     }
 
+    // 3. Assemble the completed levels and the explicit final message.
     Ok(LigeritoSecurityConfig {
         m,
         log_n,
         initial_k: INITIAL_K,
         target_security_bits: security_level.bits() as usize,
-        analysis_version: if johnson {
-            "bitz_johnson_combined_blocks_v2"
-        } else {
-            "bitz_udr_combined_blocks_v1"
+        analysis_version: match security_level {
+            SecurityLevel::Bits100 => "bitz_johnson_combined_blocks_v2",
+            SecurityLevel::Bits128 => "bitz_udr_combined_blocks_v1",
         }
         .into(),
         field: "f128".into(),
@@ -122,6 +77,55 @@ pub(crate) fn security_config(
             yr_log_n: remaining,
         },
     })
+}
+
+/// Builds one complete level, including the estimates that Flock requires for validation.
+fn configure_level(
+    log_msg_cols: usize,
+    folds: usize,
+    log_inv_rate: usize,
+    security_level: SecurityLevel,
+) -> Result<LigeritoLevelConfig, ConfigError> {
+    // 1. Set the shape and decoding policy. One query measures the contribution per query.
+    let johnson = security_level == SecurityLevel::Bits100;
+    let mut level = LigeritoLevelConfig {
+        log_msg_cols,
+        log_inv_rate,
+        log_num_interleaved: folds,
+        k_recursive: folds,
+        regime: if johnson {
+            SoundnessRegime::JohnsonOod
+        } else {
+            SoundnessRegime::Udr
+        },
+        eta: johnson.then_some(JOHNSON_ETA),
+        // Zero is the fixed backend policy for unique decoding.
+        proximity_loss: (!johnson).then_some(0.0),
+        // Later Johnson levels use one OOD sample. The commitment performs the initial check.
+        ood_samples: usize::from(johnson && log_inv_rate > 1),
+        target_security_bits: security_level.bits() as usize,
+        // Steps 2 and 3 replace these starting values.
+        queries: 1,
+        grinding_bits: 0,
+        fold_grinding_bits: 0,
+        expected_eps_pg_bits: 0.0,
+        expected_eps_query_bits: 0.0,
+        expected_eps_ood_bits: None,
+    };
+
+    // 2. Select queries and grinding for the requested target.
+    match security_level {
+        SecurityLevel::Bits100 => configure_100(&mut level),
+        SecurityLevel::Bits128 => configure_128(&mut level),
+    }
+    if level.queries > 1usize << (log_msg_cols + log_inv_rate) {
+        return Err(ConfigError::Invalid("queries exceed codeword length"));
+    }
+
+    // 3. Store Flock's validation estimates using the final query count.
+    (level.expected_eps_pg_bits, level.expected_eps_query_bits) = level.paper_predicted_bits();
+    level.expected_eps_ood_bits = level.paper_predicted_ood_bits();
+    Ok(level)
 }
 
 /// Selects the 100-bit parameters with Johnson list decoding.
