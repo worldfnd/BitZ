@@ -25,7 +25,6 @@ const INITIAL_K: usize = 4;
 const RECURSIVE_K: usize = 3;
 const FINAL_LOG_N: usize = 5;
 const JOHNSON_ETA: f64 = 0.02;
-const MAX_GRINDING_BITS: usize = transcript::pow::MAX_GRINDING_BITS as usize;
 
 /// Derives every level from `m` and the selected target.
 ///
@@ -90,7 +89,7 @@ pub(crate) fn security_config(
         // 4. Select parameters using Flock's estimates and our combined error costs.
         match security_level {
             SecurityLevel::Bits100 => configure_100(&mut level),
-            SecurityLevel::Bits128 => configure_128(&mut level, first, remaining == FINAL_LOG_N)?,
+            SecurityLevel::Bits128 => configure_128(&mut level),
         }
         if level.queries > 1usize << (remaining + log_inv_rate) {
             return Err(ConfigError::Invalid("queries exceed codeword length"));
@@ -146,68 +145,27 @@ fn configure_100(level: &mut LigeritoLevelConfig) {
 }
 
 /// Selects the 128-bit parameters with unique decoding and no OOD checks.
-fn configure_128(
-    level: &mut LigeritoLevelConfig,
-    first: bool,
-    final_level: bool,
-) -> Result<(), ConfigError> {
-    // 1. Check the theorem range, then reuse Flock's folding and per-query estimates.
-    let length = 1u128 << (level.log_msg_cols + level.log_inv_rate);
-    let inverse_rate = 1u128 << level.log_inv_rate;
-    let scaled_distance_squared = (inverse_rate - 1).pow(2) * length;
-    // BCHKS25 Corollary 1.4 requires distance^2 * n >= 18.
-    if scaled_distance_squared < 18 * inverse_rate.pow(2) {
-        return Err(ConfigError::Invalid("UDR theorem range"));
-    }
+/// Tests check the theorem range and combined bounds for every supported size.
+fn configure_128(level: &mut LigeritoLevelConfig) {
+    // 1. Reuse Flock's folding and per-query estimates.
     let (fold_bits, per_query_bits) = level.paper_predicted_bits();
     let fold_coefficient = (128.0 - fold_bits).exp2();
 
-    // 2. Choose constant fold grinding. Add the sumcheck's coefficient of two to Flock's fold coefficient.
-    // An unground first recursive fold also shares the preceding claim-batching challenge.
-    level.fold_grinding_bits = (0..=MAX_GRINDING_BITS)
-        .find(|&bits| {
-            let claim_batching = f64::from(!first && bits == 0);
-            fold_coefficient + 2.0 + claim_batching <= 2f64.powi(bits as i32)
-        })
-        .ok_or(ConfigError::Invalid("UDR fold grinding exceeds cap"))?;
+    // 2. b = ceil(log2(fold_coefficient + 2)). Each fold uses the same grinding.
+    // Flock Appendix C.3 (BCHKS25 Corollary 1.4), plus our quadratic sumcheck error.
+    level.fold_grinding_bits = (fold_coefficient + 2.0).log2().ceil() as usize;
 
-    // 3. Reuse Flock's per-query estimate. Queries alone must meet 2^-128.
+    // 3. q = ceil(128 / per_query_bits). See Flock paper_predicted_bits.
     level.queries = (128.0 / per_query_bits).ceil() as usize;
-    let all_queries_miss = (-per_query_bits * level.queries as f64).exp2();
 
-    // 4. Choose query grinding to cover query misses and batching together.
-    // Unique decoding has one candidate. Only the final level includes the extra claim-batching challenge.
-    let combined_error =
-        query_and_batching_error(all_queries_miss, level.queries, 1.0, final_level);
-    level.grinding_bits = (0..=MAX_GRINDING_BITS)
-        .find(|&bits| combined_error <= 2f64.powi(bits as i32 - 128))
-        .ok_or(ConfigError::Invalid("UDR query grinding exceeds cap"))?;
-    Ok(())
-}
-
-/// Adds query misses and batching error. Each batching challenge costs list_size / 2^128.
-fn query_and_batching_error(
-    all_queries_miss: f64,
-    queries: usize,
-    list_size: f64,
-    include_claim_batching: bool,
-) -> f64 {
-    let batching_challenges =
-        queries.next_power_of_two().ilog2() + u32::from(include_claim_batching);
-    all_queries_miss + f64::from(batching_challenges) * list_size * 2f64.powi(-128)
+    // 4. 8 < 2^128 * query_miss + ceil(log2(q)) + final_claim <= 11 < 2^4.
+    // All supported sizes need four bits; see udr_all_supported_sizes_cover_combined_errors.
+    level.grinding_bits = 4;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn query_batching_covers_every_candidate() {
-        // Eight query-batching challenges and one claim-batching challenge each cover 64 candidates.
-        let error = query_and_batching_error(0.0, 256, 64.0, true);
-        assert!(error >= 576.0 * 2f64.powi(-128));
-        assert!(error < 577.0 * 2f64.powi(-128));
-    }
 
     #[test]
     fn udr_m22_matches_audited_parameters() {
@@ -236,7 +194,8 @@ mod tests {
                 let rho = 2f64.powi(-(level.log_inv_rate as i32));
                 let delta = 1.0 - rho;
                 let gamma = delta / 2.0 - 3.0 / (delta * n);
-                assert!(delta >= 3.0 * (2.0 / n).sqrt());
+                // BCHKS25 Corollary 1.4 requires delta^2 * n >= 18.
+                assert!(delta * delta * n >= 18.0);
                 assert!(gamma >= delta / 3.0 && gamma < delta / 2.0);
                 let fold_error = |grinding| {
                     let beta = f64::from(index > 0 && grinding == 0);
@@ -260,8 +219,8 @@ mod tests {
                 assert!(level.queries <= n as usize);
                 assert!(level.fold_grinding_bits <= 32 && level.grinding_bits <= 32);
                 assert!(
-                    level.fold_grinding_bits == 0 || level.fold_grinding_bits >= level.k_recursive,
-                    "every positive fold schedule must retain all native grinding hooks"
+                    level.fold_grinding_bits >= level.k_recursive,
+                    "every fold must retain its native grinding hook"
                 );
             }
         }
