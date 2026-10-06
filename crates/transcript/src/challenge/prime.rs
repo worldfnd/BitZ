@@ -1,33 +1,35 @@
 //! Public prime sampling from the challenge stream.
 //!
-//! As in `f2z-pcs`: candidates uniform among the odd integers of the requested
-//! width, sieved by the small primes, then Miller–Rabin with bases drawn from
-//! the same stream, so a prover grinding the transcript faces fresh bases at
-//! every candidate. Everything here is public, so the arithmetic is
-//! variable-time.
+//! Candidates uniform among the odd integers of the requested width, sieved
+//! by the small primes, then Miller–Rabin with bases drawn from the same
+//! stream, so a prover grinding the transcript faces fresh bases at every
+//! candidate.
+//!
+//! Arithmetic is variable-time.
 
 use field::MAX_MODULUS_BITS;
 use field::helpers::{self, FieldMetadata};
 
-/// Miller–Rabin bases per candidate. A composite passes a base with
-/// probability at most `1/4`, so it survives with probability at most
-/// `2^-160`, and a search of up to `2^16` candidates accepts a composite with
-/// probability below `2^-144`: the 128 bits `f2z-pcs` targets and its 16 of
-/// slack. A longer search does not happen: at least one odd integer in 44 is
-/// prime below `2^126`, so `2^16` composites in a row have probability below
-/// `2^-2000`.
+/// Miller–Rabin bases per candidate.
+///
+/// A composite passes a base with probability at most `1/4`, so it survives
+/// with probability at most `2^-160`, and a search of up to `2^16` candidates
+/// accepts a composite with probability below `2^-144`: the 128 bits and its
+/// 16 bits of slack.
+///
+/// A longer search does not happen: at least one odd integer in 44 is prime
+/// below `2^126`, so `2^16` composites in a row have probability below `2^-2000`.
 const MILLER_RABIN_ROUNDS: u32 = 80;
 
 /// A prime of exactly `bits` bits, `2 <= bits <= MAX_MODULUS_BITS`, from
-/// successive `u128` draws, the same on both sides: the fingerprint prime of
-/// 5. "An end-to-end BitZ-based SNARK over any finitely generated ring",
-/// Step 2, drawn once per proof after the commitment and the statement are
-/// absorbed and before the PIOP.
+/// successive `u128` draws, the same on both sides: the fingerprint prime.
 ///
 /// Each candidate is one draw, uniform among the odd integers in
 /// `[2^(bits-1), 2^bits)`; each base is uniform in `[2, candidate - 2]` by
-/// rejection. The search stops at the first candidate that passes, which is
-/// not exactly uniform over the primes, as in `f2z-pcs`.
+/// rejection. The search stops at the first candidate that passes.
+///
+/// Should be drawn once per proof after the commitment and the statement
+/// are absorbed and before the PIOP.
 pub fn sample(mut next_u128: impl FnMut() -> u128, bits: u32) -> u128 {
     assert!(
         (2..=MAX_MODULUS_BITS).contains(&bits),
