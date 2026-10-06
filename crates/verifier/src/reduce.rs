@@ -21,9 +21,9 @@ pub enum ReduceError {
 }
 
 #[tracing::instrument(name = "Verify grand-product reduction", skip_all)]
-pub(crate) fn gkr_reduce(
+pub(crate) fn gkr_reduce<S>(
     transcript: &mut VerifierState,
-    fold: &Fold,
+    fold: &Fold<S>,
     shape: &Shape,
 ) -> Result<OpeningQuery, ReduceError> {
     // Each layer halves the row count, leaving one product per column.
@@ -60,13 +60,14 @@ mod round_trip_ai_test {
 
     use super::*;
 
-    const Q: u128 = (1 << 114) - 11;
+    const Q114: u128 = (1 << 114) - 11;
+    type F = field::Fq<Q114>;
 
     fn shape() -> Shape {
         Shape::new(7, 15).unwrap()
     }
 
-    fn params() -> BitZParams<Q> {
+    fn params() -> BitZParams<F> {
         BitZParams::new(shape(), smallest_generator()).unwrap()
     }
 

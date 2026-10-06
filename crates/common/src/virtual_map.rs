@@ -11,13 +11,14 @@
 //!
 //! `M` stays with the caller. This crate needs only `M^T v` and a digest.
 
-use field::{F128, Fq};
+use field::F128;
 use num_traits::ConstZero;
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
 use crate::{
-    BitZParams, ClaimError, LinearClaim, OpeningQuery, Shape, VirtualParams, VirtualParamsError,
+    BitZParams, BitzClaimField, ClaimError, LinearClaim, OpeningQuery, Shape, VirtualParams,
+    VirtualParamsError,
 };
 
 /// A claim on virtual bits `h = M (1 || f)` with checked dimensions.
@@ -25,10 +26,10 @@ use crate::{
 /// Both roles bind the virtual domain, commitment root, shapes, modulus,
 /// generator, map digest, and input claim to the transcript before folding.
 #[derive(Debug)]
-pub struct VirtualStatement<'a, const Q: u128, M: VirtualMap> {
-    params: VirtualParams<Q>,
+pub struct VirtualStatement<'a, F, M: VirtualMap> {
+    params: VirtualParams<F>,
     map: &'a M,
-    claim: &'a LinearClaim<Fq<Q>>,
+    claim: &'a LinearClaim<F>,
 }
 
 /// A map or claim with mismatched dimensions.
@@ -115,16 +116,16 @@ impl TransposedWeights {
     }
 }
 
-impl<'a, const Q: u128, M: VirtualMap> VirtualStatement<'a, Q, M> {
+impl<'a, F: BitzClaimField, M: VirtualMap> VirtualStatement<'a, F, M> {
     /// Checks the map and claim against both witness shapes.
     ///
     /// The statement retains the checked inputs. The map must keep the same
     /// linear transformation while the statement borrows it.
     pub fn new(
-        claim_params: BitZParams<Q>,
+        claim_params: BitZParams<F>,
         committed_shape: Shape,
         map: &'a M,
-        claim: &'a LinearClaim<Fq<Q>>,
+        claim: &'a LinearClaim<F>,
     ) -> Result<Self, VirtualStatementError> {
         let params = VirtualParams::new(claim_params, committed_shape, map)
             .map_err(VirtualStatementError::Parameters)?;
@@ -141,7 +142,7 @@ impl<'a, const Q: u128, M: VirtualMap> VirtualStatement<'a, Q, M> {
         Ok(Self { params, map, claim })
     }
 
-    pub fn params(&self) -> &VirtualParams<Q> {
+    pub fn params(&self) -> &VirtualParams<F> {
         &self.params
     }
 
@@ -149,7 +150,7 @@ impl<'a, const Q: u128, M: VirtualMap> VirtualStatement<'a, Q, M> {
         self.map
     }
 
-    pub fn claim(&self) -> &LinearClaim<Fq<Q>> {
+    pub fn claim(&self) -> &LinearClaim<F> {
         self.claim
     }
 
@@ -227,6 +228,9 @@ fn flatten(row_weights: &[F128], column_weights: &[F128]) -> Vec<F128> {
 mod tests {
     use super::*;
     use num_traits::{ConstOne, ConstZero};
+
+    const Q114: u128 = (1 << 114) - 11;
+    type F = field::Fq<Q114>;
 
     /// Dense `M`, the reference the sparse implementations are checked against.
     struct DenseMap {
@@ -345,19 +349,17 @@ mod tests {
         assert_eq!(map.transpose(&weights), map.transpose(&padded));
     }
 
-    const Q: u128 = (1 << 114) - 11;
-
-    fn params() -> BitZParams<Q> {
+    fn params() -> BitZParams<F> {
         let shape = Shape::new(7, 15).unwrap();
         BitZParams::new(shape, field::gf128::smallest_generator()).unwrap()
     }
 
-    fn input_claim(params: &BitZParams<Q>) -> LinearClaim<Fq<Q>> {
+    fn input_claim(params: &BitZParams<F>) -> LinearClaim<F> {
         LinearClaim::new(
             params,
-            vec![Fq::ONE; params.shape().rows()],
-            vec![Fq::ONE; params.shape().columns()],
-            Fq::from(0u128),
+            vec![F::ONE; params.shape().rows()],
+            vec![F::ONE; params.shape().columns()],
+            F::from(0u128),
         )
         .unwrap()
     }

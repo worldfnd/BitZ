@@ -1,8 +1,10 @@
 //! The fold round: send the column folds, then take the challenge.
 
-use common::{BitTable, Fold, FoldError, LinearClaim, column_images, fold_columns, row_images};
-
 use crate::BitZProver;
+use common::{
+    BitTable, BitzClaimField, Fold, FoldError, LinearClaim, column_images, fold_columns, row_images,
+};
+use num_traits::ToBytes;
 use transcript::ProverState;
 
 /// A fold the prover cannot produce.
@@ -14,7 +16,7 @@ pub enum SendError {
     Fold(FoldError),
 }
 
-impl<const Q: u128> BitZProver<Q> {
+impl<F: BitzClaimField> BitZProver<F> {
     /// Runs the fold round.
     ///
     /// Only the folds `eta_j` are sent. Their images `g^{eta_j}` are what the
@@ -34,10 +36,10 @@ impl<const Q: u128> BitZProver<Q> {
     #[tracing::instrument(name = "Fold columns", skip_all)]
     pub fn send_fold(
         &self,
-        claim: &LinearClaim<field::Fq<Q>>,
+        claim: &LinearClaim<F>,
         table: &BitTable<'_>,
         transcript: &mut ProverState,
-    ) -> Result<Fold, SendError> {
+    ) -> Result<Fold<F::Integer>, SendError> {
         // The weights are sized by the configured row count while the bits are
         // read at the table's. Disagreement is a panic, a silently wrong fold, or
         // a desynchronised transcript depending on which way it goes.
@@ -51,7 +53,7 @@ impl<const Q: u128> BitZProver<Q> {
         let folds = fold_columns(table, &exponents);
 
         for fold in &folds {
-            transcript.prover_message(&fold.to_le_bytes());
+            transcript.prover_message(&fold.to_le_bytes().as_ref());
         }
 
         let images = column_images(self.comb(), &folds);

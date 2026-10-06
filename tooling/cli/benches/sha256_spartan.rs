@@ -6,15 +6,15 @@
 
 use std::sync::{Arc, Mutex};
 
+use bitz_cli::{ProjectBigIntToFq, ProjectConstraint};
 use circuit::constraints::ConstraintGenerator;
 use circuit::sha256::sha256_block_aligned_circuit;
 use circuit::witgen::ProductWitgen;
 use divan::{AllocProfiler, Bencher, black_box};
-use field::FqDefault;
 use poly::{DenseMultilinearExtension, ScaledMleEvaluationClaim};
 use spartan::{
-    PreparedConstraintMatrices, R1csProductMles, SpartanPiopProof, bigint_to_fq,
-    build_assignment_mle, build_product_mles, prove_spartan_piop, verify_spartan_proof,
+    PreparedConstraintMatrices, R1csProductMles, SpartanPiopProof, build_assignment_mle,
+    build_product_mles, prove_spartan_piop, verify_spartan_proof,
 };
 use transcript::{Proof, build_prover, build_verifier};
 
@@ -28,13 +28,17 @@ const INSTANCE: &[u8] = b"bench";
 /// 2^22-bit committed shape.
 const BLOCKS: &[usize] = &[608];
 
+type R = num_bigint::BigInt;
+type F = field::FqDefault;
+type Proj = ProjectBigIntToFq;
+
 /// An R1CS instance with a witness satisfying it.
 #[derive(Debug, Clone)]
 struct R1csInstanceWitness {
-    instance: PreparedConstraintMatrices<FqDefault>,
-    witness: DenseMultilinearExtension<FqDefault>,
+    instance: PreparedConstraintMatrices<F>,
+    witness: DenseMultilinearExtension<F>,
     /// Holds precomputed `Az`, `Bz` and `Cz` tables.
-    products: R1csProductMles<FqDefault>,
+    products: R1csProductMles<F>,
 }
 
 static R1CS_INSTANCE_WITNESSES: Mutex<Vec<(usize, Arc<R1csInstanceWitness>)>> =
@@ -80,10 +84,11 @@ fn build(blocks: usize) -> R1csInstanceWitness {
     let (_witness, assignment_bits, exact_products) = witgen.into_parts();
 
     // Lower to Q100 and pad to the Boolean domains.
-    let matrices = integer_matrices.map_coefficients(|c| bigint_to_fq(&c));
+    let projection = <Proj as ProjectConstraint<R, F>>::prepare();
+    let matrices = integer_matrices.map_coefficients(|c| projection.project(&c));
     let products = build_product_mles(&exact_products, matrices.a.row_count()).unwrap();
     let assignment =
-        build_assignment_mle::<FqDefault>(&assignment_bits, matrices.a.column_count()).unwrap();
+        build_assignment_mle::<F>(&assignment_bits, matrices.a.column_count()).unwrap();
     let matrices = PreparedConstraintMatrices::new(matrices).unwrap();
 
     eprintln!("SHA-256 {blocks} blocks: {}", matrices.short_debug_info());
@@ -97,11 +102,7 @@ fn build(blocks: usize) -> R1csInstanceWitness {
 
 fn spartan_prove(
     r1cs: &R1csInstanceWitness,
-) -> (
-    Proof,
-    SpartanPiopProof<FqDefault>,
-    ScaledMleEvaluationClaim<FqDefault>,
-) {
+) -> (Proof, SpartanPiopProof<F>, ScaledMleEvaluationClaim<F>) {
     let mut prover = build_prover(SESSION, INSTANCE);
     let (piop, claim) =
         prove_spartan_piop(&mut prover, &r1cs.instance, &r1cs.products, &r1cs.witness).unwrap();
@@ -110,10 +111,10 @@ fn spartan_prove(
 }
 
 fn spartan_verify(
-    r1cs_instance: &PreparedConstraintMatrices<FqDefault>,
+    r1cs_instance: &PreparedConstraintMatrices<F>,
     proof: &Proof,
-    piop: &SpartanPiopProof<FqDefault>,
-) -> ScaledMleEvaluationClaim<FqDefault> {
+    piop: &SpartanPiopProof<F>,
+) -> ScaledMleEvaluationClaim<F> {
     let mut verifier = build_verifier(SESSION, INSTANCE, proof);
     let claim = verify_spartan_proof(&mut verifier, r1cs_instance, piop).unwrap();
     verifier.check_eof().unwrap();

@@ -538,18 +538,37 @@ pub trait Circuit {
     ) -> Self::Z<TO_LIMBS>;
 }
 
-pub trait Bits {
+pub trait BitWidth {
     /// Determines the fewest bits necessary to express this value
-    fn bits(&self) -> u64;
+    fn bit_width(&self) -> u64;
 }
 
 pub trait IntoWords {
+    /// Convert a value into u64 words, lowest limb first
     fn into_words<const LIMBS: usize>(self) -> [u64; LIMBS];
 }
 
-impl Bits for num_bigint::BigUint {
-    fn bits(&self) -> u64 {
+impl BitWidth for u128 {
+    fn bit_width(&self) -> u64 {
+        u128::bit_width(*self) as u64
+    }
+}
+
+impl BitWidth for num_bigint::BigUint {
+    fn bit_width(&self) -> u64 {
         num_bigint::BigUint::bits(self)
+    }
+}
+
+impl IntoWords for u128 {
+    fn into_words<const LIMBS: usize>(self) -> [u64; LIMBS] {
+        const {
+            assert!(LIMBS >= 2);
+        }
+        let mut result = [0; LIMBS];
+        result[0] = self as u64;
+        result[1] = (self >> 64) as u64;
+        result
     }
 }
 

@@ -28,7 +28,9 @@ pub type FqDefault = Fq<Q100>;
 /// Barrett leaves a value below `3Q`, which has to fit a `u128`. That admits
 /// anything up to `floor((2^128 - 1)/3)`, just over `2^126.41`; the bound is
 /// rounded down to a power of two.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, InfallibleCheckedOp)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, InfallibleCheckedOp,
+)]
 #[infallible_checked_unary_op((CheckedNeg, neg))]
 #[infallible_checked_binary_op((CheckedAdd, add), (CheckedSub, sub), (CheckedMul, mul))]
 pub struct Fq<const Q: u128>(u128);

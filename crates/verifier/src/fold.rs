@@ -1,9 +1,11 @@
 //! The fold round: read the column folds, check them, then take the
 //! challenge.
 
-use common::{Fold, FoldError, LinearClaim, column_images, reconstruct, row_images};
-
 use crate::BitZVerifier;
+use common::{
+    BitzClaimField, Fold, FoldError, LinearClaim, column_images, reconstruct, row_images,
+};
+use num_traits::FromBytes;
 use transcript::VerifierState;
 
 /// A fold the verifier rejects.
@@ -19,7 +21,7 @@ pub enum ReceiveError {
     Fold(FoldError),
 }
 
-impl<const Q: u128> BitZVerifier<Q> {
+impl<F: BitzClaimField> BitZVerifier<F> {
     /// Reads the fold round and checks it.
     ///
     /// The proof carries only the folds; their images are derived here rather than
@@ -36,21 +38,21 @@ impl<const Q: u128> BitZVerifier<Q> {
     #[tracing::instrument(name = "Verify column folds", skip_all)]
     pub fn receive_fold(
         &self,
-        claim: &LinearClaim<field::Fq<Q>>,
+        claim: &LinearClaim<F>,
         transcript: &mut VerifierState<'_>,
-    ) -> Result<Fold, ReceiveError> {
+    ) -> Result<Fold<F::Integer>, ReceiveError> {
         let shape = self.params().shape();
 
         let folds = (0..shape.columns())
             .map(|_| {
                 transcript
-                    .prover_message::<[u8; 16]>()
-                    .map(u128::from_le_bytes)
+                    .prover_message::<<F::Integer as FromBytes>::Bytes>()
+                    .map(|bs| F::Integer::from_le_bytes(&bs))
                     .map_err(|_| ReceiveError::MalformedProof)
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        if folds.iter().any(|&fold| fold > self.fold_bound()) {
+        if folds.iter().any(|fold| fold > self.fold_bound()) {
             return Err(ReceiveError::FoldOutOfRange);
         }
         if reconstruct(claim, &folds).map_err(ReceiveError::Fold)? != claim.target() {

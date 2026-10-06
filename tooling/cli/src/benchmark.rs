@@ -1,6 +1,10 @@
 //! Shared execution and timing for circuit proof benchmarks.
 
+use crate::ProjectConstraint;
 use crate::end_to_end::{CircuitProofSystem, CircuitStatement, CircuitStats, Error};
+use circuit::matrix_products::ModularVector;
+use circuit::{BitWidth, IntoWords};
+use common::{BitzClaimField, BitzConstraintRing};
 use std::{
     fmt,
     time::{Duration, Instant},
@@ -18,9 +22,17 @@ pub struct Timings {
 
 /// Runs setup, witness generation, commitment, proving, and verification.
 /// Callers generate inputs and initialize worker threads before calling this.
-pub fn run<S: CircuitStatement>(statement: S, inputs: &[bool]) -> Result<Timings, Error> {
+pub fn run<S, F, R, Proj>(statement: S, inputs: &[bool]) -> Result<Timings, Error>
+where
+    S: CircuitStatement,
+    F: BitzClaimField,
+    F::Integer: BitWidth + IntoWords,
+    Vec<F>: for<'a> From<&'a ModularVector<2>>,
+    R: BitzConstraintRing,
+    Proj: ProjectConstraint<R, F>,
+{
     let started = Instant::now();
-    let prepared = CircuitProofSystem::new(statement)?;
+    let prepared = CircuitProofSystem::<S, F>::new::<R, Proj>(statement)?;
     let setup = started.elapsed();
     let circuit = prepared.stats();
     tracing::info!(

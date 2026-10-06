@@ -1,7 +1,7 @@
 //! The hint channel: round-trips beside the narg string, never touches the
 //! sponge.
 
-use field::{F128, FqDefault};
+use field::F128;
 use transcript::{Proof, build_prover, build_verifier};
 
 const SESSION: &[u8] = b"hints-session";
@@ -12,12 +12,14 @@ const HINT_BYTES: [u8; 5] = [0xAA; 5];
 const HINT_F128: F128 = F128::new(7, 8);
 const HINT_U32: u32 = 42;
 
+type F = field::FqDefault;
+
 fn prove() -> (Proof, F128, F128) {
     let mut prover = build_prover(SESSION, INSTANCE);
     prover.prover_message(&MSG_1);
     let c1: F128 = prover.verifier_message();
     prover.hint(&HINT_BYTES);
-    prover.prover_message(&FqDefault::from(12345u128));
+    prover.prover_message(&F::from(12345u128));
     prover.hint(&HINT_F128);
     let c2: F128 = prover.verifier_message();
     prover.hint(&HINT_U32);
@@ -32,10 +34,7 @@ fn mixed_messages_and_hints_round_trip() {
     assert_eq!(verifier.prover_message::<F128>().unwrap(), MSG_1);
     assert_eq!(verifier.verifier_message::<F128>(), c1);
     assert_eq!(verifier.hint::<[u8; 5]>().unwrap(), HINT_BYTES);
-    assert_eq!(
-        verifier.prover_message::<FqDefault>().unwrap(),
-        FqDefault::from(12345u128)
-    );
+    assert_eq!(verifier.prover_message::<F>().unwrap(), F::from(12345u128));
     assert_eq!(verifier.hint::<F128>().unwrap(), HINT_F128);
     assert_eq!(verifier.verifier_message::<F128>(), c2);
     assert_eq!(verifier.hint::<u32>().unwrap(), HINT_U32);
@@ -51,7 +50,7 @@ fn tampered_hint_leaves_challenges_unchanged() {
     assert_eq!(verifier.prover_message::<F128>().unwrap(), MSG_1);
     assert_eq!(verifier.verifier_message::<F128>(), c1);
     assert_ne!(verifier.hint::<[u8; 5]>().unwrap(), HINT_BYTES);
-    verifier.prover_message::<FqDefault>().unwrap();
+    verifier.prover_message::<F>().unwrap();
     verifier.hint::<F128>().unwrap();
     assert_eq!(verifier.verifier_message::<F128>(), c2);
     verifier.hint::<u32>().unwrap();
@@ -67,7 +66,7 @@ fn truncated_hints_fail_the_read() {
     verifier.prover_message::<F128>().unwrap();
     verifier.verifier_message::<F128>();
     verifier.hint::<[u8; 5]>().unwrap();
-    verifier.prover_message::<FqDefault>().unwrap();
+    verifier.prover_message::<F>().unwrap();
     verifier.hint::<F128>().unwrap();
     verifier.verifier_message::<F128>();
     assert!(verifier.hint::<u32>().is_err());
@@ -82,7 +81,7 @@ fn trailing_hint_bytes_fail_eof() {
     verifier.prover_message::<F128>().unwrap();
     verifier.verifier_message::<F128>();
     verifier.hint::<[u8; 5]>().unwrap();
-    verifier.prover_message::<FqDefault>().unwrap();
+    verifier.prover_message::<F>().unwrap();
     verifier.hint::<F128>().unwrap();
     verifier.verifier_message::<F128>();
     verifier.hint::<u32>().unwrap();
