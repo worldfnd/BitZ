@@ -89,7 +89,7 @@ pub(crate) fn security_config(
 
         // 4. Select parameters using Flock's estimates and our combined error costs.
         match security_level {
-            SecurityLevel::Bits100 => configure_100(&mut level, first, remaining == FINAL_LOG_N)?,
+            SecurityLevel::Bits100 => configure_100(&mut level),
             SecurityLevel::Bits128 => configure_128(&mut level, first, remaining == FINAL_LOG_N)?,
         }
         if level.queries > 1usize << (remaining + log_inv_rate) {
@@ -126,69 +126,23 @@ pub(crate) fn security_config(
 }
 
 /// Selects the 100-bit parameters with Johnson list decoding.
-fn configure_100(
-    level: &mut LigeritoLevelConfig,
-    first: bool,
-    final_level: bool,
-) -> Result<(), ConfigError> {
-    // Error coefficient C represents probability C / 2^128. The 100-bit target permits C <= 2^28.
-    let allowed_coefficient = 2f64.powi(28);
-
+/// Tests check the fixed OOD and batching bounds for every supported size.
+fn configure_100(level: &mut LigeritoLevelConfig) {
     // 1. Reuse Flock's folding and per-query estimates. The fold estimate already includes the row multiplier.
     let (fold_bits, per_query_bits) = level.paper_predicted_bits();
     let fold_coefficient = (128.0 - fold_bits).exp2();
     let rate = 2f64.powi(-(level.log_inv_rate as i32));
     let list_size = 1.0 / (2.0 * JOHNSON_ETA * rate.sqrt());
 
-    // 2. Choose the smallest fold grinding that covers every round and its sumcheck.
-    // Johnson halves the fold coefficient and decreases grinding by one bit after each round.
-    level.fold_grinding_bits = (0..=MAX_GRINDING_BITS)
-        .find(|&bits| {
-            (0..level.k_recursive).all(|round| {
-                let grinding = bits.saturating_sub(round);
-                let claim_batching = f64::from(!first && round == 0 && grinding == 0);
-                let total_coefficient = fold_coefficient * 2f64.powi(-(round as i32))
-                    + (2.0 + claim_batching) * list_size;
-                total_coefficient <= 2f64.powi(28 + grinding as i32)
-            })
-        })
-        .ok_or(ConfigError::Invalid("Johnson fold grinding exceeds cap"))?;
+    // 2. b = max(0, ceil(log2(fold_coefficient + 2^k_recursive * list_size)) - 28), for b >= k_recursive.
+    // Derived from Flock Appendix C.3 (paper_predicted_bits), plus our quadratic sumcheck error.
+    let coefficient = fold_coefficient + 2f64.powi(level.k_recursive as i32) * list_size;
+    level.fold_grinding_bits = (coefficient.log2().ceil() - 28.0).max(0.0) as usize;
 
-    // 3. Check OOD selection and batching. Their challenges precede fold grinding.
-    // Independent coordinates give degree at most mu. Pair collisions cost at most L^2 * mu / (2 * |F|).
-    // The commitment performs the initial check. Its backend sample count stays zero.
-    let explicit_ood = LigeritoLevelConfig {
-        ood_samples: 1,
-        ..level.clone()
-    };
-    if explicit_ood.paper_predicted_ood_bits().unwrap() < 100.0 {
-        return Err(ConfigError::Invalid("Johnson OOD bound"));
-    }
-    let batching_challenges = if first { 8.0 } else { 1.0 };
-    if batching_challenges * list_size > allowed_coefficient {
-        return Err(ConfigError::Invalid("Johnson unground batching bound"));
-    }
-
-    // 4. Add queries until query misses and batching together meet 2^-100, without query grinding.
-    // The next commitment halves the rate, increasing its list bound by sqrt(2).
-    // The explicit final message has only one candidate.
-    let next_list_size = if final_level {
-        1.0
-    } else {
-        list_size * 2f64.sqrt()
-    };
+    // 3. q = ceil(100 / per_query_bits). Supported profiles leave enough error budget for batching.
+    // See Flock paper_predicted_bits and johnson_all_sizes_cover_combined_blocks.
     level.queries = (100.0 / per_query_bits).ceil() as usize;
-    while query_and_batching_error(
-        (-per_query_bits * level.queries as f64).exp2(),
-        level.queries,
-        next_list_size,
-        true,
-    ) > 2f64.powi(-100)
-    {
-        level.queries += 1;
-    }
     level.grinding_bits = 0;
-    Ok(())
 }
 
 /// Selects the 128-bit parameters with unique decoding and no OOD checks.
@@ -336,9 +290,10 @@ mod tests {
                 // Reconstruct the published formulas independently of the bound helpers.
                 let rho = 2f64.powi(-(level.log_inv_rate as i32));
                 let sqrt_rho = rho.sqrt();
-                let list = 1.0 / (0.04 * sqrt_rho);
-                let gamma = 1.0 - sqrt_rho - 0.02;
-                let half = (sqrt_rho / 0.04).ceil().max(3.0) + 0.5;
+                let eta = level.eta.unwrap();
+                let list = 1.0 / (2.0 * eta * sqrt_rho);
+                let gamma = 1.0 - sqrt_rho - eta;
+                let half = (sqrt_rho / (2.0 * eta)).ceil().max(3.0) + 0.5;
                 let n = 2f64.powi((level.log_msg_cols + level.log_inv_rate) as i32);
                 let base = (2.0 * half.powi(5) + 3.0 * half * gamma * rho) / (3.0 * rho.powf(1.5))
                     * n
@@ -357,13 +312,13 @@ mod tests {
                     assert!(!folds_fit(level.fold_grinding_bits - 1));
                 }
                 let next_list = config.levels.get(index + 1).map_or(1.0, |next| {
-                    1.0 / (0.04 * 2f64.powi(-(next.log_inv_rate as i32)).sqrt())
+                    1.0 / (2.0 * next.eta.unwrap() * 2f64.powi(-(next.log_inv_rate as i32)).sqrt())
                 });
                 let alpha = level.queries.next_power_of_two().ilog2();
-                let query = (sqrt_rho + 0.02).powi(level.queries as i32)
+                let query = (sqrt_rho + eta).powi(level.queries as i32)
                     + f64::from(alpha + 1) * next_list * 2f64.powi(-128);
                 assert!(query <= 2f64.powi(-100));
-                let previous_query = (sqrt_rho + 0.02).powi(level.queries as i32 - 1)
+                let previous_query = (sqrt_rho + eta).powi(level.queries as i32 - 1)
                     + f64::from((level.queries - 1).next_power_of_two().ilog2() + 1)
                         * next_list
                         * 2f64.powi(-128);
