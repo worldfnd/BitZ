@@ -1,10 +1,10 @@
 //! The fold round: read the column folds, check them, then take the
 //! challenge.
 
-use common::{Fold, FoldError, LinearClaim, column_images, reconstruct, row_images};
+use common::{Fold, FoldError, LinearClaim, SecurityLevel, column_images, reconstruct, row_images};
 
 use crate::BitZVerifier;
-use transcript::{SecurityLevel, VerifierState};
+use transcript::VerifierState;
 
 /// A fold the verifier rejects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

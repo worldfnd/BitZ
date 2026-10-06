@@ -9,13 +9,13 @@
 //! The fixtures live here rather than under `tests/` so they compile once
 //! rather than once per test binary.
 
-use common::{BitTable, BitZParams, LinearClaim, Root, Shape};
+use common::{BitTable, BitZParams, LinearClaim, Root, SecurityLevel, Shape};
 use crypto_primitives::LiftElement;
 use field::{F128, Fq, gf128::smallest_generator};
 use pcs::{Pcs, ProverData};
 use rand_chacha::ChaCha8Rng;
 use rand_core::{Rng, SeedableRng};
-use transcript::{Proof, ProverState, SecurityLevel, VerifierState, build_prover, build_verifier};
+use transcript::{Proof, ProverState, VerifierState, build_prover, build_verifier};
 
 /// The specification's fixed modulus, `2^100 − 15`. Under it the fold bound
 /// admits every row width up to `t = 27`, so the reference split

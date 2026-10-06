@@ -7,10 +7,10 @@
 //! column coordinates first; `alfa_b` contains the remaining row coordinates.
 //! The caller must verify the returned claim against the commitment.
 
-use common::{ClaimError, Fold, LinearClaim, OpeningQuery, Shape};
+use common::{ClaimError, Fold, LinearClaim, OpeningQuery, SecurityLevel, Shape};
 use field::F128;
 use num_traits::ConstOne;
-use transcript::{SecurityLevel, VerifierState};
+use transcript::VerifierState;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReduceError {

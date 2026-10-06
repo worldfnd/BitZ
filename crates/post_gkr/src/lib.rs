@@ -37,14 +37,14 @@ mod test_util;
 
 use crate::sumcheck::{Pair, RoundMessage};
 use common::shape::PACK_BITS;
-use common::{LinearClaim, OpeningQuery};
+use common::{LinearClaim, OpeningQuery, SecurityLevel};
 use field::F128;
 use num_traits::{ConstOne, ConstZero};
 #[cfg(feature = "parallel")]
 use poly::parallel::workload_size;
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
-use transcript::{ProverState, SecurityLevel, VerifierState};
+use transcript::{ProverState, VerifierState};
 
 /// A reduction the prover cannot run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -293,9 +293,9 @@ fn advance(claim: F128, [a0, a2]: RoundMessage, challenge: F128) -> F128 {
 
 #[cfg(test)]
 mod tests {
+    use common::SecurityLevel::{Bits100, Bits128};
     use common::Shape;
     use poly::DenseMultilinearExtension;
-    use transcript::SecurityLevel::{Bits100, Bits128};
     use transcript::{Proof, build_prover, build_verifier};
 
     use super::*;

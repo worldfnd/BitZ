@@ -55,7 +55,7 @@ fn gkr(bencher: Bencher) {
                     &mut transcript,
                     black_box(&fold),
                     black_box(&table),
-                    transcript::SecurityLevel::Bits100,
+                    common::SecurityLevel::Bits100,
                 )
                 .expect("benchmark fold matches the table shape"),
             )

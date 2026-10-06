@@ -1,9 +1,11 @@
 //! `VerifyBitZ`.
 
-use common::{LinearClaim, OpeningQuery, VirtualMap, VirtualMapError, VirtualStatement};
+use common::{
+    LinearClaim, OpeningQuery, SecurityLevel, VirtualMap, VirtualMapError, VirtualStatement,
+};
 use field::Fq;
 use pcs::{CommitScheme, Commitment, Pcs, StatementBinding, VerifyError as OpeningVerifyError};
-use transcript::{SecurityLevel, VerifierState};
+use transcript::VerifierState;
 
 use crate::{BitZVerifier, ReceiveError, ReduceError, reduce::gkr_reduce};
 

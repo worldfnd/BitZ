@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+common = { workspace = true }
 field = { path = "../field", features = ["spongefish"] }
 transcript = {path ="../transcript"}
 tracing = { workspace = true }

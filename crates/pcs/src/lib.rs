@@ -114,9 +114,8 @@ use opening::{prove, verify};
 use transcript::{ProverState, VerifierState};
 
 pub use commitment::{CommitError, Commitment, ConfigError, Pcs, ProverData};
-pub use common::{OpeningQuery, Root};
+pub use common::{OpeningQuery, Root, SecurityLevel};
 pub use opening::{ProveError, VerifyError};
-pub use transcript::SecurityLevel;
 
 /// Controls statement binding for one opening.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

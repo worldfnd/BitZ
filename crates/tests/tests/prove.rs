@@ -1,12 +1,12 @@
 //! The top-level prove and verify, through the real opening.
 
-use common::{Root, Shape, TableError};
+use common::{Root, SecurityLevel, Shape, TableError};
 use field::{F128, Fq};
 use num_traits::{ConstOne, ConstZero};
 use pcs::{Pcs, VerifyError as PcsVerifyError};
 use prover::ProveError;
 use tests::{Instance, narrow_shape, prover_transcript, verifier_transcript, wide_shape};
-use transcript::{Proof, SecurityLevel};
+use transcript::Proof;
 use verifier::{ReceiveError, VerifyError};
 
 fn prove(instance: &mut Instance) -> Proof {

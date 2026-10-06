@@ -55,7 +55,7 @@ fn gkr_wrapper(mut transcript: ProverState, fold: &Fold, table: BitTable<'_>) {
             &mut transcript,
             black_box(fold),
             black_box(&table),
-            transcript::SecurityLevel::Bits100,
+            common::SecurityLevel::Bits100,
         )
         .expect("profiling fold matches the table shape"),
     );

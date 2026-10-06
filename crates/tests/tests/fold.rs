@@ -1,13 +1,13 @@
 //! The fold round, prover against verifier.
 
-use common::{BitZParams, FoldError, LinearClaim};
+use common::{BitZParams, FoldError, LinearClaim, SecurityLevel::Bits100};
 use field::{F128, Fq, gf128::smallest_generator};
 use num_traits::{ConstOne, ConstZero};
 use prover::{BitZProver, SendError};
 use tests::{
     Instance, Q, WINDOW, narrow_shape, prover_transcript, verifier_transcript, wide_shape,
 };
-use transcript::{Proof, SecurityLevel::Bits100};
+use transcript::Proof;
 use verifier::{BitZVerifier, ReceiveError};
 
 /// Runs an honest prover and returns the round it produced with its proof.

@@ -1,6 +1,6 @@
 //! Transcript orchestration for MLE openings and inner-product sumcheck reduction.
 
-use common::LinearClaim;
+use common::{LinearClaim, SecurityLevel};
 use field::F128;
 use flock_core::field::F128 as FlockF128;
 use flock_core::pcs::pack::PACKING_WIDTH as CLAIM_COUNT;
@@ -8,7 +8,7 @@ use post_gkr::{
     ProveError as PostGkrProveError, VerifyError as PostGkrVerifyError, prove as prove_post_gkr,
     verify as verify_post_gkr,
 };
-use transcript::{ProverState, PublicTranscript, SecurityLevel, VerifierState};
+use transcript::{ProverState, PublicTranscript, VerifierState};
 
 use crate::bridge::{as_flock_f128, as_flock_f128s, from_flock_f128};
 use crate::ligerito::{self, ReducedProver, validate_prover_data};

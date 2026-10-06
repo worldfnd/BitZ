@@ -1,9 +1,10 @@
 use std::collections::VecDeque;
 
+use common::SecurityLevel;
 use field::{F128, Wide256};
 use num_traits::{ConstOne, ConstZero};
 use rayon::prelude::*;
-use transcript::{ProverState, SecurityLevel, VerifierState};
+use transcript::{ProverState, VerifierState};
 
 pub type Field = F128;
 
@@ -407,8 +408,8 @@ impl IntoIterator for LayerWitnesses {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use common::SecurityLevel::{Bits100, Bits128};
     use proptest::prelude::*;
-    use transcript::SecurityLevel::{Bits100, Bits128};
 
     fn field() -> impl Strategy<Value = Field> {
         any::<u128>().prop_map(Field::from)

@@ -1,9 +1,11 @@
 //! The fold round: send the column folds, then take the challenge.
 
-use common::{BitTable, Fold, FoldError, LinearClaim, column_images, fold_columns, row_images};
+use common::{
+    BitTable, Fold, FoldError, LinearClaim, SecurityLevel, column_images, fold_columns, row_images,
+};
 
 use crate::BitZProver;
-use transcript::{ProverState, SecurityLevel};
+use transcript::ProverState;
 
 /// A fold the prover cannot produce.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

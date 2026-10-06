@@ -18,12 +18,13 @@
 //! The opening authenticates the closing evaluation, including when its weight is zero.
 
 use crate::{GRINDING_LABEL, VerifyError};
+use common::SecurityLevel;
 use field::{F128, Wide256};
 #[cfg(feature = "parallel")]
 use poly::parallel::workload_size;
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
-use transcript::{ProverState, SecurityLevel, VerifierState};
+use transcript::{ProverState, VerifierState};
 
 /// `(a_0, a_2)` of `p(X) = a_0 + a_1 X + a_2 X^2`; `a_1` the running claim
 /// implies.
@@ -215,11 +216,11 @@ fn coefficients_serial(weights: &[F128], values: &[F128]) -> (Wide256, Wide256) 
 
 #[cfg(test)]
 mod tests {
+    use common::SecurityLevel::Bits100;
     use num_traits::{ConstOne, ConstZero};
     use poly::DenseMultilinearExtension;
     use poly::eq_table;
     use poly::f128::{evaluate, inner_product};
-    use transcript::SecurityLevel::Bits100;
     use transcript::{build_prover, build_verifier};
 
     use super::*;

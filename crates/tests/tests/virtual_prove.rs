@@ -6,7 +6,7 @@ use circuit::{
     witgen::{PackedWitness, Witgen},
 };
 use common::{
-    BitZParams, LinearClaim, Root, Shape, TableError, TransposedWeights, VirtualMap,
+    BitZParams, LinearClaim, Root, SecurityLevel, Shape, TableError, TransposedWeights, VirtualMap,
     VirtualMapError, VirtualStatement,
 };
 use field::{F128, Fq, gf128::smallest_generator};
@@ -14,7 +14,7 @@ use num_traits::{ConstOne, ConstZero};
 use pcs::{Pcs, ProverData};
 use prover::{BitZProver, ProveError, VirtualWitness};
 use tests::{Q, WINDOW, prover_transcript, verifier_transcript};
-use transcript::{Proof, ProverState, SecurityLevel};
+use transcript::{Proof, ProverState};
 use verifier::{BitZVerifier, VerifyError};
 
 /// `h[0] = 1`, `h[1] = f[0]`, `h[128] = f[1]`, `h[129] = f[0] XOR f[1]`.
@@ -406,7 +406,7 @@ fn sha256_virtual_inner_product_opens_the_committed_bits() {
         .sum();
     let claim = LinearClaim::new(&params, rows, columns, target).unwrap();
     let statement = VirtualStatement::new(params, committed_shape, &map, &claim).unwrap();
-    let pcs = Pcs::new(&committed_shape, transcript::SecurityLevel::Bits100).unwrap();
+    let pcs = Pcs::new(&committed_shape, common::SecurityLevel::Bits100).unwrap();
     let mut transcript = prover_transcript();
     let (root, data) = pcs.commit(&committed_bits, &mut transcript).unwrap();
     BitZProver::new(params, WINDOW)

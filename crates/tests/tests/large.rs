@@ -7,14 +7,13 @@
 //!
 //! This test is designed to test what's possible in under a minute.
 
-use common::LinearClaim;
+use common::{LinearClaim, SecurityLevel::Bits100};
 use field::Fq;
 use num_traits::ConstOne;
 use prover::BitZProver;
 use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;
 use tests::{HonestClaim, WINDOW, large_shape, prover_transcript, verifier_transcript};
-use transcript::SecurityLevel::Bits100;
 use verifier::{BitZVerifier, ReceiveError};
 
 #[test]

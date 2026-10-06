@@ -5,12 +5,14 @@
 //! `sum(row, column) u1[row] * u2[column] * table.bit(column, row)`.
 //! The caller must discharge this claim through the commitment opening.
 
-use common::{BitTable, ClaimError, Fold, LinearClaim, OpeningQuery, TransposeError};
+use common::{
+    BitTable, ClaimError, Fold, LinearClaim, OpeningQuery, SecurityLevel, TransposeError,
+};
 use field::F128;
 use gkr::{GrandProductCircuit, gpgkr_prove};
 use num_traits::ConstOne;
 use poly::eq_table;
-use transcript::{ProverState, SecurityLevel};
+use transcript::ProverState;
 
 #[inline(never)]
 #[tracing::instrument(name = "Build grand-product circuit", level = "debug", skip_all)]

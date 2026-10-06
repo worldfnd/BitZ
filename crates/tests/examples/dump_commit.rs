@@ -39,7 +39,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let shape = Shape::new(t, s).map_err(|error| format!("invalid shape: {error:?}"))?;
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
     let packed = packed_witness(shape, &mut rng);
-    let pcs = Pcs::new(&shape, transcript::SecurityLevel::Bits100)
+    let pcs = Pcs::new(&shape, common::SecurityLevel::Bits100)
         .map_err(|error| format!("PCS configuration failed: {error:?}"))?;
     let (root, _data) = pcs
         .commit(&packed, &mut prover_transcript())

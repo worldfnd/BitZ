@@ -8,6 +8,7 @@ pub mod claim;
 pub mod fold;
 pub mod opening;
 pub mod params;
+pub mod security;
 pub mod shape;
 pub mod table;
 pub mod virtual_map;
@@ -18,6 +19,7 @@ pub use fold::{
 };
 pub use opening::OpeningQuery;
 pub use params::{BitZParams, ParamsError, VirtualParams, VirtualParamsError};
+pub use security::SecurityLevel;
 pub use shape::{Shape, ShapeError};
 pub use table::{BitTable, TableError, TransposeError, TransposedBitTable};
 pub use virtual_map::{

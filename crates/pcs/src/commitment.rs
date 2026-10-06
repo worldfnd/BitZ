@@ -11,12 +11,12 @@ use crate::bridge::as_flock_f128s;
 use crate::ligerito::CheckedLigerito;
 use crate::ood::{self, OodClaim};
 use crate::profiles::security_config;
-use common::{Root, Shape};
+use common::{Root, SecurityLevel, Shape};
 use field::F128;
 use flock_core::hash::HashKind;
 use flock_core::pcs::ligerito::LigeritoProfile;
 use flock_core::pcs::{LOG_PACKING, PcsParams, ProverData as FlockProverData, commit};
-use transcript::{Encoding, ProverState, PublicTranscript, SecurityLevel, VerifierState};
+use transcript::{Encoding, ProverState, PublicTranscript, VerifierState};
 
 // Increment this version when parameter derivation or transcript rules change.
 // This includes protocol changes in Flock or the selected hash.

@@ -1,12 +1,12 @@
 //! `ProveBitZ`.
 
 use common::{
-    BitTable, ClaimError, LinearClaim, OpeningQuery, TableError, VirtualMap, VirtualMapError,
-    VirtualStatement,
+    BitTable, ClaimError, LinearClaim, OpeningQuery, SecurityLevel, TableError, VirtualMap,
+    VirtualMapError, VirtualStatement,
 };
 use field::{F128, Fq};
 use pcs::{CommitScheme, Pcs, ProveError as OpeningProveError, ProverData, StatementBinding};
-use transcript::{ProverState, SecurityLevel};
+use transcript::ProverState;
 
 use crate::{BitZProver, SendError, reduce::gkr_reduce};
 
