@@ -562,7 +562,9 @@ impl BitWidth for num_bigint::BigUint {
 
 impl IntoWords for u128 {
     fn into_words<const LIMBS: usize>(self) -> [u64; LIMBS] {
-        assert!(LIMBS >= 2);
+        const {
+            assert!(LIMBS >= 2);
+        }
         let mut result = [0; LIMBS];
         result[0] = self as u64;
         result[1] = (self >> 64) as u64;
