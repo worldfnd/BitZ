@@ -15,10 +15,6 @@ use transcript::ProverState;
 #[inline(never)]
 #[tracing::instrument(name = "Build grand-product circuit", level = "debug", skip_all)]
 fn init_circuit(table: &BitTable, fold: &Fold) -> GrandProductCircuit {
-    let columns = table.shape().columns();
-    let dim = columns * table.shape().rows();
-    let mut leafs = F128::zeroed_vec(dim);
-
     // TODO optimisation: Handle the leafs and the two layers above it lazily.
     // Columns occupy the low index bits, so each product tree reduces one column.
     // Transposed so each row can be read sequentially.
@@ -26,14 +22,8 @@ fn init_circuit(table: &BitTable, fold: &Fold) -> GrandProductCircuit {
         .word_columns()
         .expect("the fold's table, whose gate admits only t >= 7")
         .transpose();
-    for (b, &row_image) in fold.row_images.iter().enumerate() {
-        let leafs = &mut leafs[b * columns..(b + 1) * columns];
-        for (leaf, bit) in leafs.iter_mut().zip(transposed.column_bits(b)) {
-            *leaf = if bit == 1 { row_image } else { F128::ONE };
-        }
-    }
 
-    GrandProductCircuit::new(leafs)
+    GrandProductCircuit::new(&fold.row_images, transposed)
 }
 
 /// Reduces the grand-product circuit to a factored claim on the committed bits.

@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 
+use common::OwnedBitTable;
 use field::{F128, Wide256};
 use num_traits::{ConstOne, ConstZero};
 use rayon::prelude::*;
@@ -342,8 +343,23 @@ pub struct GrandProductCircuit {
 }
 
 impl GrandProductCircuit {
-    // Fails if the leafs are 0.
-    pub fn new(mut leafs: Vec<Field>) -> Self {
+    pub fn new(row_images: &[F128], table: OwnedBitTable) -> Self {
+        let columns = table.shape().columns();
+        let rows = table.shape().rows();
+        let dim = columns * rows;
+        let mut leafs = F128::zeroed_vec(dim);
+
+        for (b, &row_image) in row_images.iter().enumerate() {
+            let leafs = &mut leafs[b * rows..(b + 1) * rows];
+            for (leaf, bit) in leafs.iter_mut().zip(table.column_bits(b)) {
+                *leaf = if bit == 1 { row_image } else { F128::ONE };
+            }
+        }
+
+        Self::from_leafs(leafs)
+    }
+
+    fn from_leafs(mut leafs: Vec<Field>) -> Self {
         if !leafs.is_empty() {
             leafs.resize(leafs.len().next_power_of_two(), Field::ONE);
         }
@@ -428,7 +444,7 @@ mod tests {
         fn eval_preserves_product_across_layers(leaves in prop::collection::vec(field(), 0..12)) {
             let expected = product(&leaves);
 
-            let (top, mut witnesses) = GrandProductCircuit::new(leaves).batched_eval(1);
+            let (top, mut witnesses) = GrandProductCircuit::from_leafs(leaves).batched_eval(1);
 
             prop_assert_eq!(product(&top), expected);
 
@@ -450,7 +466,7 @@ mod tests {
             let mut padded = leaves.clone();
             padded.resize(padded_len, Field::ONE);
 
-            let circuit = GrandProductCircuit::new(leaves);
+            let circuit = GrandProductCircuit::from_leafs(leaves);
             let (top, _witnesses) = circuit.batched_eval(groups);
             prop_assert_eq!(top.len(), groups);
 
@@ -511,7 +527,7 @@ mod tests {
             [Field::ZERO, Field::ONE],
             [Field::ONE, Field::ZERO],
         ] {
-            let circuit = GrandProductCircuit::new(leaves.clone());
+            let circuit = GrandProductCircuit::from_leafs(leaves.clone());
             let (output, witnesses) = circuit.batched_eval(4);
             let claim = mle(output, &point);
             let instance = (leaves.clone(), point.to_vec());
@@ -557,7 +573,7 @@ mod tests {
     }
 
     pub fn prove(input: Vec<Field>, log_groups: usize) -> (Vec<Field>, transcript::Proof) {
-        let circuit = GrandProductCircuit::new(input);
+        let circuit = GrandProductCircuit::from_leafs(input);
         // Fake hashing
         let n = circuit.leafs.len() as u128;
 
@@ -581,7 +597,7 @@ mod tests {
     }
 
     pub fn verify(input: Vec<Field>, output: Vec<Field>, proof: transcript::Proof) -> bool {
-        let circuit = GrandProductCircuit::new(input);
+        let circuit = GrandProductCircuit::from_leafs(input);
         // Fake hashing
         let instance = (&output, circuit.leafs.len() as u128);
         let mut verifier = transcript::build_verifier("gkr", &instance, &proof);
