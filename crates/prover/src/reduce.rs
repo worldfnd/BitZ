@@ -18,10 +18,7 @@ fn init_circuit(table: &BitTable, fold: &Fold) -> GrandProductCircuit {
     // TODO optimisation: Handle the leafs and the two layers above it lazily.
     // Columns occupy the low index bits, so each product tree reduces one column.
     // Transposed so each row can be read sequentially.
-    let transposed = table
-        .word_columns()
-        .expect("the fold's table, whose gate admits only t >= 7")
-        .transpose();
+    let transposed = table.transpose();
 
     GrandProductCircuit::new(&fold.row_images, transposed)
 }

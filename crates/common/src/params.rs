@@ -3,15 +3,11 @@
 use field::{F128, gf128::is_generator};
 use spongefish::Encoding;
 
-use crate::{BitTable, Shape, TableError, VirtualMap, shape::PACK_BITS};
+use crate::{BitTable, Shape, TableError, VirtualMap};
 
 /// A parameter set one of the pre-claim gates rejects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParamsError {
-    /// Fewer than seven row-index bits: a packed row would not fill one
-    /// codeword position, and the fold reads a column as whole packed
-    /// elements.
-    RowIndexTooNarrow,
     /// `(k_1 + 1)(Q - 1)` reaches `ord(g)`, so two folds could collide in the
     /// exponent.
     FoldBoundExceeded,
@@ -38,12 +34,6 @@ impl<const Q: u128> BitZParams<Q> {
     pub fn new(shape: Shape, generator: F128) -> Result<Self, ParamsError> {
         // `Fq<Q>` asserts Q is an odd prime below 2^126 on its own behalf, so
         // no modulus gate is needed here.
-
-        // A table admits any row width; the fold walks the table this shapes
-        // and is the one that needs whole-element columns.
-        if shape.log_rows() < PACK_BITS as usize {
-            return Err(ParamsError::RowIndexTooNarrow);
-        }
 
         // `ord(g) > (k_1 + 1)(Q - 1)`, the paper's requisite. A fold is an
         // integer at most `k_1 (Q - 1)` while the value it is compared against
@@ -313,15 +303,6 @@ mod tests {
             params_at(Shape::new(14, 21).unwrap()).err(),
             Some(ParamsError::FoldBoundExceeded)
         );
-    }
-
-    #[test]
-    fn rejects_a_row_index_narrower_than_the_pack_width() {
-        assert_eq!(
-            params_at(Shape::new(6, 16).unwrap()).err(),
-            Some(ParamsError::RowIndexTooNarrow)
-        );
-        assert!(params_at(Shape::new(7, 15).unwrap()).is_ok());
     }
 
     #[test]

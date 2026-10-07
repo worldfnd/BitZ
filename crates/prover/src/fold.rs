@@ -48,10 +48,7 @@ impl<const Q: u128> BitZProver<Q> {
 
         // Lifted once: the fold reads it per set bit across every column.
         let exponents = claim.row_exponents();
-        let columns = table
-            .word_columns()
-            .expect("the shape matches the parameters, whose gate admits only t >= 7");
-        let folds = fold_columns(&columns, &exponents);
+        let folds = fold_columns(table, &exponents);
 
         for fold in &folds {
             transcript.prover_message(&fold.to_le_bytes());

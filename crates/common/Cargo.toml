@@ -25,6 +25,6 @@ divan = { workspace = true }
 rand = { workspace = true }
 
 [[bench]]
-name = "table"
+name = "matrix"
 harness = false
 required-features = ["bench"]

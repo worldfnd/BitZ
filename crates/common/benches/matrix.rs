@@ -1,10 +1,10 @@
 //! Compare the blocked `bit_transpose` with the bit-at-a-time reference.
 //!
-//! Run with `cargo bench -p common --features bench --bench table`.
+//! Run with `cargo bench -p common --features bench --bench matrix`.
 //! Both transpose a `128 x DIM2`-bit matrix (`dim2` contiguous), including
 //! output allocation. Input generation runs outside the measured loop.
 
-use common::table::bench::{bit_transpose, transpose_reference};
+use common::matrix::bench::{bit_transpose, transpose_reference};
 use divan::counter::BytesCount;
 use divan::{Bencher, black_box};
 use rand::rngs::StdRng;

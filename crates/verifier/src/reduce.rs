@@ -100,7 +100,7 @@ mod round_trip_ai_test {
             .map(|i| F128::from((i as u128 + 3) * 0xABCDEF12345u128 + 1))
             .collect();
 
-        let transposed = table.word_columns().unwrap().transpose();
+        let transposed = table.transpose();
         let circuit = GrandProductCircuit::new(&row_images, transposed);
         let (top_layer, witnesses) = circuit.batched_eval(shape.columns());
 

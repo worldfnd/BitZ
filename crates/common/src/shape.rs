@@ -1,6 +1,6 @@
 //! The public instance shape and the gates that run before any proof work.
 
-/// The seven low bits of a bit index select the basis coefficients that one
+/// The seven low bits of a row index select the basis coefficients that one
 /// packed field element carries.
 pub const PACK_BITS: u32 = 7;
 
@@ -16,6 +16,9 @@ pub const MAX_LOG_BITS: usize = 35;
 /// A shape one of the admissibility constraints rejects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShapeError {
+    /// Fewer than seven row-index bits: a packed row would not fill one
+    /// codeword position. The paper writes this count `t`.
+    RowIndexTooNarrow,
     /// The total bit count falls outside `2^22..=2^35`.
     CommitmentSizeOutOfRange,
 }
@@ -24,6 +27,7 @@ pub enum ShapeError {
 ///
 /// One counts the bits of a column, the other the columns; the paper writes
 /// them `t` and `s`. Geometry only: the modulus sits in [`crate::BitZParams`],
+/// with the one gate that couples the two.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Shape {
     log_rows: usize,
@@ -33,6 +37,9 @@ pub struct Shape {
 impl Shape {
     /// Checks the geometric admissibility constraints and returns the shape.
     pub fn new(log_rows: usize, log_columns: usize) -> Result<Self, ShapeError> {
+        if log_rows < PACK_BITS as usize {
+            return Err(ShapeError::RowIndexTooNarrow);
+        }
         // The row width alone is bounded first: the total is at least as
         // large, so an out-of-window row width is already a rejection, and the
         // later `MAX_LOG_BITS - log_rows` cannot underflow.
@@ -104,9 +111,9 @@ mod tests {
     }
 
     #[test]
-    fn accepts_a_row_index_narrower_than_the_pack_width() {
-        assert!(Shape::new(6, 16).is_ok());
-        assert!(Shape::new(0, MIN_LOG_BITS).is_ok());
+    fn rejects_a_row_index_narrower_than_the_pack_width() {
+        assert_eq!(Shape::new(6, 16), Err(ShapeError::RowIndexTooNarrow));
+        assert!(Shape::new(7, 15).is_ok());
     }
 
     #[test]

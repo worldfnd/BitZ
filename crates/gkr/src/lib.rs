@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use common::OwnedBitTable;
+use common::BitMatrix;
 use field::{F128, Wide256};
 use num_traits::{ConstOne, ConstZero};
 use rayon::prelude::*;
@@ -343,15 +343,14 @@ pub struct GrandProductCircuit {
 }
 
 impl GrandProductCircuit {
-    pub fn new(row_images: &[F128], table: OwnedBitTable) -> Self {
-        let columns = table.shape().columns();
-        let rows = table.shape().rows();
-        let dim = columns * rows;
+    pub fn new(row_images: &[F128], matrix: BitMatrix) -> Self {
+        let dim2 = matrix.dim2();
+        let dim = matrix.dim1() * dim2;
         let mut leafs = F128::zeroed_vec(dim);
 
         for (b, &row_image) in row_images.iter().enumerate() {
-            let leafs = &mut leafs[b * rows..(b + 1) * rows];
-            for (leaf, bit) in leafs.iter_mut().zip(table.column_bits(b)) {
+            let leafs = &mut leafs[b * dim2..(b + 1) * dim2];
+            for (leaf, bit) in leafs.iter_mut().zip(matrix.bits(b)) {
                 *leaf = if bit == 1 { row_image } else { F128::ONE };
             }
         }
