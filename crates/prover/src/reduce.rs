@@ -125,8 +125,9 @@ mod order_check_ai_test {
     fn factored_claim_matches_for_narrow_tables() {
         const Q100: u128 = (1 << 100) - 15;
 
-        // Cover one column and both sides of the 128-column transpose boundary.
-        for log_columns in [0, 6, 7] {
+        // The narrowest tables the transpose takes: one block of 128 columns,
+        // then two.
+        for log_columns in [7, 8] {
             let shape = Shape::new(22 - log_columns, log_columns).unwrap();
             let params = BitZParams::<Q100>::new(shape, smallest_generator()).unwrap();
             let packed = packed_witness(&shape, |column, row| {

@@ -86,9 +86,15 @@ impl<'a> BitTable<'a> {
     /// Built for callers like a leaf construction that must walk the table
     /// row by row: the packing is column major, so a row-major walk over the
     /// table is a scatter, one `bit()` call and cache miss per cell. After
-    /// the transpose each row is contiguous, read by [`BitMatrix::bits`]. See
-    /// [`BitMatrix::transpose`] for the constraints; the table's own `t >= 7`
-    /// is what the first one asks for.
+    /// the transpose each row is contiguous, read by [`BitMatrix::bits`].
+    ///
+    /// # Panics
+    ///
+    /// If the table has fewer than `128` columns (`s < 7`): see
+    /// [`BitMatrix::transpose`], which needs both axes at least `128`. The
+    /// table's own `t >= 7` covers the rows, and
+    /// [`crate::ParamsError::ColumnCountTooNarrow`] keeps such shapes away
+    /// from the reduction.
     pub fn transpose(&self) -> BitMatrix {
         BitMatrix::transposed(self.packed, self.shape.log_rows())
     }
@@ -226,5 +232,18 @@ mod tests {
                 .collect();
             assert_eq!(bits, expected, "row {row}");
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "whole words")]
+    fn transpose_rejects_a_table_with_too_few_columns() {
+        // `log_columns = 0`: a single column, well under the 128 a
+        // transposed row would need to fill one word -- even though this
+        // shape is perfectly admissible for `BitTable` itself.
+        let shape = Shape::new(22, 0).unwrap();
+        let packed = vec![F128::ZERO; (1 << shape.log_bits()) / PACKED_BITS];
+        let table = BitTable::new(shape, bytemuck::cast_slice(&packed)).unwrap();
+
+        table.transpose();
     }
 }
