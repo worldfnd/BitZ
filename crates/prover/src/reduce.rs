@@ -5,7 +5,7 @@
 //! `sum(row, column) u1[row] * u2[column] * table.bit(column, row)`.
 //! The caller must discharge this claim through the commitment opening.
 
-use common::{BitTable, ClaimError, Fold, LinearClaim, OpeningQuery, TransposeError};
+use common::{BitTable, ClaimError, Fold, LinearClaim, OpeningQuery};
 use field::F128;
 use gkr::{GrandProductCircuit, gpgkr_prove};
 use num_traits::ConstOne;
@@ -15,39 +15,7 @@ use transcript::ProverState;
 #[inline(never)]
 #[tracing::instrument(name = "Build grand-product circuit", level = "debug", skip_all)]
 fn init_circuit(table: &BitTable, fold: &Fold) -> GrandProductCircuit {
-    let columns = table.shape().columns();
-    let dim = columns * table.shape().rows();
-    let mut leafs = F128::zeroed_vec(dim);
-
-    // TODO optimisation: Handle the leafs and the two layers above it lazily.
-    // Columns occupy the low index bits, so each product tree reduces one column.
-    match table.transpose() {
-        Ok(transposed) => {
-            // Transpose wide tables so each row can be read sequentially.
-            let transposed = transposed.as_table();
-            for (b, &row_image) in fold.row_images.iter().enumerate() {
-                let leafs = &mut leafs[b * columns..(b + 1) * columns];
-                for (leaf, bit) in leafs.iter_mut().zip(transposed.column_bits(b)) {
-                    *leaf = if bit { row_image } else { F128::ONE };
-                }
-            }
-        }
-        Err(TransposeError::ColumnCountTooNarrow) => {
-            // Narrow tables cannot form packed columns after transposition.
-            for (b, &row_image) in fold.row_images.iter().enumerate() {
-                let leafs = &mut leafs[b * columns..(b + 1) * columns];
-                for (c, leaf) in leafs.iter_mut().enumerate() {
-                    *leaf = if table.bit(c, b) {
-                        row_image
-                    } else {
-                        F128::ONE
-                    };
-                }
-            }
-        }
-    }
-
-    GrandProductCircuit::new(leafs)
+    GrandProductCircuit::new(&fold.row_images, table)
 }
 
 /// Reduces the grand-product circuit to a factored claim on the committed bits.
@@ -76,7 +44,7 @@ pub fn gkr_reduce(
         .row_images
         .iter()
         .zip(poly::eq_table(&alfa_b))
-        .map(|(a, b)| (*a - F128::ONE) * b) // Does the later step benefit from wide mul?
+        .map(|(a, b)| (*a - F128::ONE) * b)
         .collect();
 
     let u2 = eq_table(&alfa_c);
@@ -152,8 +120,9 @@ mod order_check_ai_test {
     fn factored_claim_matches_for_narrow_tables() {
         const Q100: u128 = (1 << 100) - 15;
 
-        // Cover one column and both sides of the 128-column transpose boundary.
-        for log_columns in [0, 6, 7] {
+        // The narrowest tables the transpose takes: one block of 128 columns,
+        // then two.
+        for log_columns in [7, 8] {
             let shape = Shape::new(22 - log_columns, log_columns).unwrap();
             let params = BitZParams::<Q100>::new(shape, smallest_generator()).unwrap();
             let packed = packed_witness(&shape, |column, row| {

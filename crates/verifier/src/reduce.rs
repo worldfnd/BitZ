@@ -56,7 +56,7 @@ mod round_trip_ai_test {
     use common::{BitZParams, Fold, Shape};
     use field::gf128::smallest_generator;
     use gkr::{GrandProductCircuit, gpgkr_prove};
-    use num_traits::{ConstOne, ConstZero, identities::Zero};
+    use num_traits::{ConstOne, ConstZero};
 
     use super::*;
 
@@ -100,18 +100,7 @@ mod round_trip_ai_test {
             .map(|i| F128::from((i as u128 + 3) * 0xABCDEF12345u128 + 1))
             .collect();
 
-        // Build affine leaves directly so the verifier test needs no prover dependency.
-        let mut leafs = vec![F128::zero(); shape.columns() * shape.rows()];
-        for b in 0..shape.rows() {
-            for c in 0..shape.columns() {
-                leafs[b * shape.columns() + c] = if table.bit(c, b) {
-                    row_images[b]
-                } else {
-                    F128::ONE
-                };
-            }
-        }
-        let circuit = GrandProductCircuit::new(leafs);
+        let circuit = GrandProductCircuit::new(&row_images, &table);
         let (top_layer, witnesses) = circuit.batched_eval(shape.columns());
 
         // Fold::new evaluates top_layer at zeta to obtain GKR's initial claim.

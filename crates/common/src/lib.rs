@@ -6,6 +6,7 @@
 
 pub mod claim;
 pub mod fold;
+pub mod matrix;
 pub mod opening;
 pub mod params;
 pub mod shape;
@@ -16,10 +17,11 @@ pub use claim::{ClaimError, LinearClaim, Root};
 pub use fold::{
     Fold, FoldError, column_images, fold_column, fold_columns, reconstruct, row_images,
 };
+pub use matrix::BitMatrix;
 pub use opening::OpeningQuery;
 pub use params::{BitZParams, ParamsError, VirtualParams, VirtualParamsError};
 pub use shape::{Shape, ShapeError};
-pub use table::{BitTable, TableError, TransposeError, TransposedBitTable};
+pub use table::{BitTable, TableError};
 pub use virtual_map::{
     TransposedWeights, VirtualMap, VirtualMapError, VirtualStatement, VirtualStatementError,
 };
