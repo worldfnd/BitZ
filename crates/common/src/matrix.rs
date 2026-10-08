@@ -1,6 +1,6 @@
 //! Bit matrices in memory order, and the transpose between them.
 
-use std::{borrow::Cow, slice::Iter};
+use std::{borrow::Cow, ops::Deref, slice::Iter};
 
 /// The word `packed` is sliced into: one `F128` element. [`crate::BitTable::BITS`]
 /// is derived from this, so changing it is the only step needed to repack
@@ -73,6 +73,10 @@ impl<'a> BitMatrix<'a> {
     /// The inner, contiguous axis.
     pub fn dim2(&self) -> usize {
         1 << self.log_dim2
+    }
+
+    pub fn log_dim2(&self) -> usize {
+        self.log_dim2
     }
 
     /// The `dim2` bits of `xs[i1]`, in ascending order.
@@ -233,7 +237,7 @@ impl<'a, const S: usize> StepIter<'a, S> {
         "step size must be nonzero, at most Word::BITS, and divide Word::BITS evenly"
     );
     const MASK: Word = (1 as Word).unbounded_shl(S as u32).wrapping_sub(1);
-    fn new(iter: Iter<'a, Word>) -> Self {
+    pub fn new(iter: Iter<'a, Word>) -> Self {
         let () = Self::CHECK_SIZE;
         Self {
             elements: iter,
@@ -267,6 +271,14 @@ impl<const S: usize> Iterator for StepIter<'_, S> {
 impl<const S: usize> ExactSizeIterator for StepIter<'_, S> {
     fn len(&self) -> usize {
         (self.remaining as usize + self.elements.len() * BITS) / S
+    }
+}
+
+impl<'a> Deref for BitMatrix<'a> {
+    type Target = [Word];
+
+    fn deref(&self) -> &Self::Target {
+        &self.packed
     }
 }
 

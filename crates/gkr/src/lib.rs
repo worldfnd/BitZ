@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use common::BitTable;
+use common::{BitMatrix, BitTable, matrix::StepIter};
 use field::{F128, Wide256};
 use num_traits::{ConstOne, ConstZero};
 use rayon::prelude::*;
@@ -338,44 +338,76 @@ fn verify_layer(vs: &mut VerifierState, mut claim: Field, point: Point) -> Optio
 }
 
 // TODO: Optimise for circuits that are padded.
-pub struct GrandProductCircuit {
-    leafs: Vec<Field>,
+pub struct GrandProductCircuit<'a> {
+    matrix: BitMatrix<'static>,
+    images: &'a [F128],
 }
 
-impl GrandProductCircuit {
-    pub fn new(row_images: &[F128], bittable: &BitTable) -> Self {
+impl<'a> GrandProductCircuit<'a> {
+    pub fn new(row_images: &'a [F128], bittable: &BitTable) -> GrandProductCircuit<'a> {
         // Columns occupy the low index bits, so each product tree reduces one
         // column. Transposed so each row can be read sequentially.
-        let matrix = bittable.as_matrix().transpose();
-        let dim2 = matrix.dim2();
-        let dim = matrix.dim1() * dim2;
-        let mut leafs = F128::zeroed_vec(dim);
+        let matrix = bittable.as_matrix();
+        // c b = c q b'. Since we combine within subtrees and want to start from d-3 that is 4 bits
+        let new_dim2 = matrix.log_dim2() - 2; // should this be -2 or -4 if we want the lookup to work?
+        let matrix = matrix.reshape(new_dim2).transpose();
 
-        for (b, &row_image) in row_images.iter().enumerate() {
-            let leafs = &mut leafs[b * dim2..(b + 1) * dim2];
-            for (leaf, bit) in leafs.iter_mut().zip(matrix.bits(b)) {
-                *leaf = if bit == 1 { row_image } else { F128::ONE };
-            }
+        Self {
+            matrix: matrix,
+            images: row_images,
         }
-
-        Self::from_leafs(leafs)
-    }
-
-    fn from_leafs(mut leafs: Vec<Field>) -> Self {
-        if !leafs.is_empty() {
-            leafs.resize(leafs.len().next_power_of_two(), Field::ONE);
-        }
-        GrandProductCircuit { leafs }
     }
 
     // Returns the final evaluation and the witnesses of the intermediate layers
     // TODO: replace with leaf lookups and add multithreading
     #[tracing::instrument(name = "Evaluate grand-product circuit", level = "debug", skip_all)]
     pub fn batched_eval(self, groups: usize) -> (Vec<Field>, LayerWitnesses) {
-        // +1 to deal with the possible case that the leafs are empty. Given that otherwise the constructor padded it to a power of two, and ilog rounds it down, it becomes a noop
-        let mut witnesses = Vec::with_capacity((self.leafs.len() + 1).ilog2() as usize);
+        // Lower
+        /// `lut[s]` is the product of the inputs whose bit is set in `s`, `a`
+        /// on bit 0 through `d` on bit 3 (`0b0000 -> 1`, `0b0001 -> a`,
+        /// `0b0011 -> a*b`, ...), so a 4-bit lookup string indexes its
+        /// multilinear value directly.
+        ///
+        /// Built by doubling: entries `2^i..2^(i+1)` are entries `0..2^i`
+        /// times the `i`-th input. The first entry of each new half is the
+        /// input itself, so it is copied rather than multiplied by one,
+        /// leaving 11 multiplications -- one per entry with two or more
+        /// factors, which is the minimum.
+        fn create_lut(c: [Field; 4]) -> [Field; 16] {
+            let mut lut = [Field::ONE; 16];
+            for (i, x) in c.into_iter().enumerate() {
+                let half = 1 << i;
+                lut[half] = x;
+                for k in 1..half {
+                    lut[half + k] = lut[k] * x;
+                }
+            }
+            lut
+        }
 
-        let mut prev_eval = self.leafs;
+        let n = self.images.len();
+        // deal with the case that it isn't divisible by 4. What does that mean? Can we just put an assert. A certain invariant is passed down
+        let quart = n / 4;
+        // Each LUT takes one image from each quarter of the rows.
+        let (a, rest) = self.images.split_at(quart);
+        let (b, rest) = rest.split_at(quart);
+        let (c, d) = rest.split_at(quart);
+        let lower_lut = a
+            .iter()
+            .zip(b)
+            .zip(c)
+            .zip(d)
+            .map(|(((&a, &b), &c), &d)| create_lut([a, b, c, d]))
+            .collect();
+
+        // Upper
+        // +1 to deal with the possible case that the leafs are empty. Given that otherwise the constructor padded it to a power of two, and ilog rounds it down, it becomes a noop
+        // derive based on matrix length and subtract the last three layers
+        let mut witnesses = Vec::with_capacity((self.matrix.len() + 1).ilog2() as usize);
+
+        // split the matrix in the middle for left and right and a table is shared among c.
+        // TODO This will start with a what was created from the last LUT layer
+        let mut prev_eval = StepIter::<4>::new(self.matrix.iter()).map(|bs| lower_lut[]);
 
         // Stop when there is one output per group
         while prev_eval.len() > groups {
@@ -386,25 +418,30 @@ impl GrandProductCircuit {
             prev_eval = eval;
         }
 
-        (prev_eval, LayerWitnesses(witnesses))
+        (
+            prev_eval,
+            LayerWitnesses {
+                lower_lut: lower_lut,
+                upper_nodes: witnesses,
+            },
+        )
     }
 }
 
 // TODO: This can be a single vec that is allocated at the start.
-pub struct LayerWitnesses(Vec<Vec<Field>>);
-
-impl LayerWitnesses {
-    pub fn pop(&mut self) -> Option<Vec<Field>> {
-        self.0.pop()
-    }
+pub struct LayerWitnesses {
+    lower_lut: Vec<[Field; 16]>,
+    upper_nodes: Vec<Vec<Field>>,
 }
 
+// Can I still use into iterator or should something else be needed?
 impl IntoIterator for LayerWitnesses {
     type Item = Vec<Field>;
     type IntoIter = std::iter::Rev<std::vec::IntoIter<Vec<Field>>>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.into_iter().rev()
+        // TODO: do we add the LUT handling here? Good for an intermediate step such that the sumcheck part keeps working. They will be a lookup from
     }
 }
 
