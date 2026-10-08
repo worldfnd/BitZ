@@ -1,6 +1,6 @@
 //! Bit matrices in memory order, and the transpose between them.
 
-use std::slice::Iter;
+use std::{borrow::Cow, slice::Iter};
 
 /// The word `packed` is sliced into: one `F128` element. [`crate::BitTable::BITS`]
 /// is derived from this, so changing it is the only step needed to repack
@@ -23,30 +23,46 @@ const BITS: usize = Word::BITS as usize;
 /// shares that word with its neighbours. Only `dim2` is stored; `dim1` is
 /// whatever the words hold beyond it, so [`BitMatrix::reshape`] changes one
 /// number.
+///
+/// The words are owned or borrowed: [`crate::BitTable::as_matrix`] reads the
+/// table's words where they lie, and [`BitMatrix::transpose`] always returns
+/// an owned copy.
 #[derive(Debug, Clone)]
-pub struct BitMatrix {
-    packed: Vec<Word>,
+pub struct BitMatrix<'a> {
+    packed: Cow<'a, [Word]>,
     log_dim2: usize,
 }
 
-impl BitMatrix {
+impl<'a> BitMatrix<'a> {
     /// Wraps `packed` as `xs[dim1][2^log_dim2]`. The words must hold a power
     /// of two bits, at least `dim2` of them.
-    pub(crate) fn new(packed: Vec<Word>, log_dim2: usize) -> Self {
+    pub(crate) fn new(packed: impl Into<Cow<'a, [Word]>>, log_dim2: usize) -> Self {
+        let packed = packed.into();
         let bits = packed.len() * BITS;
         assert!(
-            bits.is_power_of_two() && log_dim2 <= bits.ilog2() as usize,
+            bits.is_power_of_two() && (1 << log_dim2) <= bits,
             "{bits} bits do not split into rows of 2^{log_dim2}"
         );
         Self { packed, log_dim2 }
     }
 
-    /// Transposes `xs[dim1][2^log_dim2]` into an owned `[dim2][dim1]`, as
-    /// [`BitMatrix::transpose`] does, reading the words where they lie.
-    pub(crate) fn transposed(xs: &[Word], log_dim2: usize) -> Self {
-        let dim2 = 1 << log_dim2;
-        let dim1 = xs.len() * BITS / dim2;
-        Self::new(bit_transpose(xs, dim1, dim2), dim1.ilog2() as usize)
+    /// Swaps the axes, returning an owned copy: bit `(i2, i1)` of the result
+    /// is bit `(i1, i2)` of `self` for every `i1` and `i2`.
+    ///
+    /// # Constraints
+    ///
+    /// - **Both axes**: at least `128`, since `bit_transpose` moves whole
+    ///   `128 x 128` blocks. Its doc comment says where a version for a
+    ///   shorter `dim1` lives.
+    /// - **Allocation**: always a full out-of-place copy -- a fresh owned
+    ///   buffer the same size as the packed words (up to 4 GiB at `m = 35`),
+    ///   whether `self` owned or borrowed them.
+    /// - **Involution**: transposing the result returns the original bits.
+    pub fn transpose(&self) -> BitMatrix<'static> {
+        let (dim1, dim2) = (self.dim1(), self.dim2());
+        // `dim1` is a power of two, so its trailing zeros are its log.
+        let log_dim1 = dim1.trailing_zeros() as usize;
+        BitMatrix::new(bit_transpose(&self.packed, dim1, dim2), log_dim1)
     }
 
     /// The outer, strided axis.
@@ -59,21 +75,12 @@ impl BitMatrix {
         1 << self.log_dim2
     }
 
-    /// The bit `xs[i1][i2]`.
-    pub fn bit(&self, i1: usize, i2: usize) -> bool {
-        debug_assert!(i1 < self.dim1(), "i1 {i1} is outside dim1");
-        debug_assert!(i2 < self.dim2(), "i2 {i2} is outside dim2");
-
-        let index = (i1 << self.log_dim2) | i2;
-        (self.packed[index / BITS] >> (index % BITS)) & 1 == 1
-    }
-
     /// The `dim2` bits of `xs[i1]`, in ascending order.
     ///
     /// # Panics
     ///
     /// If `dim2` is below `128`: `xs[i1]` then shares a word with its
-    /// neighbours, which only [`BitMatrix::bit`] reads.
+    /// neighbours.
     pub fn bits(&self, i1: usize) -> BitsIter<'_> {
         assert!(
             self.dim2() >= BITS,
@@ -84,26 +91,6 @@ impl BitMatrix {
         BitsIter::new(self.packed[i1 * words..(i1 + 1) * words].iter())
     }
 
-    /// Swaps the axes, returning an owned copy: `result.bit(i2, i1) ==
-    /// self.bit(i1, i2)` for every `i1` and `i2`.
-    ///
-    /// Built for callers that must walk the strided axis: in place that is a
-    /// scatter, one `bit()` call and cache miss per bit. Transposing once up
-    /// front turns it into the sequential access [`BitMatrix::bits`] gives.
-    ///
-    /// # Constraints
-    ///
-    /// - **Both axes**: at least `128`, since `bit_transpose` moves whole
-    ///   `128 x 128` blocks. Its doc comment says where a version for a
-    ///   shorter `dim1` lives.
-    /// - **Allocation**: always a full out-of-place copy -- a fresh buffer
-    ///   the same size as the packed words (up to 4 GiB at `m = 35`), never
-    ///   a view over the original.
-    /// - **Involution**: transposing the result returns the original bits.
-    pub fn transpose(&self) -> BitMatrix {
-        Self::transposed(&self.packed, self.log_dim2)
-    }
-
     /// The same words read as `xs[dim1][2^log_dim2]`. No bit moves: bit
     /// `(i1 << log_dim2) | i2` stays where it is, only the split between
     /// `dim1` and `dim2` changes. `log_dim2` is at most the words' total
@@ -112,9 +99,9 @@ impl BitMatrix {
         Self::new(self.packed, log_dim2)
     }
 
-    /// Unwraps the packed bits.
+    /// Unwraps the packed bits, copying them if they were borrowed.
     pub fn into_packed(self) -> Vec<Word> {
-        self.packed
+        self.packed.into_owned()
     }
 }
 
@@ -168,8 +155,7 @@ fn bit_transpose(xs: &[Word], dim1: usize, dim2: usize) -> Vec<Word> {
 /// The recursive-doubling bit-matrix transpose (Hacker's Delight, 2nd ed.,
 /// §7-3), generalized from its usual 64x64 form to the 128-bit lane width
 /// `F128` packs bits into. `O(n log n)` word operations rather than the
-/// `O(n^2)` bit-at-a-time approach `BitMatrix::bit` would need to do the same
-/// work.
+/// `O(n^2)` of moving one bit at a time.
 fn transpose_bit_block(a: &mut [Word; BITS]) {
     let mut j = BITS / 2;
     let mut mask: Word = (1 << j) - 1;
@@ -202,7 +188,7 @@ fn transpose_reference<const GS: usize>(tt: &[Word]) -> Vec<Word> {
     'outer: loop {
         for s in &mut segments {
             let Some(b) = s.next() else { break 'outer };
-            // LSB first, like `bit()` and `StepIter`.
+            // LSB first, like `StepIter`.
             word |= b << offset;
             offset += 1;
             if offset == BITS {
@@ -294,11 +280,21 @@ mod tests {
     }
 
     /// A pseudo-random `xs[2^log_dim1][2^log_dim2]`.
-    fn pseudo_random_matrix(log_dim1: usize, log_dim2: usize) -> BitMatrix {
-        let packed = (0..(1 << (log_dim1 + log_dim2)) / BITS)
+    fn pseudo_random_matrix(log_dim1: usize, log_dim2: usize) -> BitMatrix<'static> {
+        let packed: Vec<Word> = (0..(1 << (log_dim1 + log_dim2)) / BITS)
             .map(pseudo_random_word)
             .collect();
         BitMatrix::new(packed, log_dim2)
+    }
+
+    /// The bit `xs[i1][i2]`, read on its own: the oracle the word-level
+    /// reads and the transpose are checked against.
+    fn bit(matrix: &BitMatrix, i1: usize, i2: usize) -> bool {
+        assert!(i1 < matrix.dim1(), "i1 {i1} is outside dim1");
+        assert!(i2 < matrix.dim2(), "i2 {i2} is outside dim2");
+
+        let index = (i1 << matrix.log_dim2) | i2;
+        (matrix.packed[index / BITS] >> (index % BITS)) & 1 == 1
     }
 
     #[test]
@@ -311,7 +307,7 @@ mod tests {
 
         for i1 in 0..matrix.dim1() {
             for i2 in 0..matrix.dim2() {
-                assert_eq!(matrix.bit(i1, i2), (i1, i2) == (1, 130), "xs[{i1}][{i2}]");
+                assert_eq!(bit(&matrix, i1, i2), (i1, i2) == (1, 130), "xs[{i1}][{i2}]");
             }
         }
     }
@@ -326,7 +322,8 @@ mod tests {
                 let iter = matrix.bits(i1);
                 assert_eq!(iter.len(), matrix.dim2());
                 let bits: Vec<bool> = iter.map(|b| b == 1).collect();
-                let expected: Vec<bool> = (0..matrix.dim2()).map(|i2| matrix.bit(i1, i2)).collect();
+                let expected: Vec<bool> =
+                    (0..matrix.dim2()).map(|i2| bit(&matrix, i1, i2)).collect();
                 assert_eq!(bits, expected, "log_dim2 {log_dim2}, i1 {i1}");
             }
         }
@@ -390,8 +387,8 @@ mod tests {
         for i1 in 0..matrix.dim1() {
             for i2 in 0..matrix.dim2() {
                 assert_eq!(
-                    transposed.bit(i2, i1),
-                    matrix.bit(i1, i2),
+                    bit(&transposed, i2, i1),
+                    bit(&matrix, i1, i2),
                     "xs[{i1}][{i2}] vs its transpose"
                 );
             }
@@ -421,8 +418,12 @@ mod tests {
 
             for index in 0..1 << log_bits {
                 assert_eq!(
-                    reshaped.bit(index >> log_dim2, index & (reshaped.dim2() - 1)),
-                    matrix.bit(index >> TRANSPOSE_LOG_DIM2, index & (matrix.dim2() - 1)),
+                    bit(&reshaped, index >> log_dim2, index & (reshaped.dim2() - 1)),
+                    bit(
+                        &matrix,
+                        index >> TRANSPOSE_LOG_DIM2,
+                        index & (matrix.dim2() - 1)
+                    ),
                     "log_dim2 {log_dim2}, bit {index}"
                 );
             }

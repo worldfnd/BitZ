@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use common::BitMatrix;
+use common::BitTable;
 use field::{F128, Wide256};
 use num_traits::{ConstOne, ConstZero};
 use rayon::prelude::*;
@@ -343,7 +343,10 @@ pub struct GrandProductCircuit {
 }
 
 impl GrandProductCircuit {
-    pub fn new(row_images: &[F128], matrix: BitMatrix) -> Self {
+    pub fn new(row_images: &[F128], bittable: &BitTable) -> Self {
+        // Columns occupy the low index bits, so each product tree reduces one
+        // column. Transposed so each row can be read sequentially.
+        let matrix = bittable.as_matrix().transpose();
         let dim2 = matrix.dim2();
         let dim = matrix.dim1() * dim2;
         let mut leafs = F128::zeroed_vec(dim);

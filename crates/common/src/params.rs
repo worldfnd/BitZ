@@ -11,10 +11,10 @@ pub enum ParamsError {
     /// Fewer than `128` columns (`s < 7`).
     ///
     /// Not a protocol bound: it flows up from the prover's transpose. The
-    /// reduction reads the GKR leaves row by row through
-    /// [`BitTable::transpose`], where each transposed row holds one bit per
-    /// column, and `bit_transpose` in `crates/common/src/matrix.rs` only
-    /// moves whole `128 x 128` blocks. Teaching it rows shorter than a word
+    /// reduction reads the GKR leaves row by row through the
+    /// [`crate::BitMatrix::transpose`] of [`BitTable::as_matrix`], where each
+    /// transposed row holds one bit per column, and `bit_transpose` in
+    /// `crates/common/src/matrix.rs` only moves whole `128 x 128` blocks. Teaching it rows shorter than a word
     /// lifts this gate; commit 336e8097225aca4f8146f35594740b0e5054d839 has
     /// that version.
     ColumnCountTooNarrow,

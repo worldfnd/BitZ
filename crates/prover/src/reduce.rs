@@ -15,12 +15,7 @@ use transcript::ProverState;
 #[inline(never)]
 #[tracing::instrument(name = "Build grand-product circuit", level = "debug", skip_all)]
 fn init_circuit(table: &BitTable, fold: &Fold) -> GrandProductCircuit {
-    // TODO optimisation: Handle the leafs and the two layers above it lazily.
-    // Columns occupy the low index bits, so each product tree reduces one column.
-    // Transposed so each row can be read sequentially.
-    let transposed = table.transpose();
-
-    GrandProductCircuit::new(&fold.row_images, transposed)
+    GrandProductCircuit::new(&fold.row_images, table)
 }
 
 /// Reduces the grand-product circuit to a factored claim on the committed bits.

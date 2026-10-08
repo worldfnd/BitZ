@@ -80,23 +80,11 @@ impl<'a> BitTable<'a> {
         &self.packed[column * elements..(column + 1) * elements]
     }
 
-    /// Swaps rows and columns into an owned [`BitMatrix`] with `dim1` the
-    /// rows and `dim2` the columns: `result.bit(b, c) == self.bit(c, b)`.
-    ///
-    /// Built for callers like a leaf construction that must walk the table
-    /// row by row: the packing is column major, so a row-major walk over the
-    /// table is a scatter, one `bit()` call and cache miss per cell. After
-    /// the transpose each row is contiguous, read by [`BitMatrix::bits`].
-    ///
-    /// # Panics
-    ///
-    /// If the table has fewer than `128` columns (`s < 7`): see
-    /// [`BitMatrix::transpose`], which needs both axes at least `128`. The
-    /// table's own `t >= 7` covers the rows, and
-    /// [`crate::ParamsError::ColumnCountTooNarrow`] keeps such shapes away
-    /// from the reduction.
-    pub fn transpose(&self) -> BitMatrix {
-        BitMatrix::transposed(self.packed, self.shape.log_rows())
+    /// The table as a [`BitMatrix`] with `dim1` the columns and `dim2` the
+    /// rows, borrowing the packed words: bit `(c, b)` of the result is
+    /// `self.bit(c, b)`. No bit moves.
+    pub fn as_matrix(&self) -> BitMatrix<'a> {
+        BitMatrix::new(self.packed, self.shape.log_rows())
     }
 }
 
@@ -213,6 +201,27 @@ mod tests {
         }
     }
 
+    /// The matrix has the table's columns along `dim1`, each one contiguous.
+    #[test]
+    fn the_matrix_has_the_columns_contiguous() {
+        let shape = small_shape();
+        let set = [(0, 0), (127, 0), (64, 3), (5, 9), (1, shape.columns() - 1)];
+        let packed = with_bits(&shape, &set);
+        let table = BitTable::new(shape, bytemuck::cast_slice(&packed)).unwrap();
+
+        let matrix = table.as_matrix();
+        assert_eq!(matrix.dim1(), shape.columns());
+        assert_eq!(matrix.dim2(), shape.rows());
+
+        for column in [0, 3, 9, shape.columns() - 1] {
+            let bits: Vec<bool> = matrix.bits(column).map(|b| b == 1).collect();
+            let expected: Vec<bool> = (0..shape.rows())
+                .map(|row| table.bit(column, row))
+                .collect();
+            assert_eq!(bits, expected, "column {column}");
+        }
+    }
+
     /// The transpose has the table's rows along `dim1`, each one contiguous.
     #[test]
     fn the_transpose_has_the_rows_contiguous() {
@@ -221,7 +230,7 @@ mod tests {
         let packed = with_bits(&shape, &set);
         let table = BitTable::new(shape, bytemuck::cast_slice(&packed)).unwrap();
 
-        let transposed = table.transpose();
+        let transposed = table.as_matrix().transpose();
         assert_eq!(transposed.dim1(), shape.rows());
         assert_eq!(transposed.dim2(), shape.columns());
 
@@ -244,6 +253,6 @@ mod tests {
         let packed = vec![F128::ZERO; (1 << shape.log_bits()) / PACKED_BITS];
         let table = BitTable::new(shape, bytemuck::cast_slice(&packed)).unwrap();
 
-        table.transpose();
+        table.as_matrix().transpose();
     }
 }
