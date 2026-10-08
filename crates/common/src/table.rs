@@ -167,7 +167,7 @@ mod tests {
         for (index, element) in packed.iter().enumerate() {
             let column = index / groups_per_column;
             let i_hi = index % groups_per_column;
-            let bits = u128::from(element.lo) | (u128::from(element.hi) << 64);
+            let bits = element.to_u128();
             for v in 0..PACKED_BITS {
                 assert_eq!(
                     (bits >> v) & 1 == 1,

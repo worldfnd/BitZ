@@ -53,30 +53,32 @@ pub fn verify_2kb_message_circuit<CS: Circuit>(
 
 #[cfg(test)]
 mod tests {
-    use num_bigint::{BigInt, BigUint, Sign};
-    use num_traits::{One, Zero};
-
     use super::*;
     use crate::matrix_products::StoredInteger;
     use crate::stats::{Dummy, LeanStats, Stats};
     use crate::witgen::ProductWitgen;
+    use num_traits::{One, Zero};
 
-    fn from_hex(value: &[u8]) -> BigUint {
-        BigUint::parse_bytes(value, 16).unwrap()
+    type S = num_bigint::BigUint;
+    type R = num_bigint::BigInt;
+
+    fn from_hex(value: &[u8]) -> S {
+        S::parse_bytes(value, 16).unwrap()
     }
 
-    fn inverse(value: &BigUint, modulus: &BigUint) -> BigUint {
-        let mut t = BigInt::zero();
-        let mut new_t = BigInt::one();
-        let mut r = BigInt::from(modulus.clone());
-        let mut new_r = BigInt::from(value.clone());
+    fn inverse(value: &S, modulus: &S) -> S {
+        use num_bigint::Sign;
+        let mut t = R::zero();
+        let mut new_t = R::one();
+        let mut r = R::from(modulus.clone());
+        let mut new_r = R::from(value.clone());
         while !new_r.is_zero() {
             let quotient = &r / &new_r;
             (t, new_t) = (new_t.clone(), t - &quotient * new_t);
             (r, new_r) = (new_r.clone(), r - quotient * new_r);
         }
-        assert_eq!(r, BigInt::one());
-        let modulus = BigInt::from(modulus.clone());
+        assert_eq!(r, R::one());
+        let modulus = R::from(modulus.clone());
         let mut t = t % &modulus;
         if t.sign() == Sign::Minus {
             t += modulus;
@@ -112,13 +114,13 @@ mod tests {
         bits.try_into().unwrap()
     }
 
-    fn stored_bigint(value: &StoredInteger) -> BigInt {
+    fn stored_bigint(value: &StoredInteger) -> R {
         let bytes = value
             .words()
             .iter()
             .flat_map(|word| word.to_le_bytes())
             .collect::<Vec<_>>();
-        BigInt::from_signed_bytes_le(&bytes)
+        R::from_signed_bytes_le(&bytes)
     }
 
     #[test]

@@ -6,52 +6,38 @@
 //! reduces those vectors modulo a runtime modulus. Large batches use Rayon;
 //! small batches stay sequential to avoid scheduling overhead.
 
-use std::array;
-use std::cmp::Ordering;
-
-use num_bigint::{BigInt, BigUint, Sign};
+use crate::witgen::Z as Integer;
+use crate::{Bits, IntoWords};
 use num_traits::{One, Zero};
 use rayon::prelude::*;
-
-use crate::witgen::Z as Integer;
+use std::cmp::Ordering;
 
 /// A runtime modulus with a compile-time limb count.
 #[derive(Debug, Eq, PartialEq)]
 pub struct RuntimeModulus<const PRIME_LIMBS: usize> {
-    modulus: [u64; PRIME_LIMBS],
+    /// The runtime modulus in canonical little-endian limbs.
+    words: [u64; PRIME_LIMBS],
 }
 
 impl<const PRIME_LIMBS: usize> RuntimeModulus<PRIME_LIMBS> {
     /// Validates and stores a runtime modulus.
-    pub fn new(modulus: BigUint) -> Result<Self, &'static str> {
+    pub fn new<S: One + PartialOrd + Bits + IntoWords>(modulus: S) -> Result<Self, &'static str> {
         if PRIME_LIMBS == 0 {
             return Err("a runtime field needs at least one limb");
         }
-        if modulus <= BigUint::one() {
+        if modulus <= S::one() {
             return Err("the modulus must be greater than one");
         }
         if modulus.bits() > (PRIME_LIMBS as u64) * 64 {
             return Err("the modulus does not fit the selected limb count");
         }
         Ok(Self {
-            modulus: biguint_words(&modulus),
+            words: modulus.into_words(),
         })
     }
 
-    /// The runtime modulus in canonical little-endian limbs.
     pub const fn modulus_words(&self) -> &[u64; PRIME_LIMBS] {
-        &self.modulus
-    }
-
-    /// Converts the modulus back to a `BigUint`.
-    pub fn modulus(&self) -> BigUint {
-        BigUint::from_bytes_le(
-            &self
-                .modulus
-                .iter()
-                .flat_map(|word| word.to_le_bytes())
-                .collect::<Vec<_>>(),
-        )
+        &self.words
     }
 
     pub(crate) fn reduce(&self, value: &StoredInteger) -> [u64; PRIME_LIMBS] {
@@ -59,8 +45,8 @@ impl<const PRIME_LIMBS: usize> RuntimeModulus<PRIME_LIMBS> {
             return [0; PRIME_LIMBS];
         }
 
-        if PRIME_LIMBS == 2 && self.modulus[1] >> 63 != 0 {
-            let modulus = [self.modulus[0], self.modulus[1]];
+        if PRIME_LIMBS == 2 && self.words[1] >> 63 != 0 {
+            let modulus = [self.words[0], self.words[1]];
             let reduced = reduce_normalized_2(&value.words, modulus);
             let reduced = if value.is_negative() {
                 // The stored words are x + 2^(64k), where x is negative and
@@ -94,15 +80,15 @@ impl<const PRIME_LIMBS: usize> RuntimeModulus<PRIME_LIMBS> {
         one[0] = 1;
         for &word in words.iter().rev() {
             for bit in (0..64).rev() {
-                reduced = add_mod_words(reduced, &reduced, &self.modulus);
+                reduced = add_mod_words(reduced, &reduced, &self.words);
                 if word >> bit & 1 == 1 {
-                    reduced = add_mod_words(reduced, &one, &self.modulus);
+                    reduced = add_mod_words(reduced, &one, &self.words);
                 }
             }
         }
 
         if negative && reduced.iter().any(|word| *word != 0) {
-            subtract_words(self.modulus, &reduced).0
+            subtract_words(self.words, &reduced).0
         } else {
             reduced
         }
@@ -198,11 +184,6 @@ fn twos_complement_magnitude(words: &[u64]) -> Vec<u64> {
         magnitude.pop();
     }
     magnitude
-}
-
-fn biguint_words<const LIMBS: usize>(value: &BigUint) -> [u64; LIMBS] {
-    let digits = value.to_u64_digits();
-    array::from_fn(|index| digits.get(index).copied().unwrap_or(0))
 }
 
 fn compare_words<const LIMBS: usize>(left: &[u64; LIMBS], right: &[u64; LIMBS]) -> Ordering {
@@ -301,8 +282,26 @@ pub struct StoredInteger {
 }
 
 impl StoredInteger {
+    /// Normalized little-endian two's-complement words; zero is empty.
+    pub fn words(&self) -> &[u64] {
+        &self.words
+    }
+
+    /// Whether this integer is exactly zero.
+    pub fn is_zero(&self) -> bool {
+        self.words.is_empty()
+    }
+
+    /// Whether this integer is negative.
+    pub fn is_negative(&self) -> bool {
+        self.words.last().is_some_and(|word| word >> 63 == 1)
+    }
+}
+
+impl From<&num_bigint::BigInt> for StoredInteger {
     /// Stores an arbitrary-precision integer as normalized two's-complement limbs.
-    pub(crate) fn from_bigint(value: &BigInt) -> Self {
+    fn from(value: &num_bigint::BigInt) -> Self {
+        use num_bigint::{BigUint, Sign};
         if value.is_zero() {
             return Self {
                 words: Box::default(),
@@ -340,9 +339,11 @@ impl StoredInteger {
             words: magnitude.into_boxed_slice(),
         }
     }
+}
 
+impl<const LIMBS: usize> From<&Integer<LIMBS>> for StoredInteger {
     /// Stores a gadget-local fixed integer without changing its value.
-    pub fn from_fixed<const LIMBS: usize>(value: Integer<LIMBS>) -> Self {
+    fn from(value: &Integer<LIMBS>) -> Self {
         if value.is_zero() {
             return Self {
                 words: Box::default(),
@@ -364,21 +365,6 @@ impl StoredInteger {
             words: words[..len].into(),
         }
     }
-
-    /// Normalized little-endian two's-complement words; zero is empty.
-    pub fn words(&self) -> &[u64] {
-        &self.words
-    }
-
-    /// Whether this integer is exactly zero.
-    pub fn is_zero(&self) -> bool {
-        self.words.is_empty()
-    }
-
-    /// Whether this integer is negative.
-    pub fn is_negative(&self) -> bool {
-        self.words.last().is_some_and(|word| word >> 63 == 1)
-    }
 }
 
 /// Dense exact integer `A(Mw)`, `B(Mw)`, and `C(Mw)` vectors.
@@ -397,9 +383,9 @@ impl IntegerProducts {
         b: Integer<LIMBS>,
         c: Integer<LIMBS>,
     ) {
-        self.a_mw.push(StoredInteger::from_fixed(a));
-        self.b_mw.push(StoredInteger::from_fixed(b));
-        self.c_mw.push(StoredInteger::from_fixed(c));
+        self.a_mw.push(StoredInteger::from(&a));
+        self.b_mw.push(StoredInteger::from(&b));
+        self.c_mw.push(StoredInteger::from(&c));
     }
 
     /// Reduces every materialized element modulo `modulus`.
@@ -437,24 +423,25 @@ fn reduce_vector<const PRIME_LIMBS: usize>(
 
 #[cfg(test)]
 mod tests {
-    use num_bigint::BigInt;
-    use num_traits::Signed;
-
     use super::*;
     use crate::constraints::{ConstraintGenerator, ConstraintMatrices, SparseRow};
     use crate::sha256::{SHA256_2KB_MESSAGE_BITS, SHA256_2KB_WITNESS_BITS, sha256_2kb_circuit};
     use crate::witgen::{PackedWitness, ProductWitgen};
+    use num_traits::Signed;
 
-    fn stored_bigint(value: &StoredInteger) -> BigInt {
+    type S = num_bigint::BigUint;
+    type R = num_bigint::BigInt;
+
+    fn stored_ring(value: &StoredInteger) -> R {
         let bytes = value
             .words()
             .iter()
             .flat_map(|word| word.to_le_bytes())
             .collect::<Vec<_>>();
-        BigInt::from_signed_bytes_le(&bytes)
+        R::from_signed_bytes_le(&bytes)
     }
 
-    fn direct_row(row: &SparseRow<BigInt>, integer_witness: &PackedWitness) -> BigInt {
+    fn direct_row(row: &SparseRow<R>, integer_witness: &PackedWitness) -> R {
         row.entries()
             .iter()
             .filter(|(column, _)| integer_witness.bit(*column))
@@ -462,21 +449,21 @@ mod tests {
             .sum()
     }
 
-    fn reduce_bigint<const P: usize>(value: BigInt, modulus: &BigUint) -> [u64; P] {
-        let modulus = BigInt::from(modulus.clone());
+    fn reduce_ring<const P: usize>(value: R, modulus: &S) -> [u64; P] {
+        let modulus = R::from(modulus.clone());
         let mut reduced = value % &modulus;
         if reduced.is_negative() {
             reduced += &modulus;
         }
-        biguint_words(&reduced.to_biguint().unwrap())
+        reduced.to_biguint().unwrap().into_words()
     }
 
     fn assert_products_match_direct<const P: usize>(
         exact: &IntegerProducts,
         products: &MatrixProducts<P>,
-        matrices: &ConstraintMatrices,
+        matrices: &ConstraintMatrices<R>,
         integer_witness: &PackedWitness,
-        modulus: &BigUint,
+        modulus: &S,
     ) {
         assert_eq!(exact.a_mw.len(), matrices.a.row_count());
         assert_eq!(exact.b_mw.len(), matrices.b.row_count());
@@ -490,33 +477,33 @@ mod tests {
             let expected_c = direct_row(&matrices.c.rows()[row], integer_witness);
 
             assert_eq!(
-                stored_bigint(&exact.a_mw[row]),
+                stored_ring(&exact.a_mw[row]),
                 expected_a,
                 "exact A(Mw) differs at row {row}"
             );
             assert_eq!(
-                stored_bigint(&exact.b_mw[row]),
+                stored_ring(&exact.b_mw[row]),
                 expected_b,
                 "exact B(Mw) differs at row {row}"
             );
             assert_eq!(
-                stored_bigint(&exact.c_mw[row]),
+                stored_ring(&exact.c_mw[row]),
                 expected_c,
                 "exact C(Mw) differs at row {row}"
             );
             assert_eq!(
                 products.a_mw.get(row),
-                reduce_bigint(expected_a, modulus),
+                reduce_ring(expected_a, modulus),
                 "A(Mw) differs at row {row}"
             );
             assert_eq!(
                 products.b_mw.get(row),
-                reduce_bigint(expected_b, modulus),
+                reduce_ring(expected_b, modulus),
                 "B(Mw) differs at row {row}"
             );
             assert_eq!(
                 products.c_mw.get(row),
-                reduce_bigint(expected_c, modulus),
+                reduce_ring(expected_c, modulus),
                 "C(Mw) differs at row {row}"
             );
         }
@@ -524,42 +511,42 @@ mod tests {
 
     #[test]
     fn signed_stored_integers_reduce_correctly() {
-        let modulus = (BigUint::one() << 128_usize) - BigUint::from(159_u64);
+        let modulus = (S::one() << 128_usize) - S::from(159_u64);
         let runtime_modulus = RuntimeModulus::<2>::new(modulus.clone()).unwrap();
 
         for value in [0_i128, 1, 7, -7, i128::from(i64::MIN)] {
-            let stored = StoredInteger::from_fixed(Integer::<2>::from(value));
-            let mut expected = BigInt::from(value) % BigInt::from(modulus.clone());
+            let stored = StoredInteger::from(&Integer::<2>::from(value));
+            let mut expected = R::from(value) % R::from(modulus.clone());
             if expected.is_negative() {
-                expected += BigInt::from(modulus.clone());
+                expected += R::from(modulus.clone());
             }
             assert_eq!(
                 runtime_modulus.reduce(&stored),
-                biguint_words::<2>(&expected.to_biguint().unwrap())
+                expected.to_biguint().unwrap().into_words()
             );
         }
     }
 
     #[test]
     fn arbitrary_bigints_round_trip_through_stored_integers() {
-        let boundary = BigInt::one() << 128_usize;
-        let wide = &boundary + BigInt::from(7_u8);
+        let boundary = R::one() << 128_usize;
+        let wide = &boundary + R::from(7_u8);
         for value in [
-            BigInt::zero(),
-            BigInt::one(),
-            -BigInt::one(),
-            BigInt::one() << 63_usize,
-            -(BigInt::one() << 63_usize),
+            R::zero(),
+            R::one(),
+            -R::one(),
+            R::one() << 63_usize,
+            -(R::one() << 63_usize),
             wide.clone(),
             -wide,
         ] {
-            assert_eq!(stored_bigint(&StoredInteger::from_bigint(&value)), value);
+            assert_eq!(stored_ring(&StoredInteger::from(&value)), value);
         }
     }
 
     #[test]
     fn normalized_two_limb_reduction_matches_bigint_for_wide_values() {
-        let modulus = (BigUint::one() << 128_usize) - BigUint::from(159_u64);
+        let modulus = (S::one() << 128_usize) - S::from(159_u64);
         let runtime_modulus = RuntimeModulus::<2>::new(modulus.clone()).unwrap();
         let mut state = 0x4d59_5df4_d0f3_3173_u64;
         for index in 0..1_000 {
@@ -578,19 +565,12 @@ mod tests {
             if index % 2 != 0 {
                 integer = -integer;
             }
-            let stored = StoredInteger::from_fixed(integer);
+            let stored = StoredInteger::from(&integer);
             assert_eq!(
                 runtime_modulus.reduce(&stored),
-                reduce_bigint(stored_bigint(&stored), &modulus)
+                reduce_ring(stored_ring(&stored), &modulus)
             );
         }
-    }
-
-    #[test]
-    fn modulus_round_trips() {
-        let modulus = (BigUint::one() << 128_usize) - BigUint::from(159_u64);
-        let runtime_modulus = RuntimeModulus::<2>::new(modulus.clone()).unwrap();
-        assert_eq!(runtime_modulus.modulus(), modulus);
     }
 
     #[test]
@@ -612,7 +592,7 @@ mod tests {
         let _ = sha256_2kb_circuit(&mut generator, &symbolic_inputs);
         let matrices = generator.into_matrices();
 
-        let modulus = (BigUint::one() << 128_usize) - BigUint::from(159_u64);
+        let modulus = (S::one() << 128_usize) - S::from(159_u64);
         let runtime_modulus = RuntimeModulus::<2>::new(modulus.clone()).unwrap();
         let products = witgen.products().reduce_parallel(&runtime_modulus);
         assert_products_match_direct(

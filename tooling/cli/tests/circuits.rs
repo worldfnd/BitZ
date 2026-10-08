@@ -6,13 +6,14 @@ use circuit::{
     constraints::ConstraintGenerator,
     sha256::{ABC_BLOCK, ABC_DIGEST, INITIAL_STATE},
 };
+use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive};
 
 #[test]
 fn sha_constraint_residuals_cannot_wrap_modulo_q100() {
     for circuit in BuiltinCircuit::ALL {
         let statement = CircuitInstance::random(circuit, None, None).unwrap();
-        let mut generator = ConstraintGenerator::new(statement.input_bits());
+        let mut generator = ConstraintGenerator::<BigInt>::new(statement.input_bits());
         let inputs: Vec<_> = (0..statement.input_bits())
             .map(|i| generator.input(i))
             .collect();
@@ -53,7 +54,7 @@ fn supported_sha_circuits_prove_and_verify() {
         let system = CircuitProofSystem::new(statement).unwrap();
         let witness = system.witness(&inputs).unwrap();
         let data = system.commit(&witness).unwrap();
-        let proof = system.prove(witness, &data).unwrap();
+        let proof = system.prove(witness, data).unwrap();
         system.verify(&proof).unwrap();
     }
 }
@@ -76,7 +77,7 @@ fn sha_compression_matches_abc_and_binds_public_values() {
     let system = CircuitProofSystem::new(statement.clone()).unwrap();
     let witness = system.witness(&inputs).unwrap();
     let data = system.commit(&witness).unwrap();
-    let proof = system.prove(witness, &data).unwrap();
+    let proof = system.prove(witness, data).unwrap();
     CircuitProofSystem::new(statement.clone())
         .unwrap()
         .verify(&proof)

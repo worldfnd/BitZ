@@ -42,8 +42,8 @@ pub struct VirtualWitness<'a> {
 impl<const Q: u128> BitZProver<Q> {
     /// Proves the caller's linear claim about the committed bits.
     ///
-    /// The caller commits first and passes what that produced: the `data` the
-    /// opening reads and the packed witness itself. The root is read back off
+    /// Call `Pcs::commit` on this transcript, then pass its retained
+    /// `data` and the packed witness. The root is read back off
     /// `data` rather than passed alongside it, so the two cannot disagree.
     /// `pcs` must be the scheme that committed, or the opening will not verify.
     ///
@@ -82,8 +82,8 @@ impl<const Q: u128> BitZProver<Q> {
 
     /// Proves a claim on `h = M (1 || f)` against the commitment to `f`.
     ///
-    /// Build the setup from `statement.params().claim()`. Commit `witness.committed_bits`
-    /// with `pcs` under the committed shape and pass its returned `data`. GKR reduces
+    /// Build the setup from `statement.params().claim()`. Use `Pcs::commit`
+    /// on `witness.committed_bits` and this transcript, then pass its `data`. GKR reduces
     /// the input claim to an inner product on padded virtual bits. This method
     /// transposes its coefficients before PCS opens the committed bits.
     ///
@@ -132,7 +132,7 @@ impl<const Q: u128> BitZProver<Q> {
             .transpose_query(query)
             .map_err(ProveError::VirtualMap)?;
 
-        // Step 6: run PCS sumcheck, ring switching, and opening on committed bits.
+        // Step 6: the post-GKR sumcheck, ring switching, and opening on committed bits.
         // Bind the PCS parameters and transposed query before its challenges.
         pcs.prove_lin(
             data,

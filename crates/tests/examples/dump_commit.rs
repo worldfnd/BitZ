@@ -9,7 +9,7 @@ use pcs::{HashKind, LigeritoProfile, Pcs};
 use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;
 use support::{hex, write_binary, write_witness};
-use tests::packed_witness;
+use tests::{packed_witness, prover_transcript};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     const USAGE: &str = "usage: dump_commit [t [s [seed [out-file]]]]";
@@ -42,7 +42,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pcs = Pcs::new(&shape, LigeritoProfile::Fast, HashKind::Blake3)
         .map_err(|error| format!("PCS configuration failed: {error:?}"))?;
     let (root, _data) = pcs
-        .commit(&packed)
+        .commit(&packed, &mut prover_transcript())
         .map_err(|error| format!("commitment failed: {error:?}"))?;
     write_binary(out, |output| write_witness(output, &packed))?;
     let root = hex(&root.0);

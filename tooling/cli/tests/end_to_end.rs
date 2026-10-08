@@ -1,5 +1,28 @@
-use bitz_cli::end_to_end::{CircuitProofSystem, CircuitStatement, Error, OpeningPath};
+use bitz_cli::end_to_end::{CircuitProofSystem, CircuitStatement, Error, OpeningPath, Proof};
 use circuit::Circuit;
+use pcs::VerifyError;
+
+fn rejects_changed_or_missing_ood(
+    system: &CircuitProofSystem<impl CircuitStatement>,
+    proof: &Proof,
+) {
+    // These Fast-profile fixtures have zero initial grinding bits, so the first
+    // 16 transcript bytes encode the OOD evaluation.
+    let mut changed = proof.clone();
+    changed.opening.narg_string[0] ^= 1;
+    assert!(system.verify(&changed).is_err());
+
+    let mut missing = proof.clone();
+    missing.opening.narg_string.drain(..16);
+    assert!(system.verify(&missing).is_err());
+
+    let mut truncated = proof.clone();
+    truncated.opening.narg_string.truncate(15);
+    assert!(matches!(
+        system.verify(&truncated),
+        Err(Error::OodVerify(VerifyError::MalformedProof))
+    ));
+}
 
 struct PublicBit;
 
@@ -28,11 +51,12 @@ fn generic_driver_accepts_a_non_sha_circuit() {
     assert_eq!(prepared.stats().committed_bits, 2);
     let witness = prepared.witness(&[true]).unwrap();
     let data = prepared.commit(&witness).unwrap();
-    let proof = prepared.prove(witness, &data).unwrap();
+    let proof = prepared.prove(witness, data).unwrap();
     CircuitProofSystem::new(PublicBit)
         .unwrap()
         .verify(&proof)
         .unwrap();
+    rejects_changed_or_missing_ood(&prepared, &proof);
 
     let mut changed = proof.clone();
     changed.root.0[0] ^= 1;
@@ -100,11 +124,12 @@ fn nonidentity_map_uses_virtual_opening_and_checks_xor_relation() {
     assert_eq!(system.stats().committed_bits, 2);
     let witness = system.witness(&[true, false]).unwrap();
     let data = system.commit(&witness).unwrap();
-    let proof = system.prove(witness, &data).unwrap();
+    let proof = system.prove(witness, data).unwrap();
     CircuitProofSystem::new(PublicXor)
         .unwrap()
         .verify(&proof)
         .unwrap();
+    rejects_changed_or_missing_ood(&system, &proof);
     assert!(matches!(
         system.witness(&[true, true]),
         Err(Error::Unsatisfied)
