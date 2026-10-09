@@ -239,7 +239,7 @@ fn transpose_reference<const GS: usize>(tt: &[Word]) -> Vec<Word> {
         for s in &mut segments {
             let Some(b) = s.next() else { break 'outer };
             // LSB first, like `StepIter`.
-            word |= b << offset;
+            word |= Word::from(b) << offset;
             offset += 1;
             if offset == BITS {
                 out.push(word);
@@ -270,23 +270,30 @@ pub type BitsIter<'a> = StepIter<'a, 1>;
 
 /// Iterator over packed bits `S` at a time, least significant first — see
 /// [`BitMatrix::bits`].
+///
+/// Reads the words as `u64`, since no step needs more. A `u128` word was
+/// kept on the stack between steps and made the GKR's layer 3 ~25% slower.
 pub struct StepIter<'a, const S: usize> {
-    elements: std::slice::Iter<'a, Word>,
+    elements: std::slice::Iter<'a, u64>,
     /// Bits not yet emitted; the next one to emit is the LSB.
-    word: Word,
+    word: u64,
     remaining: u8,
 }
 
 impl<'a, const S: usize> StepIter<'a, S> {
     const CHECK_SIZE: () = assert!(
-        S != 0 && S <= Word::BITS as usize && (Word::BITS as usize).is_multiple_of(S),
-        "step size must be nonzero, at most Word::BITS, and divide Word::BITS evenly"
+        S != 0 && S <= u64::BITS as usize && (u64::BITS as usize).is_multiple_of(S),
+        "step size must be nonzero, at most 64, and divide 64 evenly"
     );
-    const MASK: Word = (1 as Word).unbounded_shl(S as u32).wrapping_sub(1);
+    const MASK: u64 = 1u64.unbounded_shl(S as u32).wrapping_sub(1);
     pub fn new(iter: Iter<'a, Word>) -> Self {
         let () = Self::CHECK_SIZE;
+        // On a little-endian target, bit `i` of the words is bit `i` of the
+        // `u64`s too.
+        const { assert!(cfg!(target_endian = "little")) };
+        let elements: &[u64] = bytemuck::cast_slice(iter.as_slice());
         Self {
-            elements: iter,
+            elements: elements.iter(),
             word: 0,
             remaining: 0,
         }
@@ -294,13 +301,13 @@ impl<'a, const S: usize> StepIter<'a, S> {
 }
 
 impl<const S: usize> Iterator for StepIter<'_, S> {
-    type Item = Word;
+    type Item = u64;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.remaining == 0 {
             let element = self.elements.next()?;
             self.word = *element;
-            self.remaining = Word::BITS as u8;
+            self.remaining = u64::BITS as u8;
         }
         let bitset = self.word & Self::MASK;
         self.word = self.word.unbounded_shr(S as u32);
@@ -316,7 +323,7 @@ impl<const S: usize> Iterator for StepIter<'_, S> {
 
 impl<const S: usize> ExactSizeIterator for StepIter<'_, S> {
     fn len(&self) -> usize {
-        (self.remaining as usize + self.elements.len() * BITS) / S
+        (self.remaining as usize + self.elements.len() * u64::BITS as usize) / S
     }
 }
 
