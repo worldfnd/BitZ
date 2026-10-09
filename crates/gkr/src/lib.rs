@@ -18,8 +18,8 @@ pub fn gpgkr_prove(
     ps: &mut ProverState,
     log_bits: usize,
     point: &[F128],
-    // All the intermediate witnesses + the input layer. Doesn't contain the output layer
-    witnesses: LayerWitnesses,
+    // All the intermediate witnesses + the input layer, from the top down. Doesn't contain the output layer
+    witnesses: impl IntoIterator<Item = Vec<Field>>,
 ) -> (Vec<F128>, Field) {
     // Edge cases
     // - empty witnesses -> single constant circuit -> one verifier message that permutes the proof state, but a single constant can't have an MLE
@@ -29,9 +29,9 @@ pub fn gpgkr_prove(
     let mut point = VecDeque::from(point);
 
     let mut claim = Field::ZERO;
-    let mut storage = SuffixTable::alloc_storage(log_bits);
+    let mut suffix_storage = SuffixTable::alloc_storage(log_bits);
     for wnext in witnesses.into_iter() {
-        (point, claim) = prove_layer(ps, &mut storage, point, wnext);
+        (point, claim) = prove_layer(ps, &mut suffix_storage, point, wnext);
     }
 
     let mut point = Vec::from(point);
@@ -345,21 +345,35 @@ pub struct GrandProductCircuit<'a> {
 
 impl<'a> GrandProductCircuit<'a> {
     pub fn new(row_images: &'a [F128], bittable: &BitTable) -> GrandProductCircuit<'a> {
-        // Columns occupy the low index bits, so each product tree reduces one
-        // column. Transposed so each row can be read sequentially.
+        assert_eq!(
+            row_images.len(),
+            bittable.shape().rows(),
+            "one image per row of the table"
+        );
+        // Leaf `(b << s) | c` is `row_images[b]` where `bit(c, b)` is set and
+        // one elsewhere: columns occupy the low index bits, so each product
+        // tree reduces one column, folding the row bits from the top.
+        //
+        // The bottom three layers are looked up in 16-entry tables, one per
+        // four rows, so the top two row bits are split off and moved beside
+        // the columns. After the transpose, row group `b' < rows/4` is one
+        // contiguous run, and in it the bits of rows `b'`, `b' + rows/4`,
+        // `b' + 2 rows/4` and `b' + 3 rows/4` of one column sit next to each
+        // other as a nibble: the four leaves under node `(b' << s) | c` of
+        // layer 2, columns in ascending order.
         let matrix = bittable.as_matrix();
-        // c b = c q b'. Since we combine within subtrees and want to start from d-3 that is 4 bits
-        let new_dim2 = matrix.log_dim2() - 2; // should this be -2 or -4 if we want the lookup to work?
-        let matrix = matrix.reshape(new_dim2).transpose();
+        let log_dim2 = matrix.log_dim2() - 2;
+        let matrix = matrix.reshape(log_dim2).transpose();
 
         Self {
-            matrix: matrix,
+            matrix,
             images: row_images,
         }
     }
 
-    // Returns the final evaluation and the witnesses of the intermediate layers
-    // TODO: replace with leaf lookups and add multithreading
+    /// Returns the output layer, one value per group, and the witnesses of
+    /// the layers below it.
+    // TODO: add multithreading
     #[tracing::instrument(name = "Evaluate grand-product circuit", level = "debug", skip_all)]
     pub fn batched_eval(self, groups: usize) -> (Vec<Field>, LayerWitnesses) {
         // Lower
@@ -385,14 +399,13 @@ impl<'a> GrandProductCircuit<'a> {
             lut
         }
 
-        let n = self.images.len();
-        // deal with the case that it isn't divisible by 4. What does that mean? Can we just put an assert. A certain invariant is passed down
-        let quart = n / 4;
+        // `new` checked there is one image per row, so four per row group.
+        let quart = self.matrix.dim1();
         // Each LUT takes one image from each quarter of the rows.
         let (a, rest) = self.images.split_at(quart);
         let (b, rest) = rest.split_at(quart);
         let (c, d) = rest.split_at(quart);
-        let lower_lut = a
+        let lower_lut: Vec<[Field; 16]> = a
             .iter()
             .zip(b)
             .zip(c)
@@ -400,54 +413,127 @@ impl<'a> GrandProductCircuit<'a> {
             .map(|(((&a, &b), &c), &d)| create_lut([a, b, c, d]))
             .collect();
 
+        // Layers 0 to 2 are all in the tables, so the first layer built in
+        // full is layer 3. Its node `k` multiplies layer-2 nodes `k` and
+        // `k + n/2`, each a whole nibble looked up, so the matrix and the
+        // tables split in the middle into the left and the right child.
+        let (left, right) = self.matrix.split_at(self.matrix.len() / 2);
+        let (left_luts, right_luts) = lower_lut.split_at(quart / 2);
+        let layer3: Vec<Field> = lut_nodes(left, left_luts)
+            .zip(lut_nodes(right, right_luts))
+            .map(|((l, l_bs), (r, r_bs))| l[l_bs] * r[r_bs])
+            .collect();
+        assert!(
+            groups <= layer3.len(),
+            "{groups} groups is more than the {} nodes of layer 3",
+            layer3.len()
+        );
+
         // Upper
-        // +1 to deal with the possible case that the leafs are empty. Given that otherwise the constructor padded it to a power of two, and ilog rounds it down, it becomes a noop
-        // derive based on matrix length and subtract the last three layers
-        let mut witnesses = Vec::with_capacity((self.matrix.len() + 1).ilog2() as usize);
-
-        // split the matrix in the middle for left and right and a table is shared among c.
-        // TODO This will start with a what was created from the last LUT layer
-        let mut prev_eval = StepIter::<4>::new(self.matrix.iter()).map(|bs| lower_lut[]);
-
-        // Stop when there is one output per group
-        while prev_eval.len() > groups {
-            let mid = prev_eval.len() / 2;
-            let (l, r) = prev_eval.split_at(mid);
-            let eval: Vec<Field> = l.iter().zip(r).map(|(&a, &b)| a * b).collect();
-            witnesses.push(prev_eval);
-            prev_eval = eval;
-        }
+        let (output, upper_nodes) = fold_layers(layer3, groups);
 
         (
-            prev_eval,
+            output,
             LayerWitnesses {
-                lower_lut: lower_lut,
-                upper_nodes: witnesses,
+                matrix: self.matrix,
+                lower_lut,
+                upper_nodes,
             },
         )
     }
 }
 
+/// Each layer-2 node of a run of row groups as the table of its row group and
+/// the nibble of its four leaves, in node order: node `k = (b' << s) | c`
+/// reads nibble `k`, and all `2^s` columns of row group `b'` share its table.
+/// `nibbles` and `luts` cover the same row groups.
+fn lut_nodes<'a>(
+    nibbles: &'a [u128],
+    luts: &'a [[Field; 16]],
+) -> impl ExactSizeIterator<Item = (&'a [Field; 16], usize)> {
+    let nibbles = StepIter::<4>::new(nibbles.iter());
+    // Every table serves the same run of nibbles, one per column.
+    // TODO check assembly that this isn't reloaded constantly. Or maybe it is unavoidable but might still save a shift instruction. Also might generate too much indirection.
+    let log_columns = (nibbles.len() / luts.len()).ilog2();
+    nibbles
+        .enumerate()
+        .map(move |(k, bs)| (&luts[k >> log_columns], bs as usize))
+}
+
+/// Multiplies `layer` pairwise, left half against right half, until one
+/// value per group remains. Returns that output layer and every layer before
+/// it, `layer` first.
+fn fold_layers(mut layer: Vec<Field>, groups: usize) -> (Vec<Field>, Vec<Vec<Field>>) {
+    let rounds = (layer.len() / groups).checked_ilog2().unwrap_or(0);
+    let mut witnesses = Vec::with_capacity(rounds as usize);
+
+    // Stop when there is one output per group
+    while layer.len() > groups {
+        let (l, r) = layer.split_at(layer.len() / 2);
+        let next = l.iter().zip(r).map(|(&a, &b)| a * b).collect();
+        witnesses.push(layer);
+        layer = next;
+    }
+
+    (layer, witnesses)
+}
+
+/// The layers below the output, yielded from the top down. The bottom three
+/// are kept as the tables they are looked up in, the rest in full.
 // TODO: This can be a single vec that is allocated at the start.
 pub struct LayerWitnesses {
+    /// The nibbles of the layer-2 nodes; see [`GrandProductCircuit::new`].
+    matrix: BitMatrix<'static>,
+    /// One table per row group, shared by all of its columns.
     lower_lut: Vec<[Field; 16]>,
+    /// Layer 3 and up, layer 3 first.
     upper_nodes: Vec<Vec<Field>>,
 }
 
-// Can I still use into iterator or should something else be needed?
+impl LayerWitnesses {
+    /// The leaves and layers 1 and 2, looked up in full. A node is the
+    /// product of the nibble bits its subtree covers: leaf quarter `q` is bit
+    /// `q` alone, each half of layer 1 pairs the quarters two apart, and
+    /// layer 2 takes all four.
+    fn lower_layers(&self) -> [Vec<Field>; 3] {
+        let nodes = lut_nodes(&self.matrix, &self.lower_lut);
+        let n = nodes.len();
+        let mut leaves = Field::zeroed_vec(4 * n);
+        let mut layer1 = Field::zeroed_vec(2 * n);
+        let mut layer2 = Field::zeroed_vec(n);
+
+        for (k, (lut, bs)) in nodes.enumerate() {
+            for q in 0..4 {
+                leaves[q * n + k] = lut[bs & (1 << q)];
+            }
+            layer1[k] = lut[bs & 0b0101];
+            layer1[n + k] = lut[bs & 0b1010];
+            layer2[k] = lut[bs];
+        }
+
+        [leaves, layer1, layer2]
+    }
+}
+
+// The sumcheck still reads every layer in full, so for now the bottom three
+// are rebuilt from the tables here; layer 3 and up are already in
+// `upper_nodes`.
 impl IntoIterator for LayerWitnesses {
     type Item = Vec<Field>;
     type IntoIter = std::iter::Rev<std::vec::IntoIter<Vec<Field>>>;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.0.into_iter().rev()
-        // TODO: do we add the LUT handling here? Good for an intermediate step such that the sumcheck part keeps working. They will be a lookup from
+        let mut layers = Vec::from(self.lower_layers());
+        layers.extend(self.upper_nodes);
+        layers.into_iter().rev()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use common::{BitZParams, Shape};
+    use field::gf128::smallest_generator;
     use proptest::prelude::*;
 
     fn field() -> impl Strategy<Value = Field> {
@@ -458,6 +544,16 @@ mod tests {
     /// test below checks against.
     fn product(xs: &[Field]) -> Field {
         xs.iter().fold(Field::ONE, |acc, &x| acc * x)
+    }
+
+    /// `leaves` padded with ones to a power of two, so they have an MLE. The
+    /// sumcheck tests below take any leaves, not only those a bit table
+    /// gives, so they build the layers with `fold_layers` directly.
+    fn pad(mut leaves: Vec<Field>) -> Vec<Field> {
+        if !leaves.is_empty() {
+            leaves.resize(leaves.len().next_power_of_two(), Field::ONE);
+        }
+        leaves
     }
 
     /// Proves a grand-product circuit for `leaves` batched into `2^log_groups`
@@ -474,7 +570,7 @@ mod tests {
     }
 
     proptest! {
-        // batched_eval, unbatched (groups = 1): pairwise multiplication is
+        // fold_layers, unbatched (groups = 1): pairwise multiplication is
         // associative, so folding-by-multiply any witness layer (including
         // the leaves, padded with the multiplicative identity 1) must equal
         // folding the original input. Checks every intermediate layer, not
@@ -483,18 +579,18 @@ mod tests {
         fn eval_preserves_product_across_layers(leaves in prop::collection::vec(field(), 0..12)) {
             let expected = product(&leaves);
 
-            let (top, mut witnesses) = GrandProductCircuit::from_leafs(leaves).batched_eval(1);
+            let (top, witnesses) = fold_layers(pad(leaves), 1);
 
             prop_assert_eq!(product(&top), expected);
 
-            while let Some(layer) = witnesses.pop() {
+            for layer in witnesses {
                 prop_assert_eq!(product(&layer), expected);
             }
         }
 
 
         #[test]
-        fn batched_eval_top_layer_is_interleaved_group_products(
+        fn fold_layers_top_layer_is_interleaved_group_products(
             leaves in prop::collection::vec(field(), 1..32),
             groups_log2 in 0usize..4,
         ) {
@@ -505,8 +601,7 @@ mod tests {
             let mut padded = leaves.clone();
             padded.resize(padded_len, Field::ONE);
 
-            let circuit = GrandProductCircuit::from_leafs(leaves);
-            let (top, _witnesses) = circuit.batched_eval(groups);
+            let (top, _witnesses) = fold_layers(pad(leaves), groups);
             prop_assert_eq!(top.len(), groups);
 
             for (j, &value) in top.iter().enumerate() {
@@ -566,8 +661,7 @@ mod tests {
             [Field::ZERO, Field::ONE],
             [Field::ONE, Field::ZERO],
         ] {
-            let circuit = GrandProductCircuit::from_leafs(leaves.clone());
-            let (output, witnesses) = circuit.batched_eval(4);
+            let (output, witnesses) = fold_layers(leaves.clone(), 4);
             let claim = mle(output, &point);
             let instance = (leaves.clone(), point.to_vec());
             let mut prover = transcript::build_prover("gkr-zero", &instance);
@@ -575,7 +669,7 @@ mod tests {
                 &mut prover,
                 leaves.len().ilog2() as usize,
                 &point,
-                witnesses,
+                witnesses.into_iter().rev(),
             );
             assert_eq!(terminal.1, mle(leaves.clone(), &terminal.0));
             let proof = prover.finish();
@@ -589,6 +683,52 @@ mod tests {
 
             let mut verifier = transcript::build_verifier("gkr-zero", &instance, &proof);
             assert!(gpgkr_verify(&mut verifier, claim + Field::ONE, &point, 2).is_none());
+        }
+    }
+
+    /// Small enough that `BitZParams` accepts every shape below.
+    const Q: u128 = (1 << 100) - 15;
+
+    /// The bottom three layers looked up in the tables, and every layer
+    /// above, match the circuit built one leaf at a time from the same table.
+    #[test]
+    fn lut_layers_match_the_leaf_construction() {
+        // At t = 7 and 8 the transposed row groups are shorter than a `u128`.
+        for (log_rows, log_columns) in [(7, 15), (8, 14), (9, 13), (15, 7)] {
+            let shape = Shape::new(log_rows, log_columns).unwrap();
+            let params = BitZParams::<Q>::new(shape, smallest_generator()).unwrap();
+            let packed: Vec<F128> = (0..(1u128 << shape.log_bits()) / 128)
+                .map(|i| {
+                    F128::from(i.wrapping_mul(0x2545_F491_4F6C_DD1D_9E37_79B9_7F4A_7C15) ^ 0xA5A5)
+                })
+                .collect();
+            let table = params.table(&packed).unwrap();
+            let row_images: Vec<F128> = (0..shape.rows() as u128)
+                .map(|b| F128::from((b + 1) * 0x9E37_79B9_7F4A_7C15 + 7))
+                .collect();
+
+            // Leaf `(b << s) | c`, as `GrandProductCircuit::new` describes it.
+            let mut leaves = vec![Field::ONE; 1 << shape.log_bits()];
+            for (b, &image) in row_images.iter().enumerate() {
+                for c in 0..shape.columns() {
+                    if table.bit(c, b) {
+                        leaves[(b << log_columns) | c] = image;
+                    }
+                }
+            }
+            let (expected_output, expected_layers) = fold_layers(leaves, shape.columns());
+
+            let (output, witnesses) =
+                GrandProductCircuit::new(&row_images, &table).batched_eval(shape.columns());
+            // Witnesses come top-down; the reference is bottom-up.
+            let mut layers: Vec<Vec<Field>> = witnesses.into_iter().collect();
+            layers.reverse();
+
+            assert!(output == expected_output, "output, t = {log_rows}");
+            assert_eq!(layers.len(), expected_layers.len(), "t = {log_rows}");
+            for (i, (layer, expected)) in layers.iter().zip(&expected_layers).enumerate() {
+                assert!(layer == expected, "layer {i}, t = {log_rows}");
+            }
         }
     }
 
@@ -612,13 +752,13 @@ mod tests {
     }
 
     pub fn prove(input: Vec<Field>, log_groups: usize) -> (Vec<Field>, transcript::Proof) {
-        let circuit = GrandProductCircuit::from_leafs(input);
+        let leaves = pad(input);
         // Fake hashing
-        let n = circuit.leafs.len() as u128;
+        let n = leaves.len() as u128;
 
-        let log_bits = circuit.leafs.len().max(1).ilog2() as usize;
+        let log_bits = leaves.len().max(1).ilog2() as usize;
         let groups = 1usize << log_groups;
-        let (last_value, witnesses) = circuit.batched_eval(groups);
+        let (last_value, witnesses) = fold_layers(leaves, groups);
 
         // TODO instance is a bit loose and should be replaced by PCS
         let instance = (last_value.clone(), n);
@@ -631,14 +771,14 @@ mod tests {
         let log_groups = last_value.len().max(1).ilog2();
         let point: Vec<Field> = (0..log_groups).map(|_| prover.verifier_message()).collect();
 
-        gpgkr_prove(&mut prover, log_bits, &point, witnesses);
+        gpgkr_prove(&mut prover, log_bits, &point, witnesses.into_iter().rev());
         (last_value, prover.finish())
     }
 
     pub fn verify(input: Vec<Field>, output: Vec<Field>, proof: transcript::Proof) -> bool {
-        let circuit = GrandProductCircuit::from_leafs(input);
+        let leaves = pad(input);
         // Fake hashing
-        let instance = (&output, circuit.leafs.len() as u128);
+        let instance = (&output, leaves.len() as u128);
         let mut verifier = transcript::build_verifier("gkr", &instance, &proof);
 
         let log_groups = output.len().max(1).ilog2();
@@ -647,12 +787,12 @@ mod tests {
             .collect();
         let claim = mle(output, &point);
         let log_groups = point.len() as u32;
-        let log_leafs = circuit.leafs.len().max(1).ilog2();
+        let log_leafs = leaves.len().max(1).ilog2();
         let rounds = log_leafs.saturating_sub(log_groups);
 
         match gpgkr_verify(&mut verifier, claim, &point, rounds) {
             Some((point, claim)) => {
-                let leaf_check = mle(circuit.leafs, &point);
+                let leaf_check = mle(leaves, &point);
 
                 let ok = leaf_check == claim;
 
