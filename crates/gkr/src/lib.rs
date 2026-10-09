@@ -371,11 +371,11 @@ impl<'a> GrandProductCircuit<'a> {
         }
     }
 
-    /// Returns the output layer, one value per group, and the witnesses of
-    /// the layers below it.
+    /// Returns the output layer, the product of each column of the table, and
+    /// the witnesses of the layers below it.
     // TODO: add multithreading
     #[tracing::instrument(name = "Evaluate grand-product circuit", level = "debug", skip_all)]
-    pub fn batched_eval(self, groups: usize) -> (Vec<Field>, LayerWitnesses) {
+    pub fn batched_eval(self) -> (Vec<Field>, LayerWitnesses) {
         // Lower
         /// `lut[s]` is the product of the inputs whose bit is set in `s`, `a`
         /// on bit 0 through `d` on bit 3 (`0b0000 -> 1`, `0b0001 -> a`,
@@ -405,6 +405,7 @@ impl<'a> GrandProductCircuit<'a> {
         let (a, rest) = self.images.split_at(quart);
         let (b, rest) = rest.split_at(quart);
         let (c, d) = rest.split_at(quart);
+        // LUT for the bottom three layers (0,1,2)
         let lower_lut: Vec<[Field; 16]> = a
             .iter()
             .zip(b)
@@ -417,20 +418,44 @@ impl<'a> GrandProductCircuit<'a> {
         // full is layer 3. Its node `k` multiplies layer-2 nodes `k` and
         // `k + n/2`, each a whole nibble looked up, so the matrix and the
         // tables split in the middle into the left and the right child.
-        let (left, right) = self.matrix.split_at(self.matrix.len() / 2);
+        // Read as `u64`s: on a little-endian target, bit `i` of the words is
+        // bit `i` of the `u64`s too.
+        const { assert!(cfg!(target_endian = "little")) };
+        let bitstring: &[u64] = bytemuck::cast_slice(&self.matrix[..]);
+        let (left, right) = bitstring.split_at(bitstring.len() / 2);
         let (left_luts, right_luts) = lower_lut.split_at(quart / 2);
-        let layer3: Vec<Field> = lut_nodes(left, left_luts)
-            .zip(lut_nodes(right, right_luts))
-            .map(|((l, l_bs), (r, r_bs))| l[l_bs] * r[r_bs])
-            .collect();
-        assert!(
-            groups <= layer3.len(),
-            "{groups} groups is more than the {} nodes of layer 3",
-            layer3.len()
-        );
 
+        // Each table serves one run of whole words, so a pair of tables is
+        // picked once and its nibbles are read a word at a time.
+        // A table's run is one `xs[i1]` of the matrix, a nibble per node.
+        const NIBBLES_IN_WORD: usize = u64::BITS as usize / 4;
+        let lut_words = left.len() / left_luts.len(); // This introduces a bound. StepIterator can prevent that but is more expensive than doing it this way
+
+        assert!(lut_words > 0, "each table needs at least a word of nibbles");
+        let runs = left
+            .chunks_exact(lut_words)
+            .zip(right.chunks_exact(lut_words))
+            .zip(left_luts.iter().zip(right_luts));
+
+        // Access nible
+        let nibble = |word: u64, i: usize| (word >> (4 * i)) as usize & 15;
+
+        // One node per nibble of each left table.
+        let mut layer3 = Vec::with_capacity(left_luts.len() * lut_words * NIBBLES_IN_WORD);
+        for ((l_words, r_words), (l_lut, r_lut)) in runs {
+            for (&l, &r) in l_words.iter().zip(r_words) {
+                // `extend` from a `Range` knows its length, so there is no
+                // capacity check or length update per node.
+                layer3.extend(
+                    (0..NIBBLES_IN_WORD).map(|i| l_lut[nibble(l, i)] * r_lut[nibble(r, i)]),
+                );
+            }
+        }
         // Upper
-        let (output, upper_nodes) = fold_layers(layer3, groups);
+        // A table serves one node of every product tree, so there is a tree
+        // per nibble of a table.
+        let trees = lut_words * NIBBLES_IN_WORD;
+        let (output, upper_nodes) = fold_layers(layer3, trees);
 
         (
             output,
@@ -718,8 +743,7 @@ mod tests {
             }
             let (expected_output, expected_layers) = fold_layers(leaves, shape.columns());
 
-            let (output, witnesses) =
-                GrandProductCircuit::new(&row_images, &table).batched_eval(shape.columns());
+            let (output, witnesses) = GrandProductCircuit::new(&row_images, &table).batched_eval();
             // Witnesses come top-down; the reference is bottom-up.
             let mut layers: Vec<Vec<Field>> = witnesses.into_iter().collect();
             layers.reverse();

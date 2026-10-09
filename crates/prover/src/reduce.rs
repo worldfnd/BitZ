@@ -26,7 +26,7 @@ pub fn gkr_reduce(
     table: &BitTable,
 ) -> Result<OpeningQuery, ClaimError> {
     let circuit = init_circuit(table, fold);
-    let (_last_value, witnesses) = circuit.batched_eval(table.shape().columns());
+    let (_last_value, witnesses) = circuit.batched_eval();
 
     let (mut point, claim) =
         gpgkr_prove(transcript, table.shape().log_bits(), &fold.zeta, witnesses);
