@@ -344,6 +344,11 @@ pub struct GrandProductCircuit {
 
 impl GrandProductCircuit {
     pub fn new(row_images: &[F128], bittable: &BitTable) -> Self {
+        assert_eq!(
+            row_images.len(),
+            bittable.shape().rows(),
+            "one image per row of the table"
+        );
         // Columns occupy the low index bits, so each product tree reduces one
         // column. Transposed so each row can be read sequentially.
         let matrix = bittable.as_matrix().transpose();

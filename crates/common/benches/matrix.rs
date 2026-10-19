@@ -1,7 +1,7 @@
 //! Compare the blocked `bit_transpose` with the bit-at-a-time reference.
 //!
 //! Run with `cargo bench -p common --features bench --bench matrix`.
-//! Both transpose a `128 x DIM2`-bit matrix (`dim2` contiguous), including
+//! Both transpose a `DIM1 x DIM2`-bit matrix (`dim2` contiguous), including
 //! output allocation. Input generation runs outside the measured loop.
 
 use common::matrix::bench::{bit_transpose, transpose_reference};
@@ -10,9 +10,11 @@ use divan::{Bencher, black_box};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 
-const DIM1: usize = 128;
-/// `2^20` bits per row: a 16 MiB matrix, well past the last-level cache.
-const DIM2: usize = 1 << 20;
+/// The table as `GrandProductCircuit::new` transposes it, `[columns][rows]`,
+/// at the CLI's `2^20` columns of `128` rows: a 16 MiB matrix, well past the
+/// last-level cache.
+const DIM1: usize = 1 << 20;
+const DIM2: usize = 128;
 
 fn main() {
     let xs = input();

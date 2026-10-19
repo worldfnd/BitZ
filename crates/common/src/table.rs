@@ -33,7 +33,7 @@ pub struct BitTable<'a> {
 impl<'a> BitTable<'a> {
     pub const BITS: usize = Word::BITS as usize;
 
-    /// Wraps `packed` in `shape`, least significant bit first inside `lo`.
+    /// Wraps `packed` in `shape`, least significant bit first inside each word.
     ///
     /// Crate-private: [`crate::BitZParams::table`] is the only way in, so a
     /// table is always shaped by a checked parameter set.
