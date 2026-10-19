@@ -199,6 +199,15 @@ fn eq_factor(r: Field, z: Field) -> Field {
 }
 
 /// `eq(z_{<i}, ·)` for every round `i` of a layer, in one buffer.
+///
+/// The former `SuffixTable` with the point little-endian instead of reversed:
+/// the summed coordinates are the prefix `z[..i]`, not a suffix. Same entries.
+///
+/// Keeping every table takes twice the memory of the largest one. Keeping
+/// only the largest and halving it between rounds (`low[k] += high[k]`)
+/// would save that half, but it measured 7.5-12% slower, as it adds a pass
+/// over memory. Splitting the table makes the trade moot.
+// TODO: Split the table.
 struct EqTables<'a> {
     storage: &'a [Field],
 }
