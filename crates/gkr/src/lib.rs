@@ -293,12 +293,18 @@ impl LutLayers {
     ///   and bits 2 and 3 for the right, so every operand reads nibble `k`.
     ///
     /// The words each operand reads are zipped, and every tuple of words
-    /// gives its 16 positions.
+    /// gives its 16 positions, one item per word. Callers zip the words with
+    /// 16-position chunks of their own data and loop over the positions
+    /// inside: flattened here and zipped per position, the loop becomes a
+    /// per-position state machine that LLVM does not unroll.
     fn pairs<const LAYER: usize>(
         &self,
         stride: usize,
         positions: Range<usize>,
-    ) -> ([&[Field; 16]; 4], impl Iterator<Item = [usize; 4]> + '_) {
+    ) -> (
+        [&[Field; 16]; 4],
+        impl Iterator<Item = impl Iterator<Item = [usize; 4]>> + '_,
+    ) {
         let (words, len) = (self.words(), positions.len() / NIBBLES_IN_WORD);
         let at = STREAM[LAYER].map(|q| positions.start + q * stride);
         let luts = at.map(|k| &self.luts[k >> self.log_trees]);
@@ -308,7 +314,7 @@ impl LutLayers {
             .zip(l1)
             .zip(r0)
             .zip(r1)
-            .flat_map(|(((&l0, &l1), &r0), &r1)| {
+            .map(|(((&l0, &l1), &r0), &r1)| {
                 (0..NIBBLES_IN_WORD).map(move |i| {
                     [l0, l1, r0, r1].map(|word| (word >> (NIBBLE_BITS * i)) as usize & 0xF)
                 })
@@ -413,8 +419,10 @@ fn leaf_buckets<const AT_ONE: bool>(
 ) -> (Wide256, Wide256) {
     let ([lut, ..], pairs) = lut_layers.pairs::<LEAVES>(stride, positions);
     let mut bucket = [Field::ZERO; 16];
-    for ([a, ..], &e) in pairs.zip(eq) {
-        bucket[a] += e;
+    for (word, eq) in pairs.zip(eq.chunks_exact(NIBBLES_IN_WORD)) {
+        for ([a, ..], &e) in word.zip(eq) {
+            bucket[a] += e;
+        }
     }
     // `L(b)·R(b)` is the node of bits 0 and 2, or 1 and 3, and `L(∞)·R(∞)` is
     // `(l1 − l0)(r1 − r0)`.
@@ -444,11 +452,13 @@ fn layer1_buckets<const AT_ONE: bool>(
     // A position's keys in the buckets of `l0·r0`, `l1·r1`, `l1·r0` and
     // `l0·r1`: bits 0 and 2 from the nibble of the `l` factor, bits 1 and 3
     // from that of the `r` factor.
-    for ([n0, n1, ..], &e) in pairs.zip(eq) {
-        bucket[0][n0] += e;
-        bucket[1][n1] += e;
-        bucket[2][(n1 & 0b0101) | (n0 & 0b1010)] += e;
-        bucket[3][(n0 & 0b0101) | (n1 & 0b1010)] += e;
+    for (word, eq) in pairs.zip(eq.chunks_exact(NIBBLES_IN_WORD)) {
+        for ([n0, n1, ..], &e) in word.zip(eq) {
+            bucket[0][n0] += e;
+            bucket[1][n1] += e;
+            bucket[2][(n1 & 0b0101) | (n0 & 0b1010)] += e;
+            bucket[3][(n0 & 0b0101) | (n1 & 0b1010)] += e;
+        }
     }
     // `l0·r0`, `l1·r1`, `l1·r0` and `l0·r1` at every key.
     let product: [[Field; 16]; 4] = [
@@ -483,16 +493,18 @@ fn layer2_sums<const LAYER: usize, const AT_ONE: bool>(
         .pieces(half)
         .map(|positions| {
             let (luts, pairs) = lut_layers.pairs::<LAYER>(half, positions.clone());
-            pairs.zip(&eq[positions]).fold(
-                (Wide256::zero(), Wide256::zero()),
-                |(sum_b, sum_inf), (n, &e)| {
-                    let [l0, l1, r0, r1] = operands::<LAYER>(&luts, n);
-                    (
-                        sum_b + Wide256::mul(e * at(l0, l1), at(r0, r1)),
-                        sum_inf + Wide256::mul(e * (l1 - l0), r1 - r0),
-                    )
-                },
-            )
+            let eq = eq[positions].chunks_exact(NIBBLES_IN_WORD);
+            pairs
+                .zip(eq)
+                .fold((Wide256::zero(), Wide256::zero()), |sums, (word, eq)| {
+                    word.zip(eq).fold(sums, |(sum_b, sum_inf), (n, &e)| {
+                        let [l0, l1, r0, r1] = operands::<LAYER>(&luts, n);
+                        (
+                            sum_b + Wide256::mul(e * at(l0, l1), at(r0, r1)),
+                            sum_inf + Wide256::mul(e * (l1 - l0), r1 - r0),
+                        )
+                    })
+                })
         })
         .reduce(
             || (Wide256::zero(), Wide256::zero()),
@@ -522,9 +534,13 @@ fn lut_bind<const LAYER: usize>(
         .zip(lut_layers.pieces(half))
         .for_each(|((left, right), positions)| {
             let (luts, pairs) = lut_layers.pairs::<LAYER>(half, positions);
-            for ((l, rt), n) in left.iter_mut().zip(right).zip(pairs) {
-                let [l0, l1, r0, r1] = operands::<LAYER>(&luts, n);
-                (*l, *rt) = (interpolate(l0, l1, r), interpolate(r0, r1, r));
+            let left = left.chunks_exact_mut(NIBBLES_IN_WORD);
+            let right = right.chunks_exact_mut(NIBBLES_IN_WORD);
+            for ((left, right), word) in left.zip(right).zip(pairs) {
+                for ((l, rt), n) in left.iter_mut().zip(right).zip(word) {
+                    let [l0, l1, r0, r1] = operands::<LAYER>(&luts, n);
+                    (*l, *rt) = (interpolate(l0, l1, r), interpolate(r0, r1, r));
+                }
             }
         });
 }
