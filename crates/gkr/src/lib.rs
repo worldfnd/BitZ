@@ -2,6 +2,7 @@ use common::{BitMatrix, BitTable, matrix::StepIter};
 use field::{F128, Wide256};
 use num_traits::{ConstOne, ConstZero};
 use rayon::prelude::*;
+use std::ops::Range;
 use transcript::{ProverState, VerifierState};
 
 pub type Field = F128;
@@ -23,40 +24,50 @@ pub fn gpgkr_prove(
     // Edge cases
     // - empty witnesses -> single constant circuit -> one verifier message that permutes the proof state, but a single constant can't have an MLE
     let mut point = point.to_owned();
-    let mut claim = Field::ZERO;
-    let mut eq_storage = EqTables::alloc_storage(log_bits);
-    let lower = witnesses.lower_layers();
-    let upper = witnesses.upper_nodes;
-    for children in upper.into_iter().rev() {
-        (point, claim) = prove_layer(ps, &mut eq_storage, &point, children);
+    let mut eq_memory = EqTables::alloc_storage(log_bits);
+    let LayerWitnesses {
+        matrix,
+        lower_lut,
+        upper_nodes,
+    } = witnesses;
+    for children in upper_nodes.into_iter().rev() {
+        (point, _) = prove_layer(ps, &mut eq_memory, &point, children);
     }
-    for children in lower.into_iter().rev() {
-        (point, claim) = prove_layer(ps, &mut eq_storage, &point, children);
-    }
-    (point, claim)
+
+    // Layers 2, 1 and 0 stay in their lookup tables. Round 1 of each writes the
+    // children it has bound, `[left′ | right′]`, into one allocation sized
+    // for the leaves'.
+    let lut_layers = LutLayers::new(matrix, lower_lut);
+    // number of nodes at the leaf level is lut_layer.nodes() * 4. We only need half of that since we materialise after round 1.
+    let mut bound_children = Field::zeroed_vec(2 * lut_layers.nodes());
+    let (point, _) =
+        prove_lut_layer::<LAYER2>(ps, &mut eq_memory, &point, &lut_layers, &mut bound_children);
+    let (point, _) =
+        prove_lut_layer::<LAYER1>(ps, &mut eq_memory, &point, &lut_layers, &mut bound_children);
+    prove_lut_layer::<LEAVES>(ps, &mut eq_memory, &point, &lut_layers, &mut bound_children)
 }
 
 /// Proves `c = Σ_x eq(z, x) · L(x) · R(x)` for the halves `L`, `R` of
 /// `children`, one round per coordinate of `point`, top first. Round `i`
-/// sends the sum `sum_i` at one endpoint and its leading coefficient, where
-/// `s_i(X) = eq(z_i, X) · sum_i(X)` and `sum_i` carries
-/// `eq_bound = Π_{j > i} eq(z_j, r_j)` from the rounds already bound.
-/// Returns the point `(r, t)` on `children` and the claim
+/// sends `sum_i(b)` and its leading coefficient `sum_i(∞)`, where `b` is the
+/// boolean point that [`sends_one`] picks, `s_i(X) = eq(z_i, X) · sum_i(X)`,
+/// and `sum_i` carries `eq_bound = Π_{j > i} eq(z_j, r_j)` from the rounds
+/// already bound. Returns the point `(r, t)` on `children` and the claim
 /// `W(r, t) = L(r) + t · (R(r) - L(r))`.
 fn prove_layer(
     ps: &mut ProverState,
-    storage: &mut [Field],
+    eq_memory: &mut [Field],
     point: &[Field],
     mut children: Vec<Field>,
 ) -> (Vec<Field>, Field) {
-    let eq_tables = EqTables::new(storage, point);
+    let eq_tables = EqTables::new(eq_memory, point);
     // The top index bit of `children` picks the half: `L`, then `R`.
     let mid = children.len() / 2;
     let (left, right) = children.split_at_mut(mid);
     prove_rounds(ps, &eq_tables, point, None, left, right)
 }
 
-/// The dense rounds of a layer, then its last message. A table-backed layer
+/// The dense rounds of a layer, then its last message. A LUT-backed layer
 /// has already proved round 1, which binds the top coordinate of `point`, and
 /// passes that round's challenge as `round_one`; its `left` and `right` are
 /// then the bound halves. A dense layer passes `None` and proves every round
@@ -87,15 +98,15 @@ fn prove_rounds(
         let (left0, left1) = left.split_at_mut(half);
         let (right0, right1) = right.split_at_mut(half);
 
-        // Branch once per round: `round_sums` takes the endpoint as a const
-        // generic, so the hot fold has no per-element check.
+        // Branch once per round: `round_sums` takes `b` as a const generic,
+        // so the hot fold has no per-element check.
         let eq = eq_tables.below(i);
-        let (sum_end, sum_inf) = if sends_one(z) {
+        let (sum_b, sum_inf) = if sends_one(z) {
             round_sums::<true>(left0, left1, right0, right1, eq)
         } else {
             round_sums::<false>(left0, left1, right0, right1, eq)
         };
-        ps.prover_message(&[eq_bound * sum_end.reduce(), eq_bound * sum_inf.reduce()]);
+        ps.prover_message(&[eq_bound * sum_b.reduce(), eq_bound * sum_inf.reduce()]);
 
         let r = ps.verifier_message();
         bind(r, left0, left1, right0, right1);
@@ -113,8 +124,8 @@ fn prove_rounds(
     (next_point, interpolate(left_r, right_r, t))
 }
 
-/// `Σ eq · L(e) · R(e)` and `Σ eq · ΔL · ΔR` over the free variables: the
-/// round's sum at the endpoint `e` (`1` if `AT_ONE`) and its leading
+/// `Σ eq · L(b) · R(b)` and `Σ eq · ΔL · ΔR` over the free variables: the
+/// round's sum at the boolean point `b` (`1` if `AT_ONE`) and its leading
 /// coefficient, without `eq_bound` and left unreduced.
 fn round_sums<const AT_ONE: bool>(
     left0: &[Field],
@@ -148,10 +159,10 @@ fn round_sums<const AT_ONE: bool>(
         .with_min_len(PARALLEL_MIN_LANES / 2)
         .fold(
             || (Wide256::zero(), Wide256::zero()),
-            |(mut end, mut inf), ((((l0, l1), r0), r1), e)| {
-                // `e · L(e) · R(e)` into `end` and `e · ΔL · ΔR` into `inf`,
-                // with `e` joining the left factor through a reduced multiply
-                // so that the right one can stay wide.
+            |(mut sum_b, mut sum_inf), ((((l0, l1), r0), r1), e)| {
+                // `e · L(b) · R(b)` into `sum_b` and `e · ΔL · ΔR` into
+                // `sum_inf`, with `e` joining the left factor through a reduced
+                // multiply so that the right one can stay wide.
                 //
                 // Steps, products, then sums, each for both lanes: this order
                 // puts every load of the step ahead of the first multiply.
@@ -160,16 +171,16 @@ fn round_sums<const AT_ONE: bool>(
                 let (d_l1, d_r1) = (l1[1] - l0[1], r1[1] - r0[1]);
                 let (a0, b0) = (e[0] * at(l0[0], l1[0]), e[0] * d_l0);
                 let (a1, b1) = (e[1] * at(l0[1], l1[1]), e[1] * d_l1);
-                end += Wide256::mul(a0, at(r0[0], r1[0]));
-                inf += Wide256::mul(b0, d_r0);
-                end += Wide256::mul(a1, at(r0[1], r1[1]));
-                inf += Wide256::mul(b1, d_r1);
-                (end, inf)
+                sum_b += Wide256::mul(a0, at(r0[0], r1[0]));
+                sum_inf += Wide256::mul(b0, d_r0);
+                sum_b += Wide256::mul(a1, at(r0[1], r1[1]));
+                sum_inf += Wide256::mul(b1, d_r1);
+                (sum_b, sum_inf)
             },
         )
         .reduce(
             || (Wide256::zero(), Wide256::zero()),
-            |(a0, ainf), (b0, binf)| (a0 + b0, ainf + binf),
+            |(x_b, x_inf), (y_b, y_inf)| (x_b + y_b, x_inf + y_inf),
         )
 }
 
@@ -197,6 +208,327 @@ fn bind(r: Field, left0: &mut [Field], left1: &[Field], right0: &mut [Field], ri
         });
 }
 
+/// The LUT-backed layers, by their index in the tree. Each names the
+/// sumcheck whose children it is.
+const LEAVES: usize = 0;
+const LAYER1: usize = 1;
+const LAYER2: usize = 2;
+
+/// Where round 1 of a LUT-backed sumcheck reads its operands `l0, l1, r0,
+/// r1`, by the layer of its children: operand `o` at position `k` is nibble
+/// `k + STREAM[o] · stride`, masked by `MASK[o]`, in that nibble's lookup
+/// table. [`LutLayers::pairs`] says why.
+const STREAM: [[usize; 4]; 3] = [[0, 0, 0, 0], [0, 1, 0, 1], [0, 1, 2, 3]];
+const MASK: [[usize; 4]; 3] = [
+    [0b0001, 0b0010, 0b0100, 0b1000],
+    [0b0101, 0b0101, 0b1010, 0b1010],
+    [0b1111; 4],
+];
+
+/// Layers 0 to 2 in their lookup tables, as round 1 of their sumchecks reads
+/// them: layer-2 node `k = (g << s) | c` is nibble `k` of the matrix, looked
+/// up in the lookup table of node position `g`, which all `2^s` trees share.
+struct LutLayers {
+    /// The nibbles of the layer-2 nodes; see [`GrandProductCircuit::new`].
+    matrix: BitMatrix<'static>,
+    luts: Vec<[Field; 16]>,
+    /// `s`: a lookup table's run of nibbles holds one per tree.
+    log_trees: usize,
+}
+
+impl LutLayers {
+    fn new(matrix: BitMatrix<'static>, luts: Vec<[Field; 16]>) -> Self {
+        let log_trees = (matrix.dim2() / NIBBLE_BITS).ilog2() as usize;
+        Self {
+            matrix,
+            luts,
+            log_trees,
+        }
+    }
+
+    /// The nibbles, a word at a time.
+    fn words(&self) -> &[u64] {
+        // Read as `u64`s: on a little-endian target, bit `i` of the words is
+        // bit `i` of the `u64`s too.
+        const { assert!(cfg!(target_endian = "little")) };
+        bytemuck::cast_slice(&self.matrix[..])
+    }
+
+    /// The layer-2 nodes, one per nibble.
+    fn nodes(&self) -> usize {
+        self.words().len() * NIBBLES_IN_WORD
+    }
+
+    /// The positions of round 1 handled as one piece: a lookup table's run,
+    /// or a part of it, so that a piece never spans two lookup tables.
+    fn piece(&self) -> usize {
+        (1 << self.log_trees).min(PARALLEL_MIN_LANES)
+    }
+
+    /// Round 1's positions `0..half` in pieces, as a parallel iterator
+    /// taking at least `PARALLEL_MIN_LANES` positions per task, whatever the
+    /// number of trees.
+    fn pieces(&self, half: usize) -> impl IndexedParallelIterator<Item = Range<usize>> + use<> {
+        let piece = self.piece();
+        (0..half / piece)
+            .into_par_iter()
+            .with_min_len(PARALLEL_MIN_LANES / piece)
+            .map(move |p| p * piece..(p + 1) * piece)
+    }
+
+    /// The pairs that round 1 binds at `positions`, which lie in one lookup
+    /// table's run and start and end on a word: per position, the nibbles of
+    /// its operands `l0, l1, r0, r1`, unmasked, and each operand's lookup
+    /// table.
+    ///
+    /// Round 1 binds the top bit of the parent's index, so each node pairs
+    /// with its partner `stride` nodes later, where `stride` is the number of
+    /// round-1 positions:
+    /// - Layer 2: a nibble is one node. The left pair is nibbles `k` and
+    ///   `k + stride`, and the right pair the two half the layer on,
+    ///   `k + 2·stride` and `k + 3·stride`.
+    /// - Layer 1: a nibble holds a left node, bits 0 and 2, and a right node,
+    ///   bits 1 and 3. Both of their partners sit in nibble `k + stride`.
+    /// - Leaves: a nibble holds both pairs, bits 0 and 1 for the left child
+    ///   and bits 2 and 3 for the right, so every operand reads nibble `k`.
+    ///
+    /// The words each operand reads are zipped, and every tuple of words
+    /// gives its 16 positions.
+    fn pairs<const LAYER: usize>(
+        &self,
+        stride: usize,
+        positions: Range<usize>,
+    ) -> ([&[Field; 16]; 4], impl Iterator<Item = [usize; 4]> + '_) {
+        let (words, len) = (self.words(), positions.len() / NIBBLES_IN_WORD);
+        let at = STREAM[LAYER].map(|q| positions.start + q * stride);
+        let luts = at.map(|k| &self.luts[k >> self.log_trees]);
+        let [l0, l1, r0, r1] = at.map(|k| &words[k / NIBBLES_IN_WORD..][..len]);
+        let pairs = l0
+            .iter()
+            .zip(l1)
+            .zip(r0)
+            .zip(r1)
+            .flat_map(|(((&l0, &l1), &r0), &r1)| {
+                (0..NIBBLES_IN_WORD).map(move |i| {
+                    [l0, l1, r0, r1].map(|word| (word >> (NIBBLE_BITS * i)) as usize & 0xF)
+                })
+            });
+        (luts, pairs)
+    }
+}
+
+/// The operands `[l0, l1, r0, r1]` of one position of round 1 of layer
+/// `LAYER`, from their lookup tables and nibbles.
+fn operands<const LAYER: usize>(luts: &[&[Field; 16]; 4], nibbles: [usize; 4]) -> [Field; 4] {
+    std::array::from_fn(|o| luts[o][nibbles[o] & MASK[LAYER][o]])
+}
+
+/// Proves the layer whose children are layer `LAYER` of the lookup tables,
+/// like [`prove_layer`]. Round 1 reads its operands from the lookup tables
+/// and writes only the children it has bound, `[left′ | right′]`, into
+/// `bound_children`; the rounds after it are dense.
+fn prove_lut_layer<const LAYER: usize>(
+    ps: &mut ProverState,
+    eq_memory: &mut [Field],
+    point: &[Field],
+    lut_layers: &LutLayers,
+    bound_children: &mut [Field],
+) -> (Vec<Field>, Field) {
+    let eq_tables = EqTables::new(eq_memory, point);
+    let top = point.len() - 1;
+
+    // Nothing is bound before round 1, so its sums go out as they are.
+    let (sum_b, sum_inf) = if sends_one(point[top]) {
+        round_one_sums::<LAYER, true>(lut_layers, &eq_tables, point)
+    } else {
+        round_one_sums::<LAYER, false>(lut_layers, &eq_tables, point)
+    };
+    ps.prover_message(&[sum_b.reduce(), sum_inf.reduce()]);
+
+    let r = ps.verifier_message();
+    let half = 1 << top;
+    let (left, right) = bound_children[..2 * half].split_at_mut(half);
+    lut_bind::<LAYER>(r, lut_layers, left, right);
+    prove_rounds(ps, &eq_tables, point, Some(r), left, right)
+}
+
+/// Round 1's sum at the boolean point `b` (`1` if `AT_ONE`) and its leading
+/// coefficient, unreduced, as [`round_sums`] gives them. The leaves and
+/// layer 1 sum their eq weights in buckets. Layer 2 pairs whole nibbles of
+/// two lookup tables, 256 keys per product, which costs more to finish than
+/// a piece saves at small `s`, so it works node by node.
+fn round_one_sums<const LAYER: usize, const AT_ONE: bool>(
+    lut_layers: &LutLayers,
+    eq_tables: &EqTables,
+    point: &[Field],
+) -> (Wide256, Wide256) {
+    match LAYER {
+        LEAVES => bucket_sums(lut_layers, eq_tables, point, leaf_buckets::<AT_ONE>),
+        LAYER1 => bucket_sums(lut_layers, eq_tables, point, layer1_buckets::<AT_ONE>),
+        _ => layer2_sums::<LAYER, AT_ONE>(lut_layers, eq_tables.below(point.len() - 1)),
+    }
+}
+
+/// Round 1's sums a piece at a time, with `buckets` summing each piece's eq
+/// weights by the nibble bits that `L·R` reads and multiplying each bucket
+/// once. The weight splits as `eq(z_{<top}, k) = eq_hi[g] · eq_lo[c]` for
+/// `k = (g << s) | c`, so the buckets sum `eq_lo`, which stays in cache, and
+/// `eq_hi` joins once per piece.
+fn bucket_sums(
+    lut_layers: &LutLayers,
+    eq_tables: &EqTables,
+    point: &[Field],
+    buckets: impl Fn(&LutLayers, usize, Range<usize>, &[Field]) -> (Wide256, Wide256) + Sync,
+) -> (Wide256, Wide256) {
+    let top = point.len() - 1;
+    let (half, s) = (1 << top, lut_layers.log_trees);
+    let eq_lo = eq_tables.below(s);
+    let eq_hi = poly::eq_table(&point[s..top]);
+    lut_layers
+        .pieces(half)
+        .map(|positions| {
+            let h = eq_hi[positions.start >> s];
+            let eq_lo = &eq_lo[positions.start % (1 << s)..][..positions.len()];
+            let (sum_b, sum_inf) = buckets(lut_layers, half, positions, eq_lo);
+            (
+                Wide256::mul(h, sum_b.reduce()),
+                Wide256::mul(h, sum_inf.reduce()),
+            )
+        })
+        .reduce(
+            || (Wide256::zero(), Wide256::zero()),
+            |(x_b, x_inf), (y_b, y_inf)| (x_b + y_b, x_inf + y_inf),
+        )
+}
+
+/// The piece of round 1 for the leaves at `positions`, its weights in `eq`.
+/// Every operand is one bit of the same nibble, so both sums are functions of
+/// the nibble: each position adds its weight into its nibble's bucket, and
+/// each of the 16 buckets is multiplied once.
+fn leaf_buckets<const AT_ONE: bool>(
+    lut_layers: &LutLayers,
+    stride: usize,
+    positions: Range<usize>,
+    eq: &[Field],
+) -> (Wide256, Wide256) {
+    let ([lut, ..], pairs) = lut_layers.pairs::<LEAVES>(stride, positions);
+    let mut bucket = [Field::ZERO; 16];
+    for ([a, ..], &e) in pairs.zip(eq) {
+        bucket[a] += e;
+    }
+    // `L(b)·R(b)` is the node of bits 0 and 2, or 1 and 3, and `L(∞)·R(∞)` is
+    // `(l1 − l0)(r1 − r0)`.
+    let b_mask = if AT_ONE { 0b1010 } else { 0b0101 };
+    let at_b = std::array::from_fn(|a| lut[a & b_mask]);
+    let at_inf = std::array::from_fn(|a| {
+        (lut[a & 0b0010] - lut[a & 0b0001]) * (lut[a & 0b1000] - lut[a & 0b0100])
+    });
+    (dot(&bucket, &at_b), dot(&bucket, &at_inf))
+}
+
+/// The piece of round 1 for layer 1 at `positions`, its weights in `eq`:
+/// nibble `n0` and the nibble `n1` half the layer later. In characteristic 2,
+/// `(l1 − l0)(r1 − r0)` is `l0·r0 + l1·r1 + l1·r0 + l0·r1`, and each product
+/// reads two disjoint 2-bit masks: 16 buckets each, keyed by the bits it
+/// reads.
+fn layer1_buckets<const AT_ONE: bool>(
+    lut_layers: &LutLayers,
+    stride: usize,
+    positions: Range<usize>,
+    eq: &[Field],
+) -> (Wide256, Wide256) {
+    // `l0` and `r0` read nibble `n0` in its lookup table, `l1` and `r1`
+    // nibble `n1`.
+    let ([lut0, lut1, ..], pairs) = lut_layers.pairs::<LAYER1>(stride, positions);
+    let mut bucket = [[Field::ZERO; 16]; 4];
+    // A position's keys in the buckets of `l0·r0`, `l1·r1`, `l1·r0` and
+    // `l0·r1`: bits 0 and 2 from the nibble of the `l` factor, bits 1 and 3
+    // from that of the `r` factor.
+    for ([n0, n1, ..], &e) in pairs.zip(eq) {
+        bucket[0][n0] += e;
+        bucket[1][n1] += e;
+        bucket[2][(n1 & 0b0101) | (n0 & 0b1010)] += e;
+        bucket[3][(n0 & 0b0101) | (n1 & 0b1010)] += e;
+    }
+    // `l0·r0`, `l1·r1`, `l1·r0` and `l0·r1` at every key.
+    let product: [[Field; 16]; 4] = [
+        *lut0,
+        *lut1,
+        std::array::from_fn(|x| lut1[x & 0b0101] * lut0[x & 0b1010]),
+        std::array::from_fn(|x| lut0[x & 0b0101] * lut1[x & 0b1010]),
+    ];
+    // Product `b` is `l_b·r_b`.
+    let b = usize::from(AT_ONE);
+    let sum_inf = (0..4).fold(Wide256::zero(), |acc, j| acc + dot(&bucket[j], &product[j]));
+    (dot(&bucket[b], &product[b]), sum_inf)
+}
+
+/// `Σ bucket · value`, unreduced.
+fn dot(bucket: &[Field; 16], value: &[Field; 16]) -> Wide256 {
+    bucket
+        .iter()
+        .zip(value)
+        .fold(Wide256::zero(), |acc, (&b, &v)| acc + Wide256::mul(b, v))
+}
+
+/// Round 1's sums node by node, as [`round_sums`] forms them, with the
+/// operands read from the lookup tables.
+fn layer2_sums<const LAYER: usize, const AT_ONE: bool>(
+    lut_layers: &LutLayers,
+    eq: &[Field],
+) -> (Wide256, Wide256) {
+    let at = |v0: Field, v1: Field| if AT_ONE { v1 } else { v0 };
+    let half = eq.len();
+    lut_layers
+        .pieces(half)
+        .map(|positions| {
+            let (luts, pairs) = lut_layers.pairs::<LAYER>(half, positions.clone());
+            pairs.zip(&eq[positions]).fold(
+                (Wide256::zero(), Wide256::zero()),
+                |(sum_b, sum_inf), (n, &e)| {
+                    let [l0, l1, r0, r1] = operands::<LAYER>(&luts, n);
+                    (
+                        sum_b + Wide256::mul(e * at(l0, l1), at(r0, r1)),
+                        sum_inf + Wide256::mul(e * (l1 - l0), r1 - r0),
+                    )
+                },
+            )
+        })
+        .reduce(
+            || (Wide256::zero(), Wide256::zero()),
+            |(x_b, x_inf), (y_b, y_inf)| (x_b + y_b, x_inf + y_inf),
+        )
+}
+
+/// Round 1's bind, `left′[k] = l0 + r·(l1 − l0)` and
+/// `right′[k] = r0 + r·(r1 − r0)`, with the operands read from the lookup
+/// tables.
+///
+/// What position `k` combines depends on the layer; see [`LutLayers::pairs`]:
+/// - Layer 2: four nibbles, one node each, the left pair at `k` and
+///   `k + stride` and the right pair half the layer on.
+/// - Layer 1: two nibbles, `k` and `k + stride`, each holding a left and a
+///   right node, so one scan binds both without jumping ahead.
+/// - Leaves: one nibble, which holds both pairs.
+fn lut_bind<const LAYER: usize>(
+    r: Field,
+    lut_layers: &LutLayers,
+    left: &mut [Field],
+    right: &mut [Field],
+) {
+    let (half, piece) = (left.len(), lut_layers.piece());
+    left.par_chunks_mut(piece)
+        .zip(right.par_chunks_mut(piece))
+        .zip(lut_layers.pieces(half))
+        .for_each(|((left, right), positions)| {
+            let (luts, pairs) = lut_layers.pairs::<LAYER>(half, positions);
+            for ((l, rt), n) in left.iter_mut().zip(right).zip(pairs) {
+                let [l0, l1, r0, r1] = operands::<LAYER>(&luts, n);
+                (*l, *rt) = (interpolate(l0, l1, r), interpolate(r0, r1, r));
+            }
+        });
+}
+
 /// The line through `at0` (at `0`) and `at1` (at `1`), at `r`: a multilinear
 /// function of one variable.
 fn interpolate(at0: Field, at1: Field, r: Field) -> Field {
@@ -205,10 +537,10 @@ fn interpolate(at0: Field, at1: Field, r: Field) -> Field {
 }
 
 /// The quadratic through `at0` (at `0`) and `at1` (at `1`) with leading
-/// coefficient `lead`, at `r`: `at0 + r·(at1 - at0) + r·(r - 1)·lead`, with
+/// coefficient `at_inf`, at `r`: `at0 + r·(at1 - at0) + r·(r - 1)·at_inf`, with
 /// `r` factored out.
-fn quadratic_at(at0: Field, at1: Field, lead: Field, r: Field) -> Field {
-    at0 + r * ((at1 - at0) + (r - Field::ONE) * lead)
+fn quadratic_at(at0: Field, at1: Field, at_inf: Field, r: Field) -> Field {
+    at0 + r * ((at1 - at0) + (r - Field::ONE) * at_inf)
 }
 
 /// Whether round `i` sends `sum_i(1)` rather than `sum_i(0)`. The verifier
@@ -318,7 +650,7 @@ pub fn gpgkr_verify(
     Some((point, claim))
 }
 
-/// Per round, recovers the other endpoint from
+/// Per round, recovers the sum at the other boolean point from
 /// `c = (1 - z_i) · sum_i(0) + z_i · sum_i(1)` and moves the claim to
 /// `s_i(r_i)`.
 /// Then checks `c = eq(z, r) · L(r) · R(r)` and continues at
@@ -333,12 +665,12 @@ fn verify_layer(
     let mut eq_bound = Field::ONE;
 
     for (i, &z) in point.iter().enumerate().rev() {
-        let [sum_end, sum_inf]: [Field; 2] = vs.prover_message().ok()?;
+        let [sum_b, sum_inf]: [Field; 2] = vs.prover_message().ok()?;
         // `claim = (1 - z) * sum0 + z * sum1`.
         let (sum0, sum1) = if sends_one(z) {
-            (claim, sum_end)
+            (claim, sum_b)
         } else {
-            (sum_end, (claim - (Field::ONE - z) * sum_end) / z)
+            (sum_b, (claim - (Field::ONE - z) * sum_b) / z)
         };
 
         let r = vs.verifier_message();
@@ -375,8 +707,8 @@ impl<'a> GrandProductCircuit<'a> {
         // one elsewhere: columns occupy the low index bits, so each product
         // tree reduces one column, folding the row bits from the top.
         //
-        // The bottom three layers are looked up in 16-entry tables, one per
-        // four rows, so the top two row bits are split off and moved beside
+        // The bottom three layers are looked up in 16-entry lookup tables, one
+        // per four rows, so the top two row bits are split off and moved beside
         // the columns. After the transpose, row group `b' < rows/4` is one
         // contiguous run, and in it the bits of rows `b'`, `b' + rows/4`,
         // `b' + 2 rows/4` and `b' + 3 rows/4` of one column sit next to each
@@ -401,7 +733,7 @@ impl<'a> GrandProductCircuit<'a> {
     pub fn batched_eval(self) -> (Vec<Field>, LayerWitnesses) {
         let lower_lut = lower_luts(self.images);
         let layer3 = layer3(&self.matrix, &lower_lut);
-        // A table's run holds one nibble per product tree.
+        // A lookup table's run holds one nibble per product tree.
         let trees = self.matrix.dim2() / NIBBLE_BITS;
         let (output, upper_nodes) = fold_layers(layer3, trees);
 
@@ -419,10 +751,10 @@ impl<'a> GrandProductCircuit<'a> {
 const NIBBLE_BITS: usize = 4;
 const NIBBLES_IN_WORD: usize = u64::BITS as usize / NIBBLE_BITS;
 
-/// Layers 0 to 2 as tables, one per four images: `lut[s]` is the layer-2 node
-/// whose four leaves are the bits of `s`.
+/// Layers 0 to 2 as lookup tables, one per four images: `lut[s]` is the
+/// layer-2 node whose four leaves are the bits of `s`.
 ///
-/// Each table takes one image from each quarter of `images`.
+/// Each lookup table takes one image from each quarter of `images`.
 fn lower_luts(images: &[Field]) -> Vec<[Field; 16]> {
     /// `lut[s]` is the product of the inputs whose bit is set in `s`, `a`
     /// on bit 0 through `d` on bit 3 (`0b0000 -> 1`, `0b0001 -> a`,
@@ -459,10 +791,10 @@ fn lower_luts(images: &[Field]) -> Vec<[Field; 16]> {
 }
 
 /// Layer 3, the first layer built in full: node `k` multiplies layer-2 nodes
-/// `k` and `k + n/2`, each a table entry looked up by its nibble.
+/// `k` and `k + n/2`, each a lookup-table entry looked up by its nibble.
 ///
-/// The matrix and the tables split in the middle into the left and the right
-/// child.
+/// The matrix and the lookup tables split in the middle into the left and
+/// the right child.
 fn layer3(matrix: &BitMatrix, lower_lut: &[[Field; 16]]) -> Vec<Field> {
     // Read as `u64`s: on a little-endian target, bit `i` of the words is
     // bit `i` of the `u64`s too.
@@ -471,12 +803,15 @@ fn layer3(matrix: &BitMatrix, lower_lut: &[[Field; 16]]) -> Vec<Field> {
     let (left, right) = bitstring.split_at(bitstring.len() / 2);
     let (left_luts, right_luts) = lower_lut.split_at(lower_lut.len() / 2);
 
-    // Each table serves one run of whole words, so a pair of tables is
+    // Each lookup table serves one run of whole words, so a pair of them is
     // picked once and its nibbles are read a word at a time.
-    // A table's run is one `xs[i1]` of the matrix, a nibble per node.
+    // A lookup table's run is one `xs[i1]` of the matrix, a nibble per node.
     let lut_words = left.len() / left_luts.len(); // This introduces a bound. StepIterator can prevent that but is more expensive than doing it this way
 
-    assert!(lut_words > 0, "each table needs at least a word of nibbles");
+    assert!(
+        lut_words > 0,
+        "each lookup table needs at least a word of nibbles"
+    );
     let runs = left
         .chunks_exact(lut_words)
         .zip(right.chunks_exact(lut_words))
@@ -487,7 +822,7 @@ fn layer3(matrix: &BitMatrix, lower_lut: &[[Field; 16]]) -> Vec<Field> {
         (0..NIBBLES_IN_WORD).map(move |i| lut[(word >> (NIBBLE_BITS * i)) as usize & 15])
     }
 
-    // One node per nibble of each left table.
+    // One node per nibble of each left lookup table.
     let mut layer3 = Vec::with_capacity(left_luts.len() * lut_words * NIBBLES_IN_WORD);
     for ((l_words, r_words), (l_lut, r_lut)) in runs {
         for (&l, &r) in l_words.iter().zip(r_words) {
@@ -497,16 +832,17 @@ fn layer3(matrix: &BitMatrix, lower_lut: &[[Field; 16]]) -> Vec<Field> {
     layer3
 }
 
-/// Each layer-2 node of a run of row groups as the table of its row group and
-/// the nibble of its four leaves, in node order: node `k = (b' << s) | c`
-/// reads nibble `k`, and all `2^s` columns of row group `b'` share its table.
-/// `nibbles` and `luts` cover the same row groups.
+/// Each layer-2 node of a run of row groups as the lookup table of its row
+/// group and the nibble of its four leaves, in node order: node
+/// `k = (b' << s) | c` reads nibble `k`, and all `2^s` columns of row group
+/// `b'` share its lookup table. `nibbles` and `luts` cover the same row
+/// groups.
 fn lut_nodes<'a>(
     nibbles: &'a [u128],
     luts: &'a [[Field; 16]],
 ) -> impl ExactSizeIterator<Item = (&'a [Field; 16], usize)> {
     let nibbles = StepIter::<4>::new(nibbles.iter());
-    // Every table serves the same run of nibbles, one per column.
+    // Every lookup table serves the same run of nibbles, one per column.
     // TODO check assembly that this isn't reloaded constantly. Or maybe it is unavoidable but might still save a shift instruction. Also might generate too much indirection.
     let log_columns = (nibbles.len() / luts.len()).ilog2();
     nibbles
@@ -546,12 +882,12 @@ fn fold_into(
 }
 
 /// The layers below the output, yielded from the top down. The bottom three
-/// are kept as the tables they are looked up in, the rest in full.
+/// are kept as the lookup tables they are looked up in, the rest in full.
 // TODO: This can be a single vec that is allocated at the start.
 pub struct LayerWitnesses {
     /// The nibbles of the layer-2 nodes; see [`GrandProductCircuit::new`].
     matrix: BitMatrix<'static>,
-    /// One table per row group, shared by all of its columns.
+    /// One lookup table per row group, shared by all of its columns.
     lower_lut: Vec<[Field; 16]>,
     /// Layer 3 and up, layer 3 first.
     upper_nodes: Vec<Vec<Field>>,
@@ -584,7 +920,7 @@ impl LayerWitnesses {
 }
 
 // The sumcheck still reads every layer in full, so for now the bottom three
-// are rebuilt from the tables here; layer 3 and up are already in
+// are rebuilt from the lookup tables here; layer 3 and up are already in
 // `upper_nodes`.
 impl IntoIterator for LayerWitnesses {
     type Item = Vec<Field>;
@@ -824,7 +1160,64 @@ mod tests {
         }
     }
 
-    /// The bottom three layers looked up in the tables, and every layer
+    /// Each LUT-backed layer proved on its own, from a point whose top
+    /// coordinate is zero (round 1's `sends_one` branch) or not: the verifier
+    /// accepts it, and the final claim is the MLE of the children.
+    #[test]
+    fn lut_layers_prove_from_any_top_coordinate() {
+        let (shape, packed, row_images) = instance(SMALLEST, Bits::Drawn, 4);
+        let table = table(shape, &packed);
+        // The leaves and every layer above, built one leaf at a time.
+        let (_, layers) = fold_layers(leaves(&table, &row_images), shape.columns());
+        let (_, witnesses) = GrandProductCircuit::new(&row_images, &table).batched_eval();
+        let lut_layers = LutLayers::new(witnesses.matrix, witnesses.lower_lut);
+        let mut bound_children = Field::zeroed_vec(2 * lut_layers.nodes());
+        let mut eq_memory = EqTables::alloc_storage(shape.log_bits());
+
+        let mut draws = stream(5);
+        for layer in [LEAVES, LAYER1, LAYER2] {
+            type Prove = fn(
+                &mut ProverState,
+                &mut [Field],
+                &[Field],
+                &LutLayers,
+                &mut [Field],
+            ) -> (Vec<Field>, Field);
+            let prove: Prove = match layer {
+                LEAVES => prove_lut_layer::<LEAVES>,
+                LAYER1 => prove_lut_layer::<LAYER1>,
+                _ => prove_lut_layer::<LAYER2>,
+            };
+            let (children, parent) = (&layers[layer], &layers[layer + 1]);
+            for top in [Field::ZERO, Field::from(7u128)] {
+                let mut point: Vec<Field> = (0..parent.len().ilog2())
+                    .map(|_| element(&mut draws))
+                    .collect();
+                *point.last_mut().unwrap() = top;
+
+                let mut prover = transcript::build_prover("lut-layer", &point);
+                let terminal = prove(
+                    &mut prover,
+                    &mut eq_memory,
+                    &point,
+                    &lut_layers,
+                    &mut bound_children,
+                );
+                let proof = prover.finish();
+
+                let mut verifier = transcript::build_verifier("lut-layer", &point, &proof);
+                let claim = mle(parent.clone(), &point);
+                assert_eq!(
+                    verify_layer(&mut verifier, claim, &point),
+                    Some(terminal.clone()),
+                    "layer {layer}, top coordinate {top}"
+                );
+                assert_eq!(terminal.1, mle(children.clone(), &terminal.0));
+            }
+        }
+    }
+
+    /// The bottom three layers looked up in the lookup tables, and every layer
     /// above, match the circuit built one leaf at a time from the same table.
     #[test]
     fn lut_layers_match_the_leaf_construction() {
