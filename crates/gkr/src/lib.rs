@@ -26,8 +26,7 @@ pub fn gpgkr_prove(
     let mut point = point.to_owned();
     let mut eq_memory = EqTables::alloc_storage(log_bits);
     let LayerWitnesses {
-        matrix,
-        lower_lut,
+        lut_layers,
         upper_nodes,
     } = witnesses;
     for children in upper_nodes.into_iter().rev() {
@@ -37,7 +36,6 @@ pub fn gpgkr_prove(
     // Layers 2, 1 and 0 stay in their lookup tables. Round 1 of each writes the
     // children it has bound, `[left′ | right′]`, into one allocation sized
     // for the leaves'.
-    let lut_layers = LutLayers::new(matrix, lower_lut);
     // number of nodes at the leaf level is lut_layer.nodes() * 4. We only need half of that since we materialise after round 1.
     let mut bound_children = Field::zeroed_vec(2 * lut_layers.nodes());
     let (point, _) =
@@ -239,6 +237,11 @@ struct LutLayers {
 impl LutLayers {
     fn new(matrix: BitMatrix<'static>, luts: Vec<[Field; 16]>) -> Self {
         let log_trees = (matrix.dim2() / NIBBLE_BITS).ilog2() as usize;
+        // `pairs` reads whole words of one lookup table's run.
+        assert!(
+            1 << log_trees >= NIBBLES_IN_WORD,
+            "each lookup table needs at least a word of nibbles"
+        );
         Self {
             matrix,
             luts,
@@ -747,17 +750,14 @@ impl<'a> GrandProductCircuit<'a> {
     /// full, and the layers above it fold as usual.
     #[tracing::instrument(name = "Evaluate grand-product circuit", level = "debug", skip_all)]
     pub fn batched_eval(self) -> (Vec<Field>, LayerWitnesses) {
-        let lower_lut = lower_luts(self.images);
-        let layer3 = layer3(&self.matrix, &lower_lut);
-        // A lookup table's run holds one nibble per product tree.
-        let trees = self.matrix.dim2() / NIBBLE_BITS;
-        let (output, upper_nodes) = fold_layers(layer3, trees);
+        let lut_layers = LutLayers::new(self.matrix, lower_luts(self.images));
+        let layer3 = layer3(&lut_layers);
+        let (output, upper_nodes) = fold_layers(layer3, 1 << lut_layers.log_trees);
 
         (
             output,
             LayerWitnesses {
-                matrix: self.matrix,
-                lower_lut,
+                lut_layers,
                 upper_nodes,
             },
         )
@@ -798,53 +798,34 @@ fn lower_luts(images: &[Field]) -> Vec<[Field; 16]> {
     let (a, rest) = images.split_at(quart);
     let (b, rest) = rest.split_at(quart);
     let (c, d) = rest.split_at(quart);
-    a.iter()
+    a.par_iter()
         .zip(b)
         .zip(c)
         .zip(d)
+        // A lookup table writes 16 entries.
+        .with_min_len(PARALLEL_MIN_LANES / 16)
         .map(|(((&a, &b), &c), &d)| create_lut([a, b, c, d]))
         .collect()
 }
 
 /// Layer 3, the first layer built in full: node `k` multiplies layer-2 nodes
 /// `k` and `k + n/2`, each a lookup-table entry looked up by its nibble.
-///
-/// The matrix and the lookup tables split in the middle into the left and
-/// the right child.
-fn layer3(matrix: &BitMatrix, lower_lut: &[[Field; 16]]) -> Vec<Field> {
-    // Read as `u64`s: on a little-endian target, bit `i` of the words is
-    // bit `i` of the `u64`s too.
-    const { assert!(cfg!(target_endian = "little")) };
-    let bitstring: &[u64] = bytemuck::cast_slice(&matrix[..]);
-    let (left, right) = bitstring.split_at(bitstring.len() / 2);
-    let (left_luts, right_luts) = lower_lut.split_at(lower_lut.len() / 2);
-
-    // Each lookup table serves one run of whole words, so a pair of them is
-    // picked once and its nibbles are read a word at a time.
-    // A lookup table's run is one `xs[i1]` of the matrix, a nibble per node.
-    let lut_words = left.len() / left_luts.len(); // This introduces a bound. StepIterator can prevent that but is more expensive than doing it this way
-
-    assert!(
-        lut_words > 0,
-        "each lookup table needs at least a word of nibbles"
-    );
-    let runs = left
-        .chunks_exact(lut_words)
-        .zip(right.chunks_exact(lut_words))
-        .zip(left_luts.iter().zip(right_luts));
-
-    // The layer-2 nodes whose four leaves are the nibbles of `word`.
-    fn layer2(lut: &[Field; 16], word: u64) -> impl Iterator<Item = Field> + '_ {
-        (0..NIBBLES_IN_WORD).map(move |i| lut[(word >> (NIBBLE_BITS * i)) as usize & 15])
-    }
-
-    // One node per nibble of each left lookup table.
-    let mut layer3 = Vec::with_capacity(left_luts.len() * lut_words * NIBBLES_IN_WORD);
-    for ((l_words, r_words), (l_lut, r_lut)) in runs {
-        for (&l, &r) in l_words.iter().zip(r_words) {
-            fold_into(&mut layer3, layer2(l_lut, l), layer2(r_lut, r));
-        }
-    }
+/// Those are the two nibbles that round 1 of layer 1 reads at position `k`,
+/// here read whole.
+fn layer3(lut_layers: &LutLayers) -> Vec<Field> {
+    let half = lut_layers.nodes() / 2;
+    let mut layer3 = Field::zeroed_vec(half);
+    layer3
+        .par_chunks_mut(lut_layers.piece())
+        .zip(lut_layers.pieces(half))
+        .for_each(|(nodes, positions)| {
+            let ([lut0, lut1, ..], pairs) = lut_layers.pairs::<LAYER1>(half, positions);
+            for (nodes, word) in nodes.chunks_exact_mut(NIBBLES_IN_WORD).zip(pairs) {
+                for (node, [n0, n1, ..]) in nodes.iter_mut().zip(word) {
+                    *node = lut0[n0] * lut1[n1];
+                }
+            }
+        });
     layer3
 }
 
@@ -875,9 +856,15 @@ fn fold_layers(mut layer: Vec<Field>, groups: usize) -> (Vec<Field>, Vec<Vec<Fie
 
     // Stop when there is one output per group
     while layer.len() > groups {
+        // Node `k` multiplies node `k` of the left half and node `k` of the
+        // right half below it.
         let (l, r) = layer.split_at(layer.len() / 2);
-        let mut next = Vec::with_capacity(l.len());
-        fold_into(&mut next, l.iter().copied(), r.iter().copied());
+        let next = l
+            .par_iter()
+            .zip(r)
+            .with_min_len(PARALLEL_MIN_LANES)
+            .map(|(&a, &b)| a * b)
+            .collect();
         witnesses.push(layer);
         layer = next;
     }
@@ -885,26 +872,12 @@ fn fold_layers(mut layer: Vec<Field>, groups: usize) -> (Vec<Field>, Vec<Vec<Fie
     (layer, witnesses)
 }
 
-/// One layer up, appended to `next`: node `k` multiplies node `k` of the left
-/// half and node `k` of the right half below it.
-fn fold_into(
-    next: &mut Vec<Field>,
-    left: impl Iterator<Item = Field>,
-    right: impl Iterator<Item = Field>,
-) {
-    // `extend` from zipped ranges or slices knows its length, so there is no
-    // capacity check or length update per node.
-    next.extend(left.zip(right).map(|(a, b)| a * b));
-}
-
 /// The layers below the output, yielded from the top down. The bottom three
 /// are kept as the lookup tables they are looked up in, the rest in full.
 // TODO: This can be a single vec that is allocated at the start.
 pub struct LayerWitnesses {
-    /// The nibbles of the layer-2 nodes; see [`GrandProductCircuit::new`].
-    matrix: BitMatrix<'static>,
-    /// One lookup table per row group, shared by all of its columns.
-    lower_lut: Vec<[Field; 16]>,
+    /// Layers 0 to 2, in their lookup tables.
+    lut_layers: LutLayers,
     /// Layer 3 and up, layer 3 first.
     upper_nodes: Vec<Vec<Field>>,
 }
@@ -915,7 +888,7 @@ impl LayerWitnesses {
     /// `q` alone, layer-1 half `h` pairs bits `h` and `h + 2`, and layer 2
     /// takes all four.
     fn lower_layers(&self) -> [Vec<Field>; 3] {
-        let nodes = lut_nodes(&self.matrix, &self.lower_lut);
+        let nodes = lut_nodes(&self.lut_layers.matrix, &self.lut_layers.luts);
         let n = nodes.len();
         let mut leaves = Field::zeroed_vec(4 * n);
         let mut layer1 = Field::zeroed_vec(2 * n);
@@ -1186,7 +1159,7 @@ mod tests {
         // The leaves and every layer above, built one leaf at a time.
         let (_, layers) = fold_layers(leaves(&table, &row_images), shape.columns());
         let (_, witnesses) = GrandProductCircuit::new(&row_images, &table).batched_eval();
-        let lut_layers = LutLayers::new(witnesses.matrix, witnesses.lower_lut);
+        let lut_layers = witnesses.lut_layers;
         let mut bound_children = Field::zeroed_vec(2 * lut_layers.nodes());
         let mut eq_memory = EqTables::alloc_storage(shape.log_bits());
 
