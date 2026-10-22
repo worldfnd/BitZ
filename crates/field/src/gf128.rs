@@ -12,6 +12,7 @@ use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::iter::{Product, Sum};
 use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 
+use bytemuck::NoUninit;
 use crypto_primitives::{WithAssociatedInteger, WithExtensionDegree};
 use crypto_primitives_proc_macros::InfallibleCheckedOp;
 use num_traits::{
@@ -59,6 +60,7 @@ pub const REDUCTION: u64 = 0x87;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, InfallibleCheckedOp)]
 #[infallible_checked_unary_op((CheckedNeg, neg))]
 #[infallible_checked_binary_op((CheckedAdd, add), (CheckedSub, sub), (CheckedMul, mul))]
+#[derive(NoUninit)]
 #[repr(C, align(16))]
 pub struct F128 {
     pub lo: u64,

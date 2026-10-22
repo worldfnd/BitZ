@@ -14,7 +14,7 @@ use common::{
 };
 use field::{F128, gf128::smallest_generator};
 use num_traits::{ConstOne, ConstZero};
-use pcs::{CommitScheme, HashKind, LigeritoProfile, Pcs, ProverData, StatementBinding};
+use pcs::{CommitScheme, Pcs, ProverData, SecurityLevel, StatementBinding};
 use poly::{DenseMultilinearExtension, ScaledMleEvaluationClaim};
 use prover::{BitZProver, VirtualWitness};
 use transcript::{ProverState, PublicTranscript, build_prover, build_verifier};
@@ -54,8 +54,8 @@ pub enum Error {
     Spartan(spartan::SpartanError),
     #[error("commitment failed: {0:?}")]
     Commit(pcs::CommitError),
-    #[error("OOD commitment binding verification failed: {0:?}")]
-    OodVerify(pcs::VerifyError),
+    #[error("commitment verification failed: {0:?}")]
+    CommitmentVerify(pcs::VerifyError),
     #[error("constant-one opening failed: {0:?}")]
     ConstantProve(pcs::ProveError),
     #[error("constant-one verification failed: {0:?}")]
@@ -76,6 +76,8 @@ pub enum OpeningPath {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CircuitStats {
     pub opening_path: OpeningPath,
+    /// Classical PCS round budget; this does not describe Spartan security.
+    pub pcs_security: SecurityLevel,
     pub constraints: usize,
     pub assignment_bits: usize,
     /// Meaningful committed witness bits before PCS zero padding.
@@ -103,7 +105,8 @@ pub struct Witness<F> {
     products: R1csProductMles<F>,
 }
 
-/// Commitment data and the transcript that sampled its OOD claim.
+/// Retains the commitment and transcript for the remaining proof stages.
+/// The transcript includes the initial OOD check when the selected policy requires it.
 pub struct CommittedWitness {
     data: ProverData,
     transcript: ProverState,
@@ -123,8 +126,9 @@ where
     F::Integer: BitWidth + IntoWords,
     Vec<F>: for<'a> From<&'a ModularVector<2>>, // Needed for `build_product_mles`
 {
+    /// Selects the classical PCS round budget; Spartan's security is not part of it.
     #[tracing::instrument(name = "setup", skip_all)]
-    pub fn new<R, Proj>(statement: S) -> Result<Self, Error>
+    pub fn new<R, Proj>(statement: S, pcs_security: SecurityLevel) -> Result<Self, Error>
     where
         R: BitzConstraintRing,
         Proj: ProjectConstraint<R, F>,
@@ -163,7 +167,7 @@ where
         };
         let params = BitZParams::new(claim_shape, smallest_generator())
             .map_err(|_| Error::Configuration("inadmissible BitZ parameters"))?;
-        let pcs = Pcs::new(&committed_shape, LigeritoProfile::Fast, HashKind::Blake3)
+        let pcs = Pcs::new(&committed_shape, pcs_security)
             .map_err(|_| Error::Configuration("unsupported PCS shape"))?;
         Ok(Self {
             statement,
@@ -179,6 +183,7 @@ where
     pub fn stats(&self) -> CircuitStats {
         CircuitStats {
             opening_path: self.opening_path,
+            pcs_security: self.pcs.security_level(),
             constraints: self.matrices.matrices().a.row_count(),
             assignment_bits: self.map.h_len(),
             committed_bits: match self.opening_path {
@@ -225,8 +230,8 @@ where
         })
     }
 
-    /// Commits and sends the initial OOD evaluation before any PIOP challenge.
-    /// The returned state retains both PCS data and the transcript for proving.
+    /// Commits and runs the selected policy's initial checks before any PIOP challenge.
+    /// The returned state retains the transcript, codeword, and Merkle tree for proving.
     #[tracing::instrument(name = "commit", skip_all)]
     pub fn commit(&self, witness: &Witness<F>) -> Result<CommittedWitness, Error> {
         let mut transcript = build_prover(SESSION, self.statement.domain());
@@ -304,7 +309,7 @@ where
         let commitment = self
             .pcs
             .receive_commitment(proof.root, &mut transcript)
-            .map_err(Error::OodVerify)?;
+            .map_err(Error::CommitmentVerify)?;
         self.bind(&mut transcript, proof.root);
         if self.opening_path == OpeningPath::Direct {
             self.pcs
@@ -321,19 +326,12 @@ where
         let claim = opening_claim(&self.params, &terminal)?;
         let verifier = BitZVerifier::new(self.params, WINDOW);
         match self.opening_path {
-            OpeningPath::Direct => {
-                verifier.verify_with_commitment(&claim, &self.pcs, &commitment, transcript)
-            }
+            OpeningPath::Direct => verifier.verify(&claim, &self.pcs, &commitment, transcript),
             OpeningPath::Virtual => {
                 let statement =
                     VirtualStatement::new(self.params, self.committed_shape, &self.map, &claim)
                         .map_err(|_| Error::Configuration("invalid virtual statement"))?;
-                verifier.verify_virtual_with_commitment(
-                    &statement,
-                    &self.pcs,
-                    &commitment,
-                    transcript,
-                )
+                verifier.verify_virtual(&statement, &self.pcs, &commitment, transcript)
             }
         }
         .map_err(Error::Verify)
@@ -458,7 +456,9 @@ mod tests {
 
     #[test]
     fn commitment_sends_ood_before_proving() {
-        let system = CircuitProofSystem::<_, F>::new::<_, Proj>(IdentityBit).unwrap();
+        let system =
+            CircuitProofSystem::<_, F>::new::<_, Proj>(IdentityBit, SecurityLevel::Bits100)
+                .unwrap();
         let witness = system.witness(&[true]).unwrap();
         let committed = system.commit(&witness).unwrap();
         let proof = committed.transcript.finish();
@@ -474,11 +474,20 @@ mod tests {
 
     #[test]
     fn direct_opening_requires_constant_one_on_both_sides() {
-        let mut system = CircuitProofSystem::<_, F>::new::<_, Proj>(IdentityBit).unwrap();
+        let mut system =
+            CircuitProofSystem::<_, F>::new::<_, Proj>(IdentityBit, SecurityLevel::Bits100)
+                .unwrap();
         let witness = system.witness(&[true]).unwrap();
         let data = system.commit(&witness).unwrap();
         let mut proof = system.prove(witness, data).unwrap();
         system.verify(&proof).unwrap();
+        // The initial OOD value must arrive before constant checks or Spartan challenges.
+        let mut truncated_commitment = proof.clone();
+        truncated_commitment.opening.narg_string.truncate(15);
+        assert!(matches!(
+            system.verify(&truncated_commitment),
+            Err(Error::CommitmentVerify(_))
+        ));
         system.opening_path = OpeningPath::Virtual;
         assert!(system.verify(&proof).is_err());
         system.opening_path = OpeningPath::Direct;

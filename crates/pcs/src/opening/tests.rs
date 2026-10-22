@@ -7,7 +7,7 @@ use proptest::prelude::*;
 use transcript::{build_prover, build_verifier};
 
 use super::*;
-use crate::{HashKind, LigeritoProfile};
+use crate::SecurityLevel;
 
 const M: usize = 22;
 const SINGLETON: usize = (1 << 21) | (1 << 7) | 0b101_0101;
@@ -16,7 +16,6 @@ const INSTANCE: &[u8] = b"singleton";
 
 struct Fixture {
     pcs: Pcs,
-    root: Root,
     witness: Vec<F128>,
     claim: LinearClaim<F128>,
 }
@@ -25,12 +24,9 @@ fn fixture() -> &'static Fixture {
     static FIXTURE: OnceLock<Fixture> = OnceLock::new();
     FIXTURE.get_or_init(|| {
         let shape = Shape::new(7, M - 7).unwrap();
-        let pcs = Pcs::new(&shape, LigeritoProfile::Fast, HashKind::Blake3).unwrap();
+        let pcs = Pcs::new(&shape, SecurityLevel::Bits100).unwrap();
         let mut witness = vec![F128::ZERO; pcs.packed_len()];
         witness[SINGLETON / 128].hi = 1 << (SINGLETON % 128 - 64);
-        let (root, _) = pcs
-            .commit(&witness, &mut build_prover(SESSION, INSTANCE))
-            .unwrap();
         let rows = (0..shape.rows())
             .map(|row| F128::from(row as u64 + 2))
             .collect::<Vec<_>>();
@@ -41,7 +37,6 @@ fn fixture() -> &'static Fixture {
         let claim = LinearClaim::from_shape(&shape, rows, columns, target).unwrap();
         Fixture {
             pcs,
-            root,
             witness,
             claim,
         }
@@ -52,8 +47,8 @@ fn fixture() -> &'static Fixture {
 fn inner_product_proof_composes_sumcheck_with_a_bound_mle_opening() {
     let fixture = fixture();
     let mut prover = build_prover(SESSION, INSTANCE);
-    let (_, data) = fixture.pcs.commit(&fixture.witness, &mut prover).unwrap();
-    bind_inner_product_statement(&fixture.pcs, &fixture.root.0, &fixture.claim, &mut prover);
+    let (root, data) = fixture.pcs.commit(&fixture.witness, &mut prover).unwrap();
+    bind_inner_product_statement(&fixture.pcs, &root.0, &fixture.claim, &mut prover);
     prove(
         &fixture.pcs,
         &data,
@@ -69,13 +64,10 @@ fn inner_product_proof_composes_sumcheck_with_a_bound_mle_opening() {
 
     // Independent composition checks stage order and binding of the derived MLE claim.
     let mut verifier = build_verifier(SESSION, INSTANCE, &proof);
-    let commitment = fixture
-        .pcs
-        .receive_commitment(fixture.root, &mut verifier)
-        .unwrap();
-    bind_inner_product_statement(&fixture.pcs, &fixture.root.0, &fixture.claim, &mut verifier);
+    let commitment = fixture.pcs.receive_commitment(root, &mut verifier).unwrap();
+    bind_inner_product_statement(&fixture.pcs, &root.0, &fixture.claim, &mut verifier);
     verifier.public_message(SUMCHECK_LABEL);
-    let reduced = verify_post_gkr(&fixture.claim, &mut verifier).unwrap();
+    let reduced = verify_post_gkr(&fixture.claim, SecurityLevel::Bits100, &mut verifier).unwrap();
     verify(
         &fixture.pcs,
         &commitment,
@@ -129,9 +121,9 @@ proptest! {
 }
 
 #[test]
-fn opening_leaves_matching_transcripts_for_following_protocols() {
+fn opening_reuses_commitment_state_and_leaves_matching_transcripts() {
     let fixture = fixture();
-    for query in [
+    let queries = [
         OpeningQuery::Mle {
             point: vec![F128::ZERO; M],
             target: F128::ZERO,
@@ -139,36 +131,84 @@ fn opening_leaves_matching_transcripts_for_following_protocols() {
         OpeningQuery::InnerProduct {
             claim: fixture.claim.clone(),
         },
-    ] {
+    ];
+    for security in [SecurityLevel::Bits100, SecurityLevel::Bits128] {
+        let pcs = Pcs::new(&Shape::new(7, M - 7).unwrap(), security).unwrap();
         let mut prover = build_prover(SESSION, INSTANCE);
-        let (_, data) = fixture.pcs.commit(&fixture.witness, &mut prover).unwrap();
+        let (root, data) = pcs.commit(&fixture.witness, &mut prover).unwrap();
+        assert_eq!(
+            data.commitment().ood.is_some(),
+            security == SecurityLevel::Bits100
+        );
+        for query in &queries {
+            prove(
+                &pcs,
+                &data,
+                fixture.witness.clone(),
+                query,
+                StatementBinding::Bind,
+                &mut prover,
+            )
+            .unwrap();
+        }
+        let expected = prover.verifier_message::<F128>();
+        let proof = prover.finish();
+        let mut verifier = build_verifier(SESSION, INSTANCE, &proof);
+        let commitment = pcs.receive_commitment(root, &mut verifier).unwrap();
+        assert_eq!(commitment.ood.is_some(), security == SecurityLevel::Bits100);
+        for query in &queries {
+            verify(
+                &pcs,
+                &commitment,
+                query,
+                StatementBinding::Bind,
+                &mut verifier,
+            )
+            .unwrap();
+        }
+        assert_eq!(verifier.verifier_message::<F128>(), expected);
+        verifier.check_eof().unwrap();
+    }
+}
+
+#[test]
+fn opening_rejects_missing_ood_commitment_state() {
+    let fixture = fixture();
+    let pcs = &fixture.pcs;
+    let mut prover = build_prover(SESSION, INSTANCE);
+    let (root, mut data) = pcs.commit(&fixture.witness, &mut prover).unwrap();
+    let proof = prover.finish();
+
+    let query = OpeningQuery::Mle {
+        point: vec![F128::ZERO; M],
+        target: F128::ZERO,
+    };
+    let mut verifier = build_verifier(SESSION, INSTANCE, &proof);
+    let mut commitment = pcs.receive_commitment(root, &mut verifier).unwrap();
+    commitment.ood = None;
+    assert_eq!(
+        verify(
+            pcs,
+            &commitment,
+            &query,
+            StatementBinding::Bind,
+            &mut verifier
+        ),
+        Err(VerifyError::VerificationFailed),
+    );
+    data.commitment.ood = None;
+    let mut prover = build_prover(SESSION, INSTANCE);
+    assert_eq!(
         prove(
-            &fixture.pcs,
+            pcs,
             &data,
             fixture.witness.clone(),
             &query,
             StatementBinding::Bind,
             &mut prover,
-        )
-        .unwrap();
-        let expected = prover.verifier_message::<F128>();
-        let proof = prover.finish();
-        let mut verifier = build_verifier(SESSION, INSTANCE, &proof);
-        let commitment = fixture
-            .pcs
-            .receive_commitment(fixture.root, &mut verifier)
-            .unwrap();
-        verify(
-            &fixture.pcs,
-            &commitment,
-            &query,
-            StatementBinding::Bind,
-            &mut verifier,
-        )
-        .unwrap();
-        assert_eq!(verifier.verifier_message::<F128>(), expected);
-        verifier.check_eof().unwrap();
-    }
+        ),
+        Err(ProveError::ProverDataMismatch),
+    );
 }
 
 #[test]
@@ -176,7 +216,7 @@ fn zero_weight_factor_still_requires_the_correct_pcs_witness_evaluation() {
     let fixture = fixture();
     let pcs = &fixture.pcs;
     let shape = Shape::new(7, M - 7).unwrap();
-    assert_eq!(pcs.ood_grinding_bits(), Some(0));
+    assert_eq!(pcs.security_level(), SecurityLevel::Bits100);
 
     for zero_rows in [true, false] {
         let mut rows = fixture.claim.row_weights().to_vec();

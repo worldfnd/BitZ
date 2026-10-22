@@ -12,6 +12,16 @@ use std::marker::PhantomData;
 /// A parameter set one of the pre-claim gates rejects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParamsError {
+    /// Fewer than `128` columns (`s < 7`).
+    ///
+    /// Not a protocol bound: it flows up from the prover's transpose. The
+    /// reduction reads the GKR leaves row by row through the
+    /// [`crate::BitMatrix::transpose`] of [`BitTable::as_matrix`], where each
+    /// transposed row holds one bit per column, and `bit_transpose` in
+    /// `crates/common/src/matrix.rs` only moves whole `128 x 128` blocks. Teaching it rows shorter than a word
+    /// lifts this gate; commit 336e8097225aca4f8146f35594740b0e5054d839 has
+    /// that version.
+    ColumnCountTooNarrow,
     /// `(k_1 + 1)(Q - 1)` reaches `ord(g)`, so a sent fold and the honest
     /// exponent could collide in the exponent.
     FoldBoundExceeded,
@@ -38,6 +48,11 @@ impl<F: BitzClaimField> BitZParams<F> {
     pub fn new(shape: Shape, generator: F128) -> Result<Self, ParamsError> {
         // The field asserts its modulus is an odd prime below 2^126 on its own
         // behalf, so no modulus gate is needed here.
+
+        // A limit of the transpose, not of the protocol; see the variant.
+        if shape.columns() < BitTable::BITS {
+            return Err(ParamsError::ColumnCountTooNarrow);
+        }
 
         // `g^{<f_j, gamma>} = g^{eta_j}` implies integer equality only if both
         // sides, each in `[0, k_1 (Q - 1)]`, differ by less than `ord(g)`.
@@ -71,7 +86,7 @@ impl<F: BitzClaimField> BitZParams<F> {
     /// The only way to build a [`BitTable`], so a table can never be shaped by
     /// anything but a checked parameter set.
     pub fn table<'a>(&self, packed: &'a [F128]) -> Result<BitTable<'a>, TableError> {
-        BitTable::new(self.shape, packed)
+        BitTable::new(self.shape, bytemuck::cast_slice(packed))
     }
 
     pub fn shape(&self) -> &Shape {
@@ -169,7 +184,7 @@ impl<F: BitzClaimField> VirtualParams<F> {
     /// Views the committed witness, which is `f` and not the vector the claim
     /// is about.
     pub fn table<'a>(&self, packed: &'a [F128]) -> Result<BitTable<'a>, TableError> {
-        BitTable::new(self.committed, packed)
+        BitTable::new(self.committed, bytemuck::cast_slice(packed))
     }
 }
 
@@ -307,6 +322,21 @@ mod tests {
         assert_eq!(
             params_at(Shape::new(14, 21).unwrap()).err(),
             Some(ParamsError::FoldBoundExceeded)
+        );
+    }
+
+    #[test]
+    fn rejects_a_table_too_narrow_to_transpose() {
+        // Small enough for `2^16` rows, so the column count is the only gate
+        // that can fail: `Q114` already caps `t` at 13, and with it `s` at 9
+        // or more.
+        const Q100: u128 = (1 << 100) - 15;
+        let params_q100 = |shape| BitZParams::<field::Fq<Q100>>::new(shape, smallest_generator());
+
+        assert!(params_q100(Shape::new(15, 7).unwrap()).is_ok());
+        assert_eq!(
+            params_q100(Shape::new(16, 6).unwrap()).err(),
+            Some(ParamsError::ColumnCountTooNarrow)
         );
     }
 

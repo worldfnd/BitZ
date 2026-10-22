@@ -6,7 +6,7 @@ use poly::DenseMultilinearExtension;
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
-use crate::{BitTable, BitzClaimField, BitzSemiring, LinearClaim, Shape, table::PACKED_BITS};
+use crate::{BitTable, BitzClaimField, BitzSemiring, LinearClaim, Shape};
 
 /// A round whose parts do not describe the shape they belong to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,9 +20,8 @@ pub enum FoldError {
 
 /// `eta_j = sum_i pi_q^{-1}(v^(1)_i) f_ij`, over the integers.
 ///
-/// Walks the column's packed elements and adds the exponent of each set bit,
-/// rather than reading `k_1` bits one at a time. `F128` is only a 128-bit
-/// container here; no field arithmetic happens.
+/// Walks the column's words and adds the exponent of each set bit, rather
+/// than reading `k_1` bits one at a time.
 ///
 /// `exponents` must be the claim's own — [`LinearClaim::row_exponents`].
 /// That is what makes the sum safe: each is below `q` and there are `k_1` of
@@ -31,23 +30,16 @@ pub fn fold_column<S: Semiring>(table: &BitTable<'_>, exponents: &[S], column: u
     table
         .column(column)
         .iter()
-        .enumerate()
-        .map(|(index, element)| {
-            let base = index * PACKED_BITS;
-            [(0, element.lo), (64, element.hi)]
-                .into_iter()
-                .map(|(half, mut remaining)| {
-                    let mut total = S::zero();
-                    while remaining != 0 {
-                        total += &exponents[base + half + remaining.trailing_zeros() as usize];
-                        // Clears the lowest set bit.
-                        remaining &= remaining - 1;
-                    }
-                    total
-                })
-                .sum::<S>()
+        .fold((0usize, S::zero()), |(base, mut total), &element| {
+            let mut remaining = element;
+            while remaining != 0 {
+                total += &exponents[base + remaining.trailing_zeros() as usize];
+                // Clears the lowest set bit.
+                remaining &= remaining - 1;
+            }
+            (base + BitTable::BITS, total)
         })
-        .sum()
+        .1
 }
 
 /// Every column's fold, in column order.
@@ -197,6 +189,7 @@ mod tests {
     use num_traits::{ConstOne, ConstZero};
 
     use super::*;
+    const PACKED_BITS: usize = 128;
     use crate::{BitZParams, Shape};
 
     const Q114: u128 = (1 << 114) - 11;
@@ -246,7 +239,7 @@ mod tests {
         let claim = claim(field_weights, vec![F::ONE; shape.columns()]);
 
         let packed = witness(&shape, &[(1, 0), (5, 0), (127, 0), (64, 4)]);
-        let table = BitTable::new(shape, &packed).unwrap();
+        let table = BitTable::new(shape, bytemuck::cast_slice(&packed)).unwrap();
 
         assert_eq!(
             fold_column(&table, &claim.row_exponents(), 0),
@@ -266,7 +259,7 @@ mod tests {
         );
         let all: Vec<(usize, usize)> = (0..shape.rows()).map(|row| (row, 0)).collect();
         let packed = witness(&shape, &all);
-        let table = BitTable::new(shape, &packed).unwrap();
+        let table = BitTable::new(shape, bytemuck::cast_slice(&packed)).unwrap();
 
         assert_eq!(
             fold_column(&table, &claim.row_exponents(), 0),
@@ -287,7 +280,7 @@ mod tests {
             .map(|row| (row, 6))
             .collect();
         let packed = witness(&shape, &bits);
-        let table = BitTable::new(shape, &packed).unwrap();
+        let table = BitTable::new(shape, bytemuck::cast_slice(&packed)).unwrap();
 
         let expected: u128 = (0..shape.rows())
             .filter(|&row| table.bit(6, row))

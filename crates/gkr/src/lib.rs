@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 
+use common::{BitTable, SecurityLevel};
 use field::{F128, Wide256};
 use num_traits::{ConstOne, ConstZero};
 use rayon::prelude::*;
@@ -8,6 +9,8 @@ use transcript::{ProverState, VerifierState};
 pub type Field = F128;
 
 type Point = VecDeque<Field>;
+
+const CUBIC_GRINDING_LABEL: &[u8] = b"gkr/cubic/v1";
 
 /// Proves the layer-by-layer sumcheck reduction from a claim at `point`
 /// (an evaluation point on the output layer) down to a claim on the leaves.
@@ -19,6 +22,7 @@ pub fn gpgkr_prove(
     point: &[F128],
     // All the intermediate witnesses + the input layer. Doesn't contain the output layer
     witnesses: LayerWitnesses,
+    security: SecurityLevel,
 ) -> (Vec<F128>, Field) {
     // Edge cases
     // - empty witnesses -> single constant circuit -> one verifier message that permutes the proof state, but a single constant can't have an MLE
@@ -30,7 +34,7 @@ pub fn gpgkr_prove(
     let mut claim = Field::ZERO;
     let mut storage = SuffixTable::alloc_storage(log_bits);
     for wnext in witnesses.into_iter() {
-        (point, claim) = prove_layer(ps, &mut storage, point, wnext);
+        (point, claim) = prove_layer(ps, &mut storage, point, wnext, security);
     }
 
     let mut point = Vec::from(point);
@@ -43,6 +47,7 @@ fn prove_layer(
     storage: &mut [Field],
     mut point: Point,
     mut wnext: Vec<Field>,
+    security: SecurityLevel,
 ) -> (Point, Field) {
     let suffix_table = SuffixTable::new(storage, &point);
     let mut factor = Field::ONE;
@@ -82,6 +87,7 @@ fn prove_layer(
 
         ps.prover_message(&[factor * sum_endpoint.reduce(), factor * sum_inf.reduce()]);
 
+        ps.grind(CUBIC_GRINDING_LABEL, security.grinding_bits(3));
         let r = ps.verifier_message();
         next_point.push_back(r);
 
@@ -127,6 +133,7 @@ fn prove_layer(
 
         ps.prover_message(&[factor * sum_endpoint.reduce(), factor * sum_inf.reduce()]);
 
+        ps.grind(CUBIC_GRINDING_LABEL, security.grinding_bits(3));
         let r = ps.verifier_message();
         next_point.push_back(r);
 
@@ -268,6 +275,7 @@ pub fn gpgkr_verify(
     mut claim: Field,
     point: &[F128],
     rounds: u32,
+    security: SecurityLevel,
 ) -> Option<(Vec<F128>, Field)> {
     // Edge cases around input lenghts, 0 meaning empty
     // | circuit | last value |
@@ -284,7 +292,7 @@ pub fn gpgkr_verify(
     let mut point = VecDeque::from(point);
 
     for _i in 0..rounds {
-        (point, claim) = verify_layer(vs, claim, point)?
+        (point, claim) = verify_layer(vs, claim, point, security)?
     }
 
     let mut point = Vec::from(point);
@@ -294,7 +302,12 @@ pub fn gpgkr_verify(
 }
 
 /// Point's orientation is the reverse of gpgkr_verify
-fn verify_layer(vs: &mut VerifierState, mut claim: Field, point: Point) -> Option<(Point, Field)> {
+fn verify_layer(
+    vs: &mut VerifierState,
+    mut claim: Field,
+    point: Point,
+    security: SecurityLevel,
+) -> Option<(Point, Field)> {
     let mut prefix = Field::ONE;
 
     let mut next_point: Point = VecDeque::new();
@@ -310,6 +323,8 @@ fn verify_layer(vs: &mut VerifierState, mut claim: Field, point: Point) -> Optio
             (sum_endpoint, (claim - eqjsum0) / z)
         };
 
+        vs.grind(CUBIC_GRINDING_LABEL, security.grinding_bits(3))
+            .ok()?;
         let r = vs.verifier_message();
         next_point.push_back(r);
         let factor = eq_factor(r, z);
@@ -342,8 +357,30 @@ pub struct GrandProductCircuit {
 }
 
 impl GrandProductCircuit {
-    // Fails if the leafs are 0.
-    pub fn new(mut leafs: Vec<Field>) -> Self {
+    pub fn new(row_images: &[F128], bittable: &BitTable) -> Self {
+        assert_eq!(
+            row_images.len(),
+            bittable.shape().rows(),
+            "one image per row of the table"
+        );
+        // Columns occupy the low index bits, so each product tree reduces one
+        // column. Transposed so each row can be read sequentially.
+        let matrix = bittable.as_matrix().transpose();
+        let dim2 = matrix.dim2();
+        let dim = matrix.dim1() * dim2;
+        let mut leafs = F128::zeroed_vec(dim);
+
+        for (b, &row_image) in row_images.iter().enumerate() {
+            let leafs = &mut leafs[b * dim2..(b + 1) * dim2];
+            for (leaf, bit) in leafs.iter_mut().zip(matrix.bits(b)) {
+                *leaf = if bit == 1 { row_image } else { F128::ONE };
+            }
+        }
+
+        Self::from_leafs(leafs)
+    }
+
+    fn from_leafs(mut leafs: Vec<Field>) -> Self {
         if !leafs.is_empty() {
             leafs.resize(leafs.len().next_power_of_two(), Field::ONE);
         }
@@ -393,6 +430,7 @@ impl IntoIterator for LayerWitnesses {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use common::SecurityLevel::{Bits100, Bits128};
     use proptest::prelude::*;
 
     fn field() -> impl Strategy<Value = Field> {
@@ -428,7 +466,7 @@ mod tests {
         fn eval_preserves_product_across_layers(leaves in prop::collection::vec(field(), 0..12)) {
             let expected = product(&leaves);
 
-            let (top, mut witnesses) = GrandProductCircuit::new(leaves).batched_eval(1);
+            let (top, mut witnesses) = GrandProductCircuit::from_leafs(leaves).batched_eval(1);
 
             prop_assert_eq!(product(&top), expected);
 
@@ -450,7 +488,7 @@ mod tests {
             let mut padded = leaves.clone();
             padded.resize(padded_len, Field::ONE);
 
-            let circuit = GrandProductCircuit::new(leaves);
+            let circuit = GrandProductCircuit::from_leafs(leaves);
             let (top, _witnesses) = circuit.batched_eval(groups);
             prop_assert_eq!(top.len(), groups);
 
@@ -501,6 +539,50 @@ mod tests {
     }
 
     #[test]
+    fn gpgkr_security_targets_replay_and_reject_changed_nonces() {
+        let leaves: Vec<Field> = (1u128..=16).map(Field::from).collect();
+        let point = [Field::from(5u128), Field::from(7u128)];
+        let instance = (leaves.clone(), point.to_vec());
+        let mut unground_len = 0;
+
+        for security in [Bits100, Bits128] {
+            let circuit = GrandProductCircuit::from_leafs(leaves.clone());
+            let (output, witnesses) = circuit.batched_eval(4);
+            let claim = mle(output, &point);
+            let mut prover = transcript::build_prover("gkr-security", &instance);
+            let terminal = gpgkr_prove(
+                &mut prover,
+                leaves.len().ilog2() as usize,
+                &point,
+                witnesses,
+                security,
+            );
+            assert_eq!(terminal.1, mle(leaves.clone(), &terminal.0));
+            let mut proof = prover.finish();
+
+            let mut verifier = transcript::build_verifier("gkr-security", &instance, &proof);
+            assert_eq!(
+                gpgkr_verify(&mut verifier, claim, &point, 2, security),
+                Some(terminal)
+            );
+            verifier.check_eof().unwrap();
+
+            match security {
+                Bits100 => unground_len = proof.narg_string.len(),
+                Bits128 => {
+                    // Two layers have five cubic challenges and five eight-byte nonces.
+                    assert_eq!(proof.narg_string.len(), unground_len + 40);
+                    // The first cubic message occupies two canonical field elements.
+                    proof.narg_string[32] ^= 1;
+                    let mut verifier =
+                        transcript::build_verifier("gkr-security", &instance, &proof);
+                    assert!(gpgkr_verify(&mut verifier, claim, &point, 2, security).is_none());
+                }
+            }
+        }
+    }
+
+    #[test]
     fn gpgkr_round_trip_with_zero_coordinates() {
         let leaves: Vec<Field> = (1u128..=16).map(Field::from).collect();
         let nonzero = Field::from(5u128);
@@ -511,7 +593,7 @@ mod tests {
             [Field::ZERO, Field::ONE],
             [Field::ONE, Field::ZERO],
         ] {
-            let circuit = GrandProductCircuit::new(leaves.clone());
+            let circuit = GrandProductCircuit::from_leafs(leaves.clone());
             let (output, witnesses) = circuit.batched_eval(4);
             let claim = mle(output, &point);
             let instance = (leaves.clone(), point.to_vec());
@@ -521,19 +603,20 @@ mod tests {
                 leaves.len().ilog2() as usize,
                 &point,
                 witnesses,
+                Bits100,
             );
             assert_eq!(terminal.1, mle(leaves.clone(), &terminal.0));
             let proof = prover.finish();
 
             let mut verifier = transcript::build_verifier("gkr-zero", &instance, &proof);
             assert_eq!(
-                gpgkr_verify(&mut verifier, claim, &point, 2),
+                gpgkr_verify(&mut verifier, claim, &point, 2, Bits100),
                 Some(terminal)
             );
             verifier.check_eof().unwrap();
 
             let mut verifier = transcript::build_verifier("gkr-zero", &instance, &proof);
-            assert!(gpgkr_verify(&mut verifier, claim + Field::ONE, &point, 2).is_none());
+            assert!(gpgkr_verify(&mut verifier, claim + Field::ONE, &point, 2, Bits100).is_none());
         }
     }
 
@@ -557,7 +640,7 @@ mod tests {
     }
 
     pub fn prove(input: Vec<Field>, log_groups: usize) -> (Vec<Field>, transcript::Proof) {
-        let circuit = GrandProductCircuit::new(input);
+        let circuit = GrandProductCircuit::from_leafs(input);
         // Fake hashing
         let n = circuit.leafs.len() as u128;
 
@@ -576,12 +659,12 @@ mod tests {
         let log_groups = last_value.len().max(1).ilog2();
         let point: Vec<Field> = (0..log_groups).map(|_| prover.verifier_message()).collect();
 
-        gpgkr_prove(&mut prover, log_bits, &point, witnesses);
+        gpgkr_prove(&mut prover, log_bits, &point, witnesses, Bits100);
         (last_value, prover.finish())
     }
 
     pub fn verify(input: Vec<Field>, output: Vec<Field>, proof: transcript::Proof) -> bool {
-        let circuit = GrandProductCircuit::new(input);
+        let circuit = GrandProductCircuit::from_leafs(input);
         // Fake hashing
         let instance = (&output, circuit.leafs.len() as u128);
         let mut verifier = transcript::build_verifier("gkr", &instance, &proof);
@@ -595,7 +678,7 @@ mod tests {
         let log_leafs = circuit.leafs.len().max(1).ilog2();
         let rounds = log_leafs.saturating_sub(log_groups);
 
-        match gpgkr_verify(&mut verifier, claim, &point, rounds) {
+        match gpgkr_verify(&mut verifier, claim, &point, rounds, Bits100) {
             Some((point, claim)) => {
                 let leaf_check = mle(circuit.leafs, &point);
 

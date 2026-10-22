@@ -2,7 +2,8 @@
 
 use crate::BitZProver;
 use common::{
-    BitTable, BitzClaimField, Fold, FoldError, LinearClaim, column_images, fold_columns, row_images,
+    BitTable, BitzClaimField, Fold, FoldError, LinearClaim, SecurityLevel, column_images,
+    fold_columns, row_images,
 };
 use num_traits::ToBytes;
 use transcript::ProverState;
@@ -39,6 +40,7 @@ impl<F: BitzClaimField> BitZProver<F> {
         claim: &LinearClaim<F>,
         table: &BitTable<'_>,
         transcript: &mut ProverState,
+        security: SecurityLevel,
     ) -> Result<Fold<F::Integer>, SendError> {
         // The weights are sized by the configured row count while the bits are
         // read at the table's. Disagreement is a panic, a silently wrong fold, or
@@ -58,6 +60,10 @@ impl<F: BitzClaimField> BitZProver<F> {
 
         let images = column_images(self.comb(), &folds);
         let row_images = row_images(self.comb(), &exponents);
+        transcript.grind(
+            b"bitz/columns/v1",
+            security.grinding_bits(shape.log_columns()),
+        );
         let zeta = (0..shape.log_columns())
             .map(|_| transcript.verifier_message())
             .collect();
