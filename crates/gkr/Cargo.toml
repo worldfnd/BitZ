@@ -6,13 +6,14 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+field = { workspace= true  }
+transcript = { workspace = true}
 common = { workspace = true }
-field = { path = "../field", features = ["spongefish"] }
-transcript = {path ="../transcript"}
 tracing = { workspace = true }
-poly = { path = "../poly" }
+poly = { workspace = true }
 num-traits = { workspace = true }
 rayon = { workspace = true }
+
 
 [dev-dependencies]
 proptest = "1.11.0"
