@@ -4,12 +4,8 @@
 /// packed field element carries.
 pub const PACK_BITS: u32 = 7;
 
-/// The commitment size window the opening parameters are fixed for.
-///
-/// `22..=35` is not derived from a security bound here; it is the range
-/// `flock-core`'s Ligerito configs are precomputed for (one shipped TOML per
-/// `m` in that range, per profile). Sizes outside it have no config to load.
-pub const MIN_LOG_BITS: usize = 22;
+/// The size window for dynamically derived opening parameters.
+pub const MIN_LOG_BITS: usize = 20;
 /// The upper end of that window.
 pub const MAX_LOG_BITS: usize = 35;
 
@@ -19,7 +15,7 @@ pub enum ShapeError {
     /// Fewer than seven row-index bits: a packed row would not fill one
     /// codeword position. The paper writes this count `t`.
     RowIndexTooNarrow,
-    /// The total bit count falls outside `2^22..=2^35`.
+    /// The total bit count falls outside `2^20..=2^35`.
     CommitmentSizeOutOfRange,
 }
 
@@ -118,8 +114,8 @@ mod tests {
 
     #[test]
     fn rejects_a_commitment_size_outside_the_window() {
-        // m = 21, then m = 36.
-        assert_eq!(Shape::new(7, 14), Err(ShapeError::CommitmentSizeOutOfRange));
+        // m = 19, then m = 36.
+        assert_eq!(Shape::new(7, 12), Err(ShapeError::CommitmentSizeOutOfRange));
         assert_eq!(
             Shape::new(13, 23),
             Err(ShapeError::CommitmentSizeOutOfRange)
@@ -157,7 +153,7 @@ mod tests {
 
     #[test]
     fn accepts_the_window_boundaries() {
-        assert_eq!(Shape::new(7, 15).unwrap().log_bits(), MIN_LOG_BITS);
+        assert_eq!(Shape::new(7, 13).unwrap().log_bits(), MIN_LOG_BITS);
         assert_eq!(Shape::new(14, 21).unwrap().log_bits(), MAX_LOG_BITS);
     }
 }

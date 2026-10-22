@@ -4,11 +4,21 @@
 //! public shape and the caller's claim, so both sides derive it rather than
 //! one side sending it.
 
+// `BitZParams::table` and `VirtualParams::table` read the prover's `F128`s in
+// place as `Word`s. That keeps bit `v` of `lo || hi`, the coefficient of
+// `X^v`, at bit `v` of the word only on a little-endian target: on a
+// big-endian one the cast swaps the two `u64` halves, and the table returns
+// row `r ^ 64` when asked for row `r`. spongefish refuses big-endian targets
+// too, but that is its policy, not a guarantee this crate can lean on.
+#[cfg(target_endian = "big")]
+compile_error!("`common` reads `F128`s in place as `u128` words and needs a little-endian target");
+
 pub mod claim;
 pub mod fold;
 pub mod matrix;
 pub mod opening;
 pub mod params;
+pub mod security;
 pub mod shape;
 pub mod table;
 pub mod virtual_map;
@@ -20,6 +30,7 @@ pub use fold::{
 pub use matrix::BitMatrix;
 pub use opening::OpeningQuery;
 pub use params::{BitZParams, ParamsError, VirtualParams, VirtualParamsError};
+pub use security::SecurityLevel;
 pub use shape::{Shape, ShapeError};
 pub use table::{BitTable, TableError};
 pub use virtual_map::{

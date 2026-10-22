@@ -111,13 +111,13 @@ fn bounded_prover_message_bytes_preserve_the_transcript() {
     let challenge = prover.verifier_message::<F128>();
     let proof = prover.finish();
 
-    let mut legacy = build_prover(SESSION, INSTANCE);
-    legacy.prover_message(&(bytes.len() as u32));
+    let mut reference = build_prover(SESSION, INSTANCE);
+    reference.prover_message(&(bytes.len() as u32));
     for &byte in bytes {
-        legacy.prover_message(&[byte]);
+        reference.prover_message(&[byte]);
     }
-    assert_eq!(legacy.verifier_message::<F128>(), challenge);
-    assert_eq!(legacy.finish().narg_string, proof.narg_string);
+    assert_eq!(reference.verifier_message::<F128>(), challenge);
+    assert_eq!(reference.finish().narg_string, proof.narg_string);
 
     let mut verifier = build_verifier(SESSION, INSTANCE, &proof);
     assert_eq!(verifier.prover_message_bytes::<11>().unwrap(), bytes);

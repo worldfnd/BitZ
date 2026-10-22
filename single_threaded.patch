@@ -1,16 +1,16 @@
 diff --git a/crates/gkr/src/lib.rs b/crates/gkr/src/lib.rs
-index e553149..626eaa5 100644
+index 82753c0..7723ae7 100644
 --- a/crates/gkr/src/lib.rs
 +++ b/crates/gkr/src/lib.rs
 @@ -1,7 +1,6 @@
- use common::{BitMatrix, BitTable};
+ use common::{BitMatrix, BitTable, SecurityLevel};
  use field::{F128, Wide256};
  use num_traits::{ConstOne, ConstZero};
 -use rayon::prelude::*;
  use std::ops::Range;
  use transcript::{ProverState, VerifierState};
  
-@@ -148,16 +147,13 @@ fn round_sums<const AT_ONE: bool>(
+@@ -171,16 +170,13 @@ fn round_sums<const AT_ONE: bool>(
      // Two lanes per step: independent multiplication chains. Chunking also
      // reduces variance in benchmarking.
      left0
@@ -33,7 +33,7 @@ index e553149..626eaa5 100644
              |(mut sum_b, mut sum_inf), ((((l0, l1), r0), r1), e)| {
                  // `e · L(b) · R(b)` into `sum_b` and `e · ΔL · ΔR` into
                  // `sum_inf`, with `e` joining the left factor through a reduced
-@@ -177,21 +173,16 @@ fn round_sums<const AT_ONE: bool>(
+@@ -200,21 +196,16 @@ fn round_sums<const AT_ONE: bool>(
                  (sum_b, sum_inf)
              },
          )
@@ -59,7 +59,7 @@ index e553149..626eaa5 100644
          .for_each(|(((l0, r0), &l1), &r1)| {
              // Recalculating the step rather than writing it in the high half
              // in `round_sums` to save on writes. No benchmarking has been done
-@@ -269,15 +260,10 @@ impl LutLayers {
+@@ -292,15 +283,10 @@ impl LutLayers {
          (1 << self.log_trees).min(PARALLEL_MIN_LANES)
      }
  
@@ -78,7 +78,7 @@ index e553149..626eaa5 100644
      }
  
      /// The pairs that round 1 binds at `positions`, which lie in one lookup
-@@ -388,7 +374,7 @@ fn bucket_sums(
+@@ -413,7 +399,7 @@ fn bucket_sums(
      lut_layers: &LutLayers,
      eq_tables: &EqTables,
      point: &[Field],
@@ -87,7 +87,7 @@ index e553149..626eaa5 100644
  ) -> (Wide256, Wide256) {
      let top = point.len() - 1;
      let (half, s) = (1 << top, lut_layers.log_trees);
-@@ -405,8 +391,8 @@ fn bucket_sums(
+@@ -430,8 +416,8 @@ fn bucket_sums(
                  Wide256::mul(h, sum_inf.reduce()),
              )
          })
@@ -98,7 +98,7 @@ index e553149..626eaa5 100644
              |(x_b, x_inf), (y_b, y_inf)| (x_b + y_b, x_inf + y_inf),
          )
  }
-@@ -510,8 +496,8 @@ fn layer2_sums<const LAYER: usize, const AT_ONE: bool>(
+@@ -535,8 +521,8 @@ fn layer2_sums<const LAYER: usize, const AT_ONE: bool>(
                      })
                  })
          })
@@ -109,7 +109,7 @@ index e553149..626eaa5 100644
              |(x_b, x_inf), (y_b, y_inf)| (x_b + y_b, x_inf + y_inf),
          )
  }
-@@ -533,8 +519,8 @@ fn lut_bind<const LAYER: usize>(
+@@ -558,8 +544,8 @@ fn lut_bind<const LAYER: usize>(
      right: &mut [Field],
  ) {
      let (half, piece) = (left.len(), lut_layers.piece());
@@ -120,7 +120,7 @@ index e553149..626eaa5 100644
          .zip(lut_layers.pieces(half))
          .for_each(|((left, right), positions)| {
              let (luts, pairs) = lut_layers.pairs::<LAYER>(half, positions);
-@@ -805,12 +791,10 @@ fn lower_luts(images: &[Field]) -> Vec<[Field; 16]> {
+@@ -834,12 +820,10 @@ fn lower_luts(images: &[Field]) -> Vec<[Field; 16]> {
      let (a, rest) = images.split_at(quart);
      let (b, rest) = rest.split_at(quart);
      let (c, d) = rest.split_at(quart);
@@ -134,7 +134,7 @@ index e553149..626eaa5 100644
          .map(|(((&a, &b), &c), &d)| create_lut([a, b, c, d]))
          .collect()
  }
-@@ -823,7 +807,7 @@ fn layer3(lut_layers: &LutLayers) -> Vec<Field> {
+@@ -852,7 +836,7 @@ fn layer3(lut_layers: &LutLayers) -> Vec<Field> {
      let half = lut_layers.nodes() / 2;
      let mut layer3 = Field::zeroed_vec(half);
      layer3
@@ -143,7 +143,7 @@ index e553149..626eaa5 100644
          .zip(lut_layers.pieces(half))
          .for_each(|(nodes, positions)| {
              let ([lut0, lut1, ..], pairs) = lut_layers.pairs::<LAYER1>(half, positions);
-@@ -848,12 +832,7 @@ fn fold_layers(mut layer: Vec<Field>, groups: usize) -> (Vec<Field>, Vec<Vec<Fie
+@@ -877,12 +861,7 @@ fn fold_layers(mut layer: Vec<Field>, groups: usize) -> (Vec<Field>, Vec<Vec<Fie
          // Node `k` multiplies node `k` of the left half and node `k` of the
          // right half below it.
          let (l, r) = layer.split_at(layer.len() / 2);

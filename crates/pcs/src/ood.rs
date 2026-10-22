@@ -1,9 +1,14 @@
 //! Initial out-of-domain claim on the packed commitment polynomial.
 //!
-//! After binding the root and PCS parameters, the prover performs any configured
-//! grinding, samples `zeta`, and sends `value = p(point)`, where `p` is the packed
-//! witness MLE and `point[i] = zeta^(2^i)` in low-bit-first order.
+//! The caller binds the root and PCS parameters before this round.
+//! We sample one independent field coordinate per packed variable, as in Flock's recursive OOD checks.
+//! The prover sends `value = p(point)`, where `p` is the packed witness MLE.
 //! The verifier derives the same point and reads the claimed value.
+//!
+//! This adapts BitZ Lemma B.2 with independent coordinates and the multilinear Schwartz-Zippel bound.
+//! Two distinct candidates differ by a nonzero multilinear polynomial of total degree at most `point.len()`.
+//! For at most `L` candidates, the collision bound is `L^2 * point.len() / (2 * 2^128)`.
+//! This meets the 100-bit target for every supported witness size without initial OOD grinding.
 //!
 //! After ring switching, a fresh `coefficient` batches this claim into Ligerito:
 //! `basis += coefficient * eq(point, ·)` and `target += coefficient * value`.
@@ -18,19 +23,17 @@ use rayon::{current_num_threads, prelude::*};
 use transcript::{ProverState, PublicTranscript, VerifierState};
 
 use crate::bridge::{as_flock_f128, from_flock_f128};
-use crate::pow::{find, valid};
-use crate::{Pcs, VerifyError};
+use crate::{Pcs, SecurityLevel, VerifyError};
 
 const OOD_ROUND_TAG: &[u8] = b"bitz/pcs/ood/v1";
 const OOD_BATCHING_TAG: &[u8] = b"bitz/pcs/ood-batching/v1";
-const OOD_POW_TAG: &[u8] = b"bitz/pcs/ood-pow/v1";
 const BLOCK_LOG: usize = 12;
 const PARALLEL_MIN_LEN: usize = 1 << 18;
 
 /// An evaluation of the packed witness MLE, authenticated by the batched opening.
 #[derive(Debug)]
 pub(crate) struct OodClaim {
-    /// Successive squares of the sampled challenge, in low-bit-first order.
+    /// Independent field coordinates in low-bit-first variable order.
     pub(crate) point: Vec<F128>,
     /// Claimed MLE evaluation at `point`.
     pub(crate) value: F128,
@@ -38,38 +41,26 @@ pub(crate) struct OodClaim {
 
 /// Sends the initial evaluation after binding the commitment and configuration.
 /// Returns `None` without transcript events when the profile omits OOD sampling.
-pub(crate) fn prove(
-    pcs: &Pcs,
-    root: &[u8; 32],
-    packed: &[F128],
-    transcript: &mut ProverState,
-) -> Option<OodClaim> {
-    let grinding_bits = pcs.ood_grinding_bits()?;
-    absorb_header(pcs, root, grinding_bits, transcript);
-    if grinding_bits != 0 {
-        prove_pow(transcript, grinding_bits);
+pub(crate) fn prove(pcs: &Pcs, packed: &[F128], transcript: &mut ProverState) -> Option<OodClaim> {
+    if pcs.security_level() != SecurityLevel::Bits100 {
+        return None;
     }
-    let point = ood_point(transcript.verifier_message_f128(), pcs.packed_len());
+    let point = sample_point(pcs.packed_len(), transcript);
     let value = DenseMultilinearExtension::evaluate_exact(packed, &point);
     transcript.prover_message(&value);
     Some(OodClaim { point, value })
 }
 
-/// Reads the initial evaluation, checking grinding before sampling its point.
+/// Reads the initial evaluation after sampling its point.
 /// Reading the value does not authenticate it; the caller must verify its opening.
 pub(crate) fn verify(
     pcs: &Pcs,
-    root: &[u8; 32],
     transcript: &mut VerifierState<'_>,
 ) -> Result<Option<OodClaim>, VerifyError> {
-    let Some(grinding_bits) = pcs.ood_grinding_bits() else {
+    if pcs.security_level() != SecurityLevel::Bits100 {
         return Ok(None);
-    };
-    absorb_header(pcs, root, grinding_bits, transcript);
-    if grinding_bits != 0 {
-        verify_pow(transcript, grinding_bits).map_err(|_| VerifyError::MalformedProof)?;
     }
-    let point = ood_point(transcript.verifier_message_f128(), pcs.packed_len());
+    let point = sample_point(pcs.packed_len(), transcript);
     let value = transcript
         .prover_message::<F128>()
         .map_err(|_| VerifyError::MalformedProof)?;
@@ -127,55 +118,39 @@ pub(crate) fn add_succinct_basis(
     }
 }
 
-fn absorb_header(
-    pcs: &Pcs,
-    root: &[u8; 32],
-    grinding_bits: u32,
-    transcript: &mut impl PublicTranscript,
-) {
+fn sample_point(packed_len: usize, transcript: &mut impl PublicTranscript) -> Vec<F128> {
     transcript.public_message(OOD_ROUND_TAG);
-    transcript.public_message(root);
-    transcript.public_message(pcs);
-    transcript.public_message(&(pcs.packed_len() as u64));
-    transcript.public_message(&grinding_bits);
-}
-
-fn ood_point(zeta: F128, packed_len: usize) -> Vec<F128> {
-    let mut point = Vec::with_capacity(packed_len.ilog2() as usize);
-    let mut coordinate = zeta;
-    for _ in 0..packed_len.ilog2() {
-        point.push(coordinate);
-        coordinate *= coordinate;
-    }
-    point
-}
-
-fn prove_pow(transcript: &mut ProverState, bits: u32) {
-    transcript.public_message(OOD_POW_TAG);
-    transcript.public_message(&bits);
-    let seed = transcript.verifier_message::<F128>().to_bytes();
-    let nonce = find(&seed, bits);
-    transcript.prover_message(&nonce.to_le_bytes());
-}
-
-fn verify_pow(transcript: &mut VerifierState<'_>, bits: u32) -> Result<(), ()> {
-    transcript.public_message(OOD_POW_TAG);
-    transcript.public_message(&bits);
-    let seed = transcript.verifier_message::<F128>().to_bytes();
-    let nonce = transcript
-        .prover_message::<[u8; 8]>()
-        .map(u64::from_le_bytes)
-        .map_err(|_| ())?;
-    valid(&seed, nonce, bits).then_some(()).ok_or(())
+    (0..packed_len.ilog2())
+        .map(|_| transcript.verifier_message_f128())
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use num_traits::ConstZero;
     use rayon::ThreadPoolBuilder;
-    use transcript::{build_prover, build_verifier};
+    use transcript::build_prover;
 
     use super::*;
+
+    #[test]
+    fn each_ood_coordinate_consumes_a_fresh_challenge() {
+        for variables in 13..=28 {
+            let mut prover = build_prover(b"ood-test", b"independent-coordinates");
+            let mut expected = build_prover(b"ood-test", b"independent-coordinates");
+            expected.public_message(OOD_ROUND_TAG);
+            let point = sample_point(1 << variables, &mut prover);
+            assert_eq!(point.len(), variables);
+            for coordinate in point {
+                assert_eq!(coordinate, expected.verifier_message::<F128>());
+            }
+            assert_eq!(
+                prover.verifier_message::<F128>(),
+                expected.verifier_message::<F128>()
+            );
+            assert!(prover.finish().narg_string.is_empty());
+        }
+    }
 
     #[test]
     fn dense_basis_updates_match_the_full_equality_table_across_thread_counts() {
@@ -191,7 +166,7 @@ mod tests {
         for log_len in [0, 8, 12, 17, 18, 19] {
             let len = 1usize << log_len;
             let claim = OodClaim {
-                point: ood_point(F128::new(7, 11), len),
+                point: sample_point(len, &mut build_prover(b"ood-test", b"dense-basis")),
                 value: F128::ZERO,
             };
             let weights = eq_table(&claim.point);
@@ -220,7 +195,7 @@ mod tests {
 
     #[test]
     fn dense_and_succinct_ood_bases_agree_after_folding() {
-        let point = ood_point(F128::new(7, 11), 1 << 14);
+        let point = sample_point(1 << 14, &mut build_prover(b"ood-test", b"folded-basis"));
         let coefficient = F128::new(13, 17);
         let claim = OodClaim {
             point,
@@ -240,30 +215,5 @@ mod tests {
         let mut succinct = vec![FlockF128::ZERO; dense.len()];
         add_succinct_basis(&mut succinct, &claim, coefficient, &queries);
         assert_eq!(dense, succinct);
-    }
-
-    #[test]
-    fn grinding_binds_the_following_challenge_and_rejects_invalid_nonces() {
-        const BITS: u32 = 8;
-        let mut prover = build_prover(b"ood-test", b"grinding");
-        prove_pow(&mut prover, BITS);
-        let challenge = prover.verifier_message::<F128>();
-        let mut proof = prover.finish();
-        let mut verifier = build_verifier(b"ood-test", b"grinding", &proof);
-        verify_pow(&mut verifier, BITS).unwrap();
-        assert_eq!(verifier.verifier_message::<F128>(), challenge);
-        verifier.check_eof().unwrap();
-
-        let mut seed_transcript = build_prover(b"ood-test", b"grinding");
-        seed_transcript.public_message(OOD_POW_TAG);
-        seed_transcript.public_message(&BITS);
-        let seed = seed_transcript.verifier_message::<F128>().to_bytes();
-        let invalid = (0..).find(|&nonce| !valid(&seed, nonce, BITS)).unwrap();
-        proof.narg_string.copy_from_slice(&invalid.to_le_bytes());
-        let mut verifier = build_verifier(b"ood-test", b"grinding", &proof);
-        assert!(verify_pow(&mut verifier, BITS).is_err());
-        proof.narg_string.truncate(7);
-        let mut verifier = build_verifier(b"ood-test", b"grinding", &proof);
-        assert!(verify_pow(&mut verifier, BITS).is_err());
     }
 }

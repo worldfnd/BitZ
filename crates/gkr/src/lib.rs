@@ -1,4 +1,4 @@
-use common::{BitMatrix, BitTable};
+use common::{BitMatrix, BitTable, SecurityLevel};
 use field::{F128, Wide256};
 use num_traits::{ConstOne, ConstZero};
 use rayon::prelude::*;
@@ -6,6 +6,8 @@ use std::ops::Range;
 use transcript::{ProverState, VerifierState};
 
 pub type Field = F128;
+
+const CUBIC_GRINDING_LABEL: &[u8] = b"gkr/cubic/v1";
 
 /// Proves the layer-by-layer sumcheck reduction from a claim at `point`
 /// (an evaluation point on the output layer) down to a claim on the leaves.
@@ -21,6 +23,7 @@ pub fn gpgkr_prove(
     // Every layer below the output: layer 3 and up in full, layers 0 to 2 in
     // their lookup tables.
     witnesses: LayerWitnesses,
+    security: SecurityLevel,
 ) -> (Vec<F128>, Field) {
     let mut point = point.to_owned();
     let mut eq_memory = EqTables::alloc_storage(log_bits);
@@ -29,7 +32,7 @@ pub fn gpgkr_prove(
         upper_nodes,
     } = witnesses;
     for children in upper_nodes.into_iter().rev() {
-        (point, _) = prove_layer(ps, &mut eq_memory, &point, children);
+        (point, _) = prove_layer(ps, &mut eq_memory, &point, children, security);
     }
 
     // Layers 2, 1 and 0 stay in their lookup tables. Round 1 of each writes the
@@ -37,11 +40,30 @@ pub fn gpgkr_prove(
     // for the leaves'.
     // number of nodes at the leaf level is lut_layer.nodes() * 4. We only need half of that since we materialise after round 1.
     let mut bound_children = Field::zeroed_vec(2 * lut_layers.nodes());
-    let (point, _) =
-        prove_lut_layer::<LAYER2>(ps, &mut eq_memory, &point, &lut_layers, &mut bound_children);
-    let (point, _) =
-        prove_lut_layer::<LAYER1>(ps, &mut eq_memory, &point, &lut_layers, &mut bound_children);
-    prove_lut_layer::<LEAVES>(ps, &mut eq_memory, &point, &lut_layers, &mut bound_children)
+    let (point, _) = prove_lut_layer::<LAYER2>(
+        ps,
+        &mut eq_memory,
+        &point,
+        &lut_layers,
+        &mut bound_children,
+        security,
+    );
+    let (point, _) = prove_lut_layer::<LAYER1>(
+        ps,
+        &mut eq_memory,
+        &point,
+        &lut_layers,
+        &mut bound_children,
+        security,
+    );
+    prove_lut_layer::<LEAVES>(
+        ps,
+        &mut eq_memory,
+        &point,
+        &lut_layers,
+        &mut bound_children,
+        security,
+    )
 }
 
 /// Proves `c = Σ_x eq(z, x) · L(x) · R(x)` for the halves `L`, `R` of
@@ -56,12 +78,13 @@ fn prove_layer(
     eq_memory: &mut [Field],
     point: &[Field],
     mut children: Vec<Field>,
+    security: SecurityLevel,
 ) -> (Vec<Field>, Field) {
     let eq_tables = EqTables::new(eq_memory, point);
     // The top index bit of `children` picks the half: `L`, then `R`.
     let mid = children.len() / 2;
     let (left, right) = children.split_at_mut(mid);
-    prove_rounds(ps, &eq_tables, point, None, left, right)
+    prove_rounds(ps, &eq_tables, point, None, left, right, security)
 }
 
 /// The dense rounds of a layer, then its last message. A LUT-backed layer
@@ -76,6 +99,7 @@ fn prove_rounds(
     round_one: Option<Field>,
     mut left: &mut [Field],
     mut right: &mut [Field],
+    security: SecurityLevel,
 ) -> (Vec<Field>, Field) {
     let n = point.len();
     let mut next_point = vec![Field::ZERO; n + 1];
@@ -105,6 +129,7 @@ fn prove_rounds(
         };
         ps.prover_message(&[eq_bound * sum_b.reduce(), eq_bound * sum_inf.reduce()]);
 
+        ps.grind(CUBIC_GRINDING_LABEL, security.grinding_bits(3));
         let r = ps.verifier_message();
         bind(r, left0, left1, right0, right1);
         left = &mut left[..half];
@@ -341,6 +366,7 @@ fn prove_lut_layer<const LAYER: usize>(
     point: &[Field],
     lut_layers: &LutLayers,
     bound_children: &mut [Field],
+    security: SecurityLevel,
 ) -> (Vec<Field>, Field) {
     let eq_tables = EqTables::new(eq_memory, point);
     let top = point.len() - 1;
@@ -353,11 +379,12 @@ fn prove_lut_layer<const LAYER: usize>(
     };
     ps.prover_message(&[sum_b.reduce(), sum_inf.reduce()]);
 
+    ps.grind(CUBIC_GRINDING_LABEL, security.grinding_bits(3));
     let r = ps.verifier_message();
     let half = 1 << top;
     let (left, right) = bound_children[..2 * half].split_at_mut(half);
     lut_bind::<LAYER>(r, lut_layers, left, right);
-    prove_rounds(ps, &eq_tables, point, Some(r), left, right)
+    prove_rounds(ps, &eq_tables, point, Some(r), left, right, security)
 }
 
 /// Round 1's sum at the boolean point `b` (`1` if `AT_ONE`) and its leading
@@ -654,6 +681,7 @@ pub fn gpgkr_verify(
     mut claim: Field,
     point: &[F128],
     layers: u32,
+    security: SecurityLevel,
 ) -> Option<(Vec<F128>, Field)> {
     // Edge cases around input lenghts, 0 meaning empty
     // | circuit | last value |
@@ -667,7 +695,7 @@ pub fn gpgkr_verify(
     //
     let mut point = point.to_owned();
     for _ in 0..layers {
-        (point, claim) = verify_layer(vs, claim, &point)?
+        (point, claim) = verify_layer(vs, claim, &point, security)?
     }
     Some((point, claim))
 }
@@ -681,6 +709,7 @@ fn verify_layer(
     vs: &mut VerifierState,
     mut claim: Field,
     point: &[Field],
+    security: SecurityLevel,
 ) -> Option<(Vec<Field>, Field)> {
     let n = point.len();
     let mut next_point = vec![Field::ZERO; n + 1];
@@ -695,6 +724,8 @@ fn verify_layer(
             (sum_b, (claim - (Field::ONE - z) * sum_b) / z)
         };
 
+        vs.grind(CUBIC_GRINDING_LABEL, security.grinding_bits(3))
+            .ok()?;
         let r = vs.verifier_message();
         next_point[i] = r;
         let eq_r = eq_factor(r, z);
@@ -872,6 +903,7 @@ pub struct LayerWitnesses {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use common::SecurityLevel::{Bits100, Bits128};
     use common::{BitZParams, Shape};
     use field::gf128::smallest_generator;
     use proptest::prelude::*;
@@ -1029,8 +1061,8 @@ mod tests {
             let table = table(shape, &packed);
             let leaves = leaves(&table, &row_images);
 
-            let (output, proof) = prove(&table, &row_images);
-            prop_assert!(verify(&leaves, &output, &proof));
+            let (output, proof) = prove(&table, &row_images, Bits100);
+            prop_assert!(verify(&leaves, &output, &proof, Bits100));
 
             let columns = shape.columns();
             let expected: Vec<Field> = (0..columns)
@@ -1044,13 +1076,38 @@ mod tests {
         fn gpgkr_verify_rejects_tampered_output(bits in bits(), seed in any::<u64>()) {
             let (shape, packed, row_images) = instance(SMALLEST, bits, seed);
             let table = table(shape, &packed);
-            let (output, proof) = prove(&table, &row_images);
+            let (output, proof) = prove(&table, &row_images, Bits100);
 
             let mut tampered = output;
             tampered[0] += Field::ONE;
 
-            prop_assert!(!verify(&leaves(&table, &row_images), &tampered, &proof));
+            prop_assert!(!verify(&leaves(&table, &row_images), &tampered, &proof, Bits100));
         }
+    }
+
+    // At 128 bits every cubic challenge is ground: the proof carries a nonce
+    // per sumcheck round, and the verifier rejects a changed one.
+    #[test]
+    fn gpgkr_security_targets_replay_and_reject_changed_nonces() {
+        let (shape, packed, row_images) = instance(SMALLEST, Bits::Drawn, 6);
+        let table = table(shape, &packed);
+        let leaves = leaves(&table, &row_images);
+
+        let (_, unground) = prove(&table, &row_images, Bits100);
+        let (output, mut proof) = prove(&table, &row_images, Bits128);
+        assert!(verify(&leaves, &output, &proof, Bits128));
+
+        // One cubic challenge per coordinate of each layer's point, from the
+        // output's `s` up to the leaves' `log_bits - 1`, each with an
+        // eight-byte nonce.
+        let cubic_challenges: usize = (shape.log_columns()..shape.log_bits()).sum();
+        assert_eq!(
+            proof.narg_string.len(),
+            unground.narg_string.len() + 8 * cubic_challenges
+        );
+        // The first cubic message occupies two canonical field elements.
+        proof.narg_string[32] ^= 1;
+        assert!(!verify(&leaves, &output, &proof, Bits128));
     }
 
     // Zero and one coordinates in the output point take the `sends_one`
@@ -1080,19 +1137,21 @@ mod tests {
             let (output, witnesses) = GrandProductCircuit::new(&row_images, &table).batched_eval();
             let claim = mle(output, &point);
             let mut prover = transcript::build_prover("gkr-zero", &point);
-            let terminal = gpgkr_prove(&mut prover, shape.log_bits(), &point, witnesses);
+            let terminal = gpgkr_prove(&mut prover, shape.log_bits(), &point, witnesses, Bits100);
             assert_eq!(terminal.1, mle(leaves.clone(), &terminal.0));
             let proof = prover.finish();
 
             let mut verifier = transcript::build_verifier("gkr-zero", &point, &proof);
             assert_eq!(
-                gpgkr_verify(&mut verifier, claim, &point, layers),
+                gpgkr_verify(&mut verifier, claim, &point, layers, Bits100),
                 Some(terminal)
             );
             verifier.check_eof().unwrap();
 
             let mut verifier = transcript::build_verifier("gkr-zero", &point, &proof);
-            assert!(gpgkr_verify(&mut verifier, claim + Field::ONE, &point, layers).is_none());
+            assert!(
+                gpgkr_verify(&mut verifier, claim + Field::ONE, &point, layers, Bits100).is_none()
+            );
         }
     }
 
@@ -1118,6 +1177,7 @@ mod tests {
                 &[Field],
                 &LutLayers,
                 &mut [Field],
+                SecurityLevel,
             ) -> (Vec<Field>, Field);
             let prove: Prove = match layer {
                 LEAVES => prove_lut_layer::<LEAVES>,
@@ -1138,13 +1198,14 @@ mod tests {
                     &point,
                     &lut_layers,
                     &mut bound_children,
+                    Bits100,
                 );
                 let proof = prover.finish();
 
                 let mut verifier = transcript::build_verifier("lut-layer", &point, &proof);
                 let claim = mle(parent.clone(), &point);
                 assert_eq!(
-                    verify_layer(&mut verifier, claim, &point),
+                    verify_layer(&mut verifier, claim, &point, Bits100),
                     Some(terminal.clone()),
                     "layer {layer}, top coordinate {top}"
                 );
@@ -1188,15 +1249,15 @@ mod tests {
         let (shape, packed, row_images) = instance(SMALLEST, Bits::Drawn, 2);
         let table = table(shape, &packed);
         let leaves = leaves(&table, &row_images);
-        let (output, proof) = prove(&table, &row_images);
-        assert!(verify(&leaves, &output, &proof));
+        let (output, proof) = prove(&table, &row_images, Bits100);
+        assert!(verify(&leaves, &output, &proof, Bits100));
 
         // Cover partial field elements and missing messages in every layer.
         for len in 0..proof.narg_string.len() {
             let mut truncated = proof.clone();
             truncated.narg_string.truncate(len);
             assert!(
-                !verify(&leaves, &output, &truncated),
+                !verify(&leaves, &output, &truncated, Bits100),
                 "accepted {len} bytes"
             );
         }
@@ -1204,7 +1265,11 @@ mod tests {
 
     /// Proves the circuit of `table` at a point the verifier draws, as
     /// `gkr_reduce` does. Returns the output layer, one product per tree.
-    fn prove(table: &BitTable, row_images: &[Field]) -> (Vec<Field>, transcript::Proof) {
+    fn prove(
+        table: &BitTable,
+        row_images: &[Field],
+        security: SecurityLevel,
+    ) -> (Vec<Field>, transcript::Proof) {
         let (output, witnesses) = GrandProductCircuit::new(row_images, table).batched_eval();
         let log_bits = table.shape().log_bits();
 
@@ -1218,13 +1283,18 @@ mod tests {
             .map(|_| prover.verifier_message())
             .collect();
 
-        gpgkr_prove(&mut prover, log_bits, &point, witnesses);
+        gpgkr_prove(&mut prover, log_bits, &point, witnesses, security);
         (output, prover.finish())
     }
 
     /// Verifies `proof` for `output`, then checks the final claim against the
     /// MLE of `leaves`.
-    fn verify(leaves: &[Field], output: &[Field], proof: &transcript::Proof) -> bool {
+    fn verify(
+        leaves: &[Field],
+        output: &[Field],
+        proof: &transcript::Proof,
+        security: SecurityLevel,
+    ) -> bool {
         let instance = (output.to_vec(), leaves.len() as u128);
         let mut verifier = transcript::build_verifier("gkr", &instance, proof);
 
@@ -1234,7 +1304,7 @@ mod tests {
         let claim = mle(output.to_vec(), &point);
         let layers = leaves.len().ilog2() - output.len().ilog2();
 
-        match gpgkr_verify(&mut verifier, claim, &point, layers) {
+        match gpgkr_verify(&mut verifier, claim, &point, layers, security) {
             Some((point, claim)) => {
                 mle(leaves.to_vec(), &point) == claim && verifier.check_eof().is_ok()
             }

@@ -44,8 +44,10 @@ impl<'a> BitMatrix<'a> {
     pub(crate) fn new(packed: impl Into<Cow<'a, [Word]>>, log_dim2: usize) -> Self {
         let packed = packed.into();
         let bits = packed.len() * BITS;
+        // Compared as logs: `1 << log_dim2` overflows from `usize::BITS` on,
+        // and a release build masks the shift instead of panicking.
         assert!(
-            bits.is_power_of_two() && (1 << log_dim2) <= bits,
+            bits.is_power_of_two() && log_dim2 <= bits.ilog2() as usize,
             "{bits} bits do not split into rows of 2^{log_dim2}"
         );
         Self { packed, log_dim2 }
@@ -229,8 +231,11 @@ fn transpose_bit_block<W: BlockWord, const N: usize>(a: &mut [W; N]) {
 fn transpose_reference<const GS: usize>(tt: &[Word]) -> Vec<Word> {
     assert_eq!(tt.len() % GS, 0);
     let segment_n = tt.len() / GS;
-    let mut segments: [_; GS] =
-        std::array::from_fn(|i| BitsIter::new(tt[i * segment_n..(i + 1) * segment_n].iter()));
+    // On the heap: the benchmark's `GS` is `2^20`, too many iterators for the
+    // stack.
+    let mut segments: Vec<_> = (0..GS)
+        .map(|i| BitsIter::new(tt[i * segment_n..(i + 1) * segment_n].iter()))
+        .collect();
 
     let mut out = Vec::with_capacity(tt.len());
     let mut word: Word = 0;
@@ -253,7 +258,7 @@ fn transpose_reference<const GS: usize>(tt: &[Word]) -> Vec<Word> {
     out
 }
 
-/// Benchmark-only access to the private transposes; see `benches/table.rs`.
+/// Benchmark-only access to the private transposes; see `benches/matrix.rs`.
 #[cfg(feature = "bench")]
 #[doc(hidden)]
 pub mod bench {

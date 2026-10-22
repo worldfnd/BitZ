@@ -1822,6 +1822,7 @@ dependencies = [
 name = "transcript"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "field",
  "spongefish",
 ]

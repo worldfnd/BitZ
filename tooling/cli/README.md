@@ -6,6 +6,12 @@ Run an end-to-end proof with fresh random inputs:
 cargo run -p bitz-cli --release -- circuit-e2e --circuit sha256-chain --num-blocks 8 --threads 1
 ```
 
+Select the PCS round budget with `--pcs-security-bits 100` or `128`; the default is `100`.
+The implementation derives all internal parameters from the padded witness size.
+The `100` target uses list decoding and an initial out-of-domain (OOD) check.
+The `128` target uses unique decoding and omits that check.
+Spartan still uses `Q100`; this option does not set Spartan security.
+
 `--circuit` selects one of these compiled-in adapters:
 
 - `sha256-compression`: one raw block; optional `--initial-state` accepts eight words as 64 hexadecimal digits.
