@@ -6,6 +6,7 @@ use {
         benchmark,
         circuits::{BuiltinCircuit, CircuitInstance},
     },
+    pcs::SecurityLevel,
 };
 
 /// Prove generated circuit constraints over Q100 and verify the proof.
@@ -28,6 +29,14 @@ pub struct Args {
     /// positive Rayon worker count (default available parallelism)
     #[argh(option)]
     threads: Option<usize>,
+
+    /// classical PCS round budget: 100 (default) or 128; Spartan remains over Q100
+    #[argh(
+        option,
+        default = "SecurityLevel::Bits100",
+        from_str_fn(parse_pcs_security)
+    )]
+    pcs_security_bits: SecurityLevel,
 }
 
 impl Command for Args {
@@ -46,19 +55,27 @@ impl Command for Args {
                 circuit = %self.circuit,
                 threads = rayon::current_num_threads(),
                 field = "Q100",
-                pcs = "Fast",
+                pcs_round_target_bits = self.pcs_security_bits.bits(),
                 hash = "Blake3",
             ).entered();
             let statement = tracing::info_span!("generate_inputs").in_scope(|| {
                 CircuitInstance::random(self.circuit, self.num_blocks, self.initial_state)
             })?;
             let inputs = statement.inputs.clone();
-            let timings = benchmark::run(statement, &inputs)?;
+            let timings = benchmark::run(statement, &inputs, self.pcs_security_bits)?;
             tracing::info!("Proof verified successfully");
-            println!("circuit={} threads={} field=Q100 pcs=Fast hash=Blake3 relation=Q100-r1cs constraints_verified=true", self.circuit, rayon::current_num_threads());
+            println!("circuit={} threads={} field=Q100 pcs_round_target_bits={} security_model=classical-pcs-round-budget relation=Q100-r1cs constraints_verified=true", self.circuit, rayon::current_num_threads(), self.pcs_security_bits.bits());
             println!("{timings}");
             Ok(())
         })
+    }
+}
+
+fn parse_pcs_security(value: &str) -> Result<SecurityLevel, String> {
+    match value {
+        "100" => Ok(SecurityLevel::Bits100),
+        "128" => Ok(SecurityLevel::Bits128),
+        _ => Err("expected a PCS round budget of 100 or 128 bits".into()),
     }
 }
 
@@ -71,4 +88,34 @@ fn parse_state(hex: &str) -> Result<[u32; 8], String> {
         *word = u32::from_str_radix(&hex[i * 8..i * 8 + 8], 16).map_err(|err| err.to_string())?;
     }
     Ok(words)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pcs_budget_defaults_to_100_and_accepts_only_supported_values() {
+        let args = Args::from_args(&["circuit-e2e"], &["--circuit", "sha256-compression"]).unwrap();
+        assert_eq!(args.pcs_security_bits, SecurityLevel::Bits100);
+        for (value, expected) in [
+            ("100", SecurityLevel::Bits100),
+            ("128", SecurityLevel::Bits128),
+        ] {
+            let args = Args::from_args(
+                &["circuit-e2e"],
+                &[
+                    "--circuit",
+                    "sha256-compression",
+                    "--pcs-security-bits",
+                    value,
+                ],
+            )
+            .unwrap();
+            assert_eq!(args.pcs_security_bits, expected);
+        }
+        for value in ["0", "99", "120", "129", "invalid"] {
+            assert!(parse_pcs_security(value).is_err());
+        }
+    }
 }

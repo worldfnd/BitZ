@@ -1,6 +1,7 @@
 //! Shared execution and timing for circuit proof benchmarks.
 
 use crate::end_to_end::{CircuitProofSystem, CircuitStatement, CircuitStats, Error};
+use pcs::SecurityLevel;
 use std::{
     fmt,
     time::{Duration, Instant},
@@ -18,13 +19,22 @@ pub struct Timings {
 
 /// Runs setup, witness generation, commitment, proving, and verification.
 /// Callers generate inputs and initialize worker threads before calling this.
-pub fn run<S: CircuitStatement>(statement: S, inputs: &[bool]) -> Result<Timings, Error> {
+pub fn run<S: CircuitStatement>(
+    statement: S,
+    inputs: &[bool],
+    pcs_security: SecurityLevel,
+) -> Result<Timings, Error> {
     let started = Instant::now();
-    let prepared = CircuitProofSystem::new(statement)?;
+    let prepared = CircuitProofSystem::new(statement, pcs_security)?;
     let setup = started.elapsed();
     let circuit = prepared.stats();
     tracing::info!(
         opening_path = ?circuit.opening_path,
+        pcs_round_target_bits = circuit.pcs_security.bits(),
+        pcs_decoding = match circuit.pcs_security {
+            SecurityLevel::Bits100 => "list",
+            SecurityLevel::Bits128 => "unique",
+        },
         constraints = circuit.constraints,
         assignment_bits = circuit.assignment_bits,
         committed_bits = circuit.committed_bits,
@@ -57,8 +67,9 @@ impl fmt::Display for Timings {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "opening_path={:?} constraints={} assignment_bits={} committed_bits={} padded_committed_bits={} setup_ms={:.3} witness_ms={:.3} commit_ms={:.3} prove_ms={:.3} total_prove_ms={:.3} verify_ms={:.3}",
+            "opening_path={:?} pcs_round_target_bits={} constraints={} assignment_bits={} committed_bits={} padded_committed_bits={} setup_ms={:.3} witness_ms={:.3} commit_ms={:.3} prove_ms={:.3} total_prove_ms={:.3} verify_ms={:.3}",
             self.circuit.opening_path,
+            self.circuit.pcs_security.bits(),
             self.circuit.constraints,
             self.circuit.assignment_bits,
             self.circuit.committed_bits,

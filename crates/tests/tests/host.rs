@@ -42,7 +42,6 @@ fn a_proof_survives_the_round_trip_through_bytes() {
         // Verification against the decoded proof, with the claim supplied
         // the way a caller supplies it on both sides.
         instance
-            .verifier
             .verify(
                 &instance.claim,
                 &instance.pcs,
@@ -71,7 +70,6 @@ fn a_tampered_fold_is_left_for_the_verifier_to_catch() {
     let transcript = verifier_transcript(&proof);
     assert!(
         instance
-            .verifier
             .verify(&instance.claim, &instance.pcs, instance.com, transcript)
             .is_err(),
         "a tampered fold must not verify"

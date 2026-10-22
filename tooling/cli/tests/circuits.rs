@@ -8,6 +8,7 @@ use circuit::{
 };
 use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive};
+use pcs::SecurityLevel;
 
 #[test]
 fn sha_constraint_residuals_cannot_wrap_modulo_q100() {
@@ -51,7 +52,7 @@ fn supported_sha_circuits_prove_and_verify() {
     for circuit in BuiltinCircuit::ALL {
         let statement = CircuitInstance::random(circuit, None, None).unwrap();
         let inputs = statement.inputs.clone();
-        let system = CircuitProofSystem::new(statement).unwrap();
+        let system = CircuitProofSystem::new(statement, SecurityLevel::Bits100).unwrap();
         let witness = system.witness(&inputs).unwrap();
         let data = system.commit(&witness).unwrap();
         let proof = system.prove(witness, data).unwrap();
@@ -74,17 +75,17 @@ fn sha_compression_matches_abc_and_binds_public_values() {
         inputs: inputs.clone(),
         output: bits(&ABC_DIGEST),
     };
-    let system = CircuitProofSystem::new(statement.clone()).unwrap();
+    let system = CircuitProofSystem::new(statement.clone(), SecurityLevel::Bits100).unwrap();
     let witness = system.witness(&inputs).unwrap();
     let data = system.commit(&witness).unwrap();
     let proof = system.prove(witness, data).unwrap();
-    CircuitProofSystem::new(statement.clone())
+    CircuitProofSystem::new(statement.clone(), SecurityLevel::Bits100)
         .unwrap()
         .verify(&proof)
         .unwrap();
     let mut changed = statement.clone();
     changed.output[0] ^= true;
-    let wrong_output = CircuitProofSystem::new(changed).unwrap();
+    let wrong_output = CircuitProofSystem::new(changed, SecurityLevel::Bits100).unwrap();
     assert!(wrong_output.verify(&proof).is_err());
     assert!(matches!(
         wrong_output.witness(&inputs),
@@ -93,7 +94,7 @@ fn sha_compression_matches_abc_and_binds_public_values() {
     let mut changed = statement;
     changed.inputs[0] ^= true;
     assert!(
-        CircuitProofSystem::new(changed)
+        CircuitProofSystem::new(changed, SecurityLevel::Bits100)
             .unwrap()
             .verify(&proof)
             .is_err()
@@ -110,7 +111,7 @@ fn variable_lengths_custom_state_and_invalid_dimensions() {
     ] {
         let statement = CircuitInstance::random(circuit, count, state).unwrap();
         let inputs = statement.inputs.clone();
-        let system = CircuitProofSystem::new(statement).unwrap();
+        let system = CircuitProofSystem::new(statement, SecurityLevel::Bits100).unwrap();
         system.witness(&inputs).unwrap();
     }
     for (circuit, count) in [
@@ -127,5 +128,5 @@ fn variable_lengths_custom_state_and_invalid_dimensions() {
     let mut malformed =
         CircuitInstance::random(BuiltinCircuit::Sha256Compression, None, None).unwrap();
     malformed.inputs.pop();
-    assert!(CircuitProofSystem::new(malformed).is_err());
+    assert!(CircuitProofSystem::new(malformed, SecurityLevel::Bits100).is_err());
 }
