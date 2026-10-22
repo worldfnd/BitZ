@@ -1,4 +1,4 @@
-use common::{BitMatrix, BitTable, matrix::StepIter};
+use common::{BitMatrix, BitTable};
 use field::{F128, Wide256};
 use num_traits::{ConstOne, ConstZero};
 use rayon::prelude::*;
@@ -18,11 +18,10 @@ pub fn gpgkr_prove(
     ps: &mut ProverState,
     log_bits: usize,
     point: &[F128],
-    // All the intermediate witnesses + the input layer, from the top down. Doesn't contain the output layer
+    // Every layer below the output: layer 3 and up in full, layers 0 to 2 in
+    // their lookup tables.
     witnesses: LayerWitnesses,
 ) -> (Vec<F128>, Field) {
-    // Edge cases
-    // - empty witnesses -> single constant circuit -> one verifier message that permutes the proof state, but a single constant can't have an MLE
     let mut point = point.to_owned();
     let mut eq_memory = EqTables::alloc_storage(log_bits);
     let LayerWitnesses {
@@ -587,14 +586,14 @@ fn eq_factor(r: Field, z: Field) -> Field {
 /// only the largest and halving it between rounds (`low[k] += high[k]`)
 /// would save that half, but it measured 7.5-12% slower, as it adds a pass
 /// over memory. Splitting the table makes the trade moot.
-// TODO: Split the table.
+// TODO: Split the table. The buckets already do a kind of splitting
 struct EqTables<'a> {
     storage: &'a [Field],
 }
 
 impl<'a> EqTables<'a> {
     /// `eq(z_{<i}, x)` for `x ∈ {0,1}^i`, in the order of
-    /// `poly::eq::eq_table(&z[..i])`. Table `i` sits at
+    /// `poly::eq_table(&z[..i])`. Table `i` sits at
     /// `2^i - 1 .. 2^(i+1) - 1`.
     fn below(&self, i: usize) -> &[Field] {
         let start = (1 << i) - 1;
@@ -602,8 +601,9 @@ impl<'a> EqTables<'a> {
         &self.storage[start..end]
     }
 
-    /// Allocates all directly as it is as much space as a double buffer approach would take.
-    #[inline(never)]
+    /// Builds every table of `point` in `storage`, a buffer from
+    /// [`EqTables::alloc_storage`]; nothing is allocated here.
+    #[inline(never)] // Inlining or not doesn't improve performance, but it does hide it in profiling therefore it has been annotated with inline never.
     fn new(storage: &'a mut [Field], point: &[Field]) -> EqTables<'a> {
         // Establishes the whole table's space budget up front so LLVM can
         // prove the `low`/`hi` writes in the loop below are in bounds
@@ -634,6 +634,9 @@ impl<'a> EqTables<'a> {
         EqTables { storage }
     }
 
+    /// Room for every table of a point of up to `log_bits - 1` coordinates,
+    /// the leaves' sumcheck's, allocated once for all layers. All the tables
+    /// in one buffer take as much space as a double buffer would.
     fn alloc_storage(log_bits: usize) -> Vec<Field> {
         Field::zeroed_vec(1 << (log_bits.saturating_sub(1)).max(1))
     }
@@ -709,7 +712,6 @@ fn verify_layer(
     Some((next_point, interpolate(left_r, right_r, t)))
 }
 
-// TODO: Optimise for circuits that are padded.
 pub struct GrandProductCircuit<'a> {
     matrix: BitMatrix<'static>,
     images: &'a [F128],
@@ -723,16 +725,19 @@ impl<'a> GrandProductCircuit<'a> {
             "one image per row of the table"
         );
         // Leaf `(b << s) | c` is `row_images[b]` where `bit(c, b)` is set and
-        // one elsewhere: columns occupy the low index bits, so each product
-        // tree reduces one column, folding the row bits from the top.
+        // one elsewhere: the low `s` index bits pick one of the `2^s` trees
+        // and the rest are the leaf's position in it. Each layer folds the
+        // top position bit, so tree `c` multiplies the images `bit(c, ·)`
+        // selects.
         //
-        // The bottom three layers are looked up in 16-entry lookup tables, one
-        // per four rows, so the top two row bits are split off and moved beside
-        // the columns. After the transpose, row group `b' < rows/4` is one
-        // contiguous run, and in it the bits of rows `b'`, `b' + rows/4`,
-        // `b' + 2 rows/4` and `b' + 3 rows/4` of one column sit next to each
-        // other as a nibble: the four leaves under node `(b' << s) | c` of
-        // layer 2, columns in ascending order.
+        // Layers 0 to 2 are looked up in 16-entry lookup tables, one per four
+        // images, and the four leaves under a layer-2 node are a quarter of
+        // the positions apart, so the top two position bits are split off and
+        // moved below the tree bits. After the transpose, layer-2 node
+        // position `g` is one contiguous run, a nibble per tree in ascending
+        // order, and nibble `c` of it holds `bit(c, g + q·n)` at bit `q`, `n`
+        // being a quarter of the images: the four leaves under layer-2 node
+        // `(g << s) | c`.
         let matrix = bittable.as_matrix();
         let log_dim2 = matrix.log_dim2() - 2;
         let matrix = matrix.reshape(log_dim2).transpose();
@@ -767,14 +772,14 @@ impl<'a> GrandProductCircuit<'a> {
 const NIBBLE_BITS: usize = 4;
 const NIBBLES_IN_WORD: usize = u64::BITS as usize / NIBBLE_BITS;
 
-/// Layers 0 to 2 as lookup tables, one per four images: `lut[s]` is the
-/// layer-2 node whose four leaves are the bits of `s`.
+/// Layers 0 to 2 as lookup tables, one per four images: `lut[nibble]` is the
+/// layer-2 node whose four leaves are the bits of `nibble`.
 ///
 /// Each lookup table takes one image from each quarter of `images`.
 fn lower_luts(images: &[Field]) -> Vec<[Field; 16]> {
-    /// `lut[s]` is the product of the inputs whose bit is set in `s`, `a`
-    /// on bit 0 through `d` on bit 3 (`0b0000 -> 1`, `0b0001 -> a`,
-    /// `0b0011 -> a*b`, ...), so a 4-bit lookup string indexes its
+    /// `lut[nibble]` is the product of the inputs whose bit is set in
+    /// `nibble`, `a` on bit 0 through `d` on bit 3 (`0b0000 -> 1`,
+    /// `0b0001 -> a`, `0b0011 -> a*b`, ...), so a nibble indexes its
     /// multilinear value directly.
     ///
     /// Built by doubling: entries `2^i..2^(i+1)` are entries `0..2^i`
@@ -829,24 +834,6 @@ fn layer3(lut_layers: &LutLayers) -> Vec<Field> {
     layer3
 }
 
-/// Each layer-2 node of a run of row groups as the lookup table of its row
-/// group and the nibble of its four leaves, in node order: node
-/// `k = (b' << s) | c` reads nibble `k`, and all `2^s` columns of row group
-/// `b'` share its lookup table. `nibbles` and `luts` cover the same row
-/// groups.
-fn lut_nodes<'a>(
-    nibbles: &'a [u128],
-    luts: &'a [[Field; 16]],
-) -> impl ExactSizeIterator<Item = (&'a [Field; 16], usize)> {
-    let nibbles = StepIter::<4>::new(nibbles.iter());
-    // Every lookup table serves the same run of nibbles, one per column.
-    // TODO check assembly that this isn't reloaded constantly. Or maybe it is unavoidable but might still save a shift instruction. Also might generate too much indirection.
-    let log_columns = (nibbles.len() / luts.len()).ilog2();
-    nibbles
-        .enumerate()
-        .map(move |(k, bs)| (&luts[k >> log_columns], bs as usize))
-}
-
 /// Multiplies `layer` pairwise, left half against right half, until one
 /// value per group remains. Returns that output layer and every layer before
 /// it, `layer` first.
@@ -872,54 +859,14 @@ fn fold_layers(mut layer: Vec<Field>, groups: usize) -> (Vec<Field>, Vec<Vec<Fie
     (layer, witnesses)
 }
 
-/// The layers below the output, yielded from the top down. The bottom three
-/// are kept as the lookup tables they are looked up in, the rest in full.
-// TODO: This can be a single vec that is allocated at the start.
+/// The intermediate layers. Layers 0 to 2 stay in their lookup tables,
+/// which is how round 1 of their sumchecks reads them; layer 3 and up are
+/// kept in full.
 pub struct LayerWitnesses {
     /// Layers 0 to 2, in their lookup tables.
     lut_layers: LutLayers,
     /// Layer 3 and up, layer 3 first.
     upper_nodes: Vec<Vec<Field>>,
-}
-
-impl LayerWitnesses {
-    /// The leaves and layers 1 and 2, looked up in full. A node is the
-    /// product of the nibble bits its subtree covers: leaf quarter `q` is bit
-    /// `q` alone, layer-1 half `h` pairs bits `h` and `h + 2`, and layer 2
-    /// takes all four.
-    fn lower_layers(&self) -> [Vec<Field>; 3] {
-        let nodes = lut_nodes(&self.lut_layers.matrix, &self.lut_layers.luts);
-        let n = nodes.len();
-        let mut leaves = Field::zeroed_vec(4 * n);
-        let mut layer1 = Field::zeroed_vec(2 * n);
-        let mut layer2 = Field::zeroed_vec(n);
-
-        for (k, (lut, bs)) in nodes.enumerate() {
-            for q in 0..4 {
-                leaves[q * n + k] = lut[bs & (1 << q)];
-            }
-            for h in 0..2 {
-                layer1[h * n + k] = lut[bs & (0b0101 << h)];
-            }
-            layer2[k] = lut[bs];
-        }
-
-        [leaves, layer1, layer2]
-    }
-}
-
-// The sumcheck still reads every layer in full, so for now the bottom three
-// are rebuilt from the lookup tables here; layer 3 and up are already in
-// `upper_nodes`.
-impl IntoIterator for LayerWitnesses {
-    type Item = Vec<Field>;
-    type IntoIter = std::iter::Rev<std::vec::IntoIter<Vec<Field>>>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        let mut layers = Vec::from(self.lower_layers());
-        layers.extend(self.upper_nodes);
-        layers.into_iter().rev()
-    }
 }
 
 #[cfg(test)]
@@ -1075,7 +1022,7 @@ mod tests {
         #![proptest_config(ProptestConfig::with_cases(4))]
 
         // Full protocol: the verifier accepts, and the output is the product
-        // of each column's leaves.
+        // of each tree's leaves.
         #[test]
         fn gpgkr_round_trip(bits in bits(), seed in any::<u64>()) {
             let (shape, packed, row_images) = instance(SMALLEST, bits, seed);
@@ -1206,11 +1153,18 @@ mod tests {
         }
     }
 
-    /// The bottom three layers looked up in the lookup tables, and every layer
-    /// above, match the circuit built one leaf at a time from the same table.
+    /// The output and every layer from layer 3 up match the circuit built one
+    /// leaf at a time from the same table. Layers 0 to 2 stay in their lookup
+    /// tables; `lut_layers_prove_from_any_top_coordinate` checks them through
+    /// the sumchecks that read them.
     #[test]
     fn lut_layers_match_the_leaf_construction() {
-        // At t = 7 and 8 the transposed row groups are shorter than a `u128`.
+        // At t = 7 and 8 there are 32 and 64 lookup tables, fewer than the bits
+        // of a `u128`, so the transpose in `GrandProductCircuit::new` moves
+        // `u32` and `u64` blocks; from t = 9 on it moves `u128` ones. At s = 7
+        // a lookup table's run is 128 nibbles, 8 words, below
+        // `PARALLEL_MIN_LANES`, so a piece of `layer3` is a whole run rather
+        // than part of one.
         for (log_rows, log_columns) in [(7, 15), (8, 14), (9, 13), (15, 7)] {
             let (shape, packed, row_images) = instance((log_rows, log_columns), Bits::Drawn, 3);
             let table = table(shape, &packed);
@@ -1218,14 +1172,13 @@ mod tests {
                 fold_layers(leaves(&table, &row_images), shape.columns());
 
             let (output, witnesses) = GrandProductCircuit::new(&row_images, &table).batched_eval();
-            // Witnesses come top-down; the reference is bottom-up.
-            let mut layers: Vec<Vec<Field>> = witnesses.into_iter().collect();
-            layers.reverse();
+            // Both start at layer 3: the reference after its first three.
+            let (layers, expected_layers) = (&witnesses.upper_nodes, &expected_layers[3..]);
 
             assert!(output == expected_output, "output, t = {log_rows}");
             assert_eq!(layers.len(), expected_layers.len(), "t = {log_rows}");
-            for (i, (layer, expected)) in layers.iter().zip(&expected_layers).enumerate() {
-                assert!(layer == expected, "layer {i}, t = {log_rows}");
+            for (i, (layer, expected)) in layers.iter().zip(expected_layers).enumerate() {
+                assert!(layer == expected, "layer {}, t = {log_rows}", i + 3);
             }
         }
     }
@@ -1250,7 +1203,7 @@ mod tests {
     }
 
     /// Proves the circuit of `table` at a point the verifier draws, as
-    /// `gkr_reduce` does. Returns the output layer, one product per column.
+    /// `gkr_reduce` does. Returns the output layer, one product per tree.
     fn prove(table: &BitTable, row_images: &[Field]) -> (Vec<Field>, transcript::Proof) {
         let (output, witnesses) = GrandProductCircuit::new(row_images, table).batched_eval();
         let log_bits = table.shape().log_bits();
