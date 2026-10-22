@@ -102,7 +102,7 @@ mod round_trip_ai_test {
             .collect();
 
         let circuit = GrandProductCircuit::new(&row_images, &table);
-        let (top_layer, witnesses) = circuit.batched_eval(shape.columns());
+        let (top_layer, witnesses) = circuit.batched_eval();
 
         // Fold::new evaluates top_layer at zeta to obtain GKR's initial claim.
         let folds = vec![0u128; shape.columns()];

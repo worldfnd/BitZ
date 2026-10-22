@@ -10,13 +10,12 @@ use crate::{BitTable, Shape, TableError, VirtualMap};
 pub enum ParamsError {
     /// Fewer than `128` columns (`s < 7`).
     ///
-    /// Not a protocol bound: it flows up from the prover's transpose. The
-    /// reduction reads the GKR leaves row by row through the
-    /// [`crate::BitMatrix::transpose`] of [`BitTable::as_matrix`], where each
-    /// transposed row holds one bit per column, and `bit_transpose` in
-    /// `crates/common/src/matrix.rs` only moves whole `128 x 128` blocks. Teaching it rows shorter than a word
-    /// lifts this gate; commit 336e8097225aca4f8146f35594740b0e5054d839 has
-    /// that version.
+    /// Not a protocol bound: it flowed up from the prover's transpose, when
+    /// `bit_transpose` in `crates/common/src/matrix.rs` moved only whole
+    /// `128 x 128` blocks. It now drops to narrower words, and the GKR
+    /// relayout transposes `4 * columns` by `rows / 4` bits, so the prover
+    /// itself only needs `s >= 1`. This gate is stricter than that until it
+    /// is revisited.
     ColumnCountTooNarrow,
     /// `(k_1 + 1)(Q - 1)` reaches `ord(g)`, so two folds could collide in the
     /// exponent.

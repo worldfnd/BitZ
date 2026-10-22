@@ -1,205 +1,599 @@
-use std::collections::VecDeque;
-
-use common::{BitTable, SecurityLevel};
+use common::{BitMatrix, BitTable, SecurityLevel};
 use field::{F128, Wide256};
 use num_traits::{ConstOne, ConstZero};
 use rayon::prelude::*;
+use std::ops::Range;
 use transcript::{ProverState, VerifierState};
 
 pub type Field = F128;
-
-type Point = VecDeque<Field>;
 
 const CUBIC_GRINDING_LABEL: &[u8] = b"gkr/cubic/v1";
 
 /// Proves the layer-by-layer sumcheck reduction from a claim at `point`
 /// (an evaluation point on the output layer) down to a claim on the leaves.
+///
+/// Points are little-endian, as in `poly`'s tables: `point[i]` is the
+/// coordinate of index bit `i`. Every layer adds one coordinate, at the top.
 // TODO #[must_use], requires changing the test suite
 #[tracing::instrument(name = "Prove GKR", skip_all)]
 pub fn gpgkr_prove(
     ps: &mut ProverState,
     log_bits: usize,
     point: &[F128],
-    // All the intermediate witnesses + the input layer. Doesn't contain the output layer
+    // Every layer below the output: layer 3 and up in full, layers 0 to 2 in
+    // their lookup tables.
     witnesses: LayerWitnesses,
     security: SecurityLevel,
 ) -> (Vec<F128>, Field) {
-    // Edge cases
-    // - empty witnesses -> single constant circuit -> one verifier message that permutes the proof state, but a single constant can't have an MLE
     let mut point = point.to_owned();
-    point.reverse();
-
-    let mut point = VecDeque::from(point);
-
-    let mut claim = Field::ZERO;
-    let mut storage = SuffixTable::alloc_storage(log_bits);
-    for wnext in witnesses.into_iter() {
-        (point, claim) = prove_layer(ps, &mut storage, point, wnext, security);
+    let mut eq_memory = EqTables::alloc_storage(log_bits);
+    let LayerWitnesses {
+        lut_layers,
+        upper_nodes,
+    } = witnesses;
+    for children in upper_nodes.into_iter().rev() {
+        (point, _) = prove_layer(ps, &mut eq_memory, &point, children, security);
     }
 
-    let mut point = Vec::from(point);
-    point.reverse();
-    (point, claim)
+    // Layers 2, 1 and 0 stay in their lookup tables. Round 1 of each writes the
+    // children it has bound, `[left′ | right′]`, into one allocation sized
+    // for the leaves'.
+    // number of nodes at the leaf level is lut_layer.nodes() * 4. We only need half of that since we materialise after round 1.
+    let mut bound_children = Field::zeroed_vec(2 * lut_layers.nodes());
+    let (point, _) = prove_lut_layer::<LAYER2>(
+        ps,
+        &mut eq_memory,
+        &point,
+        &lut_layers,
+        &mut bound_children,
+        security,
+    );
+    let (point, _) = prove_lut_layer::<LAYER1>(
+        ps,
+        &mut eq_memory,
+        &point,
+        &lut_layers,
+        &mut bound_children,
+        security,
+    );
+    prove_lut_layer::<LEAVES>(
+        ps,
+        &mut eq_memory,
+        &point,
+        &lut_layers,
+        &mut bound_children,
+        security,
+    )
 }
 
+/// Proves `c = Σ_x eq(z, x) · L(x) · R(x)` for the halves `L`, `R` of
+/// `children`, one round per coordinate of `point`, top first. Round `i`
+/// sends `sum_i(b)` and its leading coefficient `sum_i(∞)`, where `b` is the
+/// boolean point that [`sends_one`] picks, `s_i(X) = eq(z_i, X) · sum_i(X)`,
+/// and `sum_i` carries `eq_bound = Π_{j > i} eq(z_j, r_j)` from the rounds
+/// already bound. Returns the point `(r, t)` on `children` and the claim
+/// `W(r, t) = L(r) + t · (R(r) - L(r))`.
 fn prove_layer(
     ps: &mut ProverState,
-    storage: &mut [Field],
-    mut point: Point,
-    mut wnext: Vec<Field>,
+    eq_memory: &mut [Field],
+    point: &[Field],
+    mut children: Vec<Field>,
     security: SecurityLevel,
-) -> (Point, Field) {
-    let suffix_table = SuffixTable::new(storage, &point);
-    let mut factor = Field::ONE;
-
-    let mid = wnext.len() / 2;
-    // Tree is encoded in LSB order
-    let (mut mle_l, mut mle_r) = wnext.split_at_mut(mid);
-
-    let rounds = point.len();
-    let mut next_point = VecDeque::with_capacity(rounds + 1);
-
-    // `SuffixTable::layer(i)` has length `2^i`, so `h` is even on every round
-    // except the last (`i == 0`). Peel that round out instead of checking
-    // for it on every iteration.
-    let last_z = point.pop_back();
-
-    for (i, z) in (1..rounds).rev().zip(point) {
-        let eq = suffix_table.layer(i);
-        let h = mle_l.len() / 2;
-        debug_assert_eq!(eq.len(), h);
-        debug_assert_eq!(h % 2, 0);
-
-        let (lo_l, hi_l) = mle_l.split_at_mut(h);
-        let (lo_r, hi_r) = mle_r.split_at_mut(h);
-
-        // `send_one` is constant for the whole round: at z = 0 the incoming
-        // claim determines the value at zero, so this round sends the value
-        // at one instead. Branch on it once here -- SEND_ONE below is a
-        // const generic, so each instantiation gets only its own branch,
-        // not a per-element check inside the hot fold.
-        let send_one = z == Field::ZERO;
-        let (sum_endpoint, sum_inf) = if send_one {
-            reduce_sumcheck_round::<true>(lo_l, lo_r, hi_l, hi_r, eq)
-        } else {
-            reduce_sumcheck_round::<false>(lo_l, lo_r, hi_l, hi_r, eq)
-        };
-
-        ps.prover_message(&[factor * sum_endpoint.reduce(), factor * sum_inf.reduce()]);
-
-        ps.grind(CUBIC_GRINDING_LABEL, security.grinding_bits(3));
-        let r = ps.verifier_message();
-        next_point.push_back(r);
-
-        lo_l.par_iter_mut()
-            .zip(lo_r.par_iter_mut())
-            .zip(hi_l.par_iter())
-            .zip(hi_r.par_iter())
-            .with_min_len(PARALLEL_MIN_LANES)
-            .for_each(|(((l_lo, r_lo), &l_hi), &r_hi)| {
-                // Recalculating delta rather than writing it in the top half of the array in the previous loop to save on writes.
-                // No benchmarking has been done to check the difference.
-                let (d_l, d_r) = (l_hi - *l_lo, r_hi - *r_lo);
-
-                // narrow multiply as the next round will multiply with this result
-                *l_lo += r * d_l;
-                *r_lo += r * d_r;
-            });
-        mle_l = &mut mle_l[..h];
-        mle_r = &mut mle_r[..h];
-
-        factor *= eq_factor(r, z);
-    }
-
-    if let Some(z) = last_z {
-        // i == 0, h == 1: `SuffixTable::new` always seeds the base layer
-        // (`eq[0]`) with `Field::ONE`, so the `eq[i] *` multiplication every
-        // other round needs is the identity here -- skipped rather than
-        // spent multiplying by one.
-        debug_assert_eq!(mle_l.len(), 2);
-        let (l_lo, l_hi) = (mle_l[0], mle_l[1]);
-        let (r_lo, r_hi) = (mle_r[0], mle_r[1]);
-        let (d_l, d_r) = (l_hi - l_lo, r_hi - r_lo);
-
-        // Same `send_one` swap as the main loop above: at z = 0 the incoming
-        // claim determines the value at zero, so send the value at one.
-        let (l_endpoint, r_endpoint) = if z == Field::ZERO {
-            (l_hi, r_hi)
-        } else {
-            (l_lo, r_lo)
-        };
-        let sum_endpoint = Wide256::mul(l_endpoint, r_endpoint);
-        let sum_inf = Wide256::mul(d_l, d_r);
-
-        ps.prover_message(&[factor * sum_endpoint.reduce(), factor * sum_inf.reduce()]);
-
-        ps.grind(CUBIC_GRINDING_LABEL, security.grinding_bits(3));
-        let r = ps.verifier_message();
-        next_point.push_back(r);
-
-        mle_l[0] = l_lo + r * d_l;
-        mle_r[0] = r_lo + r * d_r;
-        mle_l = &mut mle_l[..1];
-        mle_r = &mut mle_r[..1];
-
-        factor *= eq_factor(r, z);
-    }
-
-    ps.prover_message(&[mle_l[0], mle_r[0]]);
-    let r = ps.verifier_message();
-    next_point.push_front(r);
-    let claim = mle_l[0] + r * (mle_r[0] - mle_l[0]);
-    (next_point, claim)
+) -> (Vec<Field>, Field) {
+    let eq_tables = EqTables::new(eq_memory, point);
+    // The top index bit of `children` picks the half: `L`, then `R`.
+    let mid = children.len() / 2;
+    let (left, right) = children.split_at_mut(mid);
+    prove_rounds(ps, &eq_tables, point, None, left, right, security)
 }
 
-fn reduce_sumcheck_round<const SEND_ONE: bool>(
-    lo_l: &[Field],
-    lo_r: &[Field],
-    hi_l: &[Field],
-    hi_r: &[Field],
+/// The dense rounds of a layer, then its last message. A LUT-backed layer
+/// has already proved round 1, which binds the top coordinate of `point`, and
+/// passes that round's challenge as `round_one`; its `left` and `right` are
+/// then the bound halves. A dense layer passes `None` and proves every round
+/// here.
+fn prove_rounds(
+    ps: &mut ProverState,
+    eq_tables: &EqTables,
+    point: &[Field],
+    round_one: Option<Field>,
+    mut left: &mut [Field],
+    mut right: &mut [Field],
+    security: SecurityLevel,
+) -> (Vec<Field>, Field) {
+    let n = point.len();
+    let mut next_point = vec![Field::ZERO; n + 1];
+    // The coordinates whose rounds run here, and `eq` of those already bound.
+    let (remaining, mut eq_bound) = match round_one {
+        Some(r) => {
+            let top = n - 1;
+            next_point[top] = r;
+            (&point[..top], eq_factor(r, point[top]))
+        }
+        None => (point, Field::ONE),
+    };
+
+    for (i, &z) in remaining.iter().enumerate().rev() {
+        // `x_i = 0` in the low half of each, `x_i = 1` in the high half.
+        let half = 1 << i;
+        let (left0, left1) = left.split_at_mut(half);
+        let (right0, right1) = right.split_at_mut(half);
+
+        // Branch once per round: `round_sums` takes `b` as a const generic,
+        // so the hot fold has no per-element check.
+        let eq = eq_tables.below(i);
+        let (sum_b, sum_inf) = if sends_one(z) {
+            round_sums::<true>(left0, left1, right0, right1, eq)
+        } else {
+            round_sums::<false>(left0, left1, right0, right1, eq)
+        };
+        ps.prover_message(&[eq_bound * sum_b.reduce(), eq_bound * sum_inf.reduce()]);
+
+        ps.grind(CUBIC_GRINDING_LABEL, security.grinding_bits(3));
+        let r = ps.verifier_message();
+        bind(r, left0, left1, right0, right1);
+        left = &mut left[..half];
+        right = &mut right[..half];
+
+        next_point[i] = r;
+        eq_bound *= eq_factor(r, z);
+    }
+
+    let (left_r, right_r) = (left[0], right[0]);
+    ps.prover_message(&[left_r, right_r]);
+    let t = ps.verifier_message();
+    next_point[n] = t;
+    (next_point, interpolate(left_r, right_r, t))
+}
+
+/// `Σ eq · L(b) · R(b)` and `Σ eq · ΔL · ΔR` over the free variables: the
+/// round's sum at the boolean point `b` (`1` if `AT_ONE`) and its leading
+/// coefficient, without `eq_bound` and left unreduced.
+fn round_sums<const AT_ONE: bool>(
+    left0: &[Field],
+    left1: &[Field],
+    right0: &[Field],
+    right1: &[Field],
     eq: &[Field],
 ) -> (Wide256, Wide256) {
-    // chunking reduces variance in benchmarking
-    lo_l.par_chunks_exact(2)
-        .zip(lo_r.par_chunks_exact(2))
-        .zip(hi_l.par_chunks_exact(2))
-        .zip(hi_r.par_chunks_exact(2))
+    let at = |v0: Field, v1: Field| if AT_ONE { v1 } else { v0 };
+
+    // The last round has a single summand, and `eq` there is the empty
+    // product `1`: no multiplication by it, and too few for two lanes.
+    if let [_] = eq {
+        let (l0, l1, r0, r1) = (left0[0], left1[0], right0[0], right1[0]);
+        return (
+            Wide256::mul(at(l0, l1), at(r0, r1)),
+            Wide256::mul(l1 - l0, r1 - r0),
+        );
+    }
+
+    // Two lanes per step: independent multiplication chains. Chunking also
+    // reduces variance in benchmarking.
+    left0
+        .par_chunks_exact(2)
+        .zip(left1.par_chunks_exact(2))
+        .zip(right0.par_chunks_exact(2))
+        .zip(right1.par_chunks_exact(2))
         .zip(eq.par_chunks_exact(2))
         // Chunked by 2, so the element-count threshold below is halved in
         // terms of chunks.
         .with_min_len(PARALLEL_MIN_LANES / 2)
         .fold(
             || (Wide256::zero(), Wide256::zero()),
-            |(mut sum_endpoint, mut sum_inf), ((((l_lo, r_lo), l_hi), r_hi), e)| {
-                let (d_l0, d_r0) = (l_hi[0] - l_lo[0], r_hi[0] - r_lo[0]);
-                let (d_l1, d_r1) = (l_hi[1] - l_lo[1], r_hi[1] - r_lo[1]);
-
-                let (l_e0, r_e0) = if SEND_ONE {
-                    (l_hi[0], r_hi[0])
-                } else {
-                    (l_lo[0], r_lo[0])
-                };
-                let (l_e1, r_e1) = if SEND_ONE {
-                    (l_hi[1], r_hi[1])
-                } else {
-                    (l_lo[1], r_lo[1])
-                };
-
-                let (a0, b0) = (e[0] * l_e0, e[0] * d_l0);
-                let (a1, b1) = (e[1] * l_e1, e[1] * d_l1);
-
-                sum_endpoint += Wide256::mul(a0, r_e0);
+            |(mut sum_b, mut sum_inf), ((((l0, l1), r0), r1), e)| {
+                // `e · L(b) · R(b)` into `sum_b` and `e · ΔL · ΔR` into
+                // `sum_inf`, with `e` joining the left factor through a reduced
+                // multiply so that the right one can stay wide.
+                //
+                // Steps, products, then sums, each for both lanes: this order
+                // puts every load of the step ahead of the first multiply.
+                // Lane by lane is 1.1-1.4% slower single-threaded.
+                let (d_l0, d_r0) = (l1[0] - l0[0], r1[0] - r0[0]);
+                let (d_l1, d_r1) = (l1[1] - l0[1], r1[1] - r0[1]);
+                let (a0, b0) = (e[0] * at(l0[0], l1[0]), e[0] * d_l0);
+                let (a1, b1) = (e[1] * at(l0[1], l1[1]), e[1] * d_l1);
+                sum_b += Wide256::mul(a0, at(r0[0], r1[0]));
                 sum_inf += Wide256::mul(b0, d_r0);
-                sum_endpoint += Wide256::mul(a1, r_e1);
+                sum_b += Wide256::mul(a1, at(r0[1], r1[1]));
                 sum_inf += Wide256::mul(b1, d_r1);
-
-                (sum_endpoint, sum_inf)
+                (sum_b, sum_inf)
             },
         )
         .reduce(
             || (Wide256::zero(), Wide256::zero()),
-            |(a0, ainf), (b0, binf)| (a0 + b0, ainf + binf),
+            |(x_b, x_inf), (y_b, y_inf)| (x_b + y_b, x_inf + y_inf),
         )
+}
+
+/// Binds the variable that splits each pair of halves to `r`, writing the
+/// result over the low halves.
+fn bind(r: Field, left0: &mut [Field], left1: &[Field], right0: &mut [Field], right1: &[Field]) {
+    left0
+        .par_iter_mut()
+        .zip(right0.par_iter_mut())
+        .zip(left1.par_iter())
+        .zip(right1.par_iter())
+        .with_min_len(PARALLEL_MIN_LANES)
+        .for_each(|(((l0, r0), &l1), &r1)| {
+            // Recalculating the step rather than writing it in the high half
+            // in `round_sums` to save on writes. No benchmarking has been done
+            // to check the difference.
+            let (d_l, d_r) = (l1 - *l0, r1 - *r0);
+
+            // `interpolate`, spelled out: as `*r0 = interpolate(*r0, r1, r)`
+            // the compiler loads `*r0` as a vector and moves it back to
+            // general registers for the subtraction, one extra instruction
+            // per pair on the way into the multiply (~3.7% single-threaded).
+            *l0 += r * d_l;
+            *r0 += r * d_r;
+        });
+}
+
+/// The LUT-backed layers, by their index in the tree. Each names the
+/// sumcheck whose children it is.
+const LEAVES: usize = 0;
+const LAYER1: usize = 1;
+const LAYER2: usize = 2;
+
+/// Where round 1 of a LUT-backed sumcheck reads its operands `l0, l1, r0,
+/// r1`, by the layer of its children: operand `o` at position `k` is nibble
+/// `k + STREAM[o] · stride`, masked by `MASK[o]`, in that nibble's lookup
+/// table. [`LutLayers::pairs`] says why.
+const STREAM: [[usize; 4]; 3] = [[0, 0, 0, 0], [0, 1, 0, 1], [0, 1, 2, 3]];
+const MASK: [[usize; 4]; 3] = [
+    [0b0001, 0b0010, 0b0100, 0b1000],
+    [0b0101, 0b0101, 0b1010, 0b1010],
+    [0b1111; 4],
+];
+
+/// Layers 0 to 2 in their lookup tables, as round 1 of their sumchecks reads
+/// them: layer-2 node `k = (g << s) | c` is nibble `k` of the matrix, looked
+/// up in the lookup table of node position `g`, which all `2^s` trees share.
+struct LutLayers {
+    /// The nibbles of the layer-2 nodes; see [`GrandProductCircuit::new`].
+    matrix: BitMatrix<'static>,
+    luts: Vec<[Field; 16]>,
+    /// `s`: a lookup table's run of nibbles holds one per tree.
+    log_trees: usize,
+}
+
+impl LutLayers {
+    fn new(matrix: BitMatrix<'static>, luts: Vec<[Field; 16]>) -> Self {
+        let log_trees = (matrix.dim2() / NIBBLE_BITS).ilog2() as usize;
+        // `pairs` reads whole words of one lookup table's run.
+        assert!(
+            1 << log_trees >= NIBBLES_IN_WORD,
+            "each lookup table needs at least a word of nibbles"
+        );
+        Self {
+            matrix,
+            luts,
+            log_trees,
+        }
+    }
+
+    /// The nibbles, a word at a time.
+    fn words(&self) -> &[u64] {
+        // Read as `u64`s: on a little-endian target, bit `i` of the words is
+        // bit `i` of the `u64`s too.
+        const { assert!(cfg!(target_endian = "little")) };
+        bytemuck::cast_slice(&self.matrix[..])
+    }
+
+    /// The layer-2 nodes, one per nibble.
+    fn nodes(&self) -> usize {
+        self.words().len() * NIBBLES_IN_WORD
+    }
+
+    /// The positions of round 1 handled as one piece: a lookup table's run,
+    /// or a part of it, so that a piece never spans two lookup tables.
+    fn piece(&self) -> usize {
+        (1 << self.log_trees).min(PARALLEL_MIN_LANES)
+    }
+
+    /// Round 1's positions `0..half` in pieces, as a parallel iterator
+    /// taking at least `PARALLEL_MIN_LANES` positions per task, whatever the
+    /// number of trees.
+    fn pieces(&self, half: usize) -> impl IndexedParallelIterator<Item = Range<usize>> + use<> {
+        let piece = self.piece();
+        (0..half / piece)
+            .into_par_iter()
+            .with_min_len(PARALLEL_MIN_LANES / piece)
+            .map(move |p| p * piece..(p + 1) * piece)
+    }
+
+    /// The pairs that round 1 binds at `positions`, which lie in one lookup
+    /// table's run and start and end on a word: per position, the nibbles of
+    /// its operands `l0, l1, r0, r1`, unmasked, and each operand's lookup
+    /// table.
+    ///
+    /// Round 1 binds the top bit of the parent's index, so each node pairs
+    /// with its partner `stride` nodes later, where `stride` is the number of
+    /// round-1 positions:
+    /// - Layer 2: a nibble is one node. The left pair is nibbles `k` and
+    ///   `k + stride`, and the right pair the two half the layer on,
+    ///   `k + 2·stride` and `k + 3·stride`.
+    /// - Layer 1: a nibble holds a left node, bits 0 and 2, and a right node,
+    ///   bits 1 and 3. Both of their partners sit in nibble `k + stride`.
+    /// - Leaves: a nibble holds both pairs, bits 0 and 1 for the left child
+    ///   and bits 2 and 3 for the right, so every operand reads nibble `k`.
+    ///
+    /// The words each operand reads are zipped, and every tuple of words
+    /// gives its 16 positions, one item per word. Callers zip the words with
+    /// 16-position chunks of their own data and loop over the positions
+    /// inside: flattened here and zipped per position, the loop becomes a
+    /// per-position state machine that LLVM does not unroll.
+    fn pairs<const LAYER: usize>(
+        &self,
+        stride: usize,
+        positions: Range<usize>,
+    ) -> (
+        [&[Field; 16]; 4],
+        impl Iterator<Item = impl Iterator<Item = [usize; 4]>> + '_,
+    ) {
+        let (words, len) = (self.words(), positions.len() / NIBBLES_IN_WORD);
+        let at = STREAM[LAYER].map(|q| positions.start + q * stride);
+        let luts = at.map(|k| &self.luts[k >> self.log_trees]);
+        let [l0, l1, r0, r1] = at.map(|k| &words[k / NIBBLES_IN_WORD..][..len]);
+        let pairs = l0
+            .iter()
+            .zip(l1)
+            .zip(r0)
+            .zip(r1)
+            .map(|(((&l0, &l1), &r0), &r1)| {
+                (0..NIBBLES_IN_WORD).map(move |i| {
+                    [l0, l1, r0, r1].map(|word| (word >> (NIBBLE_BITS * i)) as usize & 0xF)
+                })
+            });
+        (luts, pairs)
+    }
+}
+
+/// The operands `[l0, l1, r0, r1]` of one position of round 1 of layer
+/// `LAYER`, from their lookup tables and nibbles.
+fn operands<const LAYER: usize>(luts: &[&[Field; 16]; 4], nibbles: [usize; 4]) -> [Field; 4] {
+    std::array::from_fn(|o| luts[o][nibbles[o] & MASK[LAYER][o]])
+}
+
+/// Proves the layer whose children are layer `LAYER` of the lookup tables,
+/// like [`prove_layer`]. Round 1 reads its operands from the lookup tables
+/// and writes only the children it has bound, `[left′ | right′]`, into
+/// `bound_children`; the rounds after it are dense.
+fn prove_lut_layer<const LAYER: usize>(
+    ps: &mut ProverState,
+    eq_memory: &mut [Field],
+    point: &[Field],
+    lut_layers: &LutLayers,
+    bound_children: &mut [Field],
+    security: SecurityLevel,
+) -> (Vec<Field>, Field) {
+    let eq_tables = EqTables::new(eq_memory, point);
+    let top = point.len() - 1;
+
+    // Nothing is bound before round 1, so its sums go out as they are.
+    let (sum_b, sum_inf) = if sends_one(point[top]) {
+        round_one_sums::<LAYER, true>(lut_layers, &eq_tables, point)
+    } else {
+        round_one_sums::<LAYER, false>(lut_layers, &eq_tables, point)
+    };
+    ps.prover_message(&[sum_b.reduce(), sum_inf.reduce()]);
+
+    ps.grind(CUBIC_GRINDING_LABEL, security.grinding_bits(3));
+    let r = ps.verifier_message();
+    let half = 1 << top;
+    let (left, right) = bound_children[..2 * half].split_at_mut(half);
+    lut_bind::<LAYER>(r, lut_layers, left, right);
+    prove_rounds(ps, &eq_tables, point, Some(r), left, right, security)
+}
+
+/// Round 1's sum at the boolean point `b` (`1` if `AT_ONE`) and its leading
+/// coefficient, unreduced, as [`round_sums`] gives them. The leaves and
+/// layer 1 sum their eq weights in buckets. Layer 2 pairs whole nibbles of
+/// two lookup tables, 256 keys per product, which costs more to finish than
+/// a piece saves at small `s`, so it works node by node.
+fn round_one_sums<const LAYER: usize, const AT_ONE: bool>(
+    lut_layers: &LutLayers,
+    eq_tables: &EqTables,
+    point: &[Field],
+) -> (Wide256, Wide256) {
+    match LAYER {
+        LEAVES => bucket_sums(lut_layers, eq_tables, point, leaf_buckets::<AT_ONE>),
+        LAYER1 => bucket_sums(lut_layers, eq_tables, point, layer1_buckets::<AT_ONE>),
+        _ => layer2_sums::<LAYER, AT_ONE>(lut_layers, eq_tables.below(point.len() - 1)),
+    }
+}
+
+/// Round 1's sums a piece at a time, with `buckets` summing each piece's eq
+/// weights by the nibble bits that `L·R` reads and multiplying each bucket
+/// once. The weight splits as `eq(z_{<top}, k) = eq_hi[g] · eq_lo[c]` for
+/// `k = (g << s) | c`, so the buckets sum `eq_lo`, which stays in cache, and
+/// `eq_hi` joins once per piece.
+fn bucket_sums(
+    lut_layers: &LutLayers,
+    eq_tables: &EqTables,
+    point: &[Field],
+    buckets: impl Fn(&LutLayers, usize, Range<usize>, &[Field]) -> (Wide256, Wide256) + Sync,
+) -> (Wide256, Wide256) {
+    let top = point.len() - 1;
+    let (half, s) = (1 << top, lut_layers.log_trees);
+    let eq_lo = eq_tables.below(s);
+    let eq_hi = poly::eq_table(&point[s..top]);
+    lut_layers
+        .pieces(half)
+        .map(|positions| {
+            let h = eq_hi[positions.start >> s];
+            let eq_lo = &eq_lo[positions.start % (1 << s)..][..positions.len()];
+            let (sum_b, sum_inf) = buckets(lut_layers, half, positions, eq_lo);
+            (
+                Wide256::mul(h, sum_b.reduce()),
+                Wide256::mul(h, sum_inf.reduce()),
+            )
+        })
+        .reduce(
+            || (Wide256::zero(), Wide256::zero()),
+            |(x_b, x_inf), (y_b, y_inf)| (x_b + y_b, x_inf + y_inf),
+        )
+}
+
+/// The piece of round 1 for the leaves at `positions`, its weights in `eq`.
+/// Every operand is one bit of the same nibble, so both sums are functions of
+/// the nibble: each position adds its weight into its nibble's bucket, and
+/// each of the 16 buckets is multiplied once.
+fn leaf_buckets<const AT_ONE: bool>(
+    lut_layers: &LutLayers,
+    stride: usize,
+    positions: Range<usize>,
+    eq: &[Field],
+) -> (Wide256, Wide256) {
+    let ([lut, ..], pairs) = lut_layers.pairs::<LEAVES>(stride, positions);
+    let mut bucket = [Field::ZERO; 16];
+    for (word, eq) in pairs.zip(eq.chunks_exact(NIBBLES_IN_WORD)) {
+        for ([a, ..], &e) in word.zip(eq) {
+            bucket[a] += e;
+        }
+    }
+    // `L(b)·R(b)` is the node of bits 0 and 2, or 1 and 3, and `L(∞)·R(∞)` is
+    // `(l1 − l0)(r1 − r0)`.
+    let b_mask = if AT_ONE { 0b1010 } else { 0b0101 };
+    let at_b = std::array::from_fn(|a| lut[a & b_mask]);
+    let at_inf = std::array::from_fn(|a| {
+        (lut[a & 0b0010] - lut[a & 0b0001]) * (lut[a & 0b1000] - lut[a & 0b0100])
+    });
+    (dot(&bucket, &at_b), dot(&bucket, &at_inf))
+}
+
+/// The piece of round 1 for layer 1 at `positions`, its weights in `eq`:
+/// nibble `n0` and the nibble `n1` half the layer later. In characteristic 2,
+/// `(l1 − l0)(r1 − r0)` is `l0·r0 + l1·r1 + l1·r0 + l0·r1`, and each product
+/// reads two disjoint 2-bit masks: 16 buckets each, keyed by the bits it
+/// reads.
+fn layer1_buckets<const AT_ONE: bool>(
+    lut_layers: &LutLayers,
+    stride: usize,
+    positions: Range<usize>,
+    eq: &[Field],
+) -> (Wide256, Wide256) {
+    // `l0` and `r0` read nibble `n0` in its lookup table, `l1` and `r1`
+    // nibble `n1`.
+    let ([lut0, lut1, ..], pairs) = lut_layers.pairs::<LAYER1>(stride, positions);
+    let mut bucket = [[Field::ZERO; 16]; 4];
+    // A position's keys in the buckets of `l0·r0`, `l1·r1`, `l1·r0` and
+    // `l0·r1`: bits 0 and 2 from the nibble of the `l` factor, bits 1 and 3
+    // from that of the `r` factor.
+    for (word, eq) in pairs.zip(eq.chunks_exact(NIBBLES_IN_WORD)) {
+        for ([n0, n1, ..], &e) in word.zip(eq) {
+            bucket[0][n0] += e;
+            bucket[1][n1] += e;
+            bucket[2][(n1 & 0b0101) | (n0 & 0b1010)] += e;
+            bucket[3][(n0 & 0b0101) | (n1 & 0b1010)] += e;
+        }
+    }
+    // `l0·r0`, `l1·r1`, `l1·r0` and `l0·r1` at every key.
+    let product: [[Field; 16]; 4] = [
+        *lut0,
+        *lut1,
+        std::array::from_fn(|x| lut1[x & 0b0101] * lut0[x & 0b1010]),
+        std::array::from_fn(|x| lut0[x & 0b0101] * lut1[x & 0b1010]),
+    ];
+    // Product `b` is `l_b·r_b`.
+    let b = usize::from(AT_ONE);
+    let sum_inf = (0..4).fold(Wide256::zero(), |acc, j| acc + dot(&bucket[j], &product[j]));
+    (dot(&bucket[b], &product[b]), sum_inf)
+}
+
+/// `Σ bucket · value`, unreduced.
+fn dot(bucket: &[Field; 16], value: &[Field; 16]) -> Wide256 {
+    bucket
+        .iter()
+        .zip(value)
+        .fold(Wide256::zero(), |acc, (&b, &v)| acc + Wide256::mul(b, v))
+}
+
+/// Round 1's sums node by node, as [`round_sums`] forms them, with the
+/// operands read from the lookup tables.
+fn layer2_sums<const LAYER: usize, const AT_ONE: bool>(
+    lut_layers: &LutLayers,
+    eq: &[Field],
+) -> (Wide256, Wide256) {
+    let at = |v0: Field, v1: Field| if AT_ONE { v1 } else { v0 };
+    let half = eq.len();
+    lut_layers
+        .pieces(half)
+        .map(|positions| {
+            let (luts, pairs) = lut_layers.pairs::<LAYER>(half, positions.clone());
+            let eq = eq[positions].chunks_exact(NIBBLES_IN_WORD);
+            pairs
+                .zip(eq)
+                .fold((Wide256::zero(), Wide256::zero()), |sums, (word, eq)| {
+                    word.zip(eq).fold(sums, |(sum_b, sum_inf), (n, &e)| {
+                        let [l0, l1, r0, r1] = operands::<LAYER>(&luts, n);
+                        (
+                            sum_b + Wide256::mul(e * at(l0, l1), at(r0, r1)),
+                            sum_inf + Wide256::mul(e * (l1 - l0), r1 - r0),
+                        )
+                    })
+                })
+        })
+        .reduce(
+            || (Wide256::zero(), Wide256::zero()),
+            |(x_b, x_inf), (y_b, y_inf)| (x_b + y_b, x_inf + y_inf),
+        )
+}
+
+/// Round 1's bind, `left′[k] = l0 + r·(l1 − l0)` and
+/// `right′[k] = r0 + r·(r1 − r0)`, with the operands read from the lookup
+/// tables.
+///
+/// What position `k` combines depends on the layer; see [`LutLayers::pairs`]:
+/// - Layer 2: four nibbles, one node each, the left pair at `k` and
+///   `k + stride` and the right pair half the layer on.
+/// - Layer 1: two nibbles, `k` and `k + stride`, each holding a left and a
+///   right node, so one scan binds both without jumping ahead.
+/// - Leaves: one nibble, which holds both pairs.
+fn lut_bind<const LAYER: usize>(
+    r: Field,
+    lut_layers: &LutLayers,
+    left: &mut [Field],
+    right: &mut [Field],
+) {
+    let (half, piece) = (left.len(), lut_layers.piece());
+    left.par_chunks_mut(piece)
+        .zip(right.par_chunks_mut(piece))
+        .zip(lut_layers.pieces(half))
+        .for_each(|((left, right), positions)| {
+            let (luts, pairs) = lut_layers.pairs::<LAYER>(half, positions);
+            let left = left.chunks_exact_mut(NIBBLES_IN_WORD);
+            let right = right.chunks_exact_mut(NIBBLES_IN_WORD);
+            for ((left, right), word) in left.zip(right).zip(pairs) {
+                for ((l, rt), n) in left.iter_mut().zip(right).zip(word) {
+                    let [l0, l1, r0, r1] = operands::<LAYER>(&luts, n);
+                    (*l, *rt) = (interpolate(l0, l1, r), interpolate(r0, r1, r));
+                }
+            }
+        });
+}
+
+/// The line through `at0` (at `0`) and `at1` (at `1`), at `r`: a multilinear
+/// function of one variable.
+fn interpolate(at0: Field, at1: Field, r: Field) -> Field {
+    // Narrow multiply, as the next round will multiply with this result.
+    at0 + r * (at1 - at0)
+}
+
+/// The quadratic through `at0` (at `0`) and `at1` (at `1`) with leading
+/// coefficient `at_inf`, at `r`: `at0 + r·(at1 - at0) + r·(r - 1)·at_inf`, with
+/// `r` factored out.
+fn quadratic_at(at0: Field, at1: Field, at_inf: Field, r: Field) -> Field {
+    at0 + r * ((at1 - at0) + (r - Field::ONE) * at_inf)
+}
+
+/// Whether round `i` sends `sum_i(1)` rather than `sum_i(0)`. The verifier
+/// recovers the other one from `c = (1 - z_i) · sum_i(0) + z_i · sum_i(1)`,
+/// which divides by `z_i` to get `sum_i(1)`; at `z_i = 0` it gives
+/// `sum_i(0) = c` directly instead.
+fn sends_one(z: Field) -> bool {
+    z == Field::ZERO
 }
 
 /// `eq(r, z) = r*z + (1 - r)*(1 - z)`. Expanding gives
@@ -210,23 +604,34 @@ fn eq_factor(r: Field, z: Field) -> Field {
     Field::ONE + r + z
 }
 
-// TODO: Split suffix table
-struct SuffixTable<'a> {
+/// `eq(z_{<i}, ·)` for every round `i` of a layer, in one buffer.
+///
+/// The former `SuffixTable` with the point little-endian instead of reversed:
+/// the summed coordinates are the prefix `z[..i]`, not a suffix. Same entries.
+///
+/// Keeping every table takes twice the memory of the largest one. Keeping
+/// only the largest and halving it between rounds (`low[k] += high[k]`)
+/// would save that half, but it measured 7.5-12% slower, as it adds a pass
+/// over memory. Splitting the table makes the trade moot.
+// TODO: Split the table. The buckets already do a kind of splitting
+struct EqTables<'a> {
     storage: &'a [Field],
 }
 
-impl<'a> SuffixTable<'a> {
-    fn layer(&self, i: usize) -> &[Field] {
+impl<'a> EqTables<'a> {
+    /// `eq(z_{<i}, x)` for `x ∈ {0,1}^i`, in the order of
+    /// `poly::eq_table(&z[..i])`. Table `i` sits at
+    /// `2^i - 1 .. 2^(i+1) - 1`.
+    fn below(&self, i: usize) -> &[Field] {
         let start = (1 << i) - 1;
         let end = (1 << (i + 1)) - 1;
         &self.storage[start..end]
     }
-}
 
-impl<'a> SuffixTable<'a> {
-    /// Allocates all directly as it is as much space as a double buffer approach would take.
-    #[inline(never)]
-    fn new(storage: &'a mut [Field], point: &Point) -> SuffixTable<'a> {
+    /// Builds every table of `point` in `storage`, a buffer from
+    /// [`EqTables::alloc_storage`]; nothing is allocated here.
+    #[inline(never)] // Inlining or not doesn't improve performance, but it does hide it in profiling therefore it has been annotated with inline never.
+    fn new(storage: &'a mut [Field], point: &[Field]) -> EqTables<'a> {
         // Establishes the whole table's space budget up front so LLVM can
         // prove the `low`/`hi` writes in the loop below are in bounds
         let needed = (1usize << point.len()).saturating_sub(1).max(1);
@@ -234,14 +639,12 @@ impl<'a> SuffixTable<'a> {
 
         storage[0] = F128::ONE;
         let (mut prev, mut remaining) = storage.split_at_mut(1);
-        // The selector is the first entry of the point and we need to skip
-        // that -- except when `point` is itself empty, in which case there
-        // is no selector and `c` must stay empty too (`min(1)` keeps the
-        // range start in-bounds there instead of panicking).
-        let c = point.range(point.len().min(1)..);
+        // Round `i` reads only the coordinates below `i`, so the top one
+        // never enters a table.
+        let below_top = &point[..point.len().saturating_sub(1)];
 
-        // Suffix table is in the reverse order of the point
-        for &z in c.rev() {
+        // Each coordinate doubles the table, as its new top index bit.
+        for &z in below_top {
             let size = prev.len() << 1;
             let (entry, next) = remaining.split_at_mut(size);
             let (low, hi) = entry.split_at_mut(entry.len() >> 1);
@@ -255,9 +658,12 @@ impl<'a> SuffixTable<'a> {
             prev = entry;
             remaining = next;
         }
-        SuffixTable { storage }
+        EqTables { storage }
     }
 
+    /// Room for every table of a point of up to `log_bits - 1` coordinates,
+    /// the leaves' sumcheck's, allocated once for all layers. All the tables
+    /// in one buffer take as much space as a double buffer would.
     fn alloc_storage(log_bits: usize) -> Vec<Field> {
         Field::zeroed_vec(1 << (log_bits.saturating_sub(1)).max(1))
     }
@@ -274,7 +680,7 @@ pub fn gpgkr_verify(
     vs: &mut VerifierState,
     mut claim: Field,
     point: &[F128],
-    rounds: u32,
+    layers: u32,
     security: SecurityLevel,
 ) -> Option<(Vec<F128>, Field)> {
     // Edge cases around input lenghts, 0 meaning empty
@@ -288,149 +694,218 @@ pub fn gpgkr_verify(
     //    -> false
     //
     let mut point = point.to_owned();
-    point.reverse();
-    let mut point = VecDeque::from(point);
-
-    for _i in 0..rounds {
-        (point, claim) = verify_layer(vs, claim, point, security)?
+    for _ in 0..layers {
+        (point, claim) = verify_layer(vs, claim, &point, security)?
     }
-
-    let mut point = Vec::from(point);
-    point.reverse();
-
     Some((point, claim))
 }
 
-/// Point's orientation is the reverse of gpgkr_verify
+/// Per round, recovers the sum at the other boolean point from
+/// `c = (1 - z_i) · sum_i(0) + z_i · sum_i(1)` and moves the claim to
+/// `s_i(r_i)`.
+/// Then checks `c = eq(z, r) · L(r) · R(r)` and continues at
+/// `W(r, t) = L(r) + t · (R(r) - L(r))`.
 fn verify_layer(
     vs: &mut VerifierState,
     mut claim: Field,
-    point: Point,
+    point: &[Field],
     security: SecurityLevel,
-) -> Option<(Point, Field)> {
-    let mut prefix = Field::ONE;
+) -> Option<(Vec<Field>, Field)> {
+    let n = point.len();
+    let mut next_point = vec![Field::ZERO; n + 1];
+    let mut eq_bound = Field::ONE;
 
-    let mut next_point: Point = VecDeque::new();
-
-    for z in point {
-        let [sum_endpoint, suminf]: [Field; 2] = vs.prover_message().ok()?;
-        // claim = (1 - z) * sum0 + z * sum1. At z = 0, sum0 is known
-        // and the prover supplies sum1; otherwise recover sum1 by division.
-        let (sum0, sum1) = if z == Field::ZERO {
-            (claim, sum_endpoint)
+    for (i, &z) in point.iter().enumerate().rev() {
+        let [sum_b, sum_inf]: [Field; 2] = vs.prover_message().ok()?;
+        // `claim = (1 - z) * sum0 + z * sum1`.
+        let (sum0, sum1) = if sends_one(z) {
+            (claim, sum_b)
         } else {
-            let eqjsum0 = (Field::ONE - z) * sum_endpoint;
-            (sum_endpoint, (claim - eqjsum0) / z)
+            (sum_b, (claim - (Field::ONE - z) * sum_b) / z)
         };
 
         vs.grind(CUBIC_GRINDING_LABEL, security.grinding_bits(3))
             .ok()?;
         let r = vs.verifier_message();
-        next_point.push_back(r);
-        let factor = eq_factor(r, z);
-
-        // `claim = factor * (sum0 + r*(sum1 - sum0) + r*(r - 1)*suminf)`.
-        let bracket = (sum1 - sum0) + (r - Field::ONE) * suminf;
-        claim = factor * (sum0 + r * bracket);
-
-        prefix *= factor;
+        next_point[i] = r;
+        let eq_r = eq_factor(r, z);
+        claim = eq_r * quadratic_at(sum0, sum1, sum_inf, r);
+        eq_bound *= eq_r;
     }
 
-    let elem_lr: [Field; 2] = vs.prover_message().ok()?;
-    // Check if line polynomial hits same spot as sumcheck check
-    if (prefix * elem_lr[0] * elem_lr[1]) != claim {
-        None
-    } else {
-        let r = vs.verifier_message();
-        next_point.push_front(r);
-
-        // Reduce both claims to a single claim
-        claim = elem_lr[0] + r * (elem_lr[1] - elem_lr[0]);
-
-        Some((next_point, claim))
+    // Every coordinate is bound now: `eq_bound = eq(z, r)`.
+    let [left_r, right_r]: [Field; 2] = vs.prover_message().ok()?;
+    if eq_bound * left_r * right_r != claim {
+        return None;
     }
+    let t = vs.verifier_message();
+    next_point[n] = t;
+    Some((next_point, interpolate(left_r, right_r, t)))
 }
 
-// TODO: Optimise for circuits that are padded.
-pub struct GrandProductCircuit {
-    leafs: Vec<Field>,
+pub struct GrandProductCircuit<'a> {
+    matrix: BitMatrix<'static>,
+    images: &'a [F128],
 }
 
-impl GrandProductCircuit {
-    pub fn new(row_images: &[F128], bittable: &BitTable) -> Self {
+impl<'a> GrandProductCircuit<'a> {
+    pub fn new(row_images: &'a [F128], bittable: &BitTable) -> GrandProductCircuit<'a> {
         assert_eq!(
             row_images.len(),
             bittable.shape().rows(),
             "one image per row of the table"
         );
-        // Columns occupy the low index bits, so each product tree reduces one
-        // column. Transposed so each row can be read sequentially.
-        let matrix = bittable.as_matrix().transpose();
-        let dim2 = matrix.dim2();
-        let dim = matrix.dim1() * dim2;
-        let mut leafs = F128::zeroed_vec(dim);
+        // Leaf `(b << s) | c` is `row_images[b]` where `bit(c, b)` is set and
+        // one elsewhere: the low `s` index bits pick one of the `2^s` trees
+        // and the rest are the leaf's position in it. Each layer folds the
+        // top position bit, so tree `c` multiplies the images `bit(c, ·)`
+        // selects.
+        //
+        // Layers 0 to 2 are looked up in 16-entry lookup tables, one per four
+        // images, and the four leaves under a layer-2 node are a quarter of
+        // the positions apart, so the top two position bits are split off and
+        // moved below the tree bits. After the transpose, layer-2 node
+        // position `g` is one contiguous run, a nibble per tree in ascending
+        // order, and nibble `c` of it holds `bit(c, g + q·n)` at bit `q`, `n`
+        // being a quarter of the images: the four leaves under layer-2 node
+        // `(g << s) | c`.
+        let matrix = bittable.as_matrix();
+        let log_dim2 = matrix.log_dim2() - 2;
+        let matrix = matrix.reshape(log_dim2).transpose();
 
-        for (b, &row_image) in row_images.iter().enumerate() {
-            let leafs = &mut leafs[b * dim2..(b + 1) * dim2];
-            for (leaf, bit) in leafs.iter_mut().zip(matrix.bits(b)) {
-                *leaf = if bit == 1 { row_image } else { F128::ONE };
+        Self {
+            matrix,
+            images: row_images,
+        }
+    }
+
+    /// Returns the output layer, the product of each column of the table, and
+    /// the witnesses of the layers below it.
+    ///
+    /// Layers 0 to 2 stay as lookup tables, layer 3 is the first one built in
+    /// full, and the layers above it fold as usual.
+    #[tracing::instrument(name = "Evaluate grand-product circuit", level = "debug", skip_all)]
+    pub fn batched_eval(self) -> (Vec<Field>, LayerWitnesses) {
+        let lut_layers = LutLayers::new(self.matrix, lower_luts(self.images));
+        let layer3 = layer3(&lut_layers);
+        let (output, upper_nodes) = fold_layers(layer3, 1 << lut_layers.log_trees);
+
+        (
+            output,
+            LayerWitnesses {
+                lut_layers,
+                upper_nodes,
+            },
+        )
+    }
+}
+
+const NIBBLE_BITS: usize = 4;
+const NIBBLES_IN_WORD: usize = u64::BITS as usize / NIBBLE_BITS;
+
+/// Layers 0 to 2 as lookup tables, one per four images: `lut[nibble]` is the
+/// layer-2 node whose four leaves are the bits of `nibble`.
+///
+/// Each lookup table takes one image from each quarter of `images`.
+fn lower_luts(images: &[Field]) -> Vec<[Field; 16]> {
+    /// `lut[nibble]` is the product of the inputs whose bit is set in
+    /// `nibble`, `a` on bit 0 through `d` on bit 3 (`0b0000 -> 1`,
+    /// `0b0001 -> a`, `0b0011 -> a*b`, ...), so a nibble indexes its
+    /// multilinear value directly.
+    ///
+    /// Built by doubling: entries `2^i..2^(i+1)` are entries `0..2^i`
+    /// times the `i`-th input. The first entry of each new half is the
+    /// input itself, so it is copied rather than multiplied by one,
+    /// leaving 11 multiplications -- one per entry with two or more
+    /// factors, which is the minimum.
+    fn create_lut(c: [Field; 4]) -> [Field; 16] {
+        let mut lut = [Field::ONE; 16];
+        for (i, x) in c.into_iter().enumerate() {
+            let half = 1 << i;
+            lut[half] = x;
+            for k in 1..half {
+                lut[half + k] = lut[k] * x;
             }
         }
-
-        Self::from_leafs(leafs)
+        lut
     }
 
-    fn from_leafs(mut leafs: Vec<Field>) -> Self {
-        if !leafs.is_empty() {
-            leafs.resize(leafs.len().next_power_of_two(), Field::ONE);
-        }
-        GrandProductCircuit { leafs }
-    }
-
-    // Returns the final evaluation and the witnesses of the intermediate layers
-    // TODO: replace with leaf lookups and add multithreading
-    #[tracing::instrument(name = "Evaluate grand-product circuit", level = "debug", skip_all)]
-    pub fn batched_eval(self, groups: usize) -> (Vec<Field>, LayerWitnesses) {
-        // +1 to deal with the possible case that the leafs are empty. Given that otherwise the constructor padded it to a power of two, and ilog rounds it down, it becomes a noop
-        let mut witnesses = Vec::with_capacity((self.leafs.len() + 1).ilog2() as usize);
-
-        let mut prev_eval = self.leafs;
-
-        // Stop when there is one output per group
-        while prev_eval.len() > groups {
-            let mid = prev_eval.len() / 2;
-            let (l, r) = prev_eval.split_at(mid);
-            let eval: Vec<Field> = l.iter().zip(r).map(|(&a, &b)| a * b).collect();
-            witnesses.push(prev_eval);
-            prev_eval = eval;
-        }
-
-        (prev_eval, LayerWitnesses(witnesses))
-    }
+    let quart = images.len() / 4;
+    let (a, rest) = images.split_at(quart);
+    let (b, rest) = rest.split_at(quart);
+    let (c, d) = rest.split_at(quart);
+    a.par_iter()
+        .zip(b)
+        .zip(c)
+        .zip(d)
+        // A lookup table writes 16 entries.
+        .with_min_len(PARALLEL_MIN_LANES / 16)
+        .map(|(((&a, &b), &c), &d)| create_lut([a, b, c, d]))
+        .collect()
 }
 
-// TODO: This can be a single vec that is allocated at the start.
-pub struct LayerWitnesses(Vec<Vec<Field>>);
-
-impl LayerWitnesses {
-    pub fn pop(&mut self) -> Option<Vec<Field>> {
-        self.0.pop()
-    }
+/// Layer 3, the first layer built in full: node `k` multiplies layer-2 nodes
+/// `k` and `k + n/2`, each a lookup-table entry looked up by its nibble.
+/// Those are the two nibbles that round 1 of layer 1 reads at position `k`,
+/// here read whole.
+fn layer3(lut_layers: &LutLayers) -> Vec<Field> {
+    let half = lut_layers.nodes() / 2;
+    let mut layer3 = Field::zeroed_vec(half);
+    layer3
+        .par_chunks_mut(lut_layers.piece())
+        .zip(lut_layers.pieces(half))
+        .for_each(|(nodes, positions)| {
+            let ([lut0, lut1, ..], pairs) = lut_layers.pairs::<LAYER1>(half, positions);
+            for (nodes, word) in nodes.chunks_exact_mut(NIBBLES_IN_WORD).zip(pairs) {
+                for (node, [n0, n1, ..]) in nodes.iter_mut().zip(word) {
+                    *node = lut0[n0] * lut1[n1];
+                }
+            }
+        });
+    layer3
 }
 
-impl IntoIterator for LayerWitnesses {
-    type Item = Vec<Field>;
-    type IntoIter = std::iter::Rev<std::vec::IntoIter<Vec<Field>>>;
+/// Multiplies `layer` pairwise, left half against right half, until one
+/// value per group remains. Returns that output layer and every layer before
+/// it, `layer` first.
+fn fold_layers(mut layer: Vec<Field>, groups: usize) -> (Vec<Field>, Vec<Vec<Field>>) {
+    let rounds = (layer.len() / groups).checked_ilog2().unwrap_or(0);
+    let mut witnesses = Vec::with_capacity(rounds as usize);
 
-    fn into_iter(self) -> Self::IntoIter {
-        self.0.into_iter().rev()
+    // Stop when there is one output per group
+    while layer.len() > groups {
+        // Node `k` multiplies node `k` of the left half and node `k` of the
+        // right half below it.
+        let (l, r) = layer.split_at(layer.len() / 2);
+        let next = l
+            .par_iter()
+            .zip(r)
+            .with_min_len(PARALLEL_MIN_LANES)
+            .map(|(&a, &b)| a * b)
+            .collect();
+        witnesses.push(layer);
+        layer = next;
     }
+
+    (layer, witnesses)
+}
+
+/// The intermediate layers. Layers 0 to 2 stay in their lookup tables,
+/// which is how round 1 of their sumchecks reads them; layer 3 and up are
+/// kept in full.
+pub struct LayerWitnesses {
+    /// Layers 0 to 2, in their lookup tables.
+    lut_layers: LutLayers,
+    /// Layer 3 and up, layer 3 first.
+    upper_nodes: Vec<Vec<Field>>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use common::SecurityLevel::{Bits100, Bits128};
+    use common::{BitZParams, Shape};
+    use field::gf128::smallest_generator;
     use proptest::prelude::*;
 
     fn field() -> impl Strategy<Value = Field> {
@@ -443,21 +918,18 @@ mod tests {
         xs.iter().fold(Field::ONE, |acc, &x| acc * x)
     }
 
-    /// Proves a grand-product circuit for `leaves` batched into `2^log_groups`
-    /// groups, then checks the verifier accepts the proof against the
-    /// prover's own claimed output layer. Returns that output layer so
-    /// callers can assert further properties of it.
-    fn prove_and_verify(
-        leaves: Vec<Field>,
-        log_groups: usize,
-    ) -> Result<Vec<Field>, TestCaseError> {
-        let (last_value, proof) = prove(leaves.clone(), log_groups);
-        prop_assert!(verify(leaves, last_value.clone(), proof));
-        Ok(last_value)
+    /// `leaves` padded with ones to a power of two, so they have an MLE. The
+    /// `fold_layers` tests below take any leaves, not only those a bit table
+    /// gives.
+    fn pad(mut leaves: Vec<Field>) -> Vec<Field> {
+        if !leaves.is_empty() {
+            leaves.resize(leaves.len().next_power_of_two(), Field::ONE);
+        }
+        leaves
     }
 
     proptest! {
-        // batched_eval, unbatched (groups = 1): pairwise multiplication is
+        // fold_layers, unbatched (groups = 1): pairwise multiplication is
         // associative, so folding-by-multiply any witness layer (including
         // the leaves, padded with the multiplicative identity 1) must equal
         // folding the original input. Checks every intermediate layer, not
@@ -466,18 +938,18 @@ mod tests {
         fn eval_preserves_product_across_layers(leaves in prop::collection::vec(field(), 0..12)) {
             let expected = product(&leaves);
 
-            let (top, mut witnesses) = GrandProductCircuit::from_leafs(leaves).batched_eval(1);
+            let (top, witnesses) = fold_layers(pad(leaves), 1);
 
             prop_assert_eq!(product(&top), expected);
 
-            while let Some(layer) = witnesses.pop() {
+            for layer in witnesses {
                 prop_assert_eq!(product(&layer), expected);
             }
         }
 
 
         #[test]
-        fn batched_eval_top_layer_is_interleaved_group_products(
+        fn fold_layers_top_layer_is_interleaved_group_products(
             leaves in prop::collection::vec(field(), 1..32),
             groups_log2 in 0usize..4,
         ) {
@@ -488,8 +960,7 @@ mod tests {
             let mut padded = leaves.clone();
             padded.resize(padded_len, Field::ONE);
 
-            let circuit = GrandProductCircuit::from_leafs(leaves);
-            let (top, _witnesses) = circuit.batched_eval(groups);
+            let (top, _witnesses) = fold_layers(pad(leaves), groups);
             prop_assert_eq!(top.len(), groups);
 
             for (j, &value) in top.iter().enumerate() {
@@ -501,190 +972,341 @@ mod tests {
                 prop_assert_eq!(value, expected);
             }
         }
+    }
 
-        // Full protocol, unbatched: proves and verifies through `prove`/
-        // `verify`, then checks the output against an independently computed
-        // product
-        // Starts at 1 since Dense MLE can't handle zero
-        #[test]
-        fn gpgkr_round_trip(leaves in prop::collection::vec(field(), 1..100)) {
-            let expected = product(&leaves);
+    /// Small enough that `BitZParams` accepts every shape below.
+    const Q: u128 = (1 << 100) - 15;
 
-            let last_value = prove_and_verify(leaves, 0)?;
-            prop_assert_eq!(last_value, vec![expected]);
+    /// The smallest shape the gates accept, `(t, s)` with `t + s = 22`.
+    const SMALLEST: (usize, usize) = (7, 15);
+
+    /// How the bits of a test table are set.
+    #[derive(Clone, Copy, Debug)]
+    enum Bits {
+        /// Every leaf is one.
+        Clear,
+        /// Every leaf is its row's image.
+        Set,
+        /// Bits drawn from the seed.
+        Drawn,
+    }
+
+    fn bits() -> impl Strategy<Value = Bits> {
+        prop_oneof![Just(Bits::Clear), Just(Bits::Set), Just(Bits::Drawn)]
+    }
+
+    /// A splitmix64 stream: test data that is fixed by its seed.
+    fn stream(seed: u64) -> impl Iterator<Item = u64> {
+        let mut x = seed;
+        std::iter::repeat_with(move || {
+            x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let z = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            let z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^ (z >> 31)
+        })
+    }
+
+    fn element(words: &mut impl Iterator<Item = u64>) -> F128 {
+        let mut word = || words.next().unwrap();
+        F128::from([word(), word()])
+    }
+
+    /// The packed bits of a `(t, s)` table and one image per row, from `seed`.
+    fn instance((t, s): (usize, usize), bits: Bits, seed: u64) -> (Shape, Vec<F128>, Vec<Field>) {
+        let shape = Shape::new(t, s).unwrap();
+        let mut words = stream(seed);
+        let packed = (0..(1usize << shape.log_bits()) / 128)
+            .map(|_| match bits {
+                Bits::Clear => F128::ZERO,
+                Bits::Set => F128::from(u128::MAX),
+                Bits::Drawn => element(&mut words),
+            })
+            .collect();
+        let row_images = (0..shape.rows()).map(|_| element(&mut words)).collect();
+        (shape, packed, row_images)
+    }
+
+    fn table(shape: Shape, packed: &[F128]) -> BitTable<'_> {
+        BitZParams::<Q>::new(shape, smallest_generator())
+            .unwrap()
+            .table(packed)
+            .unwrap()
+    }
+
+    /// Leaf `(b << s) | c` is `row_images[b]` where `bit(c, b)` is set and one
+    /// elsewhere, as `GrandProductCircuit::new` describes, built one leaf at a
+    /// time: the reference the circuit is checked against.
+    fn leaves(table: &BitTable, row_images: &[Field]) -> Vec<Field> {
+        let shape = table.shape();
+        let mut leaves = vec![Field::ONE; 1 << shape.log_bits()];
+        for (b, &image) in row_images.iter().enumerate() {
+            for c in 0..shape.columns() {
+                if table.bit(c, b) {
+                    leaves[(b << shape.log_columns()) | c] = image;
+                }
+            }
         }
+        leaves
+    }
 
-        // Full protocol, batched (`groups > 1`)
+    proptest! {
+        // Every case proves a whole circuit at the smallest shape.
+        #![proptest_config(ProptestConfig::with_cases(4))]
+
+        // Full protocol: the verifier accepts, and the output is the product
+        // of each tree's leaves.
         #[test]
-        fn gpgkr_round_trip_batched(
-            leaves in prop::collection::vec(field(), 4..33),
-            groups_log2 in 1usize..4,
-        ) {
-            let padded_len = leaves.len().next_power_of_two();
-            let groups_log2 = groups_log2.min(padded_len.ilog2() as usize - 1).max(1);
+        fn gpgkr_round_trip(bits in bits(), seed in any::<u64>()) {
+            let (shape, packed, row_images) = instance(SMALLEST, bits, seed);
+            let table = table(shape, &packed);
+            let leaves = leaves(&table, &row_images);
 
-            prove_and_verify(leaves, groups_log2)?;
+            let (output, proof) = prove(&table, &row_images, Bits100);
+            prop_assert!(verify(&leaves, &output, &proof, Bits100));
+
+            let columns = shape.columns();
+            let expected: Vec<Field> = (0..columns)
+                .map(|c| leaves[c..].iter().step_by(columns).product())
+                .collect();
+            prop_assert_eq!(output, expected);
         }
 
         // negative/soundness test
         #[test]
-        fn gpgkr_verify_rejects_tampered_output(leaves in prop::collection::vec(field(), 2..33)) {
-            let (last_value, proof) = prove(leaves.clone(), 0);
+        fn gpgkr_verify_rejects_tampered_output(bits in bits(), seed in any::<u64>()) {
+            let (shape, packed, row_images) = instance(SMALLEST, bits, seed);
+            let table = table(shape, &packed);
+            let (output, proof) = prove(&table, &row_images, Bits100);
 
-            let mut tampered = last_value;
+            let mut tampered = output;
             tampered[0] += Field::ONE;
 
-            prop_assert!(!verify(leaves, tampered, proof));
+            prop_assert!(!verify(&leaves(&table, &row_images), &tampered, &proof, Bits100));
         }
     }
 
+    // At 128 bits every cubic challenge is ground: the proof carries a nonce
+    // per sumcheck round, and the verifier rejects a changed one.
     #[test]
     fn gpgkr_security_targets_replay_and_reject_changed_nonces() {
-        let leaves: Vec<Field> = (1u128..=16).map(Field::from).collect();
-        let point = [Field::from(5u128), Field::from(7u128)];
-        let instance = (leaves.clone(), point.to_vec());
-        let mut unground_len = 0;
+        let (shape, packed, row_images) = instance(SMALLEST, Bits::Drawn, 6);
+        let table = table(shape, &packed);
+        let leaves = leaves(&table, &row_images);
 
-        for security in [Bits100, Bits128] {
-            let circuit = GrandProductCircuit::from_leafs(leaves.clone());
-            let (output, witnesses) = circuit.batched_eval(4);
+        let (_, unground) = prove(&table, &row_images, Bits100);
+        let (output, mut proof) = prove(&table, &row_images, Bits128);
+        assert!(verify(&leaves, &output, &proof, Bits128));
+
+        // One cubic challenge per coordinate of each layer's point, from the
+        // output's `s` up to the leaves' `log_bits - 1`, each with an
+        // eight-byte nonce.
+        let cubic_challenges: usize = (shape.log_columns()..shape.log_bits()).sum();
+        assert_eq!(
+            proof.narg_string.len(),
+            unground.narg_string.len() + 8 * cubic_challenges
+        );
+        // The first cubic message occupies two canonical field elements.
+        proof.narg_string[32] ^= 1;
+        assert!(!verify(&leaves, &output, &proof, Bits128));
+    }
+
+    // Zero and one coordinates in the output point take the `sends_one`
+    // branch in the top layer's rounds.
+    #[test]
+    fn gpgkr_round_trip_with_zero_coordinates() {
+        let (shape, packed, row_images) = instance(SMALLEST, Bits::Drawn, 1);
+        let table = table(shape, &packed);
+        let leaves = leaves(&table, &row_images);
+        let s = shape.log_columns();
+        let layers = shape.log_rows() as u32;
+
+        // `value` at coordinate `i`, and a nonzero value at every other.
+        let nonzero = Field::from(5u128);
+        let with = |i: usize, value: Field| -> Vec<Field> {
+            (0..s)
+                .map(|j| if j == i { value } else { nonzero })
+                .collect()
+        };
+        for point in [
+            vec![Field::ZERO; s],
+            with(s - 1, Field::ZERO),
+            with(0, Field::ZERO),
+            with(s - 1, Field::ONE),
+            with(0, Field::ONE),
+        ] {
+            let (output, witnesses) = GrandProductCircuit::new(&row_images, &table).batched_eval();
             let claim = mle(output, &point);
-            let mut prover = transcript::build_prover("gkr-security", &instance);
-            let terminal = gpgkr_prove(
-                &mut prover,
-                leaves.len().ilog2() as usize,
-                &point,
-                witnesses,
-                security,
-            );
+            let mut prover = transcript::build_prover("gkr-zero", &point);
+            let terminal = gpgkr_prove(&mut prover, shape.log_bits(), &point, witnesses, Bits100);
             assert_eq!(terminal.1, mle(leaves.clone(), &terminal.0));
-            let mut proof = prover.finish();
+            let proof = prover.finish();
 
-            let mut verifier = transcript::build_verifier("gkr-security", &instance, &proof);
+            let mut verifier = transcript::build_verifier("gkr-zero", &point, &proof);
             assert_eq!(
-                gpgkr_verify(&mut verifier, claim, &point, 2, security),
+                gpgkr_verify(&mut verifier, claim, &point, layers, Bits100),
                 Some(terminal)
             );
             verifier.check_eof().unwrap();
 
-            match security {
-                Bits100 => unground_len = proof.narg_string.len(),
-                Bits128 => {
-                    // Two layers have five cubic challenges and five eight-byte nonces.
-                    assert_eq!(proof.narg_string.len(), unground_len + 40);
-                    // The first cubic message occupies two canonical field elements.
-                    proof.narg_string[32] ^= 1;
-                    let mut verifier =
-                        transcript::build_verifier("gkr-security", &instance, &proof);
-                    assert!(gpgkr_verify(&mut verifier, claim, &point, 2, security).is_none());
-                }
+            let mut verifier = transcript::build_verifier("gkr-zero", &point, &proof);
+            assert!(
+                gpgkr_verify(&mut verifier, claim + Field::ONE, &point, layers, Bits100).is_none()
+            );
+        }
+    }
+
+    /// Each LUT-backed layer proved on its own, from a point whose top
+    /// coordinate is zero (round 1's `sends_one` branch) or not: the verifier
+    /// accepts it, and the final claim is the MLE of the children.
+    #[test]
+    fn lut_layers_prove_from_any_top_coordinate() {
+        let (shape, packed, row_images) = instance(SMALLEST, Bits::Drawn, 4);
+        let table = table(shape, &packed);
+        // The leaves and every layer above, built one leaf at a time.
+        let (_, layers) = fold_layers(leaves(&table, &row_images), shape.columns());
+        let (_, witnesses) = GrandProductCircuit::new(&row_images, &table).batched_eval();
+        let lut_layers = witnesses.lut_layers;
+        let mut bound_children = Field::zeroed_vec(2 * lut_layers.nodes());
+        let mut eq_memory = EqTables::alloc_storage(shape.log_bits());
+
+        let mut draws = stream(5);
+        for layer in [LEAVES, LAYER1, LAYER2] {
+            type Prove = fn(
+                &mut ProverState,
+                &mut [Field],
+                &[Field],
+                &LutLayers,
+                &mut [Field],
+                SecurityLevel,
+            ) -> (Vec<Field>, Field);
+            let prove: Prove = match layer {
+                LEAVES => prove_lut_layer::<LEAVES>,
+                LAYER1 => prove_lut_layer::<LAYER1>,
+                _ => prove_lut_layer::<LAYER2>,
+            };
+            let (children, parent) = (&layers[layer], &layers[layer + 1]);
+            for top in [Field::ZERO, Field::from(7u128)] {
+                let mut point: Vec<Field> = (0..parent.len().ilog2())
+                    .map(|_| element(&mut draws))
+                    .collect();
+                *point.last_mut().unwrap() = top;
+
+                let mut prover = transcript::build_prover("lut-layer", &point);
+                let terminal = prove(
+                    &mut prover,
+                    &mut eq_memory,
+                    &point,
+                    &lut_layers,
+                    &mut bound_children,
+                    Bits100,
+                );
+                let proof = prover.finish();
+
+                let mut verifier = transcript::build_verifier("lut-layer", &point, &proof);
+                let claim = mle(parent.clone(), &point);
+                assert_eq!(
+                    verify_layer(&mut verifier, claim, &point, Bits100),
+                    Some(terminal.clone()),
+                    "layer {layer}, top coordinate {top}"
+                );
+                assert_eq!(terminal.1, mle(children.clone(), &terminal.0));
             }
         }
     }
 
+    /// The output and every layer from layer 3 up match the circuit built one
+    /// leaf at a time from the same table. Layers 0 to 2 stay in their lookup
+    /// tables; `lut_layers_prove_from_any_top_coordinate` checks them through
+    /// the sumchecks that read them.
     #[test]
-    fn gpgkr_round_trip_with_zero_coordinates() {
-        let leaves: Vec<Field> = (1u128..=16).map(Field::from).collect();
-        let nonzero = Field::from(5u128);
-        for point in [
-            [Field::ZERO, Field::ZERO],
-            [Field::ZERO, nonzero],
-            [nonzero, Field::ZERO],
-            [Field::ZERO, Field::ONE],
-            [Field::ONE, Field::ZERO],
-        ] {
-            let circuit = GrandProductCircuit::from_leafs(leaves.clone());
-            let (output, witnesses) = circuit.batched_eval(4);
-            let claim = mle(output, &point);
-            let instance = (leaves.clone(), point.to_vec());
-            let mut prover = transcript::build_prover("gkr-zero", &instance);
-            let terminal = gpgkr_prove(
-                &mut prover,
-                leaves.len().ilog2() as usize,
-                &point,
-                witnesses,
-                Bits100,
-            );
-            assert_eq!(terminal.1, mle(leaves.clone(), &terminal.0));
-            let proof = prover.finish();
+    fn lut_layers_match_the_leaf_construction() {
+        // At t = 7 and 8 there are 32 and 64 lookup tables, fewer than the bits
+        // of a `u128`, so the transpose in `GrandProductCircuit::new` moves
+        // `u32` and `u64` blocks; from t = 9 on it moves `u128` ones. At s = 7
+        // a lookup table's run is 128 nibbles, 8 words, below
+        // `PARALLEL_MIN_LANES`, so a piece of `layer3` is a whole run rather
+        // than part of one.
+        for (log_rows, log_columns) in [(7, 15), (8, 14), (9, 13), (15, 7)] {
+            let (shape, packed, row_images) = instance((log_rows, log_columns), Bits::Drawn, 3);
+            let table = table(shape, &packed);
+            let (expected_output, expected_layers) =
+                fold_layers(leaves(&table, &row_images), shape.columns());
 
-            let mut verifier = transcript::build_verifier("gkr-zero", &instance, &proof);
-            assert_eq!(
-                gpgkr_verify(&mut verifier, claim, &point, 2, Bits100),
-                Some(terminal)
-            );
-            verifier.check_eof().unwrap();
+            let (output, witnesses) = GrandProductCircuit::new(&row_images, &table).batched_eval();
+            // Both start at layer 3: the reference after its first three.
+            let (layers, expected_layers) = (&witnesses.upper_nodes, &expected_layers[3..]);
 
-            let mut verifier = transcript::build_verifier("gkr-zero", &instance, &proof);
-            assert!(gpgkr_verify(&mut verifier, claim + Field::ONE, &point, 2, Bits100).is_none());
+            assert!(output == expected_output, "output, t = {log_rows}");
+            assert_eq!(layers.len(), expected_layers.len(), "t = {log_rows}");
+            for (i, (layer, expected)) in layers.iter().zip(expected_layers).enumerate() {
+                assert!(layer == expected, "layer {}, t = {log_rows}", i + 3);
+            }
         }
     }
 
     #[test]
     fn gpgkr_verify_rejects_every_truncated_prefix() {
-        let leaves: Vec<Field> = (1u128..=8).map(Field::from).collect();
-        for log_groups in [0, 1] {
-            let (output, proof) = prove(leaves.clone(), log_groups);
-            assert!(verify(leaves.clone(), output.clone(), proof.clone()));
+        let (shape, packed, row_images) = instance(SMALLEST, Bits::Drawn, 2);
+        let table = table(shape, &packed);
+        let leaves = leaves(&table, &row_images);
+        let (output, proof) = prove(&table, &row_images, Bits100);
+        assert!(verify(&leaves, &output, &proof, Bits100));
 
-            // Cover partial field elements and missing messages in every layer.
-            for len in 0..proof.narg_string.len() {
-                let mut truncated = proof.clone();
-                truncated.narg_string.truncate(len);
-                assert!(
-                    !verify(leaves.clone(), output.clone(), truncated),
-                    "accepted {len} bytes with log_groups = {log_groups}",
-                );
-            }
+        // Cover partial field elements and missing messages in every layer.
+        for len in 0..proof.narg_string.len() {
+            let mut truncated = proof.clone();
+            truncated.narg_string.truncate(len);
+            assert!(
+                !verify(&leaves, &output, &truncated, Bits100),
+                "accepted {len} bytes"
+            );
         }
     }
 
-    pub fn prove(input: Vec<Field>, log_groups: usize) -> (Vec<Field>, transcript::Proof) {
-        let circuit = GrandProductCircuit::from_leafs(input);
-        // Fake hashing
-        let n = circuit.leafs.len() as u128;
-
-        let log_bits = circuit.leafs.len().max(1).ilog2() as usize;
-        let groups = 1usize << log_groups;
-        let (last_value, witnesses) = circuit.batched_eval(groups);
+    /// Proves the circuit of `table` at a point the verifier draws, as
+    /// `gkr_reduce` does. Returns the output layer, one product per tree.
+    fn prove(
+        table: &BitTable,
+        row_images: &[Field],
+        security: SecurityLevel,
+    ) -> (Vec<Field>, transcript::Proof) {
+        let (output, witnesses) = GrandProductCircuit::new(row_images, table).batched_eval();
+        let log_bits = table.shape().log_bits();
 
         // TODO instance is a bit loose and should be replaced by PCS
-        let instance = (last_value.clone(), n);
-
+        let instance = (output.clone(), 1u128 << log_bits);
         let mut prover = transcript::build_prover("gkr", &instance);
 
-        // Extension point chosen by the verifier to evaluate the output layer.
-        // Mirrors `verify`'s `output.len().max(1).ilog2()` exactly, since both
-        // sides must draw the same number of challenges here.
-        let log_groups = last_value.len().max(1).ilog2();
-        let point: Vec<Field> = (0..log_groups).map(|_| prover.verifier_message()).collect();
+        // Mirrors `verify`, since both sides must draw the same number of
+        // challenges here.
+        let point: Vec<Field> = (0..output.len().ilog2())
+            .map(|_| prover.verifier_message())
+            .collect();
 
-        gpgkr_prove(&mut prover, log_bits, &point, witnesses, Bits100);
-        (last_value, prover.finish())
+        gpgkr_prove(&mut prover, log_bits, &point, witnesses, security);
+        (output, prover.finish())
     }
 
-    pub fn verify(input: Vec<Field>, output: Vec<Field>, proof: transcript::Proof) -> bool {
-        let circuit = GrandProductCircuit::from_leafs(input);
-        // Fake hashing
-        let instance = (&output, circuit.leafs.len() as u128);
-        let mut verifier = transcript::build_verifier("gkr", &instance, &proof);
+    /// Verifies `proof` for `output`, then checks the final claim against the
+    /// MLE of `leaves`.
+    fn verify(
+        leaves: &[Field],
+        output: &[Field],
+        proof: &transcript::Proof,
+        security: SecurityLevel,
+    ) -> bool {
+        let instance = (output.to_vec(), leaves.len() as u128);
+        let mut verifier = transcript::build_verifier("gkr", &instance, proof);
 
-        let log_groups = output.len().max(1).ilog2();
-        let point: Vec<Field> = (0..log_groups)
+        let point: Vec<Field> = (0..output.len().ilog2())
             .map(|_| verifier.verifier_message())
             .collect();
-        let claim = mle(output, &point);
-        let log_groups = point.len() as u32;
-        let log_leafs = circuit.leafs.len().max(1).ilog2();
-        let rounds = log_leafs.saturating_sub(log_groups);
+        let claim = mle(output.to_vec(), &point);
+        let layers = leaves.len().ilog2() - output.len().ilog2();
 
-        match gpgkr_verify(&mut verifier, claim, &point, rounds, Bits100) {
+        match gpgkr_verify(&mut verifier, claim, &point, layers, security) {
             Some((point, claim)) => {
-                let leaf_check = mle(circuit.leafs, &point);
-
-                let ok = leaf_check == claim;
-
-                ok && verifier.check_eof().is_ok()
+                mle(leaves.to_vec(), &point) == claim && verifier.check_eof().is_ok()
             }
             None => false,
         }

@@ -1,6 +1,10 @@
 //! Bit matrices in memory order, and the transpose between them.
 
-use std::{borrow::Cow, slice::Iter};
+use std::{
+    borrow::Cow,
+    ops::{BitAnd, BitXor, BitXorAssign, Deref, Not, Shl, Shr},
+    slice::Iter,
+};
 
 /// The word `packed` is sliced into: one `F128` element. [`crate::BitTable::BITS`]
 /// is derived from this, so changing it is the only step needed to repack
@@ -8,7 +12,8 @@ use std::{borrow::Cow, slice::Iter};
 ///
 /// 128 rather than 64 bits because `bit_transpose` is bound by its strided
 /// loads and stores, and each one then moves 16 bytes instead of 8: the same
-/// code with `u64` measured 20-55% slower on `BitMatrix::transpose`.
+/// code with `u64` measured 20-55% slower on `BitMatrix::transpose`. It
+/// drops to a narrower word only for an axis shorter than this.
 pub(crate) type Word = u128;
 /// Bits in a [`Word`].
 const BITS: usize = Word::BITS as usize;
@@ -53,9 +58,9 @@ impl<'a> BitMatrix<'a> {
     ///
     /// # Constraints
     ///
-    /// - **Both axes**: at least `128`, since `bit_transpose` moves whole
-    ///   `128 x 128` blocks. Its doc comment says where a version for a
-    ///   shorter `dim1` lives.
+    /// - **Both axes**: at least `8`, since `bit_transpose` moves square
+    ///   blocks of the widest word both axes fill, `u128` down to `u8`. Its
+    ///   doc comment says where a version for a shorter `dim1` lives.
     /// - **Allocation**: always a full out-of-place copy -- a fresh owned
     ///   buffer the same size as the packed words (up to 4 GiB at `m = 35`),
     ///   whether `self` owned or borrowed them.
@@ -75,6 +80,10 @@ impl<'a> BitMatrix<'a> {
     /// The inner, contiguous axis.
     pub fn dim2(&self) -> usize {
         1 << self.log_dim2
+    }
+
+    pub fn log_dim2(&self) -> usize {
+        self.log_dim2
     }
 
     /// The `dim2` bits of `xs[i1]`, in ascending order.
@@ -108,27 +117,51 @@ impl<'a> BitMatrix<'a> {
 }
 
 /// Transposes `xs[dim1][dim2]`, `dim2` contiguous and both in bits, into an
-/// owned `[dim2][dim1]`, one `BITS x BITS` block at a time.
+/// owned `[dim2][dim1]`, one square block at a time.
 ///
-/// Both axes must be whole words. Commit
-/// 336e8097225aca4f8146f35594740b0e5054d839 has a version that also takes
-/// any power-of-two `dim1` below a word (`bit_transpose_blocks` and
-/// `rotate_bit_index` in this file): it gathers `BITS / dim1` words of each
-/// row into one block and interleaves them by rotating the bit index. Run in
-/// reverse, the same steps would take `dim2` below a word, if that is ever
-/// needed. Bringing it back also lifts [`crate::ParamsError::ColumnCountTooNarrow`],
-/// the gate this limit puts on tables.
+/// The block is the widest word both axes are whole multiples of: a [`Word`]
+/// whenever they can be, otherwise the words are read in place as `u64` down
+/// to `u8` and the same kernel runs at that width. An axis of 1, 2 or 4 bits
+/// fills no word. For a short `dim1`, commit
+/// 336e8097225aca4f8146f35594740b0e5054d839 has a version that reaches those
+/// too (`bit_transpose_blocks` and `rotate_bit_index` in this file): it
+/// gathers `BITS / dim1` words of each row into one block and interleaves
+/// them by rotating the bit index.
 fn bit_transpose(xs: &[Word], dim1: usize, dim2: usize) -> Vec<Word> {
     assert_eq!(xs.len() * BITS, dim1 * dim2);
-    assert!(
-        dim1.is_multiple_of(BITS) && dim2.is_multiple_of(BITS),
-        "{dim1} x {dim2} bits is not whole words along both axes"
-    );
-    let dim1_words = dim1 / BITS;
-    let dim2_words = dim2 / BITS;
 
     let mut out = bytemuck::zeroed_vec(xs.len());
-    let mut block = [0; BITS];
+    // The lowest set bit of `dim1 | dim2` is the largest power of two both
+    // are multiples of; or-ing in `BITS` caps it at a `Word`.
+    match 1usize << (dim1 | dim2 | BITS).trailing_zeros() {
+        8 => transpose_blocks::<u8, 8>(xs, &mut out, dim1, dim2),
+        16 => transpose_blocks::<u16, 16>(xs, &mut out, dim1, dim2),
+        32 => transpose_blocks::<u32, 32>(xs, &mut out, dim1, dim2),
+        64 => transpose_blocks::<u64, 64>(xs, &mut out, dim1, dim2),
+        BITS => transpose_blocks::<Word, BITS>(xs, &mut out, dim1, dim2),
+        _ => panic!("{dim1} x {dim2} bits is not whole words along both axes"),
+    }
+
+    out
+}
+
+/// [`bit_transpose`] in `N x N` blocks of the `N`-bit word `W`.
+fn transpose_blocks<W: BlockWord, const N: usize>(
+    xs: &[Word],
+    out: &mut [Word],
+    dim1: usize,
+    dim2: usize,
+) {
+    const { assert!(N == 8 * size_of::<W>()) };
+    // Read in place: on a little-endian target, bit `i` of the words is bit
+    // `i` of the narrower words too.
+    const { assert!(cfg!(target_endian = "little")) };
+    let xs: &[W] = bytemuck::cast_slice(xs);
+    let out: &mut [W] = bytemuck::cast_slice_mut(out);
+    let dim1_words = dim1 / N;
+    let dim2_words = dim2 / N;
+
+    let mut block = [W::zeroed(); N];
     // g1 innermost, so consecutive blocks write neighbouring words of the
     // same output rows while those lines are still cached, and it is the
     // input that is revisited after a sweep; the other way round measured
@@ -136,34 +169,51 @@ fn bit_transpose(xs: &[Word], dim1: usize, dim2: usize) -> Vec<Word> {
     for g2 in 0..dim2_words {
         for g1 in 0..dim1_words {
             for (a, word) in block.iter_mut().enumerate() {
-                *word = xs[(g1 * BITS + a) * dim2_words + g2];
+                *word = xs[(g1 * N + a) * dim2_words + g2];
             }
 
             transpose_bit_block(&mut block);
 
             for (o, &word) in block.iter().enumerate() {
-                out[(g2 * BITS + o) * dim1_words + g1] = word;
+                out[(g2 * N + o) * dim1_words + g1] = word;
             }
         }
     }
-
-    out
 }
 
-/// Transposes a `BITS x BITS` bit matrix stored as `BITS` words of `BITS`
-/// bits: after the call, bit `j` of word `i` is what bit `i` of word `j` held
-/// before it, for every `i, j`.
+/// An unsigned word [`transpose_bit_block`] can work in.
+trait BlockWord:
+    bytemuck::Pod
+    + BitAnd<Output = Self>
+    + BitXor<Output = Self>
+    + BitXorAssign
+    + Not<Output = Self>
+    + Shl<usize, Output = Self>
+    + Shr<usize, Output = Self>
+{
+}
+
+impl BlockWord for u8 {}
+impl BlockWord for u16 {}
+impl BlockWord for u32 {}
+impl BlockWord for u64 {}
+impl BlockWord for u128 {}
+
+/// Transposes an `N x N` bit matrix stored as `N` words of `N` bits: after
+/// the call, bit `j` of word `i` is what bit `i` of word `j` held before it,
+/// for every `i, j`.
 ///
 /// The recursive-doubling bit-matrix transpose (Hacker's Delight, 2nd ed.,
-/// §7-3), generalized from its usual 64x64 form to the 128-bit lane width
-/// `F128` packs bits into. `O(n log n)` word operations rather than the
-/// `O(n^2)` of moving one bit at a time.
-fn transpose_bit_block(a: &mut [Word; BITS]) {
-    let mut j = BITS / 2;
-    let mut mask: Word = (1 << j) - 1;
+/// §7-3), generalized from its usual 64x64 form to any word width, `u128`
+/// being the lane width `F128` packs bits into. `O(n log n)` word operations
+/// rather than the `O(n^2)` of moving one bit at a time.
+fn transpose_bit_block<W: BlockWord, const N: usize>(a: &mut [W; N]) {
+    let mut j = N / 2;
+    // The low half of the word.
+    let mut mask = !W::zeroed() >> j;
     while j > 0 {
         let mut k = 0;
-        while k < BITS {
+        while k < N {
             let t = ((a[k] >> j) ^ a[k | j]) & mask;
             a[k | j] ^= t;
             a[k] ^= t << j;
@@ -194,7 +244,7 @@ fn transpose_reference<const GS: usize>(tt: &[Word]) -> Vec<Word> {
         for s in &mut segments {
             let Some(b) = s.next() else { break 'outer };
             // LSB first, like `StepIter`.
-            word |= b << offset;
+            word |= Word::from(b) << offset;
             offset += 1;
             if offset == BITS {
                 out.push(word);
@@ -225,23 +275,30 @@ pub type BitsIter<'a> = StepIter<'a, 1>;
 
 /// Iterator over packed bits `S` at a time, least significant first — see
 /// [`BitMatrix::bits`].
+///
+/// Reads the words as `u64`, since no step needs more. A `u128` word was
+/// kept on the stack between steps and made the GKR's layer 3 ~25% slower.
 pub struct StepIter<'a, const S: usize> {
-    elements: std::slice::Iter<'a, Word>,
+    elements: std::slice::Iter<'a, u64>,
     /// Bits not yet emitted; the next one to emit is the LSB.
-    word: Word,
+    word: u64,
     remaining: u8,
 }
 
 impl<'a, const S: usize> StepIter<'a, S> {
     const CHECK_SIZE: () = assert!(
-        S != 0 && S <= Word::BITS as usize && (Word::BITS as usize).is_multiple_of(S),
-        "step size must be nonzero, at most Word::BITS, and divide Word::BITS evenly"
+        S != 0 && S <= u64::BITS as usize && (u64::BITS as usize).is_multiple_of(S),
+        "step size must be nonzero, at most 64, and divide 64 evenly"
     );
-    const MASK: Word = (1 as Word).unbounded_shl(S as u32).wrapping_sub(1);
-    fn new(iter: Iter<'a, Word>) -> Self {
+    const MASK: u64 = 1u64.unbounded_shl(S as u32).wrapping_sub(1);
+    pub fn new(iter: Iter<'a, Word>) -> Self {
         let () = Self::CHECK_SIZE;
+        // On a little-endian target, bit `i` of the words is bit `i` of the
+        // `u64`s too.
+        const { assert!(cfg!(target_endian = "little")) };
+        let elements: &[u64] = bytemuck::cast_slice(iter.as_slice());
         Self {
-            elements: iter,
+            elements: elements.iter(),
             word: 0,
             remaining: 0,
         }
@@ -249,13 +306,13 @@ impl<'a, const S: usize> StepIter<'a, S> {
 }
 
 impl<const S: usize> Iterator for StepIter<'_, S> {
-    type Item = Word;
+    type Item = u64;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.remaining == 0 {
             let element = self.elements.next()?;
             self.word = *element;
-            self.remaining = Word::BITS as u8;
+            self.remaining = u64::BITS as u8;
         }
         let bitset = self.word & Self::MASK;
         self.word = self.word.unbounded_shr(S as u32);
@@ -271,7 +328,15 @@ impl<const S: usize> Iterator for StepIter<'_, S> {
 
 impl<const S: usize> ExactSizeIterator for StepIter<'_, S> {
     fn len(&self) -> usize {
-        (self.remaining as usize + self.elements.len() * BITS) / S
+        (self.remaining as usize + self.elements.len() * u64::BITS as usize) / S
+    }
+}
+
+impl<'a> Deref for BitMatrix<'a> {
+    type Target = [Word];
+
+    fn deref(&self) -> &Self::Target {
+        &self.packed
     }
 }
 
@@ -381,9 +446,10 @@ mod tests {
     const TRANSPOSE_LOG_DIM1: usize = 9;
     const TRANSPOSE_LOG_DIM2: usize = 8;
 
-    #[test]
-    fn transpose_swaps_the_axes() {
-        let matrix = pseudo_random_matrix(TRANSPOSE_LOG_DIM1, TRANSPOSE_LOG_DIM2);
+    /// The transpose of a pseudo-random `xs[2^log_dim1][2^log_dim2]` against
+    /// the bit accessor.
+    fn check_transpose(log_dim1: usize, log_dim2: usize) {
+        let matrix = pseudo_random_matrix(log_dim1, log_dim2);
 
         let transposed = matrix.transpose();
         assert_eq!(transposed.dim1(), matrix.dim2());
@@ -394,10 +460,31 @@ mod tests {
                 assert_eq!(
                     bit(&transposed, i2, i1),
                     bit(&matrix, i1, i2),
-                    "xs[{i1}][{i2}] vs its transpose"
+                    "xs[{i1}][{i2}] vs its transpose, {log_dim1} x {log_dim2}"
                 );
             }
         }
+    }
+
+    #[test]
+    fn transpose_swaps_the_axes() {
+        check_transpose(TRANSPOSE_LOG_DIM1, TRANSPOSE_LOG_DIM2);
+    }
+
+    /// An axis of 8, 16, 32 and 64 bits, so each narrower block word runs,
+    /// with the short axis on either side.
+    #[test]
+    fn transpose_swaps_the_axes_of_a_short_axis() {
+        for log_short in 3..7 {
+            check_transpose(log_short, 9);
+            check_transpose(9, log_short);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "whole words")]
+    fn transpose_rejects_an_axis_below_a_byte() {
+        pseudo_random_matrix(2, 10).transpose();
     }
 
     #[test]
