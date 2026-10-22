@@ -1,60 +1,159 @@
 diff --git a/crates/gkr/src/lib.rs b/crates/gkr/src/lib.rs
-index 89a1bf0..bb364ff 100644
+index e553149..626eaa5 100644
 --- a/crates/gkr/src/lib.rs
 +++ b/crates/gkr/src/lib.rs
-@@ -87,11 +87,11 @@ fn prove_layer(
-         let r = ps.verifier_message();
-         next_point.push_back(r);
+@@ -1,7 +1,6 @@
+ use common::{BitMatrix, BitTable};
+ use field::{F128, Wide256};
+ use num_traits::{ConstOne, ConstZero};
+-use rayon::prelude::*;
+ use std::ops::Range;
+ use transcript::{ProverState, VerifierState};
  
--        lo_l.par_iter_mut()
--            .zip(lo_r.par_iter_mut())
--            .zip(hi_l.par_iter())
--            .zip(hi_r.par_iter())
--            .with_min_len(PARALLEL_MIN_LANES)
-+        lo_l.iter_mut()
-+            .zip(lo_r.iter_mut())
-+            .zip(hi_l.iter())
-+            .zip(hi_r.iter())
-+            // .with_min_len(PARALLEL_MIN_LANES)
-             .for_each(|(((l_lo, r_lo), &l_hi), &r_hi)| {
-                 // Recalculating delta rather than writing it in the top half of the array in the previous loop to save on writes.
-                 // No benchmarking has been done to check the difference.
-@@ -161,16 +161,16 @@ fn reduce_round<const SEND_ONE: bool>(
-     hi_r: &[Field],
-     eq: &[Field],
- ) -> (Wide256, Wide256) {
--    lo_l.par_chunks_exact(2)
--        .zip(lo_r.par_chunks_exact(2))
--        .zip(hi_l.par_chunks_exact(2))
--        .zip(hi_r.par_chunks_exact(2))
+@@ -148,16 +147,13 @@ fn round_sums<const AT_ONE: bool>(
+     // Two lanes per step: independent multiplication chains. Chunking also
+     // reduces variance in benchmarking.
+     left0
+-        .par_chunks_exact(2)
+-        .zip(left1.par_chunks_exact(2))
+-        .zip(right0.par_chunks_exact(2))
+-        .zip(right1.par_chunks_exact(2))
 -        .zip(eq.par_chunks_exact(2))
-+    lo_l.chunks_exact(2)
-+        .zip(lo_r.chunks_exact(2))
-+        .zip(hi_l.chunks_exact(2))
-+        .zip(hi_r.chunks_exact(2))
-+        .zip(eq.chunks_exact(2))
-         // Chunked by 2, so the element-count threshold below is halved in
-         // terms of chunks.
+-        // Chunked by 2, so the element-count threshold below is halved in
+-        // terms of chunks.
 -        .with_min_len(PARALLEL_MIN_LANES / 2)
-+        // .with_min_len(PARALLEL_MIN_LANES / 2)
++        .chunks_exact(2)
++        .zip(left1.chunks_exact(2))
++        .zip(right0.chunks_exact(2))
++        .zip(right1.chunks_exact(2))
++        .zip(eq.chunks_exact(2))
          .fold(
 -            || (Wide256::zero(), Wide256::zero()),
 +            (Wide256::zero(), Wide256::zero()),
-             |(mut sum_endpoint, mut sum_inf), ((((l_lo, r_lo), l_hi), r_hi), e)| {
-                 let (d_l0, d_r0) = (l_hi[0] - l_lo[0], r_hi[0] - r_lo[0]);
-                 let (d_l1, d_r1) = (l_hi[1] - l_lo[1], r_hi[1] - r_lo[1]);
-@@ -197,10 +197,10 @@ fn reduce_round<const SEND_ONE: bool>(
-                 (sum_endpoint, sum_inf)
+             |(mut sum_b, mut sum_inf), ((((l0, l1), r0), r1), e)| {
+                 // `e · L(b) · R(b)` into `sum_b` and `e · ΔL · ΔR` into
+                 // `sum_inf`, with `e` joining the left factor through a reduced
+@@ -177,21 +173,16 @@ fn round_sums<const AT_ONE: bool>(
+                 (sum_b, sum_inf)
              },
          )
 -        .reduce(
 -            || (Wide256::zero(), Wide256::zero()),
--            |(a0, ainf), (b0, binf)| (a0 + b0, ainf + binf),
+-            |(x_b, x_inf), (y_b, y_inf)| (x_b + y_b, x_inf + y_inf),
 -        )
-+    // .reduce(
-+    //     || (Wide256::zero(), Wide256::zero()),
-+    //     |(a0, ainf), (b0, binf)| (a0 + b0, ainf + binf),
-+    // )
  }
  
- /// `eq(r, z) = r*z + (1 - r)*(1 - z)`. Expanding gives
+ /// Binds the variable that splits each pair of halves to `r`, writing the
+ /// result over the low halves.
+ fn bind(r: Field, left0: &mut [Field], left1: &[Field], right0: &mut [Field], right1: &[Field]) {
+     left0
+-        .par_iter_mut()
+-        .zip(right0.par_iter_mut())
+-        .zip(left1.par_iter())
+-        .zip(right1.par_iter())
+-        .with_min_len(PARALLEL_MIN_LANES)
++        .iter_mut()
++        .zip(right0.iter_mut())
++        .zip(left1.iter())
++        .zip(right1.iter())
+         .for_each(|(((l0, r0), &l1), &r1)| {
+             // Recalculating the step rather than writing it in the high half
+             // in `round_sums` to save on writes. No benchmarking has been done
+@@ -269,15 +260,10 @@ impl LutLayers {
+         (1 << self.log_trees).min(PARALLEL_MIN_LANES)
+     }
+ 
+-    /// Round 1's positions `0..half` in pieces, as a parallel iterator
+-    /// taking at least `PARALLEL_MIN_LANES` positions per task, whatever the
+-    /// number of trees.
+-    fn pieces(&self, half: usize) -> impl IndexedParallelIterator<Item = Range<usize>> + use<> {
++    /// Round 1's positions `0..half` in pieces.
++    fn pieces(&self, half: usize) -> impl Iterator<Item = Range<usize>> + use<> {
+         let piece = self.piece();
+-        (0..half / piece)
+-            .into_par_iter()
+-            .with_min_len(PARALLEL_MIN_LANES / piece)
+-            .map(move |p| p * piece..(p + 1) * piece)
++        (0..half / piece).map(move |p| p * piece..(p + 1) * piece)
+     }
+ 
+     /// The pairs that round 1 binds at `positions`, which lie in one lookup
+@@ -388,7 +374,7 @@ fn bucket_sums(
+     lut_layers: &LutLayers,
+     eq_tables: &EqTables,
+     point: &[Field],
+-    buckets: impl Fn(&LutLayers, usize, Range<usize>, &[Field]) -> (Wide256, Wide256) + Sync,
++    buckets: impl Fn(&LutLayers, usize, Range<usize>, &[Field]) -> (Wide256, Wide256),
+ ) -> (Wide256, Wide256) {
+     let top = point.len() - 1;
+     let (half, s) = (1 << top, lut_layers.log_trees);
+@@ -405,8 +391,8 @@ fn bucket_sums(
+                 Wide256::mul(h, sum_inf.reduce()),
+             )
+         })
+-        .reduce(
+-            || (Wide256::zero(), Wide256::zero()),
++        .fold(
++            (Wide256::zero(), Wide256::zero()),
+             |(x_b, x_inf), (y_b, y_inf)| (x_b + y_b, x_inf + y_inf),
+         )
+ }
+@@ -510,8 +496,8 @@ fn layer2_sums<const LAYER: usize, const AT_ONE: bool>(
+                     })
+                 })
+         })
+-        .reduce(
+-            || (Wide256::zero(), Wide256::zero()),
++        .fold(
++            (Wide256::zero(), Wide256::zero()),
+             |(x_b, x_inf), (y_b, y_inf)| (x_b + y_b, x_inf + y_inf),
+         )
+ }
+@@ -533,8 +519,8 @@ fn lut_bind<const LAYER: usize>(
+     right: &mut [Field],
+ ) {
+     let (half, piece) = (left.len(), lut_layers.piece());
+-    left.par_chunks_mut(piece)
+-        .zip(right.par_chunks_mut(piece))
++    left.chunks_mut(piece)
++        .zip(right.chunks_mut(piece))
+         .zip(lut_layers.pieces(half))
+         .for_each(|((left, right), positions)| {
+             let (luts, pairs) = lut_layers.pairs::<LAYER>(half, positions);
+@@ -805,12 +791,10 @@ fn lower_luts(images: &[Field]) -> Vec<[Field; 16]> {
+     let (a, rest) = images.split_at(quart);
+     let (b, rest) = rest.split_at(quart);
+     let (c, d) = rest.split_at(quart);
+-    a.par_iter()
++    a.iter()
+         .zip(b)
+         .zip(c)
+         .zip(d)
+-        // A lookup table writes 16 entries.
+-        .with_min_len(PARALLEL_MIN_LANES / 16)
+         .map(|(((&a, &b), &c), &d)| create_lut([a, b, c, d]))
+         .collect()
+ }
+@@ -823,7 +807,7 @@ fn layer3(lut_layers: &LutLayers) -> Vec<Field> {
+     let half = lut_layers.nodes() / 2;
+     let mut layer3 = Field::zeroed_vec(half);
+     layer3
+-        .par_chunks_mut(lut_layers.piece())
++        .chunks_mut(lut_layers.piece())
+         .zip(lut_layers.pieces(half))
+         .for_each(|(nodes, positions)| {
+             let ([lut0, lut1, ..], pairs) = lut_layers.pairs::<LAYER1>(half, positions);
+@@ -848,12 +832,7 @@ fn fold_layers(mut layer: Vec<Field>, groups: usize) -> (Vec<Field>, Vec<Vec<Fie
+         // Node `k` multiplies node `k` of the left half and node `k` of the
+         // right half below it.
+         let (l, r) = layer.split_at(layer.len() / 2);
+-        let next = l
+-            .par_iter()
+-            .zip(r)
+-            .with_min_len(PARALLEL_MIN_LANES)
+-            .map(|(&a, &b)| a * b)
+-            .collect();
++        let next = l.iter().zip(r).map(|(&a, &b)| a * b).collect();
+         witnesses.push(layer);
+         layer = next;
+     }
