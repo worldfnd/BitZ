@@ -9,6 +9,9 @@ use {
     pcs::SecurityLevel,
 };
 
+type F = field::FqDefault;
+type Proj = bitz_cli::ProjectBigIntToFq;
+
 /// Prove generated circuit constraints over Q100 and verify the proof.
 #[derive(FromArgs, PartialEq, Debug)]
 #[argh(subcommand, name = "circuit-e2e")]
@@ -62,7 +65,8 @@ impl Command for Args {
                 CircuitInstance::random(self.circuit, self.num_blocks, self.initial_state)
             })?;
             let inputs = statement.inputs.clone();
-            let timings = benchmark::run(statement, &inputs, self.pcs_security_bits)?;
+            let timings =
+                benchmark::run::<_, F, _, Proj>(statement, &inputs, self.pcs_security_bits)?;
             tracing::info!("Proof verified successfully");
             println!("circuit={} threads={} field=Q100 pcs_round_target_bits={} security_model=classical-pcs-round-budget relation=Q100-r1cs constraints_verified=true", self.circuit, rayon::current_num_threads(), self.pcs_security_bits.bits());
             println!("{timings}");

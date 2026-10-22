@@ -3,20 +3,14 @@
 use circuit::constraints::{ConstraintMatrices, SparseMatrix};
 use circuit::matrix_products::{IntegerProducts, ModularVector, RuntimeModulus};
 use circuit::witgen::PackedWitness;
-use common::BitzRing;
-use crypto_primitives::ConstField;
-use field::{FqDefault, Q100};
-use num_bigint::{BigInt, BigUint};
-use num_traits::{Signed, ToPrimitive};
+use circuit::{BitWidth, IntoWords};
+use common::{BitzClaimField, BitzField};
 use poly::DenseMultilinearExtension;
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
-use std::sync::LazyLock;
 use transcript::Encoding;
 
 use crate::sumcheck::R1csProductMles;
-
-static FQ_DEFAULT_MODULUS: LazyLock<BigInt> = LazyLock::new(|| BigInt::from(Q100));
 
 /// Failures while preparing or evaluating Spartan's R1CS matrices.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -98,10 +92,7 @@ impl ColumnChunkIndex {
     }
 }
 
-impl<F> PreparedConstraintMatrices<F>
-where
-    F: ConstField + Copy + Encoding<[u8]>,
-{
+impl<F: BitzField> PreparedConstraintMatrices<F> {
     pub fn new(matrices: ConstraintMatrices<F>) -> Result<Self, SpartanMatrixError> {
         let (num_row_vars, num_column_vars) = r1cs_num_vars(&matrices)?;
 
@@ -155,26 +146,19 @@ where
     }
 }
 
-/// Reduces a signed integer canonically modulo Q100.
-pub fn bigint_to_fq(value: &BigInt) -> FqDefault {
-    let modulus = &*FQ_DEFAULT_MODULUS;
-    let mut reduced = value % modulus;
-    if reduced.is_negative() {
-        reduced += modulus;
-    }
-    FqDefault::from(
-        reduced
-            .to_u128()
-            .expect("a canonical Q100 residue always fits a u128"),
-    )
-}
+const PRIME_LIMBS: usize = 2;
 
-/// Reduces exact `Ah`, `Bh`, and `Ch` values modulo Q100 and pads their row
+/// Reduces exact `Ah`, `Bh`, and `Ch` values modulo `F::modulus` and pads their row
 /// tables with trailing zeros to the next power of two.
-pub fn build_product_mles(
+pub fn build_product_mles<F>(
     products: &IntegerProducts,
     expected_rows: usize,
-) -> Result<R1csProductMles<FqDefault>, SpartanMatrixError> {
+) -> Result<R1csProductMles<F>, SpartanMatrixError>
+where
+    F: BitzClaimField,
+    F::Integer: BitWidth + IntoWords,
+    Vec<F>: for<'a> From<&'a ModularVector<PRIME_LIMBS>>,
+{
     for actual in [
         products.a_mw.len(),
         products.b_mw.len(),
@@ -188,7 +172,9 @@ pub fn build_product_mles(
         }
     }
 
-    let modulus = RuntimeModulus::<2>::new(BigUint::from(Q100))
+    // We cannot define RuntimeModulus<F::NUM_WORDS> in stable Rust, so
+    // use Vec<F>: for<'a> From<&'a ModularVector<PRIME_LIMBS>> as a workaround
+    let modulus = RuntimeModulus::<PRIME_LIMBS>::new(F::modulus())
         .map_err(|_| SpartanMatrixError::InvalidModulus)?;
     let reduced = products.reduce_parallel(&modulus);
     let num_vars = padded_num_vars(expected_rows)?;
@@ -200,16 +186,30 @@ pub fn build_product_mles(
     })
 }
 
+fn modular_vector_mle<F, const PRIME_LIMBS: usize>(
+    values: &ModularVector<PRIME_LIMBS>,
+    num_vars: usize,
+) -> Result<DenseMultilinearExtension<F>, SpartanMatrixError>
+where
+    F: BitzClaimField,
+    Vec<F>: for<'a> From<&'a ModularVector<PRIME_LIMBS>>,
+{
+    let zero = F::zero();
+    let padded_len = 1usize << num_vars;
+    let mut evaluations: Vec<F> = values.into();
+    evaluations.resize(padded_len, zero);
+
+    DenseMultilinearExtension::from_evaluations(num_vars, evaluations)
+        .map_err(|_| SpartanMatrixError::InvalidMleOperation)
+}
+
 /// Converts the packed assignment `h = M(1 || f)` into the selected field and
 /// pads it with trailing zeros to the next power-of-two column domain. The
 /// first bit must be the R1CS constant one.
-pub fn build_assignment_mle<F>(
+pub fn build_assignment_mle<F: BitzField>(
     assignment: &PackedWitness,
     expected_columns: usize,
-) -> Result<DenseMultilinearExtension<F>, SpartanMatrixError>
-where
-    F: ConstField + Copy,
-{
+) -> Result<DenseMultilinearExtension<F>, SpartanMatrixError> {
     if assignment.bit_len() != expected_columns {
         return Err(SpartanMatrixError::InvalidAssignmentLength {
             expected: expected_columns,
@@ -225,21 +225,18 @@ where
     let mut evaluations = Vec::with_capacity(padded_len);
     evaluations.extend((0..assignment.bit_len()).map(|index| {
         if assignment.bit(index) {
-            F::ONE
+            F::one()
         } else {
-            F::ZERO
+            F::zero()
         }
     }));
-    evaluations.resize(padded_len, F::ZERO);
+    evaluations.resize(padded_len, F::zero());
 
     DenseMultilinearExtension::from_evaluations(num_vars, evaluations)
         .map_err(|_| SpartanMatrixError::InvalidMleOperation)
 }
 
-impl<F> PreparedConstraintMatrices<F>
-where
-    F: ConstField + Copy,
-{
+impl<F: BitzField> PreparedConstraintMatrices<F> {
     /// Constructs
     ///
     /// `D(j) = sum_i eq(i,r_x) (A[i,j] + rho B[i,j] + rho^2 C[i,j])`
@@ -286,17 +283,14 @@ where
     }
 }
 
-fn bind_and_batch_with_num_vars<F>(
+fn bind_and_batch_with_num_vars<F: BitzField>(
     matrices: &ConstraintMatrices<F>,
     column_chunks: &[ColumnChunkIndex; 3],
     row_point: &[F],
     rho: F,
     num_row_vars: usize,
     num_column_vars: usize,
-) -> Result<DenseMultilinearExtension<F>, SpartanMatrixError>
-where
-    F: ConstField + Copy,
-{
+) -> Result<DenseMultilinearExtension<F>, SpartanMatrixError> {
     if row_point.len() != num_row_vars {
         return Err(SpartanMatrixError::InvalidRowPointLength {
             expected: num_row_vars,
@@ -306,7 +300,7 @@ where
 
     let row_weights = poly::eq_table(row_point);
     let batched = [
-        (&matrices.a, &column_chunks[0], F::ONE),
+        (&matrices.a, &column_chunks[0], F::one()),
         (&matrices.b, &column_chunks[1], rho),
         (&matrices.c, &column_chunks[2], rho * rho),
     ];
@@ -316,7 +310,7 @@ where
     // nonzeros landing in it: no two tasks write the same column, and each
     // task's writes stay within a cache-sized slice.
     let mut evaluations: Vec<F> =
-        rayon::iter::repeat_n(F::ZERO, 1usize << num_column_vars).collect();
+        rayon::iter::repeat_n(F::zero(), 1usize << num_column_vars).collect();
     evaluations
         .par_chunks_mut(chunk_len)
         .enumerate()
@@ -337,7 +331,7 @@ where
         .map_err(|_| SpartanMatrixError::InvalidMleOperation)
 }
 
-fn evaluate_batched_with_num_vars<F>(
+fn evaluate_batched_with_num_vars<F: BitzField>(
     matrices: &ConstraintMatrices<F>,
     column_chunks: &[ColumnChunkIndex; 3],
     row_point: &[F],
@@ -345,10 +339,7 @@ fn evaluate_batched_with_num_vars<F>(
     column_point: &[F],
     num_row_vars: usize,
     num_column_vars: usize,
-) -> Result<F, SpartanMatrixError>
-where
-    F: ConstField + Copy,
-{
+) -> Result<F, SpartanMatrixError> {
     if row_point.len() != num_row_vars {
         return Err(SpartanMatrixError::InvalidRowPointLength {
             expected: num_row_vars,
@@ -364,7 +355,7 @@ where
 
     let row_weights = poly::eq_table(row_point);
     let batched = [
-        (&matrices.a, &column_chunks[0], F::ONE),
+        (&matrices.a, &column_chunks[0], F::one()),
         (&matrices.b, &column_chunks[1], rho),
         (&matrices.c, &column_chunks[2], rho * rho),
     ];
@@ -382,26 +373,28 @@ where
         .enumerate()
         .map(|(chunk, &chunk_weight)| {
             let base = chunk * chunk_len;
-            let mut chunk_sum = F::ZERO;
+            let mut chunk_sum = F::zero();
             for (matrix, index, batch_scale) in batched {
-                let mut matrix_sum = F::ZERO;
+                let mut matrix_sum = F::zero();
                 for span in &index.spans[chunk] {
                     let entries = &matrix.rows()[span.row].entries()[span.start..span.end];
-                    let span_sum = entries.iter().fold(F::ZERO, |sum, &(column, coefficient)| {
-                        sum + low_weights[column - base] * coefficient
-                    });
+                    let span_sum = entries
+                        .iter()
+                        .fold(F::zero(), |sum, &(column, coefficient)| {
+                            sum + low_weights[column - base] * coefficient
+                        });
                     matrix_sum += row_weights[span.row] * span_sum;
                 }
                 chunk_sum += batch_scale * matrix_sum;
             }
             chunk_weight * chunk_sum
         })
-        .reduce(|| F::ZERO, |left, right| left + right);
+        .reduce(|| F::zero(), |left, right| left + right);
 
     Ok(evaluation)
 }
 
-pub(crate) fn r1cs_num_vars<R: BitzRing>(
+pub(crate) fn r1cs_num_vars<R: Send + Sync>(
     matrices: &ConstraintMatrices<R>,
 ) -> Result<(usize, usize), SpartanMatrixError> {
     matrices
@@ -419,12 +412,9 @@ pub(crate) fn r1cs_num_vars<R: BitzRing>(
 /// The digest domain is intentionally field-neutral. A protocol that supports
 /// more than one field must bind the field choice in its transcript session or
 /// instance; canonical coefficient encodings need not identify their field.
-pub(crate) fn constraint_matrix_digest<F>(
+pub(crate) fn constraint_matrix_digest<F: BitzField>(
     matrices: &ConstraintMatrices<F>,
-) -> Result<[u8; 32], SpartanMatrixError>
-where
-    F: ConstField + Copy + Encoding<[u8]>,
-{
+) -> Result<[u8; 32], SpartanMatrixError> {
     matrices
         .validate_shape()
         .map_err(|_| SpartanMatrixError::InvalidR1csShape)?;
@@ -490,29 +480,13 @@ pub(crate) fn padded_num_vars(logical_len: usize) -> Result<usize, SpartanMatrix
         .ok_or(SpartanMatrixError::DomainTooLarge)
 }
 
-fn modular_vector_mle(
-    values: &ModularVector<2>,
-    num_vars: usize,
-) -> Result<DenseMultilinearExtension<FqDefault>, SpartanMatrixError> {
-    let zero = FqDefault::from(0u128);
-    let padded_len = 1usize << num_vars;
-    let mut evaluations: Vec<_> = values
-        .values()
-        .iter()
-        .map(|&[low, high]| FqDefault::from_limbs(low, high))
-        .collect();
-    evaluations.resize(padded_len, zero);
-
-    DenseMultilinearExtension::from_evaluations(num_vars, evaluations)
-        .map_err(|_| SpartanMatrixError::InvalidMleOperation)
-}
-
 #[cfg(test)]
 mod tests {
     use circuit::constraints::{ConstraintMatrices, SparseBoolMatrix, SparseMatrix};
-    use field::FqDefault;
     use rand::{Rng, SeedableRng};
     use rand_pcg::Pcg64;
+
+    type F = field::FqDefault;
 
     use super::{BIND_CHUNK_COLUMN_VARS, PreparedConstraintMatrices};
 
@@ -522,7 +496,7 @@ mod tests {
     const ROWS: usize = 37;
     const ENTRIES_PER_ROW: usize = 24;
 
-    fn random_sparse_matrix(rng: &mut Pcg64) -> SparseMatrix<FqDefault> {
+    fn random_sparse_matrix(rng: &mut Pcg64) -> SparseMatrix<F> {
         let rows = (0..ROWS)
             .map(|_| {
                 let mut columns: Vec<usize> = (0..ENTRIES_PER_ROW)
@@ -532,14 +506,14 @@ mod tests {
                 columns.dedup();
                 columns
                     .into_iter()
-                    .map(|column| (column, FqDefault::from(u128::from(rng.random::<u64>()))))
+                    .map(|column| (column, F::from(u128::from(rng.random::<u64>()))))
                     .collect()
             })
             .collect();
         SparseMatrix::try_from_rows(COLUMNS, rows).unwrap()
     }
 
-    fn random_prepared_matrices(rng: &mut Pcg64) -> PreparedConstraintMatrices<FqDefault> {
+    fn random_prepared_matrices(rng: &mut Pcg64) -> PreparedConstraintMatrices<F> {
         let m = SparseBoolMatrix::try_from_rows(1, vec![Vec::new(); COLUMNS]).unwrap();
         let a = random_sparse_matrix(rng);
         let b = random_sparse_matrix(rng);
@@ -547,24 +521,24 @@ mod tests {
         PreparedConstraintMatrices::new(ConstraintMatrices { m, a, b, c }).unwrap()
     }
 
-    fn random_point(rng: &mut Pcg64, len: usize) -> Vec<FqDefault> {
+    fn random_point(rng: &mut Pcg64, len: usize) -> Vec<F> {
         (0..len)
-            .map(|_| FqDefault::from(u128::from(rng.random::<u64>())))
+            .map(|_| F::from(u128::from(rng.random::<u64>())))
             .collect()
     }
 
     /// `D(r_y)` by the direct triple loop over every nonzero.
     fn reference_evaluation(
-        matrices: &ConstraintMatrices<FqDefault>,
-        row_point: &[FqDefault],
-        rho: FqDefault,
-        column_point: &[FqDefault],
-    ) -> FqDefault {
+        matrices: &ConstraintMatrices<F>,
+        row_point: &[F],
+        rho: F,
+        column_point: &[F],
+    ) -> F {
         let row_weights = poly::eq_table(row_point);
         let column_weights = poly::eq_table(column_point);
-        let mut evaluation = FqDefault::from(0u128);
+        let mut evaluation = F::from(0u128);
         for (matrix, batch_scale) in [
-            (&matrices.a, FqDefault::from(1u128)),
+            (&matrices.a, F::from(1u128)),
             (&matrices.b, rho),
             (&matrices.c, rho * rho),
         ] {
@@ -619,7 +593,7 @@ mod tests {
         let prepared = random_prepared_matrices(&mut rng);
         let row_point = random_point(&mut rng, prepared.num_row_vars());
         let column_point = random_point(&mut rng, prepared.num_column_vars());
-        let rho = FqDefault::from(u128::from(rng.random::<u64>()));
+        let rho = F::from(u128::from(rng.random::<u64>()));
 
         let expected = reference_evaluation(prepared.matrices(), &row_point, rho, &column_point);
         let evaluation = prepared

@@ -1,10 +1,8 @@
 //! The linear claim BitZ is asked to discharge.
 
-use crypto_primitives::LiftElement;
-use field::Fq;
 use spongefish::Encoding;
 
-use crate::{BitZParams, Shape};
+use crate::{BitZParams, BitzClaimField, Shape};
 
 /// A Merkle root over the committed codeword.
 ///
@@ -24,8 +22,9 @@ pub enum ClaimError {
 
 /// The caller's `x_core`: the weights and the value they are claimed to give.
 ///
-/// BitZ uses `LinearClaim<Fq<Q>>`; opening queries use `LinearClaim<field::F128>`.
-/// The following BitZ requirements apply to the `Fq<Q>` input claim.
+/// BitZ uses `LinearClaim<F>` over a [`BitzClaimField`]; opening queries use
+/// `LinearClaim<field::F128>`. The following BitZ requirements apply to the
+/// prime-field input claim.
 /// BitZ verifies nothing upstream of this. The caller runs its own PIOP, and
 /// establishes that its claim holds, that `q` is prime, and that the
 /// coefficient factors as `v = v^(1) (x) v^(2)`. A claim whose coefficient
@@ -55,16 +54,16 @@ impl<F: Encoding<[u8]>> Encoding<[u8]> for LinearClaim<F> {
     }
 }
 
-impl<const Q: u128> LinearClaim<Fq<Q>> {
+impl<F: BitzClaimField> LinearClaim<F> {
     /// Checks the weights against `config` and returns the claim.
     ///
     /// `row_weights` is `v^(1)`, one element per row; `column_weights` is
     /// `v^(2)`, one per column; `target` is the claimed value `mu`.
     pub fn new(
-        params: &BitZParams<Q>,
-        row_weights: Vec<Fq<Q>>,
-        column_weights: Vec<Fq<Q>>,
-        target: Fq<Q>,
+        params: &BitZParams<F>,
+        row_weights: Vec<F>,
+        column_weights: Vec<F>,
+        target: F,
     ) -> Result<Self, ClaimError> {
         Self::from_shape(params.shape(), row_weights, column_weights, target)
     }
@@ -75,7 +74,7 @@ impl<const Q: u128> LinearClaim<Fq<Q>> {
     /// The claim lives in `F_q` while the exponent is an integer, and taking
     /// the representative is what bounds it: each is below `q`, so a fold over
     /// `k_1` rows lands in `[0, k_1(q-1)]`.
-    pub fn row_exponents(&self) -> Vec<u128> {
+    pub fn row_exponents(&self) -> Vec<F::Integer> {
         self.row_weights
             .iter()
             .map(|weight| weight.lift())
@@ -132,25 +131,26 @@ mod tests {
 
     /// The largest prime below `2^114`, the top of the sampling range.
     const Q114: u128 = (1 << 114) - 11;
+    type F = field::Fq<Q114>;
 
     /// `m = 22`: 128 rows per column, 32768 columns.
-    fn params() -> BitZParams<Q114> {
+    fn params() -> BitZParams<F> {
         BitZParams::new(Shape::new(7, 15).unwrap(), smallest_generator()).unwrap()
     }
 
-    fn claim(row_weights: Vec<Fq<Q114>>) -> Result<LinearClaim<Fq<Q114>>, ClaimError> {
+    fn claim(row_weights: Vec<F>) -> Result<LinearClaim<F>, ClaimError> {
         let params = params();
         LinearClaim::new(
             &params,
             row_weights,
-            vec![Fq::ONE; params.shape().columns()],
-            Fq::from(0u128),
+            vec![F::ONE; params.shape().columns()],
+            F::from(0u128),
         )
     }
 
-    fn weights() -> Vec<Fq<Q114>> {
+    fn weights() -> Vec<F> {
         (0..params().shape().rows())
-            .map(|row| Fq::from(row as u128))
+            .map(|row| F::from(row as u128))
             .collect()
     }
 
@@ -174,7 +174,7 @@ mod tests {
         }
 
         check([1u64, 2, 3, 4].map(field::F128::from));
-        check([1u128, 2, 3, 4].map(Fq::<Q114>::from));
+        check([1u128, 2, 3, 4].map(F::from));
     }
 
     #[test]
@@ -209,13 +209,13 @@ mod tests {
     #[test]
     fn rejects_weight_vectors_that_do_not_fit_the_shape() {
         assert_eq!(
-            claim(vec![Fq::ONE]).err(),
+            claim(vec![F::ONE]).err(),
             Some(ClaimError::RowWeightCountMismatch)
         );
 
         let params = params();
         assert_eq!(
-            LinearClaim::new(&params, weights(), vec![Fq::ONE], Fq::from(0u128)).err(),
+            LinearClaim::new(&params, weights(), vec![F::ONE], F::from(0u128)).err(),
             Some(ClaimError::ColumnWeightCountMismatch)
         );
     }
@@ -223,11 +223,11 @@ mod tests {
     #[test]
     fn a_row_weight_lifts_to_its_canonical_representative() {
         // The type makes an out-of-range weight unrepresentable, so there is
-        // no range check to test: `Fq::from` reduces on the way in.
+        // no range check to test: `F::from` reduces on the way in.
         let mut weights = weights();
-        weights[3] = Fq::from(Q114 - 1);
-        weights[4] = Fq::from(Q114);
-        weights[5] = Fq::from(Q114 + 6);
+        weights[3] = F::from(Q114 - 1);
+        weights[4] = F::from(Q114);
+        weights[5] = F::from(Q114 + 6);
 
         let exponents = claim(weights).unwrap().row_exponents();
         assert_eq!(exponents[3], Q114 - 1);

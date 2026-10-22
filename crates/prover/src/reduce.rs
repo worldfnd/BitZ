@@ -14,15 +14,15 @@ use transcript::ProverState;
 
 #[inline(never)]
 #[tracing::instrument(name = "Build grand-product circuit", level = "debug", skip_all)]
-fn init_circuit(table: &BitTable, fold: &Fold) -> GrandProductCircuit {
+fn init_circuit<S>(table: &BitTable, fold: &Fold<S>) -> GrandProductCircuit {
     GrandProductCircuit::new(&fold.row_images, table)
 }
 
 /// Reduces the grand-product circuit to a factored claim on the committed bits.
 #[tracing::instrument(name = "Reduce grand products", skip_all)]
-pub fn gkr_reduce(
+pub fn gkr_reduce<S>(
     transcript: &mut ProverState,
-    fold: &Fold,
+    fold: &Fold<S>,
     table: &BitTable,
     security: SecurityLevel,
 ) -> Result<OpeningQuery, ClaimError> {
@@ -65,13 +65,16 @@ mod order_check_ai_test {
     use field::gf128::smallest_generator;
     use num_traits::ConstZero;
 
-    const Q: u128 = (1 << 114) - 11;
+    const Q114: u128 = (1 << 114) - 11;
+    type F = field::Fq<Q114>;
+
+    type F2 = field::FqDefault;
 
     fn shape() -> Shape {
         Shape::new(7, 15).unwrap()
     }
 
-    fn params() -> BitZParams<Q> {
+    fn params() -> BitZParams<F> {
         BitZParams::new(shape(), smallest_generator()).unwrap()
     }
 
@@ -124,13 +127,11 @@ mod order_check_ai_test {
 
     #[test]
     fn factored_claim_matches_for_narrow_tables() {
-        const Q100: u128 = (1 << 100) - 15;
-
         // The narrowest tables the transpose takes: one block of 128 columns,
         // then two.
         for log_columns in [7, 8] {
             let shape = Shape::new(22 - log_columns, log_columns).unwrap();
-            let params = BitZParams::<Q100>::new(shape, smallest_generator()).unwrap();
+            let params = BitZParams::<F2>::new(shape, smallest_generator()).unwrap();
             let packed = packed_witness(&shape, |column, row| {
                 let bits = (row as u64).wrapping_mul(0x9E3779B97F4A7C15)
                     ^ (column as u64).wrapping_mul(0xD1B54A32D192ED03);
@@ -145,7 +146,7 @@ mod order_check_ai_test {
                 .collect();
             let fold = Fold::new(
                 &shape,
-                vec![0; shape.columns()],
+                vec![0_u64; shape.columns()],
                 vec![F128::ONE; shape.columns()],
                 row_images,
                 zeta,

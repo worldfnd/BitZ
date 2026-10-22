@@ -1,9 +1,9 @@
 //! `VerifyBitZ`.
 
 use common::{
-    LinearClaim, OpeningQuery, SecurityLevel, VirtualMap, VirtualMapError, VirtualStatement,
+    BitzClaimField, LinearClaim, OpeningQuery, SecurityLevel, VirtualMap, VirtualMapError,
+    VirtualStatement,
 };
-use field::Fq;
 use pcs::{CommitScheme, Commitment, Pcs, StatementBinding, VerifyError as OpeningVerifyError};
 use transcript::VerifierState;
 
@@ -26,7 +26,7 @@ pub enum VerifyError {
     TrailingData,
 }
 
-impl<const Q: u128> BitZVerifier<Q> {
+impl<F: BitzClaimField> BitZVerifier<F> {
     /// Verifies a claim on `h = M (1 || f)` against the commitment to `f`.
     ///
     /// Build the setup from `statement.params().claim()` and match the commitment's
@@ -40,7 +40,7 @@ impl<const Q: u128> BitZVerifier<Q> {
     #[tracing::instrument(name = "Verify virtual BitZ", skip_all)]
     pub fn verify_virtual(
         &self,
-        statement: &VirtualStatement<'_, Q, impl VirtualMap>,
+        statement: &VirtualStatement<'_, F, impl VirtualMap>,
         pcs: &Pcs,
         commitment: &Commitment,
         mut transcript: VerifierState<'_>,
@@ -76,7 +76,7 @@ impl<const Q: u128> BitZVerifier<Q> {
     #[tracing::instrument(name = "Verify BitZ", skip_all)]
     pub fn verify(
         &self,
-        claim: &LinearClaim<Fq<Q>>,
+        claim: &LinearClaim<F>,
         pcs: &Pcs,
         commitment: &Commitment,
         mut transcript: VerifierState<'_>,
@@ -114,11 +114,12 @@ impl<const Q: u128> BitZVerifier<Q> {
     /// The caller binds the statement before this call and verifies the opening afterward.
     pub(crate) fn fold_and_reduce(
         &self,
-        claim: &LinearClaim<field::Fq<Q>>,
+        claim: &LinearClaim<F>,
         transcript: &mut VerifierState<'_>,
         security: SecurityLevel,
     ) -> Result<OpeningQuery, VerifyError> {
-        // Step 2 is absent: Q is fixed, and BitZParams::new checks its fold bound.
+        // Step 2 is absent: the field modulus is fixed, and BitZParams::new
+        // checks its fold bound.
 
         // Step 3: read the folds, range-check them, reconstruct against mu.
         let fold = self
