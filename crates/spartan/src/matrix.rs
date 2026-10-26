@@ -9,6 +9,8 @@ use num_traits::ToPrimitive;
 use poly::DenseMultilinearExtension;
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+use std::hash::Hash;
 use std::sync::Arc;
 
 use crate::sumcheck::R1csProductMles;
@@ -35,8 +37,10 @@ pub enum SpartanMatrixError {
 pub struct PreparedIntegerMatrices<R> {
     m: SparseBoolMatrix,
     layout: Arc<Layout>,
-    /// The coefficients of `A`, `B` and `C`, each in its layout's order.
-    values: [Vec<R>; 3],
+    /// Distinct integer coefficients shared by `A`, `B` and `C`.
+    coefficients: Vec<R>,
+    /// Coefficient indices for each matrix, in its layout's order.
+    coefficient_indices: [Vec<usize>; 3],
     /// `integer_matrix_digest`: over the integers, so it exists before a
     /// modulus does.
     digest: [u8; 32],
@@ -206,16 +210,30 @@ impl Layout {
 
 impl<R> PreparedIntegerMatrices<R>
 where
-    R: Send + Sync + ToPrimitive,
+    R: Send + Sync + ToPrimitive + Eq + Hash,
     for<'a> StoredInteger: From<&'a R>,
 {
     pub fn new(matrices: ConstraintMatrices<R>) -> Result<Self, SpartanMatrixError> {
         let (m, layout, values) = Layout::new(matrices)?;
         let digest = integer_matrix_digest(&m, &layout, [&values[0], &values[1], &values[2]])?;
+        let mut distinct = HashMap::new();
+        let coefficient_indices = values.map(|values| {
+            values
+                .into_iter()
+                .map(|value| {
+                    let index = distinct.len();
+                    *distinct.entry(value).or_insert(index)
+                })
+                .collect()
+        });
+        let mut coefficients: Vec<_> = distinct.into_iter().collect();
+        coefficients.sort_unstable_by_key(|(_, index)| *index);
+        let coefficients = coefficients.into_iter().map(|(value, _)| value).collect();
         Ok(Self {
             m,
             layout,
-            values,
+            coefficients,
+            coefficient_indices,
             digest,
         })
     }
@@ -239,16 +257,21 @@ where
         &self.digest
     }
 
-    /// The matrices with `map` applied to every coefficient of `A`, `B` and
-    /// `C`, each into one contiguous table: the per-proof work. The layout
-    /// and the digest are shared.
+    /// Applies `map` once per distinct integer coefficient, then expands the
+    /// results into `A`, `B` and `C` in layout order. Each call projects anew;
+    /// the layout and integer digest are shared.
     pub fn project<F, M>(&self, map: M) -> PreparedConstraintMatrices<F>
     where
         F: BitzField,
         M: Fn(&R) -> F + Sync,
     {
-        let values = [&self.values[0], &self.values[1], &self.values[2]]
-            .map(|values| values.par_iter().map(&map).collect());
+        let coefficients: Vec<F> = self.coefficients.par_iter().map(&map).collect();
+        let values = self.coefficient_indices.each_ref().map(|indices| {
+            indices
+                .par_iter()
+                .map(|&index| coefficients[index])
+                .collect()
+        });
         PreparedConstraintMatrices {
             layout: Arc::clone(&self.layout),
             values,
@@ -673,9 +696,13 @@ pub(crate) fn padded_num_vars(logical_len: usize) -> Result<usize, SpartanMatrix
 mod tests {
     use circuit::constraints::{ConstraintMatrices, SparseBoolMatrix, SparseMatrix};
     use circuit::matrix_products::StoredInteger;
+    use field::Q100;
+    use num_bigint::BigInt;
+    use num_traits::ToPrimitive;
     use rand::{Rng, SeedableRng};
     use rand_pcg::Pcg64;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 
     type F = field::FqDefault;
 
@@ -923,5 +950,52 @@ mod tests {
             PreparedIntegerMatrices::new(moved).unwrap().digest(),
             prepared.digest()
         );
+    }
+
+    #[test]
+    fn projection_converts_each_distinct_integer_once_per_call() {
+        let mut rng = Pcg64::seed_from_u64(17);
+        let wide = BigInt::from(1u64) << 200usize;
+        let coefficients = [
+            BigInt::from(0),
+            BigInt::from(1),
+            BigInt::from(-1),
+            wide.clone(),
+            -wide,
+        ];
+        let matrices = random_integer_matrices(&mut rng).map_coefficients(|coefficient| {
+            coefficients[coefficient.rem_euclid(5) as usize].clone()
+        });
+        let modulus = BigInt::from(Q100);
+        let project = |coefficient: &BigInt| {
+            let residue = (coefficient % &modulus + &modulus) % &modulus;
+            F::from(residue.to_u128().unwrap())
+        };
+        let direct =
+            PreparedConstraintMatrices::new(matrices.clone().map_coefficients(|c| project(&c)))
+                .unwrap();
+        let prepared = PreparedIntegerMatrices::new(matrices).unwrap();
+        let calls = AtomicUsize::new(0);
+        let projected = prepared.project(|coefficient| {
+            calls.fetch_add(1, Relaxed);
+            project(coefficient)
+        });
+        assert_eq!(projected.values, direct.values);
+        assert_eq!(projected.digest(), prepared.digest());
+        assert_eq!(calls.load(Relaxed), coefficients.len());
+
+        let shifted = prepared.project(|coefficient| {
+            calls.fetch_add(1, Relaxed);
+            project(coefficient) + F::from(1u128)
+        });
+        assert_eq!(calls.load(Relaxed), 2 * coefficients.len());
+        for (shifted, original) in shifted
+            .values
+            .iter()
+            .flatten()
+            .zip(projected.values.iter().flatten())
+        {
+            assert_eq!(*shifted, *original + F::from(1u128));
+        }
     }
 }
