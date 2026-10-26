@@ -24,7 +24,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let instance = Instance::<F>::honest(shape, seed);
     let started = std::time::Instant::now();
-    let result = instance.verifier.verify(
+    let result = instance.verify(
         &instance.claim,
         &instance.pcs,
         instance.com,

@@ -52,7 +52,12 @@ fn main() {
 #[inline(never)]
 fn gkr_wrapper<S>(mut transcript: ProverState, fold: &Fold<S>, table: BitTable<'_>) {
     black_box(
-        prover::gkr_reduce(&mut transcript, black_box(fold), black_box(&table))
-            .expect("profiling fold matches the table shape"),
+        prover::gkr_reduce(
+            &mut transcript,
+            black_box(fold),
+            black_box(&table),
+            common::SecurityLevel::Bits100,
+        )
+        .expect("profiling fold matches the table shape"),
     );
 }

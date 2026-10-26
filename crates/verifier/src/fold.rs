@@ -3,7 +3,8 @@
 
 use crate::BitZVerifier;
 use common::{
-    BitzClaimField, Fold, FoldError, LinearClaim, column_images, reconstruct, row_images,
+    BitzClaimField, Fold, FoldError, LinearClaim, SecurityLevel, column_images, reconstruct,
+    row_images,
 };
 use num_traits::FromBytes;
 use transcript::VerifierState;
@@ -40,6 +41,7 @@ impl<F: BitzClaimField> BitZVerifier<F> {
         &self,
         claim: &LinearClaim<F>,
         transcript: &mut VerifierState<'_>,
+        security: SecurityLevel,
     ) -> Result<Fold<F::Integer>, ReceiveError> {
         let shape = self.params().shape();
 
@@ -61,6 +63,12 @@ impl<F: BitzClaimField> BitZVerifier<F> {
 
         let images = column_images(self.comb(), &folds);
         let row_images = row_images(self.comb(), &claim.row_exponents());
+        transcript
+            .grind(
+                b"bitz/columns/v1",
+                security.grinding_bits(shape.log_columns()),
+            )
+            .map_err(|_| ReceiveError::MalformedProof)?;
         let zeta = (0..shape.log_columns())
             .map(|_| transcript.verifier_message())
             .collect();

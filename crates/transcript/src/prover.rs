@@ -23,6 +23,23 @@ impl PublicTranscript for ProverState {
 }
 
 impl ProverState {
+    /// Adds a labeled grinding boundary before the next challenge block.
+    ///
+    /// Zero difficulty leaves the transcript unchanged. Difficulties above 32 panic.
+    pub fn grind(&mut self, label: &[u8], bits: u32) {
+        assert!(
+            bits <= crate::pow::MAX_GRINDING_BITS,
+            "grinding difficulty exceeds 32 bits"
+        );
+        if bits == 0 {
+            return;
+        }
+        crate::pow::absorb_header(self, label, bits);
+        let seed = self.verifier_message::<F128>().to_bytes();
+        let nonce = crate::pow::find(&seed, bits);
+        self.prover_message(&nonce.to_le_bytes());
+    }
+
     /// Absorbs a message both parties already know; nothing is written.
     pub fn public_message<T: Encoding<[u8]> + ?Sized>(&mut self, message: &T) {
         self.inner.public_message(message);

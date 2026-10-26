@@ -8,9 +8,12 @@ license.workspace = true
 [features]
 default = ["parallel"]
 parallel = ["dep:rayon"]
+# Exposes private kernels to `benches/`; not part of the public API.
+bench = []
 
 [dependencies]
 crypto-primitives = { workspace = true }
+bytemuck = {workspace = true}
 field = { workspace = true, features = ["spongefish"] }
 spongefish = { workspace = true }
 poly = { workspace = true }
@@ -19,4 +22,11 @@ num-traits = { workspace = true }
 transcript = { workspace = true }
 
 [dev-dependencies]
+divan = { workspace = true }
 num-bigint = { workspace = true }
+rand = { workspace = true }
+
+[[bench]]
+name = "matrix"
+harness = false
+required-features = ["bench"]

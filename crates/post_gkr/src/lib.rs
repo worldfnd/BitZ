@@ -21,12 +21,12 @@
 //! the tables the prover folds to have one entry per two bits. The weights
 //! are never written out in full: their folded table is the folded row
 //! factor tensored with the column factor. Proof: `2m + 1` elements, `rho`
-//! low coordinate first ([`OpeningQuery::Mle`]).
+//! low coordinate first ([`OpeningQuery::Mle`]). Each positive grind adds an eight-byte nonce.
 //!
 //! # Transcript
 //!
-//! Each round's coefficients are written and absorbed before its challenge
-//! is squeezed; the closing evaluation follows the last round. The claim is
+//! Each round absorbs its coefficients, checks any grinding, then samples its challenge.
+//! The closing evaluation follows the last round. The claim is
 //! not re-absorbed here: the opening scheme binds its statement before it
 //! calls the sumcheck. The round count derives from the claim and is not
 //! absorbed either.
@@ -37,7 +37,7 @@ mod test_util;
 
 use crate::sumcheck::{Pair, RoundMessage};
 use common::shape::PACK_BITS;
-use common::{LinearClaim, OpeningQuery};
+use common::{LinearClaim, OpeningQuery, SecurityLevel};
 use field::F128;
 use num_traits::{ConstOne, ConstZero};
 #[cfg(feature = "parallel")]
@@ -67,6 +67,9 @@ pub enum VerifyError {
 /// The bits one packed element carries.
 const ELEMENT_BITS: usize = 1 << PACK_BITS;
 
+/// Each quadratic round has error at most `2 / |F128|` before grinding.
+const GRINDING_LABEL: &[u8] = b"bitz/pcs/sumcheck/v1";
+
 /// The even bit positions of a packed element, `0b01010101...`
 const EVEN: u128 = 0x55555555555555555555555555555555;
 
@@ -82,6 +85,7 @@ const ELEMENTS_PER_TASK: usize = workload_size::<F128>() / ELEMENT_BITS;
 pub fn prove(
     claim: &LinearClaim<F128>,
     packed: &[F128],
+    security: SecurityLevel,
     transcript: &mut ProverState,
 ) -> Result<OpeningQuery, ProveError> {
     prove_factors(
@@ -89,6 +93,7 @@ pub fn prove(
         claim.column_weights(),
         claim.target(),
         packed,
+        security,
         transcript,
     )
 }
@@ -99,12 +104,14 @@ pub fn prove(
 #[tracing::instrument(name = "Verify inner-product sumcheck", skip_all)]
 pub fn verify(
     claim: &LinearClaim<F128>,
+    security: SecurityLevel,
     transcript: &mut VerifierState<'_>,
 ) -> Result<OpeningQuery, VerifyError> {
     verify_factors(
         claim.row_weights(),
         claim.column_weights(),
         claim.target(),
+        security,
         transcript,
     )
 }
@@ -116,6 +123,7 @@ fn prove_factors(
     columns: &[F128],
     target: F128,
     packed: &[F128],
+    security: SecurityLevel,
     transcript: &mut ProverState,
 ) -> Result<OpeningQuery, ProveError> {
     let factors = Factors { rows, columns };
@@ -128,10 +136,11 @@ fn prove_factors(
 
     let message = factors.first_message(packed);
     transcript.prover_message(&message);
+    transcript.grind(GRINDING_LABEL, security.grinding_bits(2));
     let challenge: F128 = transcript.verifier_message();
     let running = advance(target, message, challenge);
     let mut pair = Pair::new(factors.fold(challenge), bind_first(packed, challenge));
-    let (rest, target) = sumcheck::prove(&mut pair, running, transcript);
+    let (rest, target) = sumcheck::prove(&mut pair, running, security, transcript);
     let mut point = vec![challenge];
     point.extend(rest);
     Ok(OpeningQuery::Mle { point, target })
@@ -142,6 +151,7 @@ fn verify_factors(
     rows: &[F128],
     columns: &[F128],
     target: F128,
+    security: SecurityLevel,
     transcript: &mut VerifierState<'_>,
 ) -> Result<OpeningQuery, VerifyError> {
     let log_rows = rows.len().trailing_zeros() as usize;
@@ -151,7 +161,7 @@ fn verify_factors(
         poly::f128::evaluate(rows, &point[..log_rows])
             * poly::f128::evaluate(columns, &point[log_rows..])
     };
-    let (point, target) = sumcheck::verify(rounds, target, weight, transcript)?;
+    let (point, target) = sumcheck::verify(rounds, target, weight, security, transcript)?;
     Ok(OpeningQuery::Mle { point, target })
 }
 
@@ -283,6 +293,7 @@ fn advance(claim: F128, [a0, a2]: RoundMessage, challenge: F128) -> F128 {
 
 #[cfg(test)]
 mod tests {
+    use common::SecurityLevel::{Bits100, Bits128};
     use common::Shape;
     use poly::DenseMultilinearExtension;
     use transcript::{Proof, build_prover, build_verifier};
@@ -299,22 +310,33 @@ mod tests {
         (point, *target)
     }
 
-    fn reduced(leaf: &Leaf) -> (OpeningQuery, Proof) {
+    fn reduced(leaf: &Leaf, security: SecurityLevel) -> (OpeningQuery, Proof) {
         let mut prover = build_prover("post_gkr-tests", "reduce");
         let sent = prove_factors(
             &leaf.rows,
             &leaf.columns,
             leaf.target,
             &leaf.packed,
+            security,
             &mut prover,
         )
         .unwrap();
         (sent, prover.finish())
     }
 
-    fn verified(leaf: &Leaf, proof: &Proof) -> Result<OpeningQuery, VerifyError> {
+    fn verified(
+        leaf: &Leaf,
+        proof: &Proof,
+        security: SecurityLevel,
+    ) -> Result<OpeningQuery, VerifyError> {
         let mut verifier = build_verifier("post_gkr-tests", "reduce", proof);
-        let received = verify_factors(&leaf.rows, &leaf.columns, leaf.target, &mut verifier)?;
+        let received = verify_factors(
+            &leaf.rows,
+            &leaf.columns,
+            leaf.target,
+            security,
+            &mut verifier,
+        )?;
         assert!(verifier.check_eof().is_ok());
         Ok(received)
     }
@@ -336,11 +358,11 @@ mod tests {
     fn the_two_sides_agree_on_a_true_claim() {
         for (log_rows, log_columns, seed) in [(8, 2, 63), (10, 0, 64)] {
             let leaf = Leaf::random(log_rows, log_columns, seed);
-            let (sent, proof) = reduced(&leaf);
+            let (sent, proof) = reduced(&leaf, Bits100);
             assert_eq!(proof.narg_string.len(), (2 * 10 + 1) * 16);
             assert!(proof.hints.is_empty());
 
-            let received = verified(&leaf, &proof).unwrap();
+            let received = verified(&leaf, &proof, Bits100).unwrap();
             assert_eq!(sent, received);
             let (point, target) = mle(&received);
             assert_eq!(point.len(), 10);
@@ -364,10 +386,10 @@ mod tests {
         )
         .unwrap();
         let mut prover = build_prover("post_gkr-tests", "reduce");
-        let sent = prove(&claim, &leaf.packed, &mut prover).unwrap();
+        let sent = prove(&claim, &leaf.packed, Bits100, &mut prover).unwrap();
         let proof = prover.finish();
         let mut verifier = build_verifier("post_gkr-tests", "reduce", &proof);
-        assert_eq!(verify(&claim, &mut verifier), Ok(sent.clone()));
+        assert_eq!(verify(&claim, Bits100, &mut verifier), Ok(sent.clone()));
         let (point, target) = mle(&sent);
         assert_eq!(leaf.evaluate(point), target);
     }
@@ -390,7 +412,7 @@ mod tests {
 
         let mut generic = Pair::new(weights.clone(), written_out.clone());
         let mut prover = build_prover("post_gkr-tests", "reduce");
-        let (point, _) = sumcheck::prove(&mut generic, leaf.target, &mut prover);
+        let (point, _) = sumcheck::prove(&mut generic, leaf.target, Bits100, &mut prover);
         let proof = prover.finish();
         let message = factors.first_message(&leaf.packed);
         assert_eq!(
@@ -412,27 +434,76 @@ mod tests {
     #[test]
     fn a_reduction_altered_in_transit_is_caught() {
         let mut leaf = Leaf::random(7, 1, 66);
-        let (_, proof) = reduced(&leaf);
+        let (_, proof) = reduced(&leaf, Bits100);
         let records = 2 * 8 + 1;
         assert_eq!(proof.narg_string.len(), records * 16);
         for record in 0..records {
             let mut altered = proof.clone();
             altered.narg_string[record * 16] ^= 1;
             assert_eq!(
-                verified(&leaf, &altered),
+                verified(&leaf, &altered, Bits100),
                 Err(VerifyError::EvaluationMismatch),
                 "record {record}"
             );
         }
         let mut short = proof.clone();
         short.narg_string.truncate(proof.narg_string.len() - 16);
-        assert_eq!(verified(&leaf, &short), Err(VerifyError::MalformedProof));
+        assert_eq!(
+            verified(&leaf, &short, Bits100),
+            Err(VerifyError::MalformedProof)
+        );
 
         leaf.target += F128::ONE;
         assert_eq!(
-            verified(&leaf, &proof),
+            verified(&leaf, &proof, Bits100),
             Err(VerifyError::EvaluationMismatch)
         );
+    }
+
+    #[test]
+    fn security_targets_cover_every_quadratic_round() {
+        let leaf = Leaf::random(7, 1, 68);
+        let rounds = 8;
+        for security in [Bits100, Bits128] {
+            let (sent, proof) = reduced(&leaf, security);
+            let nonce_bytes = usize::from(security == Bits128) * 8;
+            assert_eq!(proof.narg_string.len(), rounds * (32 + nonce_bytes) + 16);
+            assert_eq!(verified(&leaf, &proof, security), Ok(sent.clone()));
+            let (point, target) = mle(&sent);
+            assert_eq!(leaf.evaluate(point), target);
+
+            let other = match security {
+                Bits100 => Bits128,
+                Bits128 => Bits100,
+            };
+            assert!(verified(&leaf, &proof, other).is_err());
+
+            if nonce_bytes != 0 {
+                for round in 0..rounds {
+                    let mut altered = proof.clone();
+                    let nonce = round * 40 + 32;
+                    altered.narg_string[nonce] ^= 1;
+                    assert!(
+                        verified(&leaf, &altered, security).is_err(),
+                        "round {round}"
+                    );
+                    let mut missing = proof.clone();
+                    missing.narg_string.drain(nonce..nonce + 8);
+                    assert!(
+                        verified(&leaf, &missing, security).is_err(),
+                        "round {round}"
+                    );
+                }
+            }
+            for length in 0..proof.narg_string.len() {
+                let mut short = proof.clone();
+                short.narg_string.truncate(length);
+                assert!(
+                    verified(&leaf, &short, security).is_err(),
+                    "length {length}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -445,6 +516,7 @@ mod tests {
                 &leaf.columns,
                 leaf.target + random(&mut rng(57)),
                 &leaf.packed,
+                Bits100,
                 &mut transcript
             ),
             Err(ProveError::ClaimDoesNotHold)
@@ -455,6 +527,7 @@ mod tests {
                 &leaf.columns,
                 leaf.target,
                 &leaf.packed[1..],
+                Bits100,
                 &mut transcript
             ),
             Err(ProveError::WitnessLengthMismatch)

@@ -13,10 +13,12 @@
 //! `h = p(0) + p(1)` fixes `a_1 = h + a_2` and only `(a_0, a_2)` is sent
 //! ([`RoundMessage`]). Both sides continue with `h' = p(rho)` and the prover
 //! folds its tables at `rho`. There is no per-round check: a wrong message
-//! in any round surfaces in the closing check. Soundness error at most
-//! `2n / |E|` for `n` rounds, plus the probability that `MLE[W](rho) = 0`.
+//! in any round surfaces in the closing check or the commitment opening.
+//! Each challenge has error at most `2 / |F128|`, reduced by its grinding factor.
+//! The opening authenticates the closing evaluation, including when its weight is zero.
 
-use crate::VerifyError;
+use crate::{GRINDING_LABEL, VerifyError};
+use common::SecurityLevel;
 use field::{F128, Wide256};
 #[cfg(feature = "parallel")]
 use poly::parallel::workload_size;
@@ -96,10 +98,11 @@ impl Pair {
 pub(crate) fn prove(
     pair: &mut Pair,
     claim: F128,
+    security: SecurityLevel,
     transcript: &mut ProverState,
 ) -> (Vec<F128>, F128) {
     let rounds = pair.weights.len().trailing_zeros() as usize;
-    let (point, running) = prove_rounds(pair, rounds, claim, transcript);
+    let (point, running) = prove_rounds(pair, rounds, claim, security, transcript);
     let evaluation = prove_evaluation(pair, running, transcript);
     (point, evaluation)
 }
@@ -110,9 +113,10 @@ pub(crate) fn verify(
     rounds: usize,
     claim: F128,
     weight: impl FnOnce(&[F128]) -> F128,
+    security: SecurityLevel,
     transcript: &mut VerifierState<'_>,
 ) -> Result<(Vec<F128>, F128), VerifyError> {
-    let (point, running) = verify_rounds(rounds, claim, transcript)?;
+    let (point, running) = verify_rounds(rounds, claim, security, transcript)?;
     let evaluation = verify_evaluation(weight(&point), running, transcript)?;
     Ok((point, evaluation))
 }
@@ -123,12 +127,14 @@ fn prove_rounds(
     pair: &mut Pair,
     rounds: usize,
     mut claim: F128,
+    security: SecurityLevel,
     transcript: &mut ProverState,
 ) -> (Vec<F128>, F128) {
     let mut point = Vec::with_capacity(rounds);
     for _ in 0..rounds {
         let message = pair.message();
         transcript.prover_message(&message);
+        transcript.grind(GRINDING_LABEL, security.grinding_bits(2));
         let challenge: F128 = transcript.verifier_message();
         claim = super::advance(claim, message, challenge);
         point.push(challenge);
@@ -142,12 +148,16 @@ fn prove_rounds(
 fn verify_rounds(
     rounds: usize,
     mut claim: F128,
+    security: SecurityLevel,
     transcript: &mut VerifierState<'_>,
 ) -> Result<(Vec<F128>, F128), VerifyError> {
     let mut point = Vec::with_capacity(rounds);
     for _ in 0..rounds {
         let message: RoundMessage = transcript
             .prover_message()
+            .map_err(|_| VerifyError::MalformedProof)?;
+        transcript
+            .grind(GRINDING_LABEL, security.grinding_bits(2))
             .map_err(|_| VerifyError::MalformedProof)?;
         let challenge: F128 = transcript.verifier_message();
         claim = super::advance(claim, message, challenge);
@@ -206,6 +216,7 @@ fn coefficients_serial(weights: &[F128], values: &[F128]) -> (Wide256, Wide256) 
 
 #[cfg(test)]
 mod tests {
+    use common::SecurityLevel::Bits100;
     use num_traits::{ConstOne, ConstZero};
     use poly::DenseMultilinearExtension;
     use poly::eq_table;
@@ -255,7 +266,7 @@ mod tests {
         let claim = inner_product(&weights, &values);
 
         let mut prover = build_prover("post_gkr-tests", "sumcheck");
-        let (point, running) = prove_rounds(&mut pair, 6, claim, &mut prover);
+        let (point, running) = prove_rounds(&mut pair, 6, claim, Bits100, &mut prover);
         let evaluation = prove_evaluation(&pair, running, &mut prover);
         let proof = prover.finish();
         assert_eq!(proof.narg_string.len(), (2 * 6 + 1) * 16);
@@ -271,7 +282,7 @@ mod tests {
         assert_eq!(evaluate(&weights, &point), extension(&weights));
 
         let mut verifier = build_verifier("post_gkr-tests", "sumcheck", &proof);
-        let (same_point, same_running) = verify_rounds(6, claim, &mut verifier).unwrap();
+        let (same_point, same_running) = verify_rounds(6, claim, Bits100, &mut verifier).unwrap();
         assert_eq!(same_point, point);
         assert_eq!(same_running, running);
         assert_eq!(
@@ -283,7 +294,7 @@ mod tests {
         // The same records against a claim one off: the gap survives every
         // round and the closing check catches it.
         let mut verifier = build_verifier("post_gkr-tests", "sumcheck", &proof);
-        let (_, running) = verify_rounds(6, claim + F128::ONE, &mut verifier).unwrap();
+        let (_, running) = verify_rounds(6, claim + F128::ONE, Bits100, &mut verifier).unwrap();
         assert_eq!(
             verify_evaluation(evaluate(&weights, &point), running, &mut verifier),
             Err(VerifyError::EvaluationMismatch)
@@ -312,12 +323,12 @@ mod tests {
         let mut pair = pair(3, &mut rng(10));
         let claim = inner_product(&pair.weights, &pair.values);
         let mut prover = build_prover("post_gkr-tests", "sumcheck");
-        prove_rounds(&mut pair, 3, claim, &mut prover);
+        prove_rounds(&mut pair, 3, claim, Bits100, &mut prover);
         let mut proof = prover.finish();
         proof.narg_string.truncate(proof.narg_string.len() - 16);
         let mut verifier = build_verifier("post_gkr-tests", "sumcheck", &proof);
         assert_eq!(
-            verify_rounds(3, claim, &mut verifier).err(),
+            verify_rounds(3, claim, Bits100, &mut verifier).err(),
             Some(VerifyError::MalformedProof)
         );
     }
