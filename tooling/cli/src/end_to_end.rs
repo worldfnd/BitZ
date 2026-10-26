@@ -65,6 +65,8 @@ pub enum Error {
     Matrix(SpartanMatrixError),
     #[error("circuit witness does not satisfy the constraints")]
     Unsatisfied,
+    #[error("proof contains a field element outside the sampled modulus")]
+    NonCanonicalProof,
     #[error("Spartan failed: {0:?}")]
     Spartan(spartan::SpartanError),
     #[error("commitment failed: {0:?}")]
@@ -353,6 +355,7 @@ where
         }
         let prime = transcript.squeeze_prime(self.prime_bits);
         let (params, matrices) = self.under_prime(prime, &prime_lock, &mut transcript)?;
+        validate_proof_fields(&proof.spartan, F::modulus())?;
         let terminal = verify_spartan_proof(&mut transcript, &matrices, &proof.spartan)
             .map_err(Error::Spartan)?;
         let claim = opening_claim(&params, &terminal)?;
@@ -415,6 +418,28 @@ where
     }
 }
 
+fn validate_proof_fields<F: BitzClaimField>(
+    proof: &SpartanPiopProof<F>,
+    modulus: F::Integer,
+) -> Result<(), Error> {
+    let outer = &proof.outer;
+    let fields = outer
+        .sumcheck
+        .round_polynomials
+        .iter()
+        .flatten()
+        .chain(proof.inner.round_polynomials.iter().flatten())
+        .chain([
+            &outer.az_mle_claim,
+            &outer.bz_mle_claim,
+            &outer.cz_mle_claim,
+        ]);
+    if fields.into_iter().any(|value| value.lift() >= modulus) {
+        return Err(Error::NonCanonicalProof);
+    }
+    Ok(())
+}
+
 fn is_identity(map: &SparseBoolMatrix) -> bool {
     map.row_count() == map.column_count()
         && map
@@ -470,6 +495,7 @@ mod tests {
     use super::*;
     use crate::ProjectBigIntToField;
     use poly::DenseMultilinearExtension;
+    use spartan::{OuterSumcheckProof, SumcheckProof};
 
     type F = field::DynField;
     type R = num_bigint::BigInt;
@@ -625,6 +651,42 @@ mod tests {
         system.matrices = matrices;
 
         assert_ne!(draw(&system), prime);
+    }
+
+    #[test]
+    fn proof_fields_must_be_below_the_sampled_modulus() {
+        type F = field::FqDefault;
+        let proof = SpartanPiopProof {
+            outer: OuterSumcheckProof {
+                sumcheck: SumcheckProof {
+                    round_polynomials: vec![[F::ZERO; 4]; 2],
+                },
+                az_mle_claim: F::ZERO,
+                bz_mle_claim: F::ZERO,
+                cz_mle_claim: F::ZERO,
+            },
+            inner: SumcheckProof {
+                round_polynomials: vec![[F::ZERO; 3]; 2],
+            },
+        };
+        assert!(validate_proof_fields(&proof, 3).is_ok());
+        let targets: [fn(&mut SpartanPiopProof<F>, F); 5] = [
+            |proof, value| proof.outer.sumcheck.round_polynomials[1][3] = value,
+            |proof, value| proof.inner.round_polynomials[1][2] = value,
+            |proof, value| proof.outer.az_mle_claim = value,
+            |proof, value| proof.outer.bz_mle_claim = value,
+            |proof, value| proof.outer.cz_mle_claim = value,
+        ];
+        for representative in [3u128, 4] {
+            for set_field in targets {
+                let mut changed = proof.clone();
+                set_field(&mut changed, F::from(representative));
+                assert!(matches!(
+                    validate_proof_fields(&changed, 3),
+                    Err(Error::NonCanonicalProof)
+                ));
+            }
+        }
     }
 
     /// `opening_claim` is generic, so a fixed field keeps this test off the

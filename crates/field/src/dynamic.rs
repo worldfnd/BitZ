@@ -82,6 +82,14 @@ impl DynField {
         debug_assert!(cfg.modulus != 0, "Field modulus has not been set yet!");
         cfg
     }
+
+    #[inline(always)]
+    fn assert_reduced(&self, modulus: u128) {
+        assert!(
+            self.reduced_value < modulus,
+            "field element is not reduced modulo the current modulus"
+        );
+    }
 }
 
 impl FieldWithDynamicModulus for DynField {
@@ -153,11 +161,13 @@ impl Neg for DynField {
 
     #[inline(always)]
     fn neg(self) -> Self::Output {
+        let modulus = Self::modulus();
+        self.assert_reduced(modulus);
         if self.is_zero() {
             self
         } else {
             DynField {
-                reduced_value: Self::modulus() - self.reduced_value,
+                reduced_value: modulus - self.reduced_value,
             }
         }
     }
@@ -282,8 +292,9 @@ impl AddAssign for DynField {
     #[inline(always)]
     fn add_assign(&mut self, rhs: Self) {
         let modulus = Self::modulus();
-        // SAFETY: Both operands are below `modulus < 2^126`, so the sum cannot wrap.
-        let sum = unsafe { self.reduced_value.unchecked_add(rhs.reduced_value) };
+        self.assert_reduced(modulus);
+        rhs.assert_reduced(modulus);
+        let sum = self.reduced_value + rhs.reduced_value;
         self.reduced_value = if sum >= modulus { sum - modulus } else { sum };
     }
 }
@@ -291,10 +302,13 @@ impl AddAssign for DynField {
 impl SubAssign for DynField {
     #[inline(always)]
     fn sub_assign(&mut self, rhs: Self) {
+        let modulus = Self::modulus();
+        self.assert_reduced(modulus);
+        rhs.assert_reduced(modulus);
         self.reduced_value = if self.reduced_value >= rhs.reduced_value {
             self.reduced_value - rhs.reduced_value
         } else {
-            self.reduced_value + Self::modulus() - rhs.reduced_value
+            self.reduced_value + modulus - rhs.reduced_value
         };
     }
 }
@@ -302,7 +316,10 @@ impl SubAssign for DynField {
 impl MulAssign for DynField {
     #[inline(always)]
     fn mul_assign(&mut self, rhs: Self) {
-        self.reduced_value = Self::config().mul(self.reduced_value, rhs.reduced_value);
+        let config = Self::config();
+        self.assert_reduced(config.modulus);
+        rhs.assert_reduced(config.modulus);
+        self.reduced_value = config.mul(self.reduced_value, rhs.reduced_value);
     }
 }
 
@@ -451,6 +468,7 @@ mod tests {
     use crypto_primitives::{ConstField, WithExtensionDegree};
     use rand_core::{Rng, SeedableRng};
     use rand_pcg::Pcg64;
+    use std::panic::catch_unwind;
 
     /// A prime small enough to check every pair of operands.
     const SMALL: u128 = 251;
@@ -583,6 +601,25 @@ mod tests {
             assert_eq!(DynField::from(&u64::MAX), DynField::from(u64::MAX));
             assert_eq!(DynField::from(true), DynField::ONE);
             assert_eq!(DynField::from(false), DynField::ZERO);
+        });
+    }
+
+    #[test]
+    fn arithmetic_rejects_representatives_from_a_larger_modulus() {
+        let representatives = with_modulus(101, || {
+            [DynField::from(100u64).lift(), DynField::from(3u64).lift()]
+        });
+        with_modulus(3, || {
+            for reduced_value in representatives {
+                let stale = DynField { reduced_value };
+                assert!(catch_unwind(|| stale + DynField::ONE).is_err());
+                assert!(catch_unwind(|| DynField::ONE + stale).is_err());
+                assert!(catch_unwind(|| stale - DynField::ONE).is_err());
+                assert!(catch_unwind(|| DynField::ONE - stale).is_err());
+                assert!(catch_unwind(|| stale * DynField::ONE).is_err());
+                assert!(catch_unwind(|| DynField::ONE * stale).is_err());
+                assert!(catch_unwind(|| -stale).is_err());
+            }
         });
     }
 
