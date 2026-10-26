@@ -9,3 +9,4 @@ license.workspace = true
 blake3 = { workspace = true }
 field = { workspace = true, features = ["spongefish"] }
 spongefish = { workspace = true }
+thiserror = { workspace = true }

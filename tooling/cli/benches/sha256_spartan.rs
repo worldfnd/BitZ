@@ -6,8 +6,8 @@
 
 use std::sync::{Arc, Mutex};
 
-use bitz_cli::{ProjectBigIntToFq, ProjectConstraint};
-use circuit::constraints::ConstraintGenerator;
+use bitz_cli::{ProjectBigIntToField, ProjectConstraint};
+use circuit::constraints::{ConstraintGenerator, ConstraintMatrices};
 use circuit::sha256::sha256_block_aligned_circuit;
 use circuit::witgen::ProductWitgen;
 use divan::{AllocProfiler, Bencher, black_box};
@@ -30,7 +30,7 @@ const BLOCKS: &[usize] = &[608];
 
 type R = num_bigint::BigInt;
 type F = field::FqDefault;
-type Proj = ProjectBigIntToFq;
+type Proj = ProjectBigIntToField;
 
 /// An R1CS instance with a witness satisfying it.
 #[derive(Debug, Clone)]
@@ -85,7 +85,8 @@ fn build(blocks: usize) -> R1csInstanceWitness {
 
     // Lower to Q100 and pad to the Boolean domains.
     let projection = <Proj as ProjectConstraint<R, F>>::prepare();
-    let matrices = integer_matrices.map_coefficients(|c| projection.project(&c));
+    let matrices: ConstraintMatrices<F> =
+        integer_matrices.map_coefficients(|c| projection.project(&c));
     let products = build_product_mles(&exact_products, matrices.a.row_count()).unwrap();
     let assignment =
         build_assignment_mle::<F>(&assignment_bits, matrices.a.column_count()).unwrap();

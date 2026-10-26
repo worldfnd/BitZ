@@ -32,7 +32,7 @@ use crypto_primitives::Semiring;
 use poly::DenseMultilinearExtension;
 use rayon::prelude::*;
 use std::array;
-use transcript::{ProverState, VerifierState};
+use transcript::{ProverState, SqueezableTranscript, VerifierState};
 
 /// Failures produced while reducing or checking a sumcheck claim.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

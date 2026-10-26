@@ -1,14 +1,14 @@
-use bitz_cli::ProjectBigIntToFq;
 use bitz_cli::end_to_end::{CircuitProofSystem, CircuitStatement, Error, OpeningPath, Proof};
+use bitz_cli::{ProjectBigIntToField, benchmark::run};
 use circuit::Circuit;
 use pcs::{SecurityLevel, VerifyError};
 
 type R = num_bigint::BigInt;
-type F = field::FqDefault;
-type Proj = ProjectBigIntToFq;
+type F = field::DynField;
+type Proj = ProjectBigIntToField;
 
 fn rejects_changed_or_missing_ood(
-    system: &CircuitProofSystem<impl CircuitStatement, F>,
+    system: &CircuitProofSystem<impl CircuitStatement, F, R, Proj>,
     proof: &Proof<F>,
 ) {
     // These 100-bit fixtures have zero initial grinding bits, so the first
@@ -53,15 +53,14 @@ impl CircuitStatement for PublicBit {
 #[test]
 fn generic_driver_accepts_a_non_sha_circuit() {
     let prepared =
-        CircuitProofSystem::<_, F>::new::<R, Proj>(PublicBit(true), SecurityLevel::Bits100)
-            .unwrap();
+        CircuitProofSystem::<_, F, R, Proj>::new(PublicBit(true), SecurityLevel::Bits100).unwrap();
     assert_eq!(prepared.stats().opening_path, OpeningPath::Direct);
     assert_eq!(prepared.stats().pcs_security, SecurityLevel::Bits100);
     assert_eq!(prepared.stats().committed_bits, 2);
     let witness = prepared.witness(&[true]).unwrap();
     let data = prepared.commit(&witness).unwrap();
     let proof = prepared.prove(witness, data).unwrap();
-    CircuitProofSystem::<_, F>::new::<R, Proj>(PublicBit(true), SecurityLevel::Bits100)
+    CircuitProofSystem::<_, F, R, Proj>::new(PublicBit(true), SecurityLevel::Bits100)
         .unwrap()
         .verify(&proof)
         .unwrap();
@@ -92,19 +91,13 @@ fn generic_driver_accepts_a_non_sha_circuit() {
 
 #[test]
 fn benchmark_runs_a_generic_circuit_and_propagates_failure() {
-    let timings =
-        bitz_cli::benchmark::run::<_, F, R, Proj>(PublicBit(true), &[true], SecurityLevel::Bits100)
-            .unwrap();
+    let timings = run::<_, F, R, Proj>(PublicBit(true), &[true], SecurityLevel::Bits100).unwrap();
     let output = timings.to_string();
     assert!(output.contains("total_prove_ms="));
     assert!(output.contains("verify_ms="));
     assert!(output.contains("pcs_round_target_bits=100"));
     assert!(matches!(
-        bitz_cli::benchmark::run::<_, F, R, Proj>(
-            PublicBit(true),
-            &[false],
-            SecurityLevel::Bits100
-        ),
+        run::<_, F, R, Proj>(PublicBit(true), &[false], SecurityLevel::Bits100),
         Err(Error::Unsatisfied)
     ));
 }
@@ -135,14 +128,14 @@ impl CircuitStatement for PublicXor {
 #[test]
 fn nonidentity_map_uses_virtual_opening_and_checks_xor_relation() {
     let system =
-        CircuitProofSystem::<_, F>::new::<R, Proj>(PublicXor, SecurityLevel::Bits100).unwrap();
+        CircuitProofSystem::<_, F, R, Proj>::new(PublicXor, SecurityLevel::Bits100).unwrap();
     assert_eq!(system.stats().opening_path, OpeningPath::Virtual);
     assert_eq!(system.stats().assignment_bits, 3);
     assert_eq!(system.stats().committed_bits, 2);
     let witness = system.witness(&[true, false]).unwrap();
     let data = system.commit(&witness).unwrap();
     let proof = system.prove(witness, data).unwrap();
-    CircuitProofSystem::<_, F>::new::<R, Proj>(PublicXor, SecurityLevel::Bits100)
+    CircuitProofSystem::<_, F, R, Proj>::new(PublicXor, SecurityLevel::Bits100)
         .unwrap()
         .verify(&proof)
         .unwrap();
@@ -158,8 +151,7 @@ fn nonidentity_map_uses_virtual_opening_and_checks_xor_relation() {
     changed.opening.narg_string.push(0);
     assert!(system.verify(&changed).is_err());
     for security in [SecurityLevel::Bits100, SecurityLevel::Bits128] {
-        let timings =
-            bitz_cli::benchmark::run::<_, F, R, Proj>(PublicXor, &[true, false], security).unwrap();
+        let timings = run::<_, F, R, Proj>(PublicXor, &[true, false], security).unwrap();
         assert_eq!(timings.circuit.opening_path, OpeningPath::Virtual);
         assert_eq!(timings.circuit.pcs_security, security);
         assert!(
@@ -173,8 +165,7 @@ fn nonidentity_map_uses_virtual_opening_and_checks_xor_relation() {
 #[test]
 fn explicit_128_budget_binds_the_policy_and_public_statement() {
     let system =
-        CircuitProofSystem::<_, F>::new::<R, Proj>(PublicBit(true), SecurityLevel::Bits128)
-            .unwrap();
+        CircuitProofSystem::<_, F, R, Proj>::new(PublicBit(true), SecurityLevel::Bits128).unwrap();
     assert_eq!(system.stats().pcs_security, SecurityLevel::Bits128);
     let witness = system.witness(&[true]).unwrap();
     let data = system.commit(&witness).unwrap();
@@ -182,13 +173,13 @@ fn explicit_128_budget_binds_the_policy_and_public_statement() {
     system.verify(&proof).unwrap();
 
     assert!(
-        CircuitProofSystem::<_, F>::new::<R, Proj>(PublicBit(true), SecurityLevel::Bits100)
+        CircuitProofSystem::<_, F, R, Proj>::new(PublicBit(true), SecurityLevel::Bits100)
             .unwrap()
             .verify(&proof)
             .is_err()
     );
     assert!(
-        CircuitProofSystem::<_, F>::new::<R, Proj>(PublicBit(false), SecurityLevel::Bits128)
+        CircuitProofSystem::<_, F, R, Proj>::new(PublicBit(false), SecurityLevel::Bits128)
             .unwrap()
             .verify(&proof)
             .is_err()

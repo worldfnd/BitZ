@@ -12,6 +12,7 @@ crypto-primitives = { workspace = true }
 crypto-primitives-proc-macros = { workspace = true }
 rand = { workspace = true, optional = true }
 spongefish = { workspace = true, optional = true }
+pastey = { workspace = true }
 
 [features]
 rand = ["dep:rand"]

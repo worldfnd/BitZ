@@ -3,16 +3,17 @@ use {
     anyhow::{Result, ensure},
     argh::FromArgs,
     bitz_cli::{
-        benchmark,
+        benchmark::run,
         circuits::{BuiltinCircuit, CircuitInstance},
     },
     pcs::SecurityLevel,
+    rayon::current_num_threads,
 };
 
-type F = field::FqDefault;
-type Proj = bitz_cli::ProjectBigIntToFq;
+type F = field::DynField;
+type Proj = bitz_cli::ProjectBigIntToField;
 
-/// Prove generated circuit constraints over Q100 and verify the proof.
+/// Prove generated circuit constraints over a transcript-drawn prime and verify the proof.
 #[derive(FromArgs, PartialEq, Debug)]
 #[argh(subcommand, name = "circuit-e2e")]
 pub struct Args {
@@ -33,7 +34,7 @@ pub struct Args {
     #[argh(option)]
     threads: Option<usize>,
 
-    /// classical PCS round budget: 100 (default) or 128; Spartan remains over Q100
+    /// classical PCS round budget: 100 (default) or 128; Spartan uses a transcript-drawn prime
     #[argh(
         option,
         default = "SecurityLevel::Bits100",
@@ -56,8 +57,8 @@ impl Command for Args {
             let _span = tracing::info_span!(
                 "circuit_e2e",
                 circuit = %self.circuit,
-                threads = rayon::current_num_threads(),
-                field = "Q100",
+                threads = current_num_threads(),
+                field = "random-prime",
                 pcs_round_target_bits = self.pcs_security_bits.bits(),
                 hash = "Blake3",
             ).entered();
@@ -66,9 +67,9 @@ impl Command for Args {
             })?;
             let inputs = statement.inputs.clone();
             let timings =
-                benchmark::run::<_, F, _, Proj>(statement, &inputs, self.pcs_security_bits)?;
+                run::<_, F, _, Proj>(statement, &inputs, self.pcs_security_bits)?;
             tracing::info!("Proof verified successfully");
-            println!("circuit={} threads={} field=Q100 pcs_round_target_bits={} security_model=classical-pcs-round-budget relation=Q100-r1cs constraints_verified=true", self.circuit, rayon::current_num_threads(), self.pcs_security_bits.bits());
+            println!("circuit={} threads={} field=random-prime pcs_round_target_bits={} security_model=classical-pcs-round-budget relation=r1cs constraints_verified=true", self.circuit, current_num_threads(), self.pcs_security_bits.bits());
             println!("{timings}");
             Ok(())
         })
