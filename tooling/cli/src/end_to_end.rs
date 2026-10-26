@@ -409,6 +409,7 @@ where
         transcript.public_message(&self.generator);
         transcript.public_message(&self.pcs);
         transcript.public_message(&self.map.digest());
+        transcript.public_message(self.matrices.digest());
         transcript.public_message(b"bitz/circuit-opening-path/v1");
         transcript.public_message(&[self.opening_path as u8]);
     }
@@ -599,6 +600,31 @@ mod tests {
         assert_eq!(draw(system.statement.domain(), root), prime);
         assert_ne!(draw(b"another/statement", root), prime);
         assert_ne!(draw(system.statement.domain(), Root([0; 32])), prime);
+    }
+
+    #[test]
+    fn integer_matrix_coefficients_affect_the_sampled_prime() {
+        let mut system = System::new(IdentityBit, SecurityLevel::Bits100).unwrap();
+        let witness = system.witness(&[true]).unwrap();
+        let root = system.commit(&witness).unwrap().data.root();
+        let draw = |system: &System<IdentityBit>| {
+            let mut transcript = build_prover(SESSION, system.statement.domain());
+            system.bind(&mut transcript, root);
+            transcript.squeeze_prime(system.prime_bits)
+        };
+        let prime = draw(&system);
+
+        let mut constraints = ConstraintGenerator::<R>::new(1);
+        let input = constraints.input(0);
+        IdentityBit.synthesize(&mut constraints, &[input]).unwrap();
+        let mut matrices = constraints.into_matrices();
+        matrices.a = matrices.a.map_values_ref(|coefficient| coefficient * 2u64);
+        let matrices = PreparedIntegerMatrices::new(matrices).unwrap();
+        assert_eq!(matrices.m(), system.matrices.m());
+        assert_ne!(matrices.digest(), system.matrices.digest());
+        system.matrices = matrices;
+
+        assert_ne!(draw(&system), prime);
     }
 
     /// `opening_claim` is generic, so a fixed field keeps this test off the
