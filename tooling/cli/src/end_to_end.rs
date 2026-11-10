@@ -265,7 +265,11 @@ where
     /// Continues the commitment transcript through the prime draw, Spartan
     /// and the BitZ opening.
     #[tracing::instrument(name = "prove", skip_all, fields(opening_path = ?self.opening_path))]
-    pub fn prove(&self, witness: Witness, commitment: CommittedWitness) -> Result<Proof<F>, Error> {
+    pub fn prove(
+        &self,
+        mut witness: Witness,
+        commitment: CommittedWitness,
+    ) -> Result<Proof<F>, Error> {
         let prime_lock = DYNAMIC_MODULUS_LOCK
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
@@ -306,7 +310,7 @@ where
                 &claim,
                 &self.pcs,
                 &data,
-                witness.committed_bits,
+                std::mem::take(&mut witness.committed_bits),
                 &mut transcript,
             ),
             OpeningPath::Virtual => {
@@ -318,7 +322,7 @@ where
                     &self.pcs,
                     &data,
                     VirtualWitness {
-                        committed_bits: witness.committed_bits,
+                        committed_bits: std::mem::take(&mut witness.committed_bits),
                         virtual_bits: witness
                             .virtual_bits
                             .as_ref()
@@ -329,6 +333,9 @@ where
             }
         }
         .map_err(Error::Prove)?;
+        // The opening took `committed_bits` out of `witness`, leaving it whole
+        // to be released here with the field values reduced from it.
+        tracing::info_span!("Free witness").in_scope(|| drop((witness, products, assignment)));
         Ok(Proof {
             root,
             spartan,
