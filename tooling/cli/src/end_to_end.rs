@@ -286,12 +286,16 @@ where
                 )
                 .map_err(Error::ConstantProve)?;
         }
-        let prime = transcript.squeeze_prime(self.prime_bits);
-        let (params, matrices) = self.under_prime(prime, &prime_lock, &mut transcript)?;
-        let products =
-            build_product_mles(&witness.products, matrices.row_count()).map_err(Error::Matrix)?;
-        let assignment =
-            build_assignment_mle(&witness.assignment, self.map.h_len()).map_err(Error::Matrix)?;
+        self.sample_and_install_prime(&prime_lock, &mut transcript)?;
+        let (params, matrices) = self.project_contraints(&mut transcript)?;
+        let (products, assignment) = {
+            let _span = tracing::info_span!("Reduce witness modulo prime").entered();
+            let products = build_product_mles(&witness.products, matrices.row_count())
+                .map_err(Error::Matrix)?;
+            let assignment = build_assignment_mle(&witness.assignment, self.map.h_len())
+                .map_err(Error::Matrix)?;
+            (products, assignment)
+        };
         let (spartan, terminal) =
             prove_spartan_piop(&mut transcript, &matrices, &products, &assignment)
                 .map_err(Error::Spartan)?;
@@ -353,8 +357,9 @@ where
                 )
                 .map_err(Error::ConstantVerify)?;
         }
-        let prime = transcript.squeeze_prime(self.prime_bits);
-        let (params, matrices) = self.under_prime(prime, &prime_lock, &mut transcript)?;
+
+        self.sample_and_install_prime(&prime_lock, &mut transcript)?;
+        let (params, matrices) = self.project_contraints(&mut transcript)?;
         validate_proof_fields(&proof.spartan, F::modulus())?;
         let terminal = verify_spartan_proof(&mut transcript, &matrices, &proof.spartan)
             .map_err(Error::Spartan)?;
@@ -372,18 +377,30 @@ where
         .map_err(Error::Verify)
     }
 
-    /// Installs the sampled prime and builds the parameters and the matrices
-    /// under it. The parameters' frame carries the prime into the transcript.
-    fn under_prime(
+    /// Sample a random prime and install it globally.
+    #[tracing::instrument(name = "Sample prime", skip_all)]
+    fn sample_and_install_prime(
         &self,
-        prime: u128,
         _prime_lock: &ModulusLock<'_>,
-        transcript: &mut impl PublicTranscript,
-    ) -> Result<(BitZParams<F>, PreparedConstraintMatrices<F>), Error> {
+        transcript: &mut impl SqueezableTranscript,
+    ) -> Result<(), Error> {
+        let prime = transcript.squeeze_prime(self.prime_bits);
         tracing::info!(bits = self.prime_bits, prime = %prime, "Fingerprint prime drawn");
+
         // SAFETY: No value of `F` exists yet, and `DYNAMIC_MODULUS_LOCK` is held, so
         // no operation is in flight elsewhere.
         unsafe { F::set_modulus(prime) };
+
+        Ok(())
+    }
+
+    /// Builds the parameters and the matrices under the installed random prime.
+    /// The parameters' frame carries the prime into the transcript.
+    #[tracing::instrument(name = "Project constraint matrices onto random field", skip_all)]
+    fn project_contraints(
+        &self,
+        transcript: &mut impl PublicTranscript,
+    ) -> Result<(BitZParams<F>, PreparedConstraintMatrices<F>), Error> {
         let params = BitZParams::new(self.claim_shape, self.generator)
             .map_err(|_| Error::Configuration("inadmissible BitZ parameters"))?;
         transcript.public_message(&params);
