@@ -265,10 +265,14 @@ impl MTransposeRecorder {
             }
         }
 
+        let column_offsets = column_offsets.into_boxed_slice();
+        let row_indices = row_indices.into_boxed_slice();
+        let digest = csc_digest(row_count, &column_offsets, &row_indices);
         MaterializedMTranspose {
             row_count,
-            column_offsets: column_offsets.into_boxed_slice(),
-            row_indices: row_indices.into_boxed_slice(),
+            column_offsets,
+            row_indices,
+            digest,
         }
     }
 }
@@ -279,6 +283,8 @@ pub struct MaterializedMTranspose {
     row_count: usize,
     column_offsets: Box<[u32]>,
     row_indices: Box<[u32]>,
+    /// Precomputed [`csc_digest`] of the fields above.
+    digest: [u8; 32],
 }
 
 impl MaterializedMTranspose {
@@ -368,6 +374,26 @@ const DIGEST_DOMAIN: &[u8] = b"bitz/virtual-map/csc/v1";
 
 const DIGEST_CHUNK: usize = 1 << 12;
 
+/// Hashes the shape and the CSC payload of `M`.
+fn csc_digest(row_count: usize, column_offsets: &[u32], row_indices: &[u32]) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(DIGEST_DOMAIN);
+    for count in [row_count, column_offsets.len() - 1, row_indices.len()] {
+        hasher.update(&(count as u64).to_le_bytes());
+    }
+    // Hash the offsets too: two matrices can share every row index and
+    // still split the columns differently.
+    for indices in [column_offsets, row_indices] {
+        let mut bytes = Vec::with_capacity(DIGEST_CHUNK * size_of::<u32>());
+        for chunk in indices.chunks(DIGEST_CHUNK) {
+            bytes.clear();
+            bytes.extend(chunk.iter().flat_map(|index| index.to_le_bytes()));
+            hasher.update(&bytes);
+        }
+    }
+    *hasher.finalize().as_bytes()
+}
+
 impl VirtualMap for MaterializedMTranspose {
     fn transpose(&self, weights: &[F128]) -> Result<TransposedWeights, VirtualMapError> {
         let weights = weights
@@ -383,22 +409,7 @@ impl VirtualMap for MaterializedMTranspose {
     }
 
     fn digest(&self) -> [u8; 32] {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(DIGEST_DOMAIN);
-        for count in [self.row_count, self.column_count(), self.nonzero_count()] {
-            hasher.update(&(count as u64).to_le_bytes());
-        }
-        // Hash the offsets too: two matrices can share every row index and
-        // still split the columns differently.
-        for indices in [&self.column_offsets, &self.row_indices] {
-            let mut bytes = Vec::with_capacity(DIGEST_CHUNK * size_of::<u32>());
-            for chunk in indices.chunks(DIGEST_CHUNK) {
-                bytes.clear();
-                bytes.extend(chunk.iter().flat_map(|index| index.to_le_bytes()));
-                hasher.update(&bytes);
-            }
-        }
-        *hasher.finalize().as_bytes()
+        self.digest
     }
 
     fn h_len(&self) -> usize {
