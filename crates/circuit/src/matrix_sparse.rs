@@ -12,7 +12,7 @@ use common::BitzConstraintRing;
 use crypto_bigint::modular::{FixedMontyForm, FixedMontyParams};
 use crypto_bigint::{Odd, U128};
 use rayon::prelude::*;
-use std::mem::{size_of, size_of_val};
+use std::mem::size_of;
 use thiserror::Error;
 
 const PARALLEL_NNZ_THRESHOLD: usize = 1 << 15;
@@ -173,7 +173,7 @@ impl MaterializedAbc {
             + self
                 .coefficients
                 .iter()
-                .map(|coefficient| size_of_val(coefficient.words()))
+                .map(StoredInteger::heap_bytes)
                 .sum::<usize>()
     }
 
