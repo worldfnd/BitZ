@@ -132,8 +132,8 @@ impl<F: BitzClaimField> BitZProver<F> {
         let query = self.fold_and_reduce(claim, &table, transcript, pcs.security_level())?;
 
         // Transpose the reduced claim from h to f, since the PCS commits to f.
-        let query = statement
-            .transpose_query(query)
+        let query = tracing::info_span!("Transpose claim")
+            .in_scope(|| statement.transpose_query(query))
             .map_err(ProveError::VirtualMap)?;
 
         // Step 6: the post-GKR sumcheck, ring switching, and opening on committed bits.
