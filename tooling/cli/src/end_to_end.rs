@@ -7,7 +7,7 @@
 use circuit::matrix_products::StoredInteger;
 use circuit::{
     BitWidth, Circuit, IntoWords,
-    constraints::{ConstraintGenerator, SparseBoolMatrix},
+    constraints::{ConstraintGenerator, ConstraintMatrices, SparseBoolMatrix},
     matrix_products::IntegerProducts,
     matrix_transpose::{MTransposeGenerator, MaterializedMTranspose},
     witgen::{PackedWitness, ProductWitgen},
@@ -159,17 +159,9 @@ where
     /// Selects the classical PCS round budget; Spartan's security is not part of it.
     #[tracing::instrument(name = "setup", skip_all)]
     pub fn new(statement: S, pcs_security: SecurityLevel) -> Result<Self, Error> {
-        let mut constraints = ConstraintGenerator::<R>::new(statement.input_bits());
-        let inputs: Vec<_> = (0..statement.input_bits())
-            .map(|i| constraints.input(i))
-            .collect();
-        statement.synthesize(&mut constraints, &inputs)?;
-        let matrices =
-            PreparedIntegerMatrices::new(constraints.into_matrices()).map_err(Error::Matrix)?;
-        let mut generator = MTransposeGenerator::new(statement.input_bits());
-        let inputs = generator.take_inputs();
-        statement.synthesize(&mut generator, &inputs)?;
-        let map = generator.finish();
+        let constraints = Self::synthesize_constraints(&statement)?;
+        let matrices = PreparedIntegerMatrices::new(constraints).map_err(Error::Matrix)?;
+        let map = Self::build_virtual_map(&statement)?;
         if map.h_len() != matrices.column_count() {
             return Err(Error::Configuration("map and assignment dimensions differ"));
         }
@@ -382,6 +374,26 @@ where
             }
         }
         .map_err(Error::Verify)
+    }
+
+    /// Replays the circuit symbolically into its constraint matrices over `R`.
+    #[tracing::instrument(name = "Synthesize constraints", skip_all)]
+    fn synthesize_constraints(statement: &S) -> Result<ConstraintMatrices<R>, Error> {
+        let mut constraints = ConstraintGenerator::<R>::new(statement.input_bits());
+        let inputs: Vec<_> = (0..statement.input_bits())
+            .map(|i| constraints.input(i))
+            .collect();
+        statement.synthesize(&mut constraints, &inputs)?;
+        Ok(constraints.into_matrices())
+    }
+
+    /// Materializes `M^T` from the circuit's Boolean structure.
+    #[tracing::instrument(name = "Build virtual map", skip_all)]
+    fn build_virtual_map(statement: &S) -> Result<MaterializedMTranspose, Error> {
+        let mut generator = MTransposeGenerator::new(statement.input_bits());
+        let inputs = generator.take_inputs();
+        statement.synthesize(&mut generator, &inputs)?;
+        Ok(generator.finish())
     }
 
     /// Sample a random prime and install it globally.
