@@ -206,6 +206,7 @@ impl CommitScheme for Pcs {
         self.receive_commitment(root, transcript)
     }
 
+    #[tracing::instrument(name = "Prove PCS opening", skip_all)]
     fn prove_lin(
         &self,
         data: &Self::ProverData,
@@ -224,6 +225,7 @@ impl CommitScheme for Pcs {
         )
     }
 
+    #[tracing::instrument(name = "Verify PCS opening", skip_all)]
     fn verify_lin(
         &self,
         commitment: &Self::Commitment,
