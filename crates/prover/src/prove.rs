@@ -123,7 +123,8 @@ impl<F: BitzClaimField> BitZProver<F> {
         transcript.public_message(b"bitz/virtual-statement/v1");
         transcript.public_message(&com.0);
         transcript.public_message(params);
-        transcript.public_message(&statement.map().digest());
+        tracing::info_span!("Bind virtual map digest")
+            .in_scope(|| transcript.public_message(&statement.map().digest()));
         transcript.public_message(claim);
         transcript.public_message(pcs);
 
@@ -132,8 +133,8 @@ impl<F: BitzClaimField> BitZProver<F> {
         let query = self.fold_and_reduce(claim, &table, transcript, pcs.security_level())?;
 
         // Transpose the reduced claim from h to f, since the PCS commits to f.
-        let query = statement
-            .transpose_query(query)
+        let query = tracing::info_span!("Transpose claim")
+            .in_scope(|| statement.transpose_query(query))
             .map_err(ProveError::VirtualMap)?;
 
         // Step 6: the post-GKR sumcheck, ring switching, and opening on committed bits.

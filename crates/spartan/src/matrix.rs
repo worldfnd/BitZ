@@ -213,6 +213,7 @@ where
     R: Send + Sync + ToPrimitive + Eq + Hash,
     for<'a> StoredInteger: From<&'a R>,
 {
+    #[tracing::instrument(name = "Prepare integer matrices", skip_all)]
     pub fn new(matrices: ConstraintMatrices<R>) -> Result<Self, SpartanMatrixError> {
         let (m, layout, values) = Layout::new(matrices)?;
         let digest = integer_matrix_digest(&m, &layout, [&values[0], &values[1], &values[2]])?;

@@ -7,7 +7,7 @@
 use circuit::matrix_products::StoredInteger;
 use circuit::{
     BitWidth, Circuit, IntoWords,
-    constraints::{ConstraintGenerator, SparseBoolMatrix},
+    constraints::{ConstraintGenerator, ConstraintMatrices, SparseBoolMatrix},
     matrix_products::IntegerProducts,
     matrix_transpose::{MTransposeGenerator, MaterializedMTranspose},
     witgen::{PackedWitness, ProductWitgen},
@@ -159,17 +159,9 @@ where
     /// Selects the classical PCS round budget; Spartan's security is not part of it.
     #[tracing::instrument(name = "setup", skip_all)]
     pub fn new(statement: S, pcs_security: SecurityLevel) -> Result<Self, Error> {
-        let mut constraints = ConstraintGenerator::<R>::new(statement.input_bits());
-        let inputs: Vec<_> = (0..statement.input_bits())
-            .map(|i| constraints.input(i))
-            .collect();
-        statement.synthesize(&mut constraints, &inputs)?;
-        let matrices =
-            PreparedIntegerMatrices::new(constraints.into_matrices()).map_err(Error::Matrix)?;
-        let mut generator = MTransposeGenerator::new(statement.input_bits());
-        let inputs = generator.take_inputs();
-        statement.synthesize(&mut generator, &inputs)?;
-        let map = generator.finish();
+        let constraints = Self::synthesize_constraints(&statement)?;
+        let matrices = PreparedIntegerMatrices::new(constraints).map_err(Error::Matrix)?;
+        let map = Self::build_virtual_map(&statement)?;
         if map.h_len() != matrices.column_count() {
             return Err(Error::Configuration("map and assignment dimensions differ"));
         }
@@ -265,7 +257,11 @@ where
     /// Continues the commitment transcript through the prime draw, Spartan
     /// and the BitZ opening.
     #[tracing::instrument(name = "prove", skip_all, fields(opening_path = ?self.opening_path))]
-    pub fn prove(&self, witness: Witness, commitment: CommittedWitness) -> Result<Proof<F>, Error> {
+    pub fn prove(
+        &self,
+        mut witness: Witness,
+        commitment: CommittedWitness,
+    ) -> Result<Proof<F>, Error> {
         let prime_lock = DYNAMIC_MODULUS_LOCK
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
@@ -286,12 +282,16 @@ where
                 )
                 .map_err(Error::ConstantProve)?;
         }
-        let prime = transcript.squeeze_prime(self.prime_bits);
-        let (params, matrices) = self.under_prime(prime, &prime_lock, &mut transcript)?;
-        let products =
-            build_product_mles(&witness.products, matrices.row_count()).map_err(Error::Matrix)?;
-        let assignment =
-            build_assignment_mle(&witness.assignment, self.map.h_len()).map_err(Error::Matrix)?;
+        self.sample_and_install_prime(&prime_lock, &mut transcript)?;
+        let (params, matrices) = self.project_contraints(&mut transcript)?;
+        let (products, assignment) = {
+            let _span = tracing::info_span!("Reduce witness modulo prime").entered();
+            let products = build_product_mles(&witness.products, matrices.row_count())
+                .map_err(Error::Matrix)?;
+            let assignment = build_assignment_mle(&witness.assignment, self.map.h_len())
+                .map_err(Error::Matrix)?;
+            (products, assignment)
+        };
         let (spartan, terminal) =
             prove_spartan_piop(&mut transcript, &matrices, &products, &assignment)
                 .map_err(Error::Spartan)?;
@@ -302,7 +302,7 @@ where
                 &claim,
                 &self.pcs,
                 &data,
-                witness.committed_bits,
+                std::mem::take(&mut witness.committed_bits),
                 &mut transcript,
             ),
             OpeningPath::Virtual => {
@@ -314,7 +314,7 @@ where
                     &self.pcs,
                     &data,
                     VirtualWitness {
-                        committed_bits: witness.committed_bits,
+                        committed_bits: std::mem::take(&mut witness.committed_bits),
                         virtual_bits: witness
                             .virtual_bits
                             .as_ref()
@@ -325,6 +325,9 @@ where
             }
         }
         .map_err(Error::Prove)?;
+        // The opening took `committed_bits` out of `witness`, leaving it whole
+        // to be released here with the field values reduced from it.
+        tracing::info_span!("Free witness").in_scope(|| drop((witness, products, assignment)));
         Ok(Proof {
             root,
             spartan,
@@ -353,8 +356,9 @@ where
                 )
                 .map_err(Error::ConstantVerify)?;
         }
-        let prime = transcript.squeeze_prime(self.prime_bits);
-        let (params, matrices) = self.under_prime(prime, &prime_lock, &mut transcript)?;
+
+        self.sample_and_install_prime(&prime_lock, &mut transcript)?;
+        let (params, matrices) = self.project_contraints(&mut transcript)?;
         validate_proof_fields(&proof.spartan, F::modulus())?;
         let terminal = verify_spartan_proof(&mut transcript, &matrices, &proof.spartan)
             .map_err(Error::Spartan)?;
@@ -372,18 +376,50 @@ where
         .map_err(Error::Verify)
     }
 
-    /// Installs the sampled prime and builds the parameters and the matrices
-    /// under it. The parameters' frame carries the prime into the transcript.
-    fn under_prime(
+    /// Replays the circuit symbolically into its constraint matrices over `R`.
+    #[tracing::instrument(name = "Synthesize constraints", skip_all)]
+    fn synthesize_constraints(statement: &S) -> Result<ConstraintMatrices<R>, Error> {
+        let mut constraints = ConstraintGenerator::<R>::new(statement.input_bits());
+        let inputs: Vec<_> = (0..statement.input_bits())
+            .map(|i| constraints.input(i))
+            .collect();
+        statement.synthesize(&mut constraints, &inputs)?;
+        Ok(constraints.into_matrices())
+    }
+
+    /// Materializes `M^T` from the circuit's Boolean structure.
+    #[tracing::instrument(name = "Build virtual map", skip_all)]
+    fn build_virtual_map(statement: &S) -> Result<MaterializedMTranspose, Error> {
+        let mut generator = MTransposeGenerator::new(statement.input_bits());
+        let inputs = generator.take_inputs();
+        statement.synthesize(&mut generator, &inputs)?;
+        Ok(generator.finish())
+    }
+
+    /// Sample a random prime and install it globally.
+    #[tracing::instrument(name = "Sample prime", skip_all)]
+    fn sample_and_install_prime(
         &self,
-        prime: u128,
         _prime_lock: &ModulusLock<'_>,
-        transcript: &mut impl PublicTranscript,
-    ) -> Result<(BitZParams<F>, PreparedConstraintMatrices<F>), Error> {
+        transcript: &mut impl SqueezableTranscript,
+    ) -> Result<(), Error> {
+        let prime = transcript.squeeze_prime(self.prime_bits);
         tracing::info!(bits = self.prime_bits, prime = %prime, "Fingerprint prime drawn");
+
         // SAFETY: No value of `F` exists yet, and `DYNAMIC_MODULUS_LOCK` is held, so
         // no operation is in flight elsewhere.
         unsafe { F::set_modulus(prime) };
+
+        Ok(())
+    }
+
+    /// Builds the parameters and the matrices under the installed random prime.
+    /// The parameters' frame carries the prime into the transcript.
+    #[tracing::instrument(name = "Project constraint matrices onto random field", skip_all)]
+    fn project_contraints(
+        &self,
+        transcript: &mut impl PublicTranscript,
+    ) -> Result<(BitZParams<F>, PreparedConstraintMatrices<F>), Error> {
         let params = BitZParams::new(self.claim_shape, self.generator)
             .map_err(|_| Error::Configuration("inadmissible BitZ parameters"))?;
         transcript.public_message(&params);
@@ -402,6 +438,7 @@ where
     }
 
     /// Everything public and fixed before the prime is drawn.
+    #[tracing::instrument(name = "Bind circuit statement", skip_all)]
     fn bind(&self, transcript: &mut impl PublicTranscript, root: Root) {
         let public = self.statement.public_bytes();
         transcript.public_message(&(public.len() as u64));

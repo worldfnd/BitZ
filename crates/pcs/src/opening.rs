@@ -107,7 +107,6 @@ impl From<PostGkrVerifyError> for VerifyError {
     }
 }
 
-#[tracing::instrument(name = "Prove PCS opening", skip_all)]
 pub(crate) fn prove(
     pcs: &Pcs,
     data: &ProverData,
@@ -160,7 +159,6 @@ pub(crate) fn prove(
     }
 }
 
-#[tracing::instrument(name = "Verify PCS opening", skip_all)]
 pub(crate) fn verify(
     pcs: &Pcs,
     commitment: &Commitment,
@@ -335,6 +333,7 @@ fn bind_mle_statement(
 
 /// Binds both tensor factors before the first sumcheck challenge: their
 /// lengths, a digest of their weights, and the target.
+#[tracing::instrument(name = "Bind opening statement", skip_all)]
 fn bind_inner_product_statement(
     pcs: &Pcs,
     root: &[u8; 32],
