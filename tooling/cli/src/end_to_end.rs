@@ -438,6 +438,7 @@ where
     }
 
     /// Everything public and fixed before the prime is drawn.
+    #[tracing::instrument(name = "Bind circuit statement", skip_all)]
     fn bind(&self, transcript: &mut impl PublicTranscript, root: Root) {
         let public = self.statement.public_bytes();
         transcript.public_message(&(public.len() as u64));
