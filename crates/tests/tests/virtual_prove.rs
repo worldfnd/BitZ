@@ -24,13 +24,20 @@ type F = field::Fq<Q>;
 struct Map(u8);
 
 impl VirtualMap for Map {
-    fn transpose(&self, weights: &[F128]) -> Result<TransposedWeights, VirtualMapError> {
-        if weights.len() < self.h_len() {
+    fn transpose(
+        &self,
+        row_weights: &[F128],
+        column_weights: &[F128],
+    ) -> Result<TransposedWeights, VirtualMapError> {
+        let row_count = row_weights.len();
+        if row_count * column_weights.len() < self.h_len() {
             return Err(VirtualMapError::WeightCountMismatch);
         }
+        let weight =
+            |index: usize| row_weights[index % row_count] * column_weights[index / row_count];
         Ok(TransposedWeights::new(
-            vec![weights[1] + weights[129], weights[128] + weights[129]],
-            weights[0],
+            vec![weight(1) + weight(129), weight(128) + weight(129)],
+            weight(0),
         ))
     }
 

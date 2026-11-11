@@ -259,6 +259,7 @@ mod tests {
         fn transpose(
             &self,
             _: &[F128],
+            _: &[F128],
         ) -> Result<crate::TransposedWeights, crate::VirtualMapError> {
             unreachable!("the parameter gates never apply the map")
         }
