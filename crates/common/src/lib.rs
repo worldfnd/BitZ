@@ -61,7 +61,7 @@ define_blanket_trait! {
         Semiring
         + BitAnd<Output = Self>
         + ShrAssign<u32>
-        + From<u64>
+        + From<u32>
         + ToPrimitive
 }
 

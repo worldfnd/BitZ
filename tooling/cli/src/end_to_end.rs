@@ -570,7 +570,7 @@ mod tests {
         }
         fn synthesize<C: Circuit>(&self, cs: &mut C, inputs: &[C::Bool]) -> Result<(), Error> {
             let bit = cs.bitz::<1>(inputs[0].clone());
-            let one = C::Z::<1>::from(C::Coefficient::<1>::from(1u64));
+            let one = C::Z::<1>::from(C::Coefficient::<1>::from(1u32));
             cs.assert_r1c::<1>(one.clone(), bit, one);
             Ok(())
         }

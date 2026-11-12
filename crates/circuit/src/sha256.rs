@@ -168,11 +168,11 @@ where
     UInt { word, z_values }
 }
 
-fn uint_constant<CS>(value: u64) -> UInt32<CS>
+fn uint_constant<CS>(value: u32) -> UInt32<CS>
 where
     CS: Circuit,
 {
-    let word = Word::constant(value);
+    let word = Word::constant(u64::from(value));
     let full = ShaZ::<CS>::from(ShaCoefficient::<CS>::from(value));
     let z_values = ZValues {
         low_32: full.clone(),
@@ -410,7 +410,7 @@ where
         let old_f = f;
         let old_g = g;
         let old_h = h;
-        let round_constant = uint_constant::<CS>(u64::from(ROUND_CONSTANTS[i]));
+        let round_constant = uint_constant::<CS>(ROUND_CONSTANTS[i]);
 
         h = old_g.clone();
         g = old_f.clone();

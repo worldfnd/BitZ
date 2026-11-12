@@ -900,6 +900,20 @@ mod tests {
     }
 
     #[test]
+    fn default_coefficient_from_le_words_keeps_every_bit() {
+        let words = [0x0123_4567_89ab_cdef, 0, u64::MAX, 1 << 63];
+        let expected = words.iter().rev().fold(R::zero(), |value, word| {
+            (value << 64_usize) + R::from(*word)
+        });
+
+        assert_eq!(
+            ConstraintGenerator::<R>::coefficient_from_le_words::<4>(&words),
+            expected
+        );
+        assert!(ConstraintGenerator::<R>::coefficient_from_le_words::<1>(&[]).is_zero());
+    }
+
+    #[test]
     fn sparse_constructors_reject_unsorted_and_out_of_bounds_columns() {
         assert_eq!(
             SparseMatrix::<R>::try_from_rows(3, vec![vec![(1, R::one()), (1, R::one())]],),
