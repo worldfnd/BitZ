@@ -45,19 +45,20 @@ impl<const PRIME_LIMBS: usize> RuntimeModulus<PRIME_LIMBS> {
     }
 
     pub(crate) fn reduce(&self, value: &StoredInteger) -> [u64; PRIME_LIMBS] {
-        if value.words.is_empty() {
+        let words = value.words();
+        if words.is_empty() {
             return [0; PRIME_LIMBS];
         }
 
         if PRIME_LIMBS == 2 && self.words[1] >> 63 != 0 {
             let modulus = [self.words[0], self.words[1]];
-            let reduced = reduce_normalized_2(&value.words, modulus);
+            let reduced = reduce_normalized_2(words, modulus);
             let reduced = if value.is_negative() {
                 // The stored words are x + 2^(64k), where x is negative and
                 // k is the trimmed storage length. Recover x modulo p without
                 // materializing the two's-complement magnitude.
                 let mut width_power = [1, 0];
-                for _ in 0..value.words.len() {
+                for _ in 0..words.len() {
                     width_power = reduce_step_2(width_power, 0, modulus);
                 }
                 subtract_mod_2(reduced, width_power, modulus)
@@ -73,10 +74,10 @@ impl<const PRIME_LIMBS: usize> RuntimeModulus<PRIME_LIMBS> {
         let negative = value.is_negative();
         let magnitude;
         let words = if negative {
-            magnitude = twos_complement_magnitude(&value.words);
+            magnitude = twos_complement_magnitude(words);
             magnitude.as_slice()
         } else {
-            value.words.as_ref()
+            words
         };
 
         let mut reduced = [0; PRIME_LIMBS];
@@ -290,27 +291,71 @@ pub struct MatrixProducts<const PRIME_LIMBS: usize> {
 
 /// An exact signed two's-complement integer with redundant sign limbs removed.
 ///
-/// Every matrix row has a materialized [`StoredInteger`]. Zero uses an empty
-/// boxed slice, so it does not perform a separate limb allocation.
+/// Every matrix row has a materialized [`StoredInteger`]. A value of at most
+/// one word is held inline; only wider values allocate their limbs.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct StoredInteger {
-    words: Box<[u64]>,
+    words: Words,
+}
+
+/// Normalized little-endian two's-complement words.
+///
+/// The derived equality and hash need one representation per integer:
+/// [`StoredInteger::from_normalized`] is the only place that picks a variant.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+enum Words {
+    /// Zero, or the only word of a one-word value.
+    Inline(u64),
+    /// Two words or more.
+    Heap(Box<[u64]>),
 }
 
 impl StoredInteger {
+    const ZERO: Self = Self {
+        words: Words::Inline(0),
+    };
+
+    /// Stores normalized little-endian two's-complement words; zero is empty.
+    fn from_normalized<W>(words: W) -> Self
+    where
+        W: AsRef<[u64]> + Into<Box<[u64]>>,
+    {
+        let words = match *words.as_ref() {
+            [] => Words::Inline(0),
+            [word] => Words::Inline(word),
+            _ => Words::Heap(words.into()),
+        };
+        Self { words }
+    }
+
     /// Normalized little-endian two's-complement words; zero is empty.
     pub fn words(&self) -> &[u64] {
-        &self.words
+        match &self.words {
+            Words::Inline(0) => &[],
+            Words::Inline(word) => std::slice::from_ref(word),
+            Words::Heap(words) => words,
+        }
     }
 
     /// Whether this integer is exactly zero.
     pub fn is_zero(&self) -> bool {
-        self.words.is_empty()
+        matches!(self.words, Words::Inline(0))
     }
 
     /// Whether this integer is negative.
     pub fn is_negative(&self) -> bool {
-        self.words.last().is_some_and(|word| word >> 63 == 1)
+        match &self.words {
+            Words::Inline(word) => word >> 63 == 1,
+            Words::Heap(words) => words.last().is_some_and(|word| word >> 63 == 1),
+        }
+    }
+
+    /// Bytes of limb storage allocated outside this value.
+    pub fn heap_bytes(&self) -> usize {
+        match &self.words {
+            Words::Inline(_) => 0,
+            Words::Heap(words) => size_of_val(words.as_ref()),
+        }
     }
 }
 
@@ -319,9 +364,7 @@ impl From<&num_bigint::BigInt> for StoredInteger {
     fn from(value: &num_bigint::BigInt) -> Self {
         use num_bigint::{BigUint, Sign};
         if value.is_zero() {
-            return Self {
-                words: Box::default(),
-            };
+            return Self::ZERO;
         }
 
         let (sign, bytes) = value.to_bytes_le();
@@ -351,9 +394,7 @@ impl From<&num_bigint::BigInt> for StoredInteger {
                 break;
             }
         }
-        Self {
-            words: magnitude.into_boxed_slice(),
-        }
+        Self::from_normalized(magnitude)
     }
 }
 
@@ -378,9 +419,7 @@ impl<const LIMBS: usize> From<&Integer<LIMBS>> for StoredInteger {
     /// Stores a gadget-local fixed integer without changing its value.
     fn from(value: &Integer<LIMBS>) -> Self {
         if value.is_zero() {
-            return Self {
-                words: Box::default(),
-            };
+            return Self::ZERO;
         }
 
         let words = value.words();
@@ -394,9 +433,7 @@ impl<const LIMBS: usize> From<&Integer<LIMBS>> for StoredInteger {
                 break;
             }
         }
-        Self {
-            words: words[..len].into(),
-        }
+        Self::from_normalized(&words[..len])
     }
 }
 
@@ -613,6 +650,25 @@ mod tests {
                 "{value}"
             );
             assert_eq!(stored_ring(&from_bigint), R::from(value));
+        }
+    }
+
+    #[test]
+    fn only_values_wider_than_one_word_allocate_limbs() {
+        assert_eq!(size_of::<StoredInteger>(), 2 * size_of::<u64>());
+        for value in [0_i128, 1, -1, i128::from(i64::MAX), i128::from(i64::MIN)] {
+            let stored = StoredInteger::from(&value);
+            assert_eq!(stored.heap_bytes(), 0, "{value}");
+            assert_eq!(
+                StoredInteger::from(&R::from(value)).heap_bytes(),
+                0,
+                "{value}"
+            );
+        }
+        for value in [1_i128 << 63, -(1 << 63) - 1, 1 << 100, -(1 << 100)] {
+            let stored = StoredInteger::from(&value);
+            assert!(stored.words().len() >= 2, "{value}");
+            assert_eq!(stored.heap_bytes(), size_of_val(stored.words()), "{value}");
         }
     }
 
