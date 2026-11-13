@@ -630,7 +630,8 @@ fn merge_sorted_vecs<T>(
     merged
 }
 
-/// The capacity of a constraint ring, in the 64-bit limbs of a gadget's bound.
+/// The capacity of a constraint ring, in the 64-bit limbs of a gadget's signed
+/// two's-complement bound.
 ///
 /// [`ConstraintGenerator`] checks it against every gadget's `LIMBS` when the
 /// gadget is monomorphized, so a gadget wider than the ring fails to build
@@ -644,31 +645,32 @@ fn merge_sorted_vecs<T>(
 /// let bit = generator.input(0);
 /// let _ = generator.bitz::<2>(bit);
 /// ```
-pub trait LimbCapacity {
-    /// The largest `LIMBS` such that the ring holds every `64 * LIMBS`-bit
-    /// two's-complement integer; `usize::MAX` for an unbounded ring.
-    const MAX_LIMBS: usize;
+pub trait SignedLimbCapacity {
+    /// The largest `LIMBS` such that the ring holds every signed integer in
+    /// `[-2^(64 * LIMBS - 1), 2^(64 * LIMBS - 1))`, the sign taking one of the
+    /// `64 * LIMBS` bits; `usize::MAX` for an unbounded ring.
+    const MAX_SIGNED_LIMBS: usize;
 }
 
-/// Fails const evaluation unless `R` holds the integers of a `limbs`-limb
-/// gadget.
-const fn assert_capacity<R: LimbCapacity>(limbs: usize) {
+/// Fails const evaluation unless `R` holds the signed integers of a
+/// `limbs`-limb gadget.
+const fn assert_signed_limb_capacity<R: SignedLimbCapacity>(limbs: usize) {
     assert!(
-        limbs <= R::MAX_LIMBS,
+        limbs <= R::MAX_SIGNED_LIMBS,
         "the constraint ring is narrower than the gadget's limb bound"
     );
 }
 
-impl LimbCapacity for i64 {
-    const MAX_LIMBS: usize = 1;
+impl SignedLimbCapacity for i64 {
+    const MAX_SIGNED_LIMBS: usize = 1;
 }
 
-impl LimbCapacity for i128 {
-    const MAX_LIMBS: usize = 2;
+impl SignedLimbCapacity for i128 {
+    const MAX_SIGNED_LIMBS: usize = 2;
 }
 
-impl LimbCapacity for BigInt {
-    const MAX_LIMBS: usize = usize::MAX;
+impl SignedLimbCapacity for BigInt {
+    const MAX_SIGNED_LIMBS: usize = usize::MAX;
 }
 
 /// Circuit backend that records sparse M/A/B/C matrices without evaluating hints.
@@ -795,7 +797,7 @@ fn bool_sparse_row(value: BoolLinearCombination) -> SparseBoolRow {
 
 impl<R> Circuit for ConstraintGenerator<R>
 where
-    R: BitzConstraintRing + LimbCapacity,
+    R: BitzConstraintRing + SignedLimbCapacity,
 {
     type Bool = BoolLinearCombination;
     type Coefficient<const LIMBS: usize> = R;
@@ -821,7 +823,7 @@ where
             + Sync
             + 'static,
     {
-        const { assert_capacity::<R>(LIMBS) };
+        const { assert_signed_limb_capacity::<R>(LIMBS) };
         assert_eq!(M, N.div_ceil(64), "incorrect packed limb count");
         let first = self.next_boolean_witness;
         self.next_boolean_witness = self
@@ -834,7 +836,7 @@ where
     }
 
     fn bitz<const LIMBS: usize>(&mut self, value: BoolLinearCombination) -> LinearCombination<R> {
-        const { assert_capacity::<R>(LIMBS) };
+        const { assert_signed_limb_capacity::<R>(LIMBS) };
         LinearCombination::witness(self.record_bitz(value))
     }
 
@@ -842,7 +844,7 @@ where
         &mut self,
         bits_le: &ScalarBits<BoolLinearCombination, N>,
     ) -> (LinearCombination<R>, LinearCombination<R>) {
-        const { assert_capacity::<R>(LIMBS) };
+        const { assert_signed_limb_capacity::<R>(LIMBS) };
         assert!(LOW <= N, "low part cannot be wider than the input");
         // Same layout as the default, one `bitz` per bit with coefficient
         // 2^index, but each sum is built once with exact capacity.
@@ -868,7 +870,7 @@ where
         b: LinearCombination<R>,
         c: LinearCombination<R>,
     ) {
-        const { assert_capacity::<R>(LIMBS) };
+        const { assert_signed_limb_capacity::<R>(LIMBS) };
         self.r1cs.push((a, b, c));
     }
 
@@ -876,7 +878,7 @@ where
         &mut self,
         value: LinearCombination<R>,
     ) -> LinearCombination<R> {
-        const { assert_capacity::<R>(TO_LIMBS) };
+        const { assert_signed_limb_capacity::<R>(TO_LIMBS) };
         assert!(
             TO_LIMBS >= FROM_LIMBS,
             "cannot sign-extend into fewer limbs"

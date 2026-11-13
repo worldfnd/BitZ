@@ -2,7 +2,7 @@
 
 use crate::ProjectConstraint;
 use crate::end_to_end::{CircuitProofSystem, CircuitStatement, CircuitStats, Error};
-use circuit::constraints::LimbCapacity;
+use circuit::constraints::SignedLimbCapacity;
 use circuit::matrix_products::StoredInteger;
 use circuit::{BitWidth, IntoWords};
 use common::{BitzClaimField, BitzConstraintRing};
@@ -34,7 +34,7 @@ where
     S: CircuitStatement,
     F: BitzClaimField + FieldWithDynamicModulus,
     F::Integer: BitWidth + IntoWords,
-    R: BitzConstraintRing + LimbCapacity + for<'a> From<&'a StoredInteger>,
+    R: BitzConstraintRing + SignedLimbCapacity + for<'a> From<&'a StoredInteger>,
     for<'a> StoredInteger: From<&'a R>,
     Proj: ProjectConstraint<R, F>,
 {

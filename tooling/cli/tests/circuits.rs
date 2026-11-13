@@ -4,7 +4,7 @@ use bitz_cli::{
     end_to_end::{CircuitProofSystem, CircuitStatement, Error},
 };
 use circuit::{
-    constraints::{ConstraintGenerator, ConstraintMatrices, LimbCapacity},
+    constraints::{ConstraintGenerator, ConstraintMatrices, SignedLimbCapacity},
     sha256::{ABC_BLOCK, ABC_DIGEST, INITIAL_STATE},
 };
 use common::BitzConstraintRing;
@@ -19,7 +19,7 @@ type Proj = ProjectI64ToField;
 
 fn synthesize<C>(statement: &CircuitInstance) -> ConstraintMatrices<C>
 where
-    C: BitzConstraintRing + LimbCapacity,
+    C: BitzConstraintRing + SignedLimbCapacity,
 {
     let mut generator = ConstraintGenerator::<C>::new(statement.input_bits());
     let inputs: Vec<_> = (0..statement.input_bits())

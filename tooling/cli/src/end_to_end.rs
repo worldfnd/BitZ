@@ -7,7 +7,7 @@
 use circuit::matrix_products::StoredInteger;
 use circuit::{
     BitWidth, Circuit, IntoWords,
-    constraints::{ConstraintGenerator, ConstraintMatrices, LimbCapacity, SparseBoolMatrix},
+    constraints::{ConstraintGenerator, ConstraintMatrices, SignedLimbCapacity, SparseBoolMatrix},
     matrix_products::IntegerProducts,
     matrix_transpose::{MTransposeGenerator, MaterializedMTranspose},
     witgen::{PackedWitness, ProductWitgen},
@@ -152,7 +152,7 @@ where
     S: CircuitStatement,
     F: BitzClaimField + FieldWithDynamicModulus,
     F::Integer: BitWidth + IntoWords,
-    R: BitzConstraintRing + LimbCapacity + for<'a> From<&'a StoredInteger>,
+    R: BitzConstraintRing + SignedLimbCapacity + for<'a> From<&'a StoredInteger>,
     for<'a> StoredInteger: From<&'a R>,
     Proj: ProjectConstraint<R, F>,
 {
