@@ -14,16 +14,16 @@ const CUBIC_GRINDING_LABEL: &[u8] = b"gkr/cubic/v1";
 ///
 /// Points are little-endian, as in `poly`'s tables: `point[i]` is the
 /// coordinate of index bit `i`. Every layer adds one coordinate, at the top.
-// TODO #[must_use], requires changing the test suite
+#[must_use]
 #[tracing::instrument(name = "Prove GKR", skip_all)]
 pub fn gpgkr_prove(
     ps: &mut ProverState,
-    point: &[F128],
+    point: &[Field],
     // Every layer below the output: layer 3 and up in full, layers 0 to 2 in
     // their lookup tables.
     witnesses: LayerWitnesses,
     security: SecurityLevel,
-) -> (Vec<F128>, Field) {
+) -> (Vec<Field>, Field) {
     let mut point = point.to_owned();
     let LayerWitnesses {
         lut_layers,
@@ -638,7 +638,7 @@ impl<'a> EqTables<'a> {
         let needed = (1usize << point.len()).saturating_sub(1).max(1);
         assert!(storage.len() >= needed);
 
-        storage[0] = F128::ONE;
+        storage[0] = Field::ONE;
         let (mut prev, mut remaining) = storage.split_at_mut(1);
         // Round `i` reads only the coordinates below `i`, so the top one
         // never enters a table.
@@ -682,10 +682,10 @@ const PARALLEL_MIN_LANES: usize = 1 << 12;
 pub fn gpgkr_verify(
     vs: &mut VerifierState,
     mut claim: Field,
-    point: &[F128],
-    layers: u32,
+    point: &[Field],
+    layers: usize,
     security: SecurityLevel,
-) -> Option<(Vec<F128>, Field)> {
+) -> Option<(Vec<Field>, Field)> {
     // Edge cases around input lenghts, 0 meaning empty
     // | circuit | last value |
     //    0 0 -> valid, no circuit has no output
@@ -748,11 +748,11 @@ fn verify_layer(
 
 pub struct GrandProductCircuit<'a> {
     matrix: BitMatrix<'static>,
-    images: &'a [F128],
+    images: &'a [Field],
 }
 
 impl<'a> GrandProductCircuit<'a> {
-    pub fn new(row_images: &'a [F128], bittable: &BitTable) -> GrandProductCircuit<'a> {
+    pub fn new(row_images: &'a [Field], bittable: &BitTable) -> GrandProductCircuit<'a> {
         assert_eq!(
             row_images.len(),
             bittable.shape().rows(),
@@ -1122,7 +1122,7 @@ mod tests {
         let table = table(shape, &packed);
         let leaves = leaves(&table, &row_images);
         let s = shape.log_columns();
-        let layers = shape.log_rows() as u32;
+        let layers = shape.log_rows();
 
         // `value` at coordinate `i`, and a nonzero value at every other.
         let nonzero = Field::from(5u128);
@@ -1286,7 +1286,8 @@ mod tests {
             .map(|_| prover.verifier_message())
             .collect();
 
-        gpgkr_prove(&mut prover, &point, witnesses, security);
+        // `verify` checks the terminal claim against the leaves itself.
+        let _terminal = gpgkr_prove(&mut prover, &point, witnesses, security);
         (output, prover.finish())
     }
 
@@ -1305,7 +1306,7 @@ mod tests {
             .map(|_| verifier.verifier_message())
             .collect();
         let claim = mle(output.to_vec(), &point);
-        let layers = leaves.len().ilog2() - output.len().ilog2();
+        let layers = (leaves.len().ilog2() - output.len().ilog2()) as usize;
 
         match gpgkr_verify(&mut verifier, claim, &point, layers, security) {
             Some((point, claim)) => {

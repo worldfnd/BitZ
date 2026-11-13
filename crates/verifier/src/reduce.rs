@@ -28,12 +28,12 @@ pub(crate) fn gkr_reduce(
     security: SecurityLevel,
 ) -> Result<OpeningQuery, ReduceError> {
     // Each layer halves the row count, leaving one product per column.
-    let r1 = fold.row_images.len().max(1).ilog2();
+    let r1 = fold.row_images.len().max(1).ilog2() as usize;
 
     let (point, mle_leaf_claim) =
         gkr::gpgkr_verify(transcript, fold.e0, &fold.zeta, r1, security).ok_or(ReduceError::GKR)?;
 
-    let r2 = point.len() - r1 as usize;
+    let r2 = point.len() - r1;
     // Columns occupy the low index bits of the GKR leaf table.
     let alfa_b = &point[r2..];
 
