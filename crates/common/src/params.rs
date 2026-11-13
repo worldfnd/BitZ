@@ -17,9 +17,11 @@ pub enum ParamsError {
     /// Not a protocol bound: it flowed up from the prover's transpose, when
     /// `bit_transpose` in `crates/common/src/matrix.rs` moved only whole
     /// `128 x 128` blocks. It now drops to narrower words, and the GKR
-    /// relayout transposes `4 * columns` by `rows / 4` bits, so the prover
-    /// itself only needs `s >= 1`. This gate is stricter than that until it
-    /// is revisited.
+    /// relayout transposes `4 * columns` by `rows / 4` bits, which needs only
+    /// `s >= 1`. GKR's lookup tables set the prover's floor at `s >= 4`:
+    /// round 1 reads a lookup table's nibbles, one per column, a `u64` at a
+    /// time (`LutLayers::new` in `crates/gkr/src/lib.rs`). This gate is
+    /// stricter than that until it is revisited.
     ColumnCountTooNarrow,
     /// `(k_1 + 1)(Q - 1)` reaches `ord(g)`, so a sent fold and the honest
     /// exponent could collide in the exponent.

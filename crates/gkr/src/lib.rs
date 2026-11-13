@@ -798,6 +798,10 @@ impl<'a> GrandProductCircuit<'a> {
     ///
     /// Layers 0 to 2 stay as lookup tables, layer 3 is the first one built in
     /// full, and the layers above it fold as usual.
+    ///
+    /// # Panics
+    ///
+    /// If the matrix has fewer than 16 trees (`s < 4`)
     #[tracing::instrument(name = "Evaluate grand-product circuit", level = "debug", skip_all)]
     pub fn batched_eval(self) -> (Vec<Field>, LayerWitnesses) {
         let lut_layers = LutLayers::new(self.matrix, lower_luts(self.images));

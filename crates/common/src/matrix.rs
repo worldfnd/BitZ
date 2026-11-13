@@ -226,13 +226,11 @@ fn transpose_bit_block<W: BlockWord, const N: usize>(a: &mut [W; N]) {
 
 /// Bit-at-a-time transpose of `GS` equal segments of `tt`: output bit `i`
 /// is bit `i / GS` of segment `i % GS`. The oracle [`bit_transpose`] is
-/// checked (and benchmarked) against.
-#[cfg(any(test, feature = "bench"))]
+/// checked against.
+#[cfg(test)]
 fn transpose_reference<const GS: usize>(tt: &[Word]) -> Vec<Word> {
     assert_eq!(tt.len() % GS, 0);
     let segment_n = tt.len() / GS;
-    // On the heap: the benchmark's `GS` is `2^20`, too many iterators for the
-    // stack.
     let mut segments: Vec<_> = (0..GS)
         .map(|i| BitsIter::new(tt[i * segment_n..(i + 1) * segment_n].iter()))
         .collect();
@@ -256,19 +254,6 @@ fn transpose_reference<const GS: usize>(tt: &[Word]) -> Vec<Word> {
     debug_assert_eq!(offset, 0);
 
     out
-}
-
-/// Benchmark-only access to the private transposes; see `benches/matrix.rs`.
-#[cfg(feature = "bench")]
-#[doc(hidden)]
-pub mod bench {
-    pub fn bit_transpose(xs: &[super::Word], dim1: usize, dim2: usize) -> Vec<super::Word> {
-        super::bit_transpose(xs, dim1, dim2)
-    }
-
-    pub fn transpose_reference<const GS: usize>(tt: &[super::Word]) -> Vec<super::Word> {
-        super::transpose_reference::<GS>(tt)
-    }
 }
 
 pub type BitsIter<'a> = StepIter<'a, 1>;
