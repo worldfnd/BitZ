@@ -5,13 +5,12 @@
 //! is the implicit integer constant one. `A`, `B`, and `C` then encode the
 //! rank-1 constraints `(A z) * (B z) = C z` over that integer witness. Every
 //! integer coefficient lives in the caller's signed [`BitzConstraintRing`],
-//! which must hold the circuit's widest coefficient: the generator does not
-//! check it, so a narrower ring panics on overflow in debug and wraps in
-//! release.
+//! which must hold the circuit's widest coefficient.
 
 use crate::witgen::PackedWitness;
 use crate::{BoolWitness, Circuit, HintResult, PackedBits, ScalarBits, WitnessContext};
 use common::{BitzConstraintRing, BitzSemiring};
+use num_bigint::BigInt;
 use num_traits::Zero;
 use rayon::prelude::*;
 use std::array;
@@ -631,6 +630,47 @@ fn merge_sorted_vecs<T>(
     merged
 }
 
+/// The capacity of a constraint ring, in the 64-bit limbs of a gadget's bound.
+///
+/// [`ConstraintGenerator`] checks it against every gadget's `LIMBS` when the
+/// gadget is monomorphized, so a gadget wider than the ring fails to build
+/// (`cargo check` does not monomorphize):
+///
+/// ```compile_fail,E0080
+/// use circuit::Circuit;
+/// use circuit::constraints::ConstraintGenerator;
+///
+/// let mut generator = ConstraintGenerator::<i64>::new(1);
+/// let bit = generator.input(0);
+/// let _ = generator.bitz::<2>(bit);
+/// ```
+pub trait LimbCapacity {
+    /// The largest `LIMBS` such that the ring holds every `64 * LIMBS`-bit
+    /// two's-complement integer; `usize::MAX` for an unbounded ring.
+    const MAX_LIMBS: usize;
+}
+
+/// Fails const evaluation unless `R` holds the integers of a `limbs`-limb
+/// gadget.
+const fn assert_capacity<R: LimbCapacity>(limbs: usize) {
+    assert!(
+        limbs <= R::MAX_LIMBS,
+        "the constraint ring is narrower than the gadget's limb bound"
+    );
+}
+
+impl LimbCapacity for i64 {
+    const MAX_LIMBS: usize = 1;
+}
+
+impl LimbCapacity for i128 {
+    const MAX_LIMBS: usize = 2;
+}
+
+impl LimbCapacity for BigInt {
+    const MAX_LIMBS: usize = usize::MAX;
+}
+
 /// Circuit backend that records sparse M/A/B/C matrices without evaluating hints.
 #[derive(Clone, Debug)]
 pub struct ConstraintGenerator<R> {
@@ -753,7 +793,10 @@ fn bool_sparse_row(value: BoolLinearCombination) -> SparseBoolRow {
     }
 }
 
-impl<R: BitzConstraintRing> Circuit for ConstraintGenerator<R> {
+impl<R> Circuit for ConstraintGenerator<R>
+where
+    R: BitzConstraintRing + LimbCapacity,
+{
     type Bool = BoolLinearCombination;
     type Coefficient<const LIMBS: usize> = R;
     type Z<const LIMBS: usize> = LinearCombination<R>;
@@ -778,6 +821,7 @@ impl<R: BitzConstraintRing> Circuit for ConstraintGenerator<R> {
             + Sync
             + 'static,
     {
+        const { assert_capacity::<R>(LIMBS) };
         assert_eq!(M, N.div_ceil(64), "incorrect packed limb count");
         let first = self.next_boolean_witness;
         self.next_boolean_witness = self
@@ -790,6 +834,7 @@ impl<R: BitzConstraintRing> Circuit for ConstraintGenerator<R> {
     }
 
     fn bitz<const LIMBS: usize>(&mut self, value: BoolLinearCombination) -> LinearCombination<R> {
+        const { assert_capacity::<R>(LIMBS) };
         LinearCombination::witness(self.record_bitz(value))
     }
 
@@ -797,6 +842,7 @@ impl<R: BitzConstraintRing> Circuit for ConstraintGenerator<R> {
         &mut self,
         bits_le: &ScalarBits<BoolLinearCombination, N>,
     ) -> (LinearCombination<R>, LinearCombination<R>) {
+        const { assert_capacity::<R>(LIMBS) };
         assert!(LOW <= N, "low part cannot be wider than the input");
         // Same layout as the default, one `bitz` per bit with coefficient
         // 2^index, but each sum is built once with exact capacity.
@@ -822,6 +868,7 @@ impl<R: BitzConstraintRing> Circuit for ConstraintGenerator<R> {
         b: LinearCombination<R>,
         c: LinearCombination<R>,
     ) {
+        const { assert_capacity::<R>(LIMBS) };
         self.r1cs.push((a, b, c));
     }
 
@@ -829,6 +876,7 @@ impl<R: BitzConstraintRing> Circuit for ConstraintGenerator<R> {
         &mut self,
         value: LinearCombination<R>,
     ) -> LinearCombination<R> {
+        const { assert_capacity::<R>(TO_LIMBS) };
         assert!(
             TO_LIMBS >= FROM_LIMBS,
             "cannot sign-extend into fewer limbs"
@@ -919,8 +967,8 @@ mod tests {
         }
     }
 
-    /// The guard on a ring narrower than the circuit's coefficients: the dev
-    /// profile's overflow checks. Release wraps instead.
+    /// The guard on a gadget exceeding its own limb bound: the dev profile's
+    /// overflow checks. Release wraps instead.
     #[test]
     #[cfg(debug_assertions)]
     #[should_panic(expected = "overflow")]
