@@ -419,7 +419,8 @@ fn round_one_sums<const LAYER: usize, const AT_ONE: bool>(
     match LAYER {
         LEAVES => bucket_sums(lut_layers, eq_tables, point, leaf_buckets::<AT_ONE>),
         LAYER1 => bucket_sums(lut_layers, eq_tables, point, layer1_buckets::<AT_ONE>),
-        _ => layer2_sums::<LAYER, AT_ONE>(lut_layers, eq_tables.below(point.len() - 1)),
+        LAYER2 => layer2_sums::<AT_ONE>(lut_layers, eq_tables.below(point.len() - 1)),
+        _ => unreachable!("layers 0 to 2 are the LUT-backed ones"),
     }
 }
 
@@ -527,24 +528,21 @@ fn dot(bucket: &[Field; 16], value: &[Field; 16]) -> Wide256 {
         .fold(Wide256::zero(), |acc, (&b, &v)| acc + Wide256::mul(b, v))
 }
 
-/// Round 1's sums node by node, as [`round_sums`] forms them, with the
-/// operands read from the lookup tables.
-fn layer2_sums<const LAYER: usize, const AT_ONE: bool>(
-    lut_layers: &LutLayers,
-    eq: &[Field],
-) -> (Wide256, Wide256) {
+/// Round 1's sums for layer 2, node by node, as [`round_sums`] forms them,
+/// with the operands read from the lookup tables.
+fn layer2_sums<const AT_ONE: bool>(lut_layers: &LutLayers, eq: &[Field]) -> (Wide256, Wide256) {
     let at = |v0: Field, v1: Field| if AT_ONE { v1 } else { v0 };
     let half = eq.len();
     lut_layers
         .pieces(half)
         .map(|positions| {
-            let (luts, pairs) = lut_layers.pairs::<LAYER>(positions.clone());
+            let (luts, pairs) = lut_layers.pairs::<LAYER2>(positions.clone());
             let eq = eq[positions].chunks_exact(NIBBLES_IN_WORD);
             pairs
                 .zip(eq)
                 .fold((Wide256::zero(), Wide256::zero()), |sums, (word, eq)| {
                     word.zip(eq).fold(sums, |(sum_b, sum_inf), (n, &e)| {
-                        let [l0, l1, r0, r1] = operands::<LAYER>(&luts, n);
+                        let [l0, l1, r0, r1] = operands::<LAYER2>(&luts, n);
                         (
                             sum_b + Wide256::mul(e * at(l0, l1), at(r0, r1)),
                             sum_inf + Wide256::mul(e * (l1 - l0), r1 - r0),
