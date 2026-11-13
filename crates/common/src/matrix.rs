@@ -291,7 +291,7 @@ impl<'a, const S: usize> StepIter<'a, S> {
         "step size must be nonzero, at most 64, and divide 64 evenly"
     );
     const MASK: u64 = 1u64.unbounded_shl(S as u32).wrapping_sub(1);
-    fn new(iter: Iter<'a, Word>) -> Self {
+    pub fn new(iter: Iter<'a, Word>) -> Self {
         let () = Self::CHECK_SIZE;
         // On a little-endian target, bit `i` of the words is bit `i` of the
         // `u64`s too.

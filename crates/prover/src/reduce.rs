@@ -34,8 +34,8 @@ pub fn gkr_reduce(
     // The multilinear extension of the constant-one table is one at every point.
     let inner_product_claim = claim - F128::ONE;
 
-    let r1 = fold.row_images.len().max(1).ilog2();
-    let r2 = point.len() - r1 as usize;
+    let r1 = fold.row_images.len().max(1).ilog2() as usize;
+    let r2 = point.len() - r1;
     // GKR returns coordinates in low-index-bit-first order: columns, then rows.
     let alfa_b = point.split_off(r2);
     let alfa_c = point;

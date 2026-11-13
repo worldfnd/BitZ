@@ -113,8 +113,8 @@ mod round_trip_ai_test {
         let proof = prover.finish();
 
         // Derive the expected factors from the prover's terminal point.
-        let r1 = row_images.len().max(1).ilog2();
-        let r2 = point.len() - r1 as usize;
+        let r1 = row_images.len().max(1).ilog2() as usize;
+        let r2 = point.len() - r1;
         let expected_alfa_b = point.split_off(r2);
         let expected_u1: Vec<F128> = row_images
             .iter()

@@ -43,7 +43,7 @@ pub fn gpgkr_prove(
     );
     // The leaves' sumcheck has the largest point, a coordinate per index bit
     // of its parent, layer 1.
-    let mut eq_memory = EqTables::alloc_storage(lut_layers.layer1_nodes());
+    let mut eq_memory = EqTables::alloc_storage(lut_layers.nodes::<LAYER1>());
     for children in upper_nodes.into_iter().rev() {
         (point, _) = prove_layer(ps, &mut eq_memory, &point, children, security);
     }
@@ -51,7 +51,7 @@ pub fn gpgkr_prove(
     // Layers 2, 1 and 0 stay in their lookup tables. Round 1 of each writes the
     // children it has bound, `[left′ | right′]`, into one allocation sized
     // for the leaves': round 1 halves them to as many as layer 1 has nodes.
-    let mut bound_children = Field::zeroed_vec(lut_layers.layer1_nodes());
+    let mut bound_children = Field::zeroed_vec(lut_layers.nodes::<LAYER1>());
     let (point, _) = prove_lut_layer::<LAYER2>(
         ps,
         &mut eq_memory,
@@ -293,16 +293,11 @@ impl LutLayers {
         bytemuck::cast_slice(&self.matrix[..])
     }
 
-    /// The layer-1 nodes, two per nibble: the parent layer of the leaves'
-    /// sumcheck, the largest of the layers proved here.
-    fn layer1_nodes(&self) -> usize {
-        2 * self.words().len() * NIBBLES_IN_WORD
-    }
-
-    /// Round 1's positions in the sumcheck whose children are layer `LAYER`:
-    /// half the nodes of its parent.
-    fn round_one_positions<const LAYER: usize>(&self) -> usize {
-        self.layer1_nodes() >> (LAYER + 1)
+    /// The nodes of layer `LAYER`: one per nibble in layer 2, twice as many
+    /// in each layer below it.
+    fn nodes<const LAYER: usize>(&self) -> usize {
+        const { assert!(LAYER <= LAYER2, "layers 0 to 2 are the LUT-backed ones") };
+        (self.words().len() * NIBBLES_IN_WORD) << (LAYER2 - LAYER)
     }
 
     /// The positions of round 1 handled as one piece: a lookup table's run,
@@ -329,7 +324,7 @@ impl LutLayers {
     ///
     /// Round 1 binds the top bit of the parent's index, so each node pairs
     /// with its partner `stride` nodes later, where `stride` is the number of
-    /// round-1 positions, [`LutLayers::round_one_positions`]:
+    /// round-1 positions, half the parent's nodes:
     /// - Layer 2: a nibble is one node. The left pair is nibbles `k` and
     ///   `k + stride`, and the right pair the two half the layer on,
     ///   `k + 2·stride` and `k + 3·stride`.
@@ -350,7 +345,8 @@ impl LutLayers {
         [&[Field; 16]; 4],
         impl Iterator<Item = impl Iterator<Item = [usize; 4]>> + '_,
     ) {
-        let stride = self.round_one_positions::<LAYER>();
+        // Half the parent's nodes, which are half the layer's.
+        let stride = self.nodes::<LAYER>() / 4;
         let (words, len) = (self.words(), positions.len() / NIBBLES_IN_WORD);
         let at = STREAM[LAYER].map(|q| positions.start + q * stride);
         let luts = at.map(|k| &self.luts[k >> self.log_trees]);
@@ -679,10 +675,11 @@ impl<'a> EqTables<'a> {
     /// Room for every table of a sumcheck whose parent layer has up to
     /// `nodes` nodes, allocated once for all layers. Its point has a
     /// coordinate per index bit of the parent, so the tables take
-    /// `nodes - 1` entries. All the tables in one buffer take as much space
-    /// as a double buffer would.
+    /// `nodes - 1` entries, and never fewer than the one of an empty point,
+    /// which [`EqTables::new`] always writes. All the tables in one buffer
+    /// take as much space as a double buffer would.
     fn alloc_storage(nodes: usize) -> Vec<Field> {
-        Field::zeroed_vec(nodes)
+        Field::zeroed_vec(nodes.max(1))
     }
 }
 
@@ -866,8 +863,7 @@ fn lower_luts(images: &[Field]) -> Vec<[Field; 16]> {
 /// Those are the two nibbles that round 1 of layer 1 reads at position `k`,
 /// here read whole.
 fn layer3(lut_layers: &LutLayers) -> Vec<Field> {
-    // Half of layer 2, a quarter of layer 1.
-    let half = lut_layers.layer1_nodes() / 4;
+    let half = lut_layers.nodes::<LAYER2>() / 2;
     let mut layer3 = Field::zeroed_vec(half);
     layer3
         .par_chunks_mut(lut_layers.piece())
@@ -922,6 +918,7 @@ pub struct LayerWitnesses {
 mod tests {
     use super::*;
     use common::SecurityLevel::{Bits100, Bits128};
+    use common::shape::{MIN_LOG_BITS, PACK_BITS};
     use common::{BitZParams, Shape};
     use field::gf128::smallest_generator;
     use proptest::prelude::*;
@@ -995,8 +992,9 @@ mod tests {
     /// Small enough that `BitZParams` accepts every shape below.
     const Q: u128 = (1 << 100) - 15;
 
-    /// The smallest shape the gates accept, `(t, s)` with `t + s = 22`.
-    const SMALLEST: (usize, usize) = (7, 15);
+    /// The smallest shape the gates accept, `(t, s)`: the narrowest `t` at
+    /// the smallest total.
+    const SMALLEST: (usize, usize) = (PACK_BITS as usize, MIN_LOG_BITS - PACK_BITS as usize);
 
     /// How the bits of a test table are set.
     #[derive(Clone, Copy, Debug)]
@@ -1174,9 +1172,10 @@ mod tests {
     }
 
     /// Proves the smallest shape from a point of `len(s)` coordinates, `s`
-    /// being the tree bits.
+    /// being the tree bits. The bits are left clear: the point's length is
+    /// checked before any of them is read.
     fn prove_from_point(len: fn(usize) -> usize) {
-        let (shape, packed, row_images) = instance(SMALLEST, Bits::Drawn, 1);
+        let (shape, packed, row_images) = instance(SMALLEST, Bits::Clear, 1);
         let table = table(shape, &packed);
         let (_, witnesses) = GrandProductCircuit::new(&row_images, &table).batched_eval();
         let point = vec![Field::from(5u128); len(shape.log_columns())];
@@ -1207,8 +1206,8 @@ mod tests {
         let (_, layers) = fold_layers(leaves(&table, &row_images), shape.columns());
         let (_, witnesses) = GrandProductCircuit::new(&row_images, &table).batched_eval();
         let lut_layers = witnesses.lut_layers;
-        let mut bound_children = Field::zeroed_vec(lut_layers.layer1_nodes());
-        let mut eq_memory = EqTables::alloc_storage(lut_layers.layer1_nodes());
+        let mut bound_children = Field::zeroed_vec(lut_layers.nodes::<LAYER1>());
+        let mut eq_memory = EqTables::alloc_storage(lut_layers.nodes::<LAYER1>());
 
         let mut draws = stream(5);
         for layer in [LEAVES, LAYER1, LAYER2] {
@@ -1313,7 +1312,7 @@ mod tests {
     ) -> (Vec<Field>, transcript::Proof) {
         let (output, witnesses) = GrandProductCircuit::new(row_images, table).batched_eval();
 
-        // TODO instance is a bit loose.
+        // TODO instance is a bit loose and should be replaced by PCS
         let instance = (output.clone(), 1u128 << table.shape().log_bits());
         let mut prover = transcript::build_prover("gkr", &instance);
 
