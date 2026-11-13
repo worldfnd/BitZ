@@ -18,7 +18,6 @@ const CUBIC_GRINDING_LABEL: &[u8] = b"gkr/cubic/v1";
 #[tracing::instrument(name = "Prove GKR", skip_all)]
 pub fn gpgkr_prove(
     ps: &mut ProverState,
-    log_bits: usize,
     point: &[F128],
     // Every layer below the output: layer 3 and up in full, layers 0 to 2 in
     // their lookup tables.
@@ -26,20 +25,21 @@ pub fn gpgkr_prove(
     security: SecurityLevel,
 ) -> (Vec<F128>, Field) {
     let mut point = point.to_owned();
-    let mut eq_memory = EqTables::alloc_storage(log_bits);
     let LayerWitnesses {
         lut_layers,
         upper_nodes,
     } = witnesses;
+    // The leaves' sumcheck has the largest point, a coordinate per index bit
+    // of its parent, layer 1.
+    let mut eq_memory = EqTables::alloc_storage(lut_layers.layer1_nodes());
     for children in upper_nodes.into_iter().rev() {
         (point, _) = prove_layer(ps, &mut eq_memory, &point, children, security);
     }
 
     // Layers 2, 1 and 0 stay in their lookup tables. Round 1 of each writes the
     // children it has bound, `[left′ | right′]`, into one allocation sized
-    // for the leaves'.
-    // number of nodes at the leaf level is lut_layer.nodes() * 4. We only need half of that since we materialise after round 1.
-    let mut bound_children = Field::zeroed_vec(2 * lut_layers.nodes());
+    // for the leaves': round 1 halves them to as many as layer 1 has nodes.
+    let mut bound_children = Field::zeroed_vec(lut_layers.layer1_nodes());
     let (point, _) = prove_lut_layer::<LAYER2>(
         ps,
         &mut eq_memory,
@@ -281,9 +281,10 @@ impl LutLayers {
         bytemuck::cast_slice(&self.matrix[..])
     }
 
-    /// The layer-2 nodes, one per nibble.
-    fn nodes(&self) -> usize {
-        self.words().len() * NIBBLES_IN_WORD
+    /// The layer-1 nodes, two per nibble: the parent layer of the leaves'
+    /// sumcheck, the largest of the layers proved here.
+    fn layer1_nodes(&self) -> usize {
+        2 * self.words().len() * NIBBLES_IN_WORD
     }
 
     /// The positions of round 1 handled as one piece: a lookup table's run,
@@ -661,11 +662,13 @@ impl<'a> EqTables<'a> {
         EqTables { storage }
     }
 
-    /// Room for every table of a point of up to `log_bits - 1` coordinates,
-    /// the leaves' sumcheck's, allocated once for all layers. All the tables
-    /// in one buffer take as much space as a double buffer would.
-    fn alloc_storage(log_bits: usize) -> Vec<Field> {
-        Field::zeroed_vec(1 << (log_bits.saturating_sub(1)).max(1))
+    /// Room for every table of a sumcheck whose parent layer has up to
+    /// `nodes` nodes, allocated once for all layers. Its point has a
+    /// coordinate per index bit of the parent, so the tables take
+    /// `nodes - 1` entries. All the tables in one buffer take as much space
+    /// as a double buffer would.
+    fn alloc_storage(nodes: usize) -> Vec<Field> {
+        Field::zeroed_vec(nodes)
     }
 }
 
@@ -849,7 +852,8 @@ fn lower_luts(images: &[Field]) -> Vec<[Field; 16]> {
 /// Those are the two nibbles that round 1 of layer 1 reads at position `k`,
 /// here read whole.
 fn layer3(lut_layers: &LutLayers) -> Vec<Field> {
-    let half = lut_layers.nodes() / 2;
+    // Half of layer 2, a quarter of layer 1.
+    let half = lut_layers.layer1_nodes() / 4;
     let mut layer3 = Field::zeroed_vec(half);
     layer3
         .par_chunks_mut(lut_layers.piece())
@@ -1137,7 +1141,7 @@ mod tests {
             let (output, witnesses) = GrandProductCircuit::new(&row_images, &table).batched_eval();
             let claim = mle(output, &point);
             let mut prover = transcript::build_prover("gkr-zero", &point);
-            let terminal = gpgkr_prove(&mut prover, shape.log_bits(), &point, witnesses, Bits100);
+            let terminal = gpgkr_prove(&mut prover, &point, witnesses, Bits100);
             assert_eq!(terminal.1, mle(leaves.clone(), &terminal.0));
             let proof = prover.finish();
 
@@ -1166,8 +1170,8 @@ mod tests {
         let (_, layers) = fold_layers(leaves(&table, &row_images), shape.columns());
         let (_, witnesses) = GrandProductCircuit::new(&row_images, &table).batched_eval();
         let lut_layers = witnesses.lut_layers;
-        let mut bound_children = Field::zeroed_vec(2 * lut_layers.nodes());
-        let mut eq_memory = EqTables::alloc_storage(shape.log_bits());
+        let mut bound_children = Field::zeroed_vec(lut_layers.layer1_nodes());
+        let mut eq_memory = EqTables::alloc_storage(lut_layers.layer1_nodes());
 
         let mut draws = stream(5);
         for layer in [LEAVES, LAYER1, LAYER2] {
@@ -1271,10 +1275,9 @@ mod tests {
         security: SecurityLevel,
     ) -> (Vec<Field>, transcript::Proof) {
         let (output, witnesses) = GrandProductCircuit::new(row_images, table).batched_eval();
-        let log_bits = table.shape().log_bits();
 
-        // TODO instance is a bit loose and should be replaced by PCS
-        let instance = (output.clone(), 1u128 << log_bits);
+        // TODO instance is a bit loose.
+        let instance = (output.clone(), 1u128 << table.shape().log_bits());
         let mut prover = transcript::build_prover("gkr", &instance);
 
         // Mirrors `verify`, since both sides must draw the same number of
@@ -1283,7 +1286,7 @@ mod tests {
             .map(|_| prover.verifier_message())
             .collect();
 
-        gpgkr_prove(&mut prover, log_bits, &point, witnesses, security);
+        gpgkr_prove(&mut prover, &point, witnesses, security);
         (output, prover.finish())
     }
 
