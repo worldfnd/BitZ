@@ -771,47 +771,34 @@ fn verify_layer(
     Some((next_point, interpolate(left_r, right_r, t)))
 }
 
-pub struct GrandProductCircuit<'a> {
-    matrix: BitMatrix<'a>,
-    images: &'a [Field],
-}
+/// Returns the output layer, the product of each column of the table, and
+/// the witnesses of the layers below it.
+///
+/// Layers 0 to 2 stay as lookup tables, layer 3 is the first one built in
+/// full, and the layers above it fold as usual.
+///
+/// # Panics
+///
+/// If `row_images` does not have one image per row of `bittable`, or the
+/// table has fewer than 16 trees (`s < 4`).
+#[tracing::instrument(name = "Evaluate grand-product circuit", level = "debug", skip_all)]
+pub fn grand_product(row_images: &[Field], bittable: &BitTable) -> (Vec<Field>, LayerWitnesses) {
+    assert_eq!(
+        row_images.len(),
+        bittable.shape().rows(),
+        "one image per row of the table"
+    );
+    let lut_layers = LutLayers::new(bittable.as_matrix(), row_images);
+    let layer3 = layer3(&lut_layers);
+    let (output, upper_nodes) = fold_layers(layer3, 1 << lut_layers.log_trees);
 
-impl<'a> GrandProductCircuit<'a> {
-    pub fn new(row_images: &'a [Field], bittable: &BitTable<'a>) -> GrandProductCircuit<'a> {
-        assert_eq!(
-            row_images.len(),
-            bittable.shape().rows(),
-            "one image per row of the table"
-        );
-        Self {
-            matrix: bittable.as_matrix(),
-            images: row_images,
-        }
-    }
-
-    /// Returns the output layer, the product of each column of the table, and
-    /// the witnesses of the layers below it.
-    ///
-    /// Layers 0 to 2 stay as lookup tables, layer 3 is the first one built in
-    /// full, and the layers above it fold as usual.
-    ///
-    /// # Panics
-    ///
-    /// If the matrix has fewer than 16 trees (`s < 4`)
-    #[tracing::instrument(name = "Evaluate grand-product circuit", level = "debug", skip_all)]
-    pub fn batched_eval(self) -> (Vec<Field>, LayerWitnesses) {
-        let lut_layers = LutLayers::new(self.matrix, self.images);
-        let layer3 = layer3(&lut_layers);
-        let (output, upper_nodes) = fold_layers(layer3, 1 << lut_layers.log_trees);
-
-        (
-            output,
-            LayerWitnesses {
-                lut_layers,
-                upper_nodes,
-            },
-        )
-    }
+    (
+        output,
+        LayerWitnesses {
+            lut_layers,
+            upper_nodes,
+        },
+    )
 }
 
 const NIBBLE_BITS: usize = 4;
@@ -1134,7 +1121,7 @@ mod tests {
             with(s - 1, Field::ONE),
             with(0, Field::ONE),
         ] {
-            let (output, witnesses) = GrandProductCircuit::new(&row_images, &table).batched_eval();
+            let (output, witnesses) = grand_product(&row_images, &table);
             let claim = mle(&output, &point);
             let mut prover = transcript::build_prover("gkr-zero", &point);
             let terminal = gpgkr_prove(&mut prover, &point, witnesses, Bits100);
@@ -1161,7 +1148,7 @@ mod tests {
     fn prove_from_point(len: fn(usize) -> usize) {
         let (shape, packed, row_images) = instance(SMALLEST, Bits::Clear, 1);
         let table = table(shape, &packed);
-        let (_, witnesses) = GrandProductCircuit::new(&row_images, &table).batched_eval();
+        let (_, witnesses) = grand_product(&row_images, &table);
         let point = vec![Field::from(5u128); len(shape.log_columns())];
         let mut prover = transcript::build_prover("gkr-point", &point);
         let _ = gpgkr_prove(&mut prover, &point, witnesses, Bits100);
@@ -1188,7 +1175,7 @@ mod tests {
         let table = table(shape, &packed);
         // The leaves and every layer above, built one leaf at a time.
         let (_, layers) = fold_layers(leaves(&table, &row_images), shape.columns());
-        let (_, witnesses) = GrandProductCircuit::new(&row_images, &table).batched_eval();
+        let (_, witnesses) = grand_product(&row_images, &table);
         let lut_layers = witnesses.lut_layers;
         let mut bound_children = Field::zeroed_vec(lut_layers.nodes::<LAYER1>());
         let mut eq_memory = EqTables::alloc_storage(lut_layers.nodes::<LAYER1>());
@@ -1256,7 +1243,7 @@ mod tests {
             let (expected_output, expected_layers) =
                 fold_layers(leaves(&table, &row_images), shape.columns());
 
-            let (output, witnesses) = GrandProductCircuit::new(&row_images, &table).batched_eval();
+            let (output, witnesses) = grand_product(&row_images, &table);
             // Both start at layer 3: the reference after its first three.
             let (layers, expected_layers) = (&witnesses.upper_nodes, &expected_layers[3..]);
 
@@ -1294,7 +1281,7 @@ mod tests {
         row_images: &[Field],
         security: SecurityLevel,
     ) -> (Vec<Field>, transcript::Proof) {
-        let (output, witnesses) = GrandProductCircuit::new(row_images, table).batched_eval();
+        let (output, witnesses) = grand_product(row_images, table);
 
         // TODO instance is a bit loose and should be replaced by PCS
         let instance = (output.clone(), 1u128 << table.shape().log_bits());

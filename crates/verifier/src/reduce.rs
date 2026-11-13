@@ -56,7 +56,7 @@ pub(crate) fn gkr_reduce<S>(
 mod round_trip_ai_test {
     use common::{BitZParams, Fold, Shape};
     use field::gf128::smallest_generator;
-    use gkr::{GrandProductCircuit, gpgkr_prove};
+    use gkr::{gpgkr_prove, grand_product};
     use num_traits::{ConstOne, ConstZero};
 
     use super::*;
@@ -102,8 +102,7 @@ mod round_trip_ai_test {
             .map(|i| F128::from((i as u128 + 3) * 0xABCDEF12345u128 + 1))
             .collect();
 
-        let circuit = GrandProductCircuit::new(&row_images, &table);
-        let (top_layer, witnesses) = circuit.batched_eval();
+        let (top_layer, witnesses) = grand_product(&row_images, &table);
 
         // Fold::new evaluates top_layer at zeta to obtain GKR's initial claim.
         let folds = vec![0u128; shape.columns()];

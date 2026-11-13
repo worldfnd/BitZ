@@ -7,16 +7,10 @@
 
 use common::{BitTable, ClaimError, Fold, LinearClaim, OpeningQuery, SecurityLevel};
 use field::F128;
-use gkr::{GrandProductCircuit, gpgkr_prove};
+use gkr::{gpgkr_prove, grand_product};
 use num_traits::ConstOne;
 use poly::eq_table;
 use transcript::ProverState;
-
-#[inline(never)]
-#[tracing::instrument(name = "Build grand-product circuit", level = "debug", skip_all)]
-fn init_circuit<'a, S>(table: &BitTable<'a>, fold: &'a Fold<S>) -> GrandProductCircuit<'a> {
-    GrandProductCircuit::new(&fold.row_images, table)
-}
 
 /// Reduces the grand-product circuit to a factored claim on the committed bits.
 #[tracing::instrument(name = "Reduce grand products", skip_all)]
@@ -26,8 +20,7 @@ pub fn gkr_reduce<S>(
     table: &BitTable,
     security: SecurityLevel,
 ) -> Result<OpeningQuery, ClaimError> {
-    let circuit = init_circuit(table, fold);
-    let (_last_value, witnesses) = circuit.batched_eval();
+    let (_last_value, witnesses) = grand_product(&fold.row_images, table);
 
     let (mut point, claim) = gpgkr_prove(transcript, &fold.zeta, witnesses, security);
 
