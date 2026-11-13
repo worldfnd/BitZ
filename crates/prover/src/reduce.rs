@@ -14,7 +14,7 @@ use transcript::ProverState;
 
 #[inline(never)]
 #[tracing::instrument(name = "Build grand-product circuit", level = "debug", skip_all)]
-fn init_circuit<'a, S>(table: &BitTable, fold: &'a Fold<S>) -> GrandProductCircuit<'a> {
+fn init_circuit<'a, S>(table: &BitTable<'a>, fold: &'a Fold<S>) -> GrandProductCircuit<'a> {
     GrandProductCircuit::new(&fold.row_images, table)
 }
 

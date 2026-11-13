@@ -263,7 +263,7 @@ const MASK: [[usize; 4]; 3] = [
 /// them: layer-2 node `k = (g << s) | c` is nibble `k` of the matrix, looked
 /// up in the lookup table of node position `g`, which all `2^s` trees share.
 struct LutLayers {
-    /// The nibbles of the layer-2 nodes; see [`GrandProductCircuit::new`].
+    /// The nibbles of the layer-2 nodes; see [`LutLayers::new`].
     matrix: BitMatrix<'static>,
     luts: Vec<[Field; LUT_ENTRIES]>,
     /// `s`: a lookup table's run of nibbles holds one per tree.
@@ -271,7 +271,23 @@ struct LutLayers {
 }
 
 impl LutLayers {
-    fn new(matrix: BitMatrix<'static>, luts: Vec<[Field; LUT_ENTRIES]>) -> Self {
+    fn new(matrix: BitMatrix<'_>, images: &[Field]) -> Self {
+        // Leaf `(b << s) | c` is `images[b]` where `bit(c, b)` is set and one
+        // elsewhere: the low `s` index bits pick one of the `2^s` trees and
+        // the rest are the leaf's position in it. Each layer folds the top
+        // position bit, so tree `c` multiplies the images `bit(c, ·)` selects.
+        //
+        // Layers 0 to 2 are looked up in 16-entry lookup tables, one per four
+        // images, and the four leaves under a layer-2 node are a quarter of
+        // the positions apart, so the top two position bits are split off and
+        // moved below the tree bits. After the transpose, layer-2 node
+        // position `g` is one contiguous run, a nibble per tree in ascending
+        // order, and nibble `c` of it holds `bit(c, g + q·n)` at bit `q`, `n`
+        // being a quarter of the images: the four leaves under layer-2 node
+        // `(g << s) | c`.
+        let log_dim2 = matrix.log_dim2() - 2;
+        let matrix = matrix.reshape(log_dim2).transpose();
+
         let log_trees = (matrix.dim2() / NIBBLE_BITS).ilog2() as usize;
         // `pairs` reads whole words of one lookup table's run.
         assert!(
@@ -280,7 +296,7 @@ impl LutLayers {
         );
         Self {
             matrix,
-            luts,
+            luts: lower_luts(images),
             log_trees,
         }
     }
@@ -756,37 +772,19 @@ fn verify_layer(
 }
 
 pub struct GrandProductCircuit<'a> {
-    matrix: BitMatrix<'static>,
+    matrix: BitMatrix<'a>,
     images: &'a [Field],
 }
 
 impl<'a> GrandProductCircuit<'a> {
-    pub fn new(row_images: &'a [Field], bittable: &BitTable) -> GrandProductCircuit<'a> {
+    pub fn new(row_images: &'a [Field], bittable: &BitTable<'a>) -> GrandProductCircuit<'a> {
         assert_eq!(
             row_images.len(),
             bittable.shape().rows(),
             "one image per row of the table"
         );
-        // Leaf `(b << s) | c` is `row_images[b]` where `bit(c, b)` is set and
-        // one elsewhere: the low `s` index bits pick one of the `2^s` trees
-        // and the rest are the leaf's position in it. Each layer folds the
-        // top position bit, so tree `c` multiplies the images `bit(c, ·)`
-        // selects.
-        //
-        // Layers 0 to 2 are looked up in 16-entry lookup tables, one per four
-        // images, and the four leaves under a layer-2 node are a quarter of
-        // the positions apart, so the top two position bits are split off and
-        // moved below the tree bits. After the transpose, layer-2 node
-        // position `g` is one contiguous run, a nibble per tree in ascending
-        // order, and nibble `c` of it holds `bit(c, g + q·n)` at bit `q`, `n`
-        // being a quarter of the images: the four leaves under layer-2 node
-        // `(g << s) | c`.
-        let matrix = bittable.as_matrix();
-        let log_dim2 = matrix.log_dim2() - 2;
-        let matrix = matrix.reshape(log_dim2).transpose();
-
         Self {
-            matrix,
+            matrix: bittable.as_matrix(),
             images: row_images,
         }
     }
@@ -802,7 +800,7 @@ impl<'a> GrandProductCircuit<'a> {
     /// If the matrix has fewer than 16 trees (`s < 4`)
     #[tracing::instrument(name = "Evaluate grand-product circuit", level = "debug", skip_all)]
     pub fn batched_eval(self) -> (Vec<Field>, LayerWitnesses) {
-        let lut_layers = LutLayers::new(self.matrix, lower_luts(self.images));
+        let lut_layers = LutLayers::new(self.matrix, self.images);
         let layer3 = layer3(&lut_layers);
         let (output, upper_nodes) = fold_layers(layer3, 1 << lut_layers.log_trees);
 
@@ -1036,7 +1034,7 @@ mod tests {
     }
 
     /// Leaf `(b << s) | c` is `row_images[b]` where `bit(c, b)` is set and one
-    /// elsewhere, as `GrandProductCircuit::new` describes, built one leaf at a
+    /// elsewhere, as `LutLayers::new` describes, built one leaf at a
     /// time: the reference the circuit is checked against.
     fn leaves(table: &BitTable, row_images: &[Field]) -> Vec<Field> {
         let shape = table.shape();
@@ -1247,7 +1245,7 @@ mod tests {
     #[test]
     fn lut_layers_match_the_leaf_construction() {
         // At t = 7 and 8 there are 32 and 64 lookup tables, fewer than the bits
-        // of a `u128`, so the transpose in `GrandProductCircuit::new` moves
+        // of a `u128`, so the transpose in `LutLayers::new` moves
         // `u32` and `u64` blocks; from t = 9 on it moves `u128` ones. At s = 7
         // a lookup table's run is 128 nibbles, 8 words, below
         // `PARALLEL_MIN_LANES`, so a piece of `layer3` is a whole run rather
