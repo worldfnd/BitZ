@@ -219,7 +219,7 @@ fn lc_words<CS: Circuit>(words: &[u64]) -> Lc<CS> {
     }
 }
 
-fn lc_u64<CS: Circuit>(value: u64) -> Lc<CS> {
+fn lc_u32<CS: Circuit>(value: u32) -> Lc<CS> {
     Lc {
         z: P256Z::<CS>::from(P256Coefficient::<CS>::from(value)),
     }
@@ -323,9 +323,9 @@ fn rep_constant<CS: Circuit>(value: &S) -> Rep<CS> {
     }
 }
 
-fn rep_u64<CS: Circuit>(value: u64) -> Rep<CS> {
+fn rep_u32<CS: Circuit>(value: u32) -> Rep<CS> {
     Rep {
-        value: lc_u64(value),
+        value: lc_u32(value),
         bound: 2,
     }
 }
@@ -345,12 +345,12 @@ fn rep_sub<CS: Circuit>(modulus: Modulus, left: Rep<CS>, right: Rep<CS>) -> Rep<
     }
 }
 
-fn rep_scale<CS: Circuit>(coefficient: usize, value: Rep<CS>) -> Rep<CS> {
+fn rep_scale<CS: Circuit>(coefficient: u32, value: Rep<CS>) -> Rep<CS> {
     Rep {
         value: value
             .value
-            .scale_coefficient(P256Coefficient::<CS>::from(coefficient as u64)),
-        bound: coefficient * value.bound,
+            .scale_coefficient(P256Coefficient::<CS>::from(coefficient)),
+        bound: coefficient as usize * value.bound,
     }
 }
 
@@ -920,15 +920,15 @@ fn point_from_elems<CS: Circuit>(x: &Elem<CS>, y: &Elem<CS>) -> Point<CS> {
     Point {
         x: of_elem(x),
         y: of_elem(y),
-        infinity: lc_u64(0),
+        infinity: lc_u32(0),
     }
 }
 
 fn infinity<CS: Circuit>() -> Point<CS> {
     Point {
-        x: rep_u64(0),
-        y: rep_u64(0),
-        infinity: lc_u64(1),
+        x: rep_u32(0),
+        y: rep_u32(0),
+        infinity: lc_u32(1),
     }
 }
 
@@ -970,7 +970,7 @@ fn lazy_zero_test<CS: Circuit>(circuit: &mut CS, modulus: Modulus, x: Rep<CS>) -
         x.clone(),
         of_elem(&Elem { value: inverse }),
         Rep {
-            value: lc_u64::<CS>(1).sub(z.clone()),
+            value: lc_u32::<CS>(1).sub(z.clone()),
             bound: 1,
         },
     );
@@ -1043,12 +1043,12 @@ fn select_formula<CS: Circuit>(
 fn double_complete<CS: Circuit>(circuit: &mut CS, point: Point<CS>) -> Point<CS> {
     let x2 = lazy_mul(circuit, Modulus::Base, point.x.clone(), point.x.clone());
     let numerator = rep_add(
-        rep_sub(Modulus::Base, rep_scale(3, x2), rep_u64::<CS>(3)),
+        rep_sub(Modulus::Base, rep_scale(3, x2), rep_u32::<CS>(3)),
         Rep {
             value: point
                 .infinity
                 .clone()
-                .scale_coefficient(P256Coefficient::<CS>::from(3_u64)),
+                .scale_coefficient(P256Coefficient::<CS>::from(3_u32)),
             bound: 1,
         },
     );
@@ -1097,16 +1097,16 @@ fn add_complete<CS: Circuit>(circuit: &mut CS, p: Point<CS>, q: Point<CS>) -> Po
     let opposite_y = lazy_zero_test(circuit, Modulus::Base, y_sum);
     let finite = and_bit(
         circuit,
-        lc_u64::<CS>(1).sub(p.infinity.clone()),
-        lc_u64::<CS>(1).sub(q.infinity.clone()),
+        lc_u32::<CS>(1).sub(p.infinity.clone()),
+        lc_u32::<CS>(1).sub(q.infinity.clone()),
     );
     let double_kind = and_bit(
         circuit,
         same_x.clone(),
-        lc_u64::<CS>(1).sub(opposite_y.clone()),
+        lc_u32::<CS>(1).sub(opposite_y.clone()),
     );
     let double_case = and_bit(circuit, finite.clone(), double_kind);
-    let generic_case = and_bit(circuit, finite.clone(), lc_u64::<CS>(1).sub(same_x.clone()));
+    let generic_case = and_bit(circuit, finite.clone(), lc_u32::<CS>(1).sub(same_x.clone()));
     let control = AddControl {
         same_x,
         opposite_y,
@@ -1117,7 +1117,7 @@ fn add_complete<CS: Circuit>(circuit: &mut CS, p: Point<CS>, q: Point<CS>) -> Po
 
     let dy = rep_sub(Modulus::Base, q.y.clone(), p.y.clone());
     let x2 = lazy_mul(circuit, Modulus::Base, p.x.clone(), p.x.clone());
-    let double_numerator = rep_sub(Modulus::Base, rep_scale(3, x2), rep_u64::<CS>(3));
+    let double_numerator = rep_sub(Modulus::Base, rep_scale(3, x2), rep_u32::<CS>(3));
     let double_denominator = rep_scale(2, p.y.clone());
     let selected_numerator =
         select_formula(circuit, control.double_case.clone(), double_numerator, dy);
@@ -1127,13 +1127,13 @@ fn add_complete<CS: Circuit>(circuit: &mut CS, p: Point<CS>, q: Point<CS>) -> Po
         circuit,
         control.active.clone(),
         selected_numerator,
-        rep_u64(0),
+        rep_u32(0),
     );
     let denominator = select_formula(
         circuit,
         control.active.clone(),
         selected_denominator,
-        rep_u64(1),
+        rep_u32(1),
     );
     let slope = lazy_divide(circuit, Modulus::Base, denominator, numerator);
     let candidate_x = lazy_mul_sub_to_elem(
@@ -1153,8 +1153,8 @@ fn add_complete<CS: Circuit>(circuit: &mut CS, p: Point<CS>, q: Point<CS>) -> Po
     );
     let candidate_y = of_elem(&candidate_y);
 
-    let inactive_x0 = select_canonical(circuit, q.infinity.clone(), p.x.clone(), rep_u64(0));
-    let inactive_y0 = select_canonical(circuit, q.infinity.clone(), p.y.clone(), rep_u64(0));
+    let inactive_x0 = select_canonical(circuit, q.infinity.clone(), p.x.clone(), rep_u32(0));
+    let inactive_y0 = select_canonical(circuit, q.infinity.clone(), p.y.clone(), rep_u32(0));
     let inactive_x = select_canonical(circuit, p.infinity.clone(), q.x.clone(), inactive_x0);
     let inactive_y = select_canonical(circuit, p.infinity.clone(), q.y.clone(), inactive_y0);
     let x = select_canonical(circuit, control.active.clone(), candidate_x, inactive_x);
@@ -1204,14 +1204,14 @@ fn indicators_impl<CS: Circuit, const N: usize, const M: usize>(
         bits,
         value: Lc { z: full },
     };
-    let sum = lifted.iter().cloned().fold(lc_u64::<CS>(0), Lc::add);
-    assert_zero(circuit, sum.sub(lc_u64(1)));
+    let sum = lifted.iter().cloned().fold(lc_u32::<CS>(0), Lc::add);
+    assert_zero(circuit, sum.sub(lc_u32(1)));
     let weighted = lifted
         .iter()
         .cloned()
-        .enumerate()
-        .fold(lc_u64::<CS>(0), |sum, (i, bit)| {
-            sum.add(bit.scale_coefficient(P256Coefficient::<CS>::from(i as u64)))
+        .zip(0_u32..)
+        .fold(lc_u32::<CS>(0), |sum, (bit, i)| {
+            sum.add(bit.scale_coefficient(P256Coefficient::<CS>::from(i)))
         });
     assert_zero(circuit, weighted.sub(digit));
     (out, lifted)
@@ -1342,13 +1342,13 @@ fn lookup_generator_byte<CS: Circuit>(
     let x = indicators
         .iter()
         .zip(table)
-        .fold(lc_u64::<CS>(0), |sum, (bit, (x, _))| {
+        .fold(lc_u32::<CS>(0), |sum, (bit, (x, _))| {
             sum.add(bit.clone().scale_coefficient(x.clone()))
         });
     let y = indicators
         .iter()
         .zip(table)
-        .fold(lc_u64::<CS>(0), |sum, (bit, (_, y))| {
+        .fold(lc_u32::<CS>(0), |sum, (bit, (_, y))| {
             sum.add(bit.clone().scale_coefficient(y.clone()))
         });
     Point {
@@ -1404,8 +1404,8 @@ fn scalar_window<CS: Circuit>(scalar: &ScalarElem<CS>, start: usize, width: usiz
         .iter()
         .cloned()
         .enumerate()
-        .fold(lc_u64::<CS>(0), |sum, (bit, value)| {
-            sum.add(value.scale_coefficient(P256Coefficient::<CS>::from(1_u64 << bit)))
+        .fold(lc_u32::<CS>(0), |sum, (bit, value)| {
+            sum.add(value.scale_coefficient(P256Coefficient::<CS>::from(1_u32 << bit)))
         })
 }
 
@@ -1492,14 +1492,14 @@ pub fn verify_digest_circuit<CS: Circuit>(
         Modulus::Scalar,
         of_elem(&r),
         of_elem(&r_inverse),
-        rep_u64(1),
+        rep_u32(1),
     );
     lazy_assert_mul_eq(
         circuit,
         Modulus::Scalar,
         of_elem(&s),
         of_elem(&s_inverse),
-        rep_u64(1),
+        rep_u32(1),
     );
 
     let z = relaxed_reduce_small(circuit, Modulus::Scalar, digest.elem.value.value);

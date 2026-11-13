@@ -7,7 +7,7 @@
 use circuit::matrix_products::StoredInteger;
 use circuit::{
     BitWidth, Circuit, IntoWords,
-    constraints::{ConstraintGenerator, ConstraintMatrices, SparseBoolMatrix},
+    constraints::{ConstraintGenerator, ConstraintMatrices, SignedLimbCapacity, SparseBoolMatrix},
     matrix_products::IntegerProducts,
     matrix_transpose::{MTransposeGenerator, MaterializedMTranspose},
     witgen::{PackedWitness, ProductWitgen},
@@ -152,7 +152,7 @@ where
     S: CircuitStatement,
     F: BitzClaimField + FieldWithDynamicModulus,
     F::Integer: BitWidth + IntoWords,
-    R: BitzConstraintRing + for<'a> From<&'a StoredInteger>,
+    R: BitzConstraintRing + SignedLimbCapacity + for<'a> From<&'a StoredInteger>,
     for<'a> StoredInteger: From<&'a R>,
     Proj: ProjectConstraint<R, F>,
 {
@@ -570,7 +570,7 @@ mod tests {
         }
         fn synthesize<C: Circuit>(&self, cs: &mut C, inputs: &[C::Bool]) -> Result<(), Error> {
             let bit = cs.bitz::<1>(inputs[0].clone());
-            let one = C::Z::<1>::from(C::Coefficient::<1>::from(1u64));
+            let one = C::Z::<1>::from(C::Coefficient::<1>::from(1u32));
             cs.assert_r1c::<1>(one.clone(), bit, one);
             Ok(())
         }

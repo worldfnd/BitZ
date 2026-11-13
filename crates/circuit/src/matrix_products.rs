@@ -415,6 +415,25 @@ impl From<&i128> for StoredInteger {
     }
 }
 
+impl From<&i64> for StoredInteger {
+    fn from(value: &i64) -> Self {
+        if *value == 0 {
+            return Self::ZERO;
+        }
+        Self::from_normalized([*value as u64])
+    }
+}
+
+impl From<&StoredInteger> for i64 {
+    /// Panics on a value wider than one word.
+    fn from(value: &StoredInteger) -> Self {
+        match value.words {
+            Words::Inline(word) => word as i64,
+            Words::Heap(_) => panic!("stored integer does not fit an i64"),
+        }
+    }
+}
+
 impl<const LIMBS: usize> From<&Integer<LIMBS>> for StoredInteger {
     /// Stores a gadget-local fixed integer without changing its value.
     fn from(value: &Integer<LIMBS>) -> Self {
@@ -464,6 +483,7 @@ impl IntegerProducts {
     where
         R: BitzConstraintRing + for<'a> From<&'a StoredInteger>,
     {
+        //  A product overflowing `R` differs from real `C(Mw)`.
         self.a_mw.len() == self.b_mw.len()
             && self.a_mw.len() == self.c_mw.len()
             && self
@@ -471,7 +491,7 @@ impl IntegerProducts {
                 .par_iter()
                 .zip(&self.b_mw)
                 .zip(&self.c_mw)
-                .all(|((a, b), c)| R::from(a) * R::from(b) == R::from(c))
+                .all(|((a, b), c)| R::from(a).checked_mul(&R::from(b)) == Some(R::from(c)))
     }
 
     /// Reduces every materialized element modulo `modulus`.
@@ -670,6 +690,33 @@ mod tests {
             assert!(stored.words().len() >= 2, "{value}");
             assert_eq!(stored.heap_bytes(), size_of_val(stored.words()), "{value}");
         }
+    }
+
+    #[test]
+    fn one_word_integers_round_trip_through_stored_integers() {
+        for value in [0_i64, 1, -1, 7, -7, 1 << 35, i64::MAX, i64::MIN] {
+            let stored = StoredInteger::from(&value);
+            assert_eq!(stored, StoredInteger::from(&R::from(value)), "{value}");
+            assert_eq!(i64::from(&stored), value);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "does not fit an i64")]
+    fn wide_stored_integers_do_not_truncate_into_one_word() {
+        let _ = i64::from(&StoredInteger::from(&(1_i128 << 63)));
+    }
+
+    #[test]
+    fn products_overflowing_the_ring_are_unsatisfied() {
+        let mut products = IntegerProducts::default();
+        let z = |value: i128| Integer::<1>::from(value);
+        products.push(z(-3), z(5), z(-15));
+        assert!(products.is_satisfied::<i64>());
+        // 2^32 * 2^32 wraps to zero in an i64.
+        products.push(z(1 << 32), z(1 << 32), z(0));
+        assert!(!products.is_satisfied::<i64>());
+        assert!(!products.is_satisfied::<R>());
     }
 
     #[test]
