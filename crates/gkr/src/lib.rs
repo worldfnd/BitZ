@@ -265,13 +265,13 @@ const MASK: [[usize; 4]; 3] = [
 struct LutLayers {
     /// The nibbles of the layer-2 nodes; see [`GrandProductCircuit::new`].
     matrix: BitMatrix<'static>,
-    luts: Vec<[Field; 16]>,
+    luts: Vec<[Field; LUT_ENTRIES]>,
     /// `s`: a lookup table's run of nibbles holds one per tree.
     log_trees: usize,
 }
 
 impl LutLayers {
-    fn new(matrix: BitMatrix<'static>, luts: Vec<[Field; 16]>) -> Self {
+    fn new(matrix: BitMatrix<'static>, luts: Vec<[Field; LUT_ENTRIES]>) -> Self {
         let log_trees = (matrix.dim2() / NIBBLE_BITS).ilog2() as usize;
         // `pairs` reads whole words of one lookup table's run.
         assert!(
@@ -342,7 +342,7 @@ impl LutLayers {
         &self,
         positions: Range<usize>,
     ) -> (
-        [&[Field; 16]; 4],
+        [&[Field; LUT_ENTRIES]; 4],
         impl Iterator<Item = impl Iterator<Item = [usize; 4]>> + '_,
     ) {
         // Half the parent's nodes, which are half the layer's.
@@ -367,7 +367,10 @@ impl LutLayers {
 
 /// The operands `[l0, l1, r0, r1]` of one position of round 1 of layer
 /// `LAYER`, from their lookup tables and nibbles.
-fn operands<const LAYER: usize>(luts: &[&[Field; 16]; 4], nibbles: [usize; 4]) -> [Field; 4] {
+fn operands<const LAYER: usize>(
+    luts: &[&[Field; LUT_ENTRIES]; 4],
+    nibbles: [usize; 4],
+) -> [Field; 4] {
     std::array::from_fn(|o| luts[o][nibbles[o] & MASK[LAYER][o]])
 }
 
@@ -462,7 +465,7 @@ fn leaf_buckets<const AT_ONE: bool>(
     eq: &[Field],
 ) -> (Wide256, Wide256) {
     let ([lut, ..], pairs) = lut_layers.pairs::<LEAVES>(positions);
-    let mut bucket = [Field::ZERO; 16];
+    let mut bucket = [Field::ZERO; LUT_ENTRIES];
     for (word, eq) in pairs.zip(eq.chunks_exact(NIBBLES_IN_WORD)) {
         for ([a, ..], &e) in word.zip(eq) {
             bucket[a] += e;
@@ -491,7 +494,7 @@ fn layer1_buckets<const AT_ONE: bool>(
     // `l0` and `r0` read nibble `n0` in its lookup table, `l1` and `r1`
     // nibble `n1`.
     let ([lut0, lut1, ..], pairs) = lut_layers.pairs::<LAYER1>(positions);
-    let mut bucket = [[Field::ZERO; 16]; 4];
+    let mut bucket = [[Field::ZERO; LUT_ENTRIES]; 4];
     // A position's keys in the buckets of `l0·r0`, `l1·r1`, `l1·r0` and
     // `l0·r1`: bits 0 and 2 from the nibble of the `l` factor, bits 1 and 3
     // from that of the `r` factor.
@@ -504,7 +507,7 @@ fn layer1_buckets<const AT_ONE: bool>(
         }
     }
     // `l0·r0`, `l1·r1`, `l1·r0` and `l0·r1` at every key.
-    let product: [[Field; 16]; 4] = [
+    let product: [[Field; LUT_ENTRIES]; 4] = [
         *lut0,
         *lut1,
         std::array::from_fn(|x| lut1[x & 0b0101] * lut0[x & 0b1010]),
@@ -517,7 +520,7 @@ fn layer1_buckets<const AT_ONE: bool>(
 }
 
 /// `Σ bucket · value`, unreduced.
-fn dot(bucket: &[Field; 16], value: &[Field; 16]) -> Wide256 {
+fn dot(bucket: &[Field; LUT_ENTRIES], value: &[Field; LUT_ENTRIES]) -> Wide256 {
     bucket
         .iter()
         .zip(value)
@@ -533,18 +536,15 @@ fn layer2_sums<const AT_ONE: bool>(lut_layers: &LutLayers, eq: &[Field]) -> (Wid
         .pieces(half)
         .map(|positions| {
             let (luts, pairs) = lut_layers.pairs::<LAYER2>(positions.clone());
-            let eq = eq[positions].chunks_exact(NIBBLES_IN_WORD);
-            pairs
-                .zip(eq)
-                .fold((Wide256::zero(), Wide256::zero()), |sums, (word, eq)| {
-                    word.zip(eq).fold(sums, |(sum_b, sum_inf), (n, &e)| {
-                        let [l0, l1, r0, r1] = operands::<LAYER2>(&luts, n);
-                        (
-                            sum_b + Wide256::mul(e * at(l0, l1), at(r0, r1)),
-                            sum_inf + Wide256::mul(e * (l1 - l0), r1 - r0),
-                        )
-                    })
-                })
+            let (mut sum_b, mut sum_inf) = (Wide256::zero(), Wide256::zero());
+            for (word, eq) in pairs.zip(eq[positions].chunks_exact(NIBBLES_IN_WORD)) {
+                for (n, &e) in word.zip(eq) {
+                    let [l0, l1, r0, r1] = operands::<LAYER2>(&luts, n);
+                    sum_b += Wide256::mul(e * at(l0, l1), at(r0, r1));
+                    sum_inf += Wide256::mul(e * (l1 - l0), r1 - r0);
+                }
+            }
+            (sum_b, sum_inf)
         })
         .reduce(
             || (Wide256::zero(), Wide256::zero()),
@@ -641,18 +641,22 @@ impl<'a> EqTables<'a> {
 
     /// Builds every table of `point` in `storage`, a buffer from
     /// [`EqTables::alloc_storage`]; nothing is allocated here.
-    #[inline(never)] // Inlining or not doesn't improve performance, but it does hide it in profiling therefore it has been annotated with inline never.
+    // Inlining or not doesn't improve performance, but it does hide it in
+    // profiling therefore it has been annotated with inline never.
+    #[inline(never)]
     fn new(storage: &'a mut [Field], point: &[Field]) -> EqTables<'a> {
+        // Round `i` reads only the coordinates below `i`, so the top one
+        // never enters a table.
+        let (_, below_top) = point
+            .split_last()
+            .expect("a sumcheck has a round per coordinate, so at least one");
         // Establishes the whole table's space budget up front so LLVM can
         // prove the `low`/`hi` writes in the loop below are in bounds
-        let needed = (1usize << point.len()).saturating_sub(1).max(1);
+        let needed = (1usize << point.len()) - 1;
         assert!(storage.len() >= needed);
 
         storage[0] = Field::ONE;
         let (mut prev, mut remaining) = storage.split_at_mut(1);
-        // Round `i` reads only the coordinates below `i`, so the top one
-        // never enters a table.
-        let below_top = &point[..point.len().saturating_sub(1)];
 
         // Each coordinate doubles the table, as its new top index bit.
         for &z in below_top {
@@ -675,19 +679,23 @@ impl<'a> EqTables<'a> {
     /// Room for every table of a sumcheck whose parent layer has up to
     /// `nodes` nodes, allocated once for all layers. Its point has a
     /// coordinate per index bit of the parent, so the tables take
-    /// `nodes - 1` entries, and never fewer than the one of an empty point,
-    /// which [`EqTables::new`] always writes. All the tables in one buffer
-    /// take as much space as a double buffer would.
+    /// `nodes - 1` entries. All the tables in one buffer take as much space
+    /// as a double buffer would.
     fn alloc_storage(nodes: usize) -> Vec<Field> {
-        Field::zeroed_vec(nodes.max(1))
+        Field::zeroed_vec(nodes - 1)
     }
 }
 
-/// TODO replace this with a proper approach
-///  Matches `poly`'s `PARALLEL_FOLD_THRESHOLD`, chosen for the same per-round
+// TODO replace this with a proper approach
+/// Matches `poly`'s `PARALLEL_FOLD_THRESHOLD`, chosen for the same per-round
 /// MLE-fold shape.
 const PARALLEL_MIN_LANES: usize = 1 << 12;
 
+/// Verifies what [`gpgkr_prove`] proves: `layers` layer sumchecks, from
+/// `claim`, the output's MLE at `point`, down to a claim on the leaves.
+///
+/// Returns the leaves' point, `point.len() + layers` coordinates, and the
+/// claim on it; `None` if a check fails or the proof runs short.
 #[must_use]
 #[tracing::instrument(name = "Verify GKR", skip_all)]
 pub fn gpgkr_verify(
@@ -697,16 +705,6 @@ pub fn gpgkr_verify(
     layers: usize,
     security: SecurityLevel,
 ) -> Option<(Vec<Field>, Field)> {
-    // Edge cases around input lenghts, 0 meaning empty
-    // | circuit | last value |
-    //    0 0 -> valid, no circuit has no output
-    //    0 1 -> false
-    //    1 0 -> false
-    // last value equal to circuit
-    //    direct comparison of the two
-    // last value being larger than circuit
-    //    -> false
-    //
     let mut point = point.to_owned();
     for _ in 0..layers {
         (point, claim) = verify_layer(vs, claim, &point, security)?
@@ -820,12 +818,14 @@ impl<'a> GrandProductCircuit<'a> {
 
 const NIBBLE_BITS: usize = 4;
 const NIBBLES_IN_WORD: usize = u64::BITS as usize / NIBBLE_BITS;
+/// A lookup table has an entry per nibble value.
+const LUT_ENTRIES: usize = 1 << NIBBLE_BITS;
 
 /// Layers 0 to 2 as lookup tables, one per four images: `lut[nibble]` is the
 /// layer-2 node whose four leaves are the bits of `nibble`.
 ///
 /// Each lookup table takes one image from each quarter of `images`.
-fn lower_luts(images: &[Field]) -> Vec<[Field; 16]> {
+fn lower_luts(images: &[Field]) -> Vec<[Field; LUT_ENTRIES]> {
     /// `lut[nibble]` is the product of the inputs whose bit is set in
     /// `nibble`, `a` on bit 0 through `d` on bit 3 (`0b0000 -> 1`,
     /// `0b0001 -> a`, `0b0011 -> a*b`, ...), so a nibble indexes its
@@ -836,8 +836,8 @@ fn lower_luts(images: &[Field]) -> Vec<[Field; 16]> {
     /// input itself, so it is copied rather than multiplied by one,
     /// leaving 11 multiplications -- one per entry with two or more
     /// factors, which is the minimum.
-    fn create_lut(c: [Field; 4]) -> [Field; 16] {
-        let mut lut = [Field::ONE; 16];
+    fn create_lut(c: [Field; NIBBLE_BITS]) -> [Field; LUT_ENTRIES] {
+        let mut lut = [Field::ONE; LUT_ENTRIES];
         for (i, x) in c.into_iter().enumerate() {
             let half = 1 << i;
             lut[half] = x;
@@ -856,8 +856,8 @@ fn lower_luts(images: &[Field]) -> Vec<[Field; 16]> {
         .zip(b)
         .zip(c)
         .zip(d)
-        // A lookup table writes 16 entries.
-        .with_min_len(PARALLEL_MIN_LANES / 16)
+        // A lookup table writes `LUT_ENTRIES` entries.
+        .with_min_len(PARALLEL_MIN_LANES / LUT_ENTRIES)
         .map(|(((&a, &b), &c), &d)| create_lut([a, b, c, d]))
         .collect()
 }
@@ -931,12 +931,6 @@ mod tests {
         any::<u128>().prop_map(Field::from)
     }
 
-    /// Product of `xs`, folding from `1` -- the invariant every grand-product
-    /// test below checks against.
-    fn product(xs: &[Field]) -> Field {
-        xs.iter().fold(Field::ONE, |acc, &x| acc * x)
-    }
-
     /// `leaves` padded with ones to a power of two, so they have an MLE. The
     /// `fold_layers` tests below take any leaves, not only those a bit table
     /// gives.
@@ -955,46 +949,34 @@ mod tests {
         // just the top.
         #[test]
         fn eval_preserves_product_across_layers(leaves in prop::collection::vec(field(), 0..12)) {
-            let expected = product(&leaves);
+            let expected: Field = leaves.iter().product();
 
             let (top, witnesses) = fold_layers(pad(leaves), 1);
 
-            prop_assert_eq!(product(&top), expected);
+            prop_assert_eq!(top.iter().product::<Field>(), expected);
 
             for layer in witnesses {
-                prop_assert_eq!(product(&layer), expected);
+                prop_assert_eq!(layer.iter().product::<Field>(), expected);
             }
         }
-
 
         #[test]
         fn fold_layers_top_layer_is_interleaved_group_products(
             leaves in prop::collection::vec(field(), 1..32),
             groups_log2 in 0usize..4,
         ) {
-            let padded_len = leaves.len().next_power_of_two();
-            let groups_log2 = groups_log2.min(padded_len.ilog2() as usize);
-            let groups = 1usize << groups_log2;
+            let padded = pad(leaves);
+            let groups = 1usize << groups_log2.min(padded.len().ilog2() as usize);
 
-            let mut padded = leaves.clone();
-            padded.resize(padded_len, Field::ONE);
-
-            let (top, _witnesses) = fold_layers(pad(leaves), groups);
+            let (top, _witnesses) = fold_layers(padded.clone(), groups);
             prop_assert_eq!(top.len(), groups);
 
             for (j, &value) in top.iter().enumerate() {
-                let expected = padded
-                    .iter()
-                    .enumerate()
-                    .filter(|(i, _)| i % groups == j)
-                    .fold(Field::ONE, |acc, (_, &x)| acc * x);
+                let expected: Field = padded[j..].iter().step_by(groups).product();
                 prop_assert_eq!(value, expected);
             }
         }
     }
-
-    /// Small enough that `BitZParams` accepts every shape below.
-    const Q: u128 = (1 << 100) - 15;
 
     /// The smallest shape the gates accept, `(t, s)`: the narrowest `t` at
     /// the smallest total.
@@ -1035,7 +1017,7 @@ mod tests {
     fn instance((t, s): (usize, usize), bits: Bits, seed: u64) -> (Shape, Vec<F128>, Vec<Field>) {
         let shape = Shape::new(t, s).unwrap();
         let mut words = stream(seed);
-        let packed = (0..(1usize << shape.log_bits()) / 128)
+        let packed = (0..1usize << shape.log_packed_len())
             .map(|_| match bits {
                 Bits::Clear => F128::ZERO,
                 Bits::Set => F128::from(u128::MAX),
@@ -1047,7 +1029,7 @@ mod tests {
     }
 
     fn table(shape: Shape, packed: &[F128]) -> BitTable<'_> {
-        BitZParams::<field::Fq<Q>>::new(shape, smallest_generator())
+        BitZParams::<field::FqDefault>::new(shape, smallest_generator())
             .unwrap()
             .table(packed)
             .unwrap()
@@ -1155,10 +1137,10 @@ mod tests {
             with(0, Field::ONE),
         ] {
             let (output, witnesses) = GrandProductCircuit::new(&row_images, &table).batched_eval();
-            let claim = mle(output, &point);
+            let claim = mle(&output, &point);
             let mut prover = transcript::build_prover("gkr-zero", &point);
             let terminal = gpgkr_prove(&mut prover, &point, witnesses, Bits100);
-            assert_eq!(terminal.1, mle(leaves.clone(), &terminal.0));
+            assert_eq!(terminal.1, mle(&leaves, &terminal.0));
             let proof = prover.finish();
 
             let mut verifier = transcript::build_verifier("gkr-zero", &point, &proof);
@@ -1247,13 +1229,13 @@ mod tests {
                 let proof = prover.finish();
 
                 let mut verifier = transcript::build_verifier("lut-layer", &point, &proof);
-                let claim = mle(parent.clone(), &point);
+                let claim = mle(parent, &point);
                 assert_eq!(
                     verify_layer(&mut verifier, claim, &point, Bits100),
                     Some(terminal.clone()),
                     "layer {layer}, top coordinate {top}"
                 );
-                assert_eq!(terminal.1, mle(children.clone(), &terminal.0));
+                assert_eq!(terminal.1, mle(children, &terminal.0));
             }
         }
     }
@@ -1345,26 +1327,17 @@ mod tests {
         let point: Vec<Field> = (0..output.len().ilog2())
             .map(|_| verifier.verifier_message())
             .collect();
-        let claim = mle(output.to_vec(), &point);
+        let claim = mle(output, &point);
         let layers = (leaves.len().ilog2() - output.len().ilog2()) as usize;
 
         match gpgkr_verify(&mut verifier, claim, &point, layers, security) {
-            Some((point, claim)) => {
-                mle(leaves.to_vec(), &point) == claim && verifier.check_eof().is_ok()
-            }
+            Some((point, claim)) => mle(leaves, &point) == claim && verifier.check_eof().is_ok(),
             None => false,
         }
     }
 
-    use poly::DenseMultilinearExtension;
-    fn mle(eval: Vec<Field>, point: &[Field]) -> Field {
-        let num_vars = point.len();
-
-        // TODO DenseMultilinearExtension::from_evaluations doesn't need a num_vars; it already checks based on evaluation size.
-        // TODO MLE should be able to handle empty point when given a single evaluation
-        DenseMultilinearExtension::from_evaluations(num_vars, eval)
-            .unwrap()
-            .evaluate(point)
-            .unwrap()
+    /// The multilinear extension of `evaluations` at `point`.
+    fn mle(evaluations: &[Field], point: &[Field]) -> Field {
+        poly::DenseMultilinearExtension::evaluate_exact(evaluations, point)
     }
 }
