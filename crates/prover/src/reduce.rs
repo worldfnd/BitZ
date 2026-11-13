@@ -7,16 +7,10 @@
 
 use common::{BitTable, ClaimError, Fold, LinearClaim, OpeningQuery, SecurityLevel};
 use field::F128;
-use gkr::{GrandProductCircuit, gpgkr_prove};
+use gkr::{gpgkr_prove, grand_product};
 use num_traits::ConstOne;
 use poly::eq_table;
 use transcript::ProverState;
-
-#[inline(never)]
-#[tracing::instrument(name = "Build grand-product circuit", level = "debug", skip_all)]
-fn init_circuit<S>(table: &BitTable, fold: &Fold<S>) -> GrandProductCircuit {
-    GrandProductCircuit::new(&fold.row_images, table)
-}
 
 /// Reduces the grand-product circuit to a factored claim on the committed bits.
 #[tracing::instrument(name = "Reduce grand products", skip_all)]
@@ -26,22 +20,15 @@ pub fn gkr_reduce<S>(
     table: &BitTable,
     security: SecurityLevel,
 ) -> Result<OpeningQuery, ClaimError> {
-    let circuit = init_circuit(table, fold);
-    let (_last_value, witnesses) = circuit.batched_eval(table.shape().columns());
+    let (_last_value, witnesses) = grand_product(&fold.row_images, table);
 
-    let (mut point, claim) = gpgkr_prove(
-        transcript,
-        table.shape().log_bits(),
-        &fold.zeta,
-        witnesses,
-        security,
-    );
+    let (mut point, claim) = gpgkr_prove(transcript, &fold.zeta, witnesses, security);
 
     // The multilinear extension of the constant-one table is one at every point.
     let inner_product_claim = claim - F128::ONE;
 
-    let r1 = fold.row_images.len().max(1).ilog2();
-    let r2 = point.len() - r1 as usize;
+    let r1 = fold.row_images.len().max(1).ilog2() as usize;
+    let r2 = point.len() - r1;
     // GKR returns coordinates in low-index-bit-first order: columns, then rows.
     let alfa_b = point.split_off(r2);
     let alfa_c = point;

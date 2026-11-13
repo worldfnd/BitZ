@@ -246,9 +246,9 @@ mod tests {
     #[test]
     #[should_panic(expected = "whole words")]
     fn transpose_rejects_a_table_with_too_few_columns() {
-        // `log_columns = 0`: a single column, well under the 128 a
-        // transposed row would need to fill one word -- even though this
-        // shape is perfectly admissible for `BitTable` itself.
+        // `log_columns = 0`: a single column, under the 8 a transposed row
+        // would need to fill even a byte -- even though this shape is
+        // perfectly admissible for `BitTable` itself.
         let shape = Shape::new(22, 0).unwrap();
         let packed = vec![F128::ZERO; (1 << shape.log_bits()) / PACKED_BITS];
         let table = BitTable::new(shape, bytemuck::cast_slice(&packed)).unwrap();
