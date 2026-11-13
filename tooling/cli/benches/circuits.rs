@@ -1,7 +1,7 @@
 //! End-to-end and per-stage benchmarks; instance generation is outside timing.
 
 use bitz_cli::{
-    ProjectBigIntToField,
+    ProjectI64ToField,
     benchmark::run,
     circuits::{BuiltinCircuit, CircuitInstance},
     end_to_end::CircuitProofSystem,
@@ -9,9 +9,9 @@ use bitz_cli::{
 use divan::Bencher;
 use pcs::SecurityLevel;
 
-type R = num_bigint::BigInt;
+type R = i64;
 type F = field::DynField;
-type Proj = ProjectBigIntToField;
+type Proj = ProjectI64ToField;
 
 fn main() {
     divan::main();

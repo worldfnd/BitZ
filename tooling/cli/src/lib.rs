@@ -37,17 +37,7 @@ impl<F: BitzClaimField> ProjectConstraint<BigInt, F> for ProjectBigIntToField {
     fn project(&self, constraint: &BigInt) -> F {
         // Coefficients are small in practice; reduce them without the heap.
         if let Some(value) = constraint.to_i128() {
-            let magnitude = value.unsigned_abs();
-            let magnitude = if magnitude < self.modulus {
-                magnitude
-            } else {
-                magnitude % self.modulus
-            };
-            return F::from(if value < 0 && magnitude != 0 {
-                self.modulus - magnitude
-            } else {
-                magnitude
-            });
+            return F::from(canonical_residue(value, self.modulus));
         }
         let mut reduced = constraint % &self.wide_modulus;
         if reduced.is_negative() {
@@ -58,6 +48,40 @@ impl<F: BitzClaimField> ProjectConstraint<BigInt, F> for ProjectBigIntToField {
                 .to_u128()
                 .expect("a canonical residue always fits a u128"),
         )
+    }
+}
+
+/// Projects [`i64`] constraints onto a prime field by reducing them
+/// canonically modulo its modulus, read when prepared.
+#[derive(Debug, Clone)]
+pub struct ProjectI64ToField {
+    modulus: u128,
+}
+
+impl<F: BitzClaimField> ProjectConstraint<i64, F> for ProjectI64ToField {
+    fn prepare() -> Self {
+        Self {
+            modulus: F::modulus().to_u128().expect("the modulus fits a u128"),
+        }
+    }
+
+    fn project(&self, constraint: &i64) -> F {
+        F::from(canonical_residue(i128::from(*constraint), self.modulus))
+    }
+}
+
+/// The canonical residue of `value` modulo `modulus`.
+fn canonical_residue(value: i128, modulus: u128) -> u128 {
+    let magnitude = value.unsigned_abs();
+    let magnitude = if magnitude < modulus {
+        magnitude
+    } else {
+        magnitude % modulus
+    };
+    if value < 0 && magnitude != 0 {
+        modulus - magnitude
+    } else {
+        magnitude
     }
 }
 
@@ -105,6 +129,16 @@ mod tests {
         for value in &values {
             let projected: F = projection.project(value);
             assert_eq!(projected, reference(value), "{value}");
+        }
+    }
+
+    #[test]
+    fn narrow_projection_matches_the_bigint_one() {
+        let wide = <ProjectBigIntToField as ProjectConstraint<BigInt, F>>::prepare();
+        let narrow = <ProjectI64ToField as ProjectConstraint<i64, F>>::prepare();
+        for value in [0_i64, 1, -1, 7, -7, 1 << 35, i64::MAX, i64::MIN] {
+            let projected: F = narrow.project(&value);
+            assert_eq!(projected, wide.project(&BigInt::from(value)), "{value}");
         }
     }
 }

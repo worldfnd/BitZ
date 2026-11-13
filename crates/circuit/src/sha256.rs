@@ -563,7 +563,7 @@ mod tests {
     use std::iter::Sum;
     use std::ops::{Add, AddAssign};
 
-    type R = num_bigint::BigInt;
+    type R = i64;
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     struct Bit(bool);

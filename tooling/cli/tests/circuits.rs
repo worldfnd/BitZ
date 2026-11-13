@@ -1,18 +1,66 @@
 use bitz_cli::{
-    ProjectBigIntToField,
+    ProjectI64ToField,
     circuits::{BuiltinCircuit, CircuitInstance},
     end_to_end::{CircuitProofSystem, CircuitStatement, Error},
 };
 use circuit::{
-    constraints::ConstraintGenerator,
+    constraints::{ConstraintGenerator, ConstraintMatrices},
     sha256::{ABC_BLOCK, ABC_DIGEST, INITIAL_STATE},
 };
-use num_traits::{Signed, ToPrimitive};
+use common::BitzConstraintRing;
+use num_bigint::BigInt;
+use num_traits::Signed;
 use pcs::SecurityLevel;
+use spartan::PreparedIntegerMatrices;
 
-type R = num_bigint::BigInt;
+type R = i64;
 type F = field::DynField;
-type Proj = ProjectBigIntToField;
+type Proj = ProjectI64ToField;
+
+fn synthesize<C: BitzConstraintRing>(statement: &CircuitInstance) -> ConstraintMatrices<C> {
+    let mut generator = ConstraintGenerator::<C>::new(statement.input_bits());
+    let inputs: Vec<_> = (0..statement.input_bits())
+        .map(|i| generator.input(i))
+        .collect();
+    statement.synthesize(&mut generator, &inputs).unwrap();
+    generator.into_matrices()
+}
+
+/// Synthesis over `i64` never wraps: it yields the matrices exact arithmetic
+/// does, under the same statement digest, and no Boolean assignment overflows
+/// a row evaluated in `i64`.
+#[test]
+fn sha_constraints_over_i64_match_exact_arithmetic() {
+    for circuit in BuiltinCircuit::ALL {
+        let statement = CircuitInstance::random(circuit, None, None).unwrap();
+        let exact = synthesize::<BigInt>(&statement);
+        let narrow = synthesize::<R>(&statement);
+        assert_eq!(
+            PreparedIntegerMatrices::new(narrow.clone())
+                .unwrap()
+                .digest(),
+            PreparedIntegerMatrices::new(exact.clone())
+                .unwrap()
+                .digest(),
+            "{circuit}: the ring changed the statement digest"
+        );
+        let narrow = narrow.map_coefficients(BigInt::from);
+        assert!(narrow == exact, "{circuit}: i64 coefficients wrapped");
+        for matrix in [&exact.a, &exact.b, &exact.c] {
+            for row in matrix.rows() {
+                let bound: BigInt = row
+                    .entries()
+                    .iter()
+                    .map(|(_, coefficient)| coefficient.abs())
+                    .sum();
+                assert!(
+                    bound <= BigInt::from(i64::MAX),
+                    "{circuit}: a row may overflow"
+                );
+            }
+        }
+    }
+}
 
 /// Every residual is below the narrowest prime a proof may draw, so no
 /// Boolean assignment satisfies a row modulo the prime without satisfying it
@@ -21,14 +69,8 @@ type Proj = ProjectBigIntToField;
 fn sha_constraint_residuals_cannot_wrap_modulo_the_prime() {
     for circuit in BuiltinCircuit::ALL {
         let statement = CircuitInstance::random(circuit, None, None).unwrap();
-        let mut generator = ConstraintGenerator::<R>::new(statement.input_bits());
-        let inputs: Vec<_> = (0..statement.input_bits())
-            .map(|i| generator.input(i))
-            .collect();
-        statement.synthesize(&mut generator, &inputs).unwrap();
-        let matrices = generator
-            .into_matrices()
-            .map_coefficients(|coefficient| coefficient.abs().to_u128().unwrap());
+        let matrices = synthesize::<R>(&statement)
+            .map_coefficients(|coefficient| u128::from(coefficient.unsigned_abs()));
         for ((a, b), c) in matrices
             .a
             .rows()
