@@ -14,6 +14,11 @@ const CUBIC_GRINDING_LABEL: &[u8] = b"gkr/cubic/v1";
 ///
 /// Points are little-endian, as in `poly`'s tables: `point[i]` is the
 /// coordinate of index bit `i`. Every layer adds one coordinate, at the top.
+///
+/// # Panics
+///
+/// If `point` does not have a coordinate per tree bit: the output layer has
+/// one value per tree.
 #[must_use]
 #[tracing::instrument(name = "Prove GKR", skip_all)]
 pub fn gpgkr_prove(
@@ -29,6 +34,13 @@ pub fn gpgkr_prove(
         lut_layers,
         upper_nodes,
     } = witnesses;
+    // Every layer below adds a coordinate, so this fixes the length of every
+    // point after it.
+    assert_eq!(
+        point.len(),
+        lut_layers.log_trees,
+        "the output has one value per tree, so the point has a coordinate per tree bit"
+    );
     // The leaves' sumcheck has the largest point, a coordinate per index bit
     // of its parent, layer 1.
     let mut eq_memory = EqTables::alloc_storage(lut_layers.layer1_nodes());
@@ -287,6 +299,12 @@ impl LutLayers {
         2 * self.words().len() * NIBBLES_IN_WORD
     }
 
+    /// Round 1's positions in the sumcheck whose children are layer `LAYER`:
+    /// half the nodes of its parent.
+    fn round_one_positions<const LAYER: usize>(&self) -> usize {
+        self.layer1_nodes() >> (LAYER + 1)
+    }
+
     /// The positions of round 1 handled as one piece: a lookup table's run,
     /// or a part of it, so that a piece never spans two lookup tables.
     fn piece(&self) -> usize {
@@ -311,7 +329,7 @@ impl LutLayers {
     ///
     /// Round 1 binds the top bit of the parent's index, so each node pairs
     /// with its partner `stride` nodes later, where `stride` is the number of
-    /// round-1 positions:
+    /// round-1 positions, [`LutLayers::round_one_positions`]:
     /// - Layer 2: a nibble is one node. The left pair is nibbles `k` and
     ///   `k + stride`, and the right pair the two half the layer on,
     ///   `k + 2·stride` and `k + 3·stride`.
@@ -327,12 +345,12 @@ impl LutLayers {
     /// per-position state machine that LLVM does not unroll.
     fn pairs<const LAYER: usize>(
         &self,
-        stride: usize,
         positions: Range<usize>,
     ) -> (
         [&[Field; 16]; 4],
         impl Iterator<Item = impl Iterator<Item = [usize; 4]>> + '_,
     ) {
+        let stride = self.round_one_positions::<LAYER>();
         let (words, len) = (self.words(), positions.len() / NIBBLES_IN_WORD);
         let at = STREAM[LAYER].map(|q| positions.start + q * stride);
         let luts = at.map(|k| &self.luts[k >> self.log_trees]);
@@ -414,7 +432,7 @@ fn bucket_sums(
     lut_layers: &LutLayers,
     eq_tables: &EqTables,
     point: &[Field],
-    buckets: impl Fn(&LutLayers, usize, Range<usize>, &[Field]) -> (Wide256, Wide256) + Sync,
+    buckets: impl Fn(&LutLayers, Range<usize>, &[Field]) -> (Wide256, Wide256) + Sync,
 ) -> (Wide256, Wide256) {
     let top = point.len() - 1;
     let (half, s) = (1 << top, lut_layers.log_trees);
@@ -425,7 +443,7 @@ fn bucket_sums(
         .map(|positions| {
             let h = eq_hi[positions.start >> s];
             let eq_lo = &eq_lo[positions.start % (1 << s)..][..positions.len()];
-            let (sum_b, sum_inf) = buckets(lut_layers, half, positions, eq_lo);
+            let (sum_b, sum_inf) = buckets(lut_layers, positions, eq_lo);
             (
                 Wide256::mul(h, sum_b.reduce()),
                 Wide256::mul(h, sum_inf.reduce()),
@@ -443,11 +461,10 @@ fn bucket_sums(
 /// each of the 16 buckets is multiplied once.
 fn leaf_buckets<const AT_ONE: bool>(
     lut_layers: &LutLayers,
-    stride: usize,
     positions: Range<usize>,
     eq: &[Field],
 ) -> (Wide256, Wide256) {
-    let ([lut, ..], pairs) = lut_layers.pairs::<LEAVES>(stride, positions);
+    let ([lut, ..], pairs) = lut_layers.pairs::<LEAVES>(positions);
     let mut bucket = [Field::ZERO; 16];
     for (word, eq) in pairs.zip(eq.chunks_exact(NIBBLES_IN_WORD)) {
         for ([a, ..], &e) in word.zip(eq) {
@@ -471,13 +488,12 @@ fn leaf_buckets<const AT_ONE: bool>(
 /// reads.
 fn layer1_buckets<const AT_ONE: bool>(
     lut_layers: &LutLayers,
-    stride: usize,
     positions: Range<usize>,
     eq: &[Field],
 ) -> (Wide256, Wide256) {
     // `l0` and `r0` read nibble `n0` in its lookup table, `l1` and `r1`
     // nibble `n1`.
-    let ([lut0, lut1, ..], pairs) = lut_layers.pairs::<LAYER1>(stride, positions);
+    let ([lut0, lut1, ..], pairs) = lut_layers.pairs::<LAYER1>(positions);
     let mut bucket = [[Field::ZERO; 16]; 4];
     // A position's keys in the buckets of `l0·r0`, `l1·r1`, `l1·r0` and
     // `l0·r1`: bits 0 and 2 from the nibble of the `l` factor, bits 1 and 3
@@ -522,7 +538,7 @@ fn layer2_sums<const LAYER: usize, const AT_ONE: bool>(
     lut_layers
         .pieces(half)
         .map(|positions| {
-            let (luts, pairs) = lut_layers.pairs::<LAYER>(half, positions.clone());
+            let (luts, pairs) = lut_layers.pairs::<LAYER>(positions.clone());
             let eq = eq[positions].chunks_exact(NIBBLES_IN_WORD);
             pairs
                 .zip(eq)
@@ -563,7 +579,7 @@ fn lut_bind<const LAYER: usize>(
         .zip(right.par_chunks_mut(piece))
         .zip(lut_layers.pieces(half))
         .for_each(|((left, right), positions)| {
-            let (luts, pairs) = lut_layers.pairs::<LAYER>(half, positions);
+            let (luts, pairs) = lut_layers.pairs::<LAYER>(positions);
             let left = left.chunks_exact_mut(NIBBLES_IN_WORD);
             let right = right.chunks_exact_mut(NIBBLES_IN_WORD);
             for ((left, right), word) in left.zip(right).zip(pairs) {
@@ -859,7 +875,7 @@ fn layer3(lut_layers: &LutLayers) -> Vec<Field> {
         .par_chunks_mut(lut_layers.piece())
         .zip(lut_layers.pieces(half))
         .for_each(|(nodes, positions)| {
-            let ([lut0, lut1, ..], pairs) = lut_layers.pairs::<LAYER1>(half, positions);
+            let ([lut0, lut1, ..], pairs) = lut_layers.pairs::<LAYER1>(positions);
             for (nodes, word) in nodes.chunks_exact_mut(NIBBLES_IN_WORD).zip(pairs) {
                 for (node, [n0, n1, ..]) in nodes.iter_mut().zip(word) {
                     *node = lut0[n0] * lut1[n1];
@@ -1157,6 +1173,29 @@ mod tests {
                 gpgkr_verify(&mut verifier, claim + Field::ONE, &point, layers, Bits100).is_none()
             );
         }
+    }
+
+    /// Proves the smallest shape from a point of `len(s)` coordinates, `s`
+    /// being the tree bits.
+    fn prove_from_point(len: fn(usize) -> usize) {
+        let (shape, packed, row_images) = instance(SMALLEST, Bits::Drawn, 1);
+        let table = table(shape, &packed);
+        let (_, witnesses) = GrandProductCircuit::new(&row_images, &table).batched_eval();
+        let point = vec![Field::from(5u128); len(shape.log_columns())];
+        let mut prover = transcript::build_prover("gkr-point", &point);
+        let _ = gpgkr_prove(&mut prover, &point, witnesses, Bits100);
+    }
+
+    #[test]
+    #[should_panic(expected = "a coordinate per tree bit")]
+    fn gpgkr_prove_rejects_a_short_point() {
+        prove_from_point(|s| s - 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "a coordinate per tree bit")]
+    fn gpgkr_prove_rejects_a_long_point() {
+        prove_from_point(|s| s + 1);
     }
 
     /// Each LUT-backed layer proved on its own, from a point whose top
