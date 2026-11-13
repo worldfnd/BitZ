@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::witgen::Z;
 use crate::{BoolWitness, Circuit, HintResult, PackedBits, ScalarBits, WitnessContext};
 use common::{TransposedWeights, VirtualMap, VirtualMapError};
-use field::F128;
+use field::{F128, Wide256};
 use rayon::prelude::*;
 use thiserror::Error;
 
@@ -265,10 +265,14 @@ impl MTransposeRecorder {
             }
         }
 
+        let column_offsets = column_offsets.into_boxed_slice();
+        let row_indices = row_indices.into_boxed_slice();
+        let digest = csc_digest(row_count, &column_offsets, &row_indices);
         MaterializedMTranspose {
             row_count,
-            column_offsets: column_offsets.into_boxed_slice(),
-            row_indices: row_indices.into_boxed_slice(),
+            column_offsets,
+            row_indices,
+            digest,
         }
     }
 }
@@ -279,6 +283,8 @@ pub struct MaterializedMTranspose {
     row_count: usize,
     column_offsets: Box<[u32]>,
     row_indices: Box<[u32]>,
+    /// Precomputed [`csc_digest`] of the fields above.
+    digest: [u8; 32],
 }
 
 impl MaterializedMTranspose {
@@ -344,11 +350,7 @@ impl MaterializedMTranspose {
             }
             F128::new(lo, hi)
         };
-        let parallel = force_parallel.unwrap_or_else(|| {
-            rayon::current_num_threads() > 1
-                && self.row_indices.len() >= PARALLEL_MATRIX_NNZ_THRESHOLD
-        });
-        if parallel {
+        if self.should_gathers_in_parallel(force_parallel) {
             output
                 .par_iter_mut()
                 .enumerate()
@@ -361,6 +363,56 @@ impl MaterializedMTranspose {
         }
         Ok(())
     }
+
+    /// Whether a gather splits its columns across threads, unless forced.
+    fn should_gathers_in_parallel(&self, force_parallel: Option<bool>) -> bool {
+        force_parallel.unwrap_or_else(|| {
+            rayon::current_num_threads() > 1
+                && self.row_indices.len() >= PARALLEL_MATRIX_NNZ_THRESHOLD
+        })
+    }
+
+    /// Computes `(row_weights (x) column_weights) * M` without writing the
+    /// tensor out: one unreduced product per nonzero entry in M, one reduction per column.
+    fn transpose_inner(
+        &self,
+        row_weights: &[F128],
+        column_weights: &[F128],
+        force_parallel: Option<bool>,
+    ) -> Result<TransposedWeights, VirtualMapError> {
+        let rows_per_column = row_weights.len();
+        // A bit count past `usize` covers every row of `M`.
+        let covers_m = rows_per_column
+            .checked_mul(column_weights.len())
+            .is_none_or(|bits| bits >= self.row_count);
+        if !rows_per_column.is_power_of_two() || !covers_m {
+            return Err(VirtualMapError::WeightCountMismatch);
+        }
+        let log_rows = rows_per_column.trailing_zeros();
+        let row_mask = rows_per_column - 1;
+
+        let evaluate = |column: usize| {
+            let start = self.column_offsets[column] as usize;
+            let end = self.column_offsets[column + 1] as usize;
+            let mut sum = Wide256::zero();
+            for &index in &self.row_indices[start..end] {
+                let index = index as usize;
+                sum += Wide256::mul(
+                    row_weights[index & row_mask],
+                    column_weights[index >> log_rows],
+                );
+            }
+            sum.reduce()
+        };
+        // Column zero is `M`'s constant column.
+        let bit_columns = 1..self.column_count();
+        let on_bits = if self.should_gathers_in_parallel(force_parallel) {
+            bit_columns.into_par_iter().map(evaluate).collect()
+        } else {
+            bit_columns.map(evaluate).collect()
+        };
+        Ok(TransposedWeights::new(on_bits, evaluate(0)))
+    }
 }
 
 /// Domain separation for the digest.
@@ -368,37 +420,37 @@ const DIGEST_DOMAIN: &[u8] = b"bitz/virtual-map/csc/v1";
 
 const DIGEST_CHUNK: usize = 1 << 12;
 
-impl VirtualMap for MaterializedMTranspose {
-    fn transpose(&self, weights: &[F128]) -> Result<TransposedWeights, VirtualMapError> {
-        let weights = weights
-            .get(..self.row_count)
-            .ok_or(VirtualMapError::WeightCountMismatch)?;
-        let mut transposed = self
-            .apply(weights)
-            .map_err(|_| VirtualMapError::WeightCountMismatch)?;
+/// Hashes the shape and the CSC payload of `M`.
+fn csc_digest(row_count: usize, column_offsets: &[u32], row_indices: &[u32]) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(DIGEST_DOMAIN);
+    for count in [row_count, column_offsets.len() - 1, row_indices.len()] {
+        hasher.update(&(count as u64).to_le_bytes());
+    }
+    // Hash the offsets too: two matrices can share every row index and
+    // still split the columns differently.
+    for indices in [column_offsets, row_indices] {
+        let mut bytes = Vec::with_capacity(DIGEST_CHUNK * size_of::<u32>());
+        for chunk in indices.chunks(DIGEST_CHUNK) {
+            bytes.clear();
+            bytes.extend(chunk.iter().flat_map(|index| index.to_le_bytes()));
+            hasher.update(&bytes);
+        }
+    }
+    *hasher.finalize().as_bytes()
+}
 
-        // Column zero is `M`'s constant column.
-        let on_bits = transposed.split_off(1);
-        Ok(TransposedWeights::new(on_bits, transposed[0]))
+impl VirtualMap for MaterializedMTranspose {
+    fn transpose(
+        &self,
+        row_weights: &[F128],
+        column_weights: &[F128],
+    ) -> Result<TransposedWeights, VirtualMapError> {
+        self.transpose_inner(row_weights, column_weights, None)
     }
 
     fn digest(&self) -> [u8; 32] {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(DIGEST_DOMAIN);
-        for count in [self.row_count, self.column_count(), self.nonzero_count()] {
-            hasher.update(&(count as u64).to_le_bytes());
-        }
-        // Hash the offsets too: two matrices can share every row index and
-        // still split the columns differently.
-        for indices in [&self.column_offsets, &self.row_indices] {
-            let mut bytes = Vec::with_capacity(DIGEST_CHUNK * size_of::<u32>());
-            for chunk in indices.chunks(DIGEST_CHUNK) {
-                bytes.clear();
-                bytes.extend(chunk.iter().flat_map(|index| index.to_le_bytes()));
-                hasher.update(&bytes);
-            }
-        }
-        *hasher.finalize().as_bytes()
+        self.digest
     }
 
     fn h_len(&self) -> usize {
@@ -514,11 +566,10 @@ mod tests {
     use crate::sha256::{COMPRESSION_HINT_BITS, COMPRESSION_INPUT_BITS, compression_circuit};
     use crate::witgen::Witgen;
     use crate::{BoolRepresentation, BoolWitness, Circuit};
-    use num_bigint::BigInt;
 
     use super::*;
 
-    type R = BigInt;
+    type R = num_bigint::BigInt;
 
     fn example_circuit<CS: Circuit>(circuit: &mut CS, inputs: &[CS::Bool; 3]) {
         let xy = circuit.xor(inputs[0].clone(), inputs[1].clone());
@@ -553,6 +604,14 @@ mod tests {
             .collect()
     }
 
+    /// Row and column factors that exactly cover `bits` virtual bits rounded up
+    /// to whole columns of `rows_per_column`.
+    fn factors(bits: usize, rows_per_column: usize) -> (Vec<F128>, Vec<F128>) {
+        let mut row_weights = challenges(rows_per_column + bits.div_ceil(rows_per_column));
+        let column_weights = row_weights.split_off(rows_per_column);
+        (row_weights, column_weights)
+    }
+
     /// `<M^T weights, (1 || f)>` must equal `<weights, h>`.
     #[test]
     fn the_transposed_claim_matches_the_claim_on_the_integer_witness() {
@@ -571,12 +630,14 @@ mod tests {
         assert_eq!(map.f_len(), f.bit_len() + 1, "M's columns are 1 || f");
         assert!(h.bit(0), "M's first row is the constant one");
 
-        let weights = challenges(map.h_len());
+        let (row_weights, column_weights) = factors(map.h_len(), 4);
         let direct = (0..h.bit_len())
             .filter(|index| h.bit(*index))
-            .fold(F128::new(0, 0), |sum, index| sum + weights[index]);
+            .fold(F128::new(0, 0), |sum, index| {
+                sum + row_weights[index % 4] * column_weights[index / 4]
+            });
 
-        let transposed = map.transpose(&weights).unwrap();
+        let transposed = map.transpose(&row_weights, &column_weights).unwrap();
         let through_f = (0..f.bit_len())
             .filter(|index| f.bit(*index))
             .fold(transposed.constant_weight(), |sum, index| {
@@ -593,9 +654,28 @@ mod tests {
         example_circuit(&mut materializer, &inputs);
         let map = materializer.finish();
 
-        let short = map.h_len() - 1;
+        let (row_weights, column_weights) = factors(map.h_len(), 4);
+        let short = column_weights.len() - 1;
         assert_eq!(
-            map.transpose(&challenges(short)),
+            map.transpose(&row_weights, &column_weights[..short]),
+            Err(VirtualMapError::WeightCountMismatch)
+        );
+    }
+
+    #[test]
+    fn row_counts_that_are_not_a_power_of_two_are_rejected() {
+        let mut materializer = MTransposeGenerator::new(3);
+        let inputs = materializer.take_boxed_inputs();
+        example_circuit(&mut materializer, &inputs);
+        let map = materializer.finish();
+
+        let (row_weights, column_weights) = factors(map.h_len(), 3);
+        assert_eq!(
+            map.transpose(&row_weights, &column_weights),
+            Err(VirtualMapError::WeightCountMismatch)
+        );
+        assert_eq!(
+            map.transpose(&[], &column_weights),
             Err(VirtualMapError::WeightCountMismatch)
         );
     }
@@ -606,15 +686,15 @@ mod tests {
         let inputs = materializer.take_boxed_inputs();
         example_circuit(&mut materializer, &inputs);
         let map = materializer.finish();
-        let weights = challenges(map.h_len());
-        let expected = map.transpose(&weights).unwrap();
+        let (row_weights, column_weights) = factors(map.h_len(), 4);
+        let expected = map.transpose(&row_weights, &column_weights).unwrap();
         for padded_len in [
-            map.h_len().next_power_of_two(),
-            2 * map.h_len().next_power_of_two(),
+            column_weights.len().next_power_of_two(),
+            2 * column_weights.len().next_power_of_two(),
         ] {
-            let mut padded = weights.clone();
+            let mut padded = column_weights.clone();
             padded.resize(padded_len, F128::new(13, 17));
-            assert_eq!(map.transpose(&padded).unwrap(), expected);
+            assert_eq!(map.transpose(&row_weights, &padded).unwrap(), expected);
         }
     }
 
@@ -695,6 +775,35 @@ mod tests {
             .apply_inner(&r, &mut parallel, Some(true))
             .unwrap();
         assert_eq!(parallel, sequential);
+    }
+
+    /// The factored gather must agree with `r * M` on the tensor written out.
+    #[test]
+    fn factored_and_dense_matrix_gathers_agree() {
+        const ROWS_PER_COLUMN: usize = 128;
+        let mut materializer = MTransposeGenerator::new(COMPRESSION_INPUT_BITS);
+        let matrix_inputs = materializer.take_boxed_inputs();
+        let _ = compression_circuit(&mut materializer, &matrix_inputs);
+        let transpose = materializer.finish();
+
+        let (row_weights, column_weights) = factors(transpose.row_count(), ROWS_PER_COLUMN);
+        let r: Vec<_> = (0..transpose.row_count())
+            .map(|index| {
+                row_weights[index % ROWS_PER_COLUMN] * column_weights[index / ROWS_PER_COLUMN]
+            })
+            .collect();
+        let mut dense = transpose.apply(&r).unwrap();
+        let on_bits = dense.split_off(1);
+        let expected = TransposedWeights::new(on_bits, dense[0]);
+
+        for parallel in [false, true] {
+            assert_eq!(
+                transpose
+                    .transpose_inner(&row_weights, &column_weights, Some(parallel))
+                    .unwrap(),
+                expected
+            );
+        }
     }
 
     #[test]

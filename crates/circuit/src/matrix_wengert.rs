@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 use std::iter::Sum;
-use std::mem::{size_of, size_of_val};
+use std::mem::size_of;
 use std::ops::{Add, AddAssign, Mul, Neg, Sub, SubAssign};
 use std::sync::{Arc, Mutex};
 
@@ -622,7 +622,7 @@ impl WengertTape {
             + self
                 .coefficients
                 .iter()
-                .map(|coefficient| size_of_val(coefficient.words()))
+                .map(StoredInteger::heap_bytes)
                 .sum::<usize>()
     }
 

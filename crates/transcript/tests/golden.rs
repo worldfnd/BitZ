@@ -1,7 +1,7 @@
 //! Pins the challenge sequence and wire bytes for one fixed transcript.
 //! A mismatch means the framing changed and every existing proof is invalid.
 
-use field::{F128, FqDefault};
+use field::F128;
 use transcript::{Proof, build_prover, build_verifier};
 
 const SESSION: &[u8] = b"golden-session";
@@ -16,12 +16,14 @@ const HINTS: &str = "aaaaaaaaaa";
 const C1: &str = "1d1bcda36aa1541c3752f7b23fedef81";
 const C2: &str = "e80729d4aa76e8e4d28dd085143eb3d5";
 
+type F = field::FqDefault;
+
 fn prove() -> (Proof, F128, F128) {
     let mut prover = build_prover(SESSION, INSTANCE);
     prover.prover_message(&MSG_F128);
     let c1: F128 = prover.verifier_message();
     prover.hint(&HINT);
-    prover.prover_message(&FqDefault::from(MSG_FQ));
+    prover.prover_message(&F::from(MSG_FQ));
     let c2: F128 = prover.verifier_message();
     (prover.finish(), c1, c2)
 }
@@ -43,10 +45,7 @@ fn verifier_replays_the_golden_transcript() {
     assert_eq!(verifier.prover_message::<F128>().unwrap(), MSG_F128);
     assert_eq!(verifier.verifier_message::<F128>(), c1);
     assert_eq!(verifier.hint::<[u8; 5]>().unwrap(), HINT);
-    assert_eq!(
-        verifier.prover_message::<FqDefault>().unwrap(),
-        FqDefault::from(MSG_FQ)
-    );
+    assert_eq!(verifier.prover_message::<F>().unwrap(), F::from(MSG_FQ));
     assert_eq!(verifier.verifier_message::<F128>(), c2);
     verifier.check_eof().unwrap();
 }

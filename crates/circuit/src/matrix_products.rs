@@ -5,9 +5,11 @@
 //! and `C(Mw)` vectors during witness generation. This module subsequently
 //! reduces those vectors modulo a runtime modulus. Large batches use Rayon;
 //! small batches stay sequential to avoid scheduling overhead.
+// TODO(alex): Should this be generalized over [`BitzClaimField`] as well?
 
 use crate::witgen::Z as Integer;
-use crate::{Bits, IntoWords};
+use crate::{BitWidth, IntoWords};
+use common::BitzConstraintRing;
 use num_traits::{One, Zero};
 use rayon::prelude::*;
 use std::cmp::Ordering;
@@ -21,14 +23,16 @@ pub struct RuntimeModulus<const PRIME_LIMBS: usize> {
 
 impl<const PRIME_LIMBS: usize> RuntimeModulus<PRIME_LIMBS> {
     /// Validates and stores a runtime modulus.
-    pub fn new<S: One + PartialOrd + Bits + IntoWords>(modulus: S) -> Result<Self, &'static str> {
+    pub fn new<S: One + PartialOrd + BitWidth + IntoWords>(
+        modulus: S,
+    ) -> Result<Self, &'static str> {
         if PRIME_LIMBS == 0 {
             return Err("a runtime field needs at least one limb");
         }
         if modulus <= S::one() {
             return Err("the modulus must be greater than one");
         }
-        if modulus.bits() > (PRIME_LIMBS as u64) * 64 {
+        if modulus.bit_width() > (PRIME_LIMBS as u64) * 64 {
             return Err("the modulus does not fit the selected limb count");
         }
         Ok(Self {
@@ -41,19 +45,20 @@ impl<const PRIME_LIMBS: usize> RuntimeModulus<PRIME_LIMBS> {
     }
 
     pub(crate) fn reduce(&self, value: &StoredInteger) -> [u64; PRIME_LIMBS] {
-        if value.words.is_empty() {
+        let words = value.words();
+        if words.is_empty() {
             return [0; PRIME_LIMBS];
         }
 
         if PRIME_LIMBS == 2 && self.words[1] >> 63 != 0 {
             let modulus = [self.words[0], self.words[1]];
-            let reduced = reduce_normalized_2(&value.words, modulus);
+            let reduced = reduce_normalized_2(words, modulus);
             let reduced = if value.is_negative() {
                 // The stored words are x + 2^(64k), where x is negative and
                 // k is the trimmed storage length. Recover x modulo p without
                 // materializing the two's-complement magnitude.
                 let mut width_power = [1, 0];
-                for _ in 0..value.words.len() {
+                for _ in 0..words.len() {
                     width_power = reduce_step_2(width_power, 0, modulus);
                 }
                 subtract_mod_2(reduced, width_power, modulus)
@@ -69,10 +74,10 @@ impl<const PRIME_LIMBS: usize> RuntimeModulus<PRIME_LIMBS> {
         let negative = value.is_negative();
         let magnitude;
         let words = if negative {
-            magnitude = twos_complement_magnitude(&value.words);
+            magnitude = twos_complement_magnitude(words);
             magnitude.as_slice()
         } else {
-            value.words.as_ref()
+            words
         };
 
         let mut reduced = [0; PRIME_LIMBS];
@@ -239,6 +244,7 @@ fn add_mod_words<const LIMBS: usize>(
 /// A dense vector of canonical runtime-field elements.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ModularVector<const PRIME_LIMBS: usize> {
+    /// Vector of canonical field element in little-endian limbs form, in row order.
     values: Vec<[u64; PRIME_LIMBS]>,
 }
 
@@ -253,7 +259,7 @@ impl<const PRIME_LIMBS: usize> ModularVector<PRIME_LIMBS> {
         self.values.is_empty()
     }
 
-    /// Dense canonical field elements in row order.
+    /// Slice of canonical field element in little-endian limbs form, in row order.
     pub fn values(&self) -> &[[u64; PRIME_LIMBS]] {
         &self.values
     }
@@ -261,6 +267,17 @@ impl<const PRIME_LIMBS: usize> ModularVector<PRIME_LIMBS> {
     /// Returns one canonical field element.
     pub fn get(&self, index: usize) -> [u64; PRIME_LIMBS] {
         self.values[index]
+    }
+}
+
+/// Converts two little-endian limbs, treating them as one `u128`.
+impl<T: From<u128>> From<&ModularVector<2>> for Vec<T> {
+    fn from(values: &ModularVector<2>) -> Self {
+        values
+            .values()
+            .iter()
+            .map(|&[low, high]| T::from(u128::from(low) | (u128::from(high) << 64)))
+            .collect()
     }
 }
 
@@ -274,27 +291,71 @@ pub struct MatrixProducts<const PRIME_LIMBS: usize> {
 
 /// An exact signed two's-complement integer with redundant sign limbs removed.
 ///
-/// Every matrix row has a materialized [`StoredInteger`]. Zero uses an empty
-/// boxed slice, so it does not perform a separate limb allocation.
+/// Every matrix row has a materialized [`StoredInteger`]. A value of at most
+/// one word is held inline; only wider values allocate their limbs.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct StoredInteger {
-    words: Box<[u64]>,
+    words: Words,
+}
+
+/// Normalized little-endian two's-complement words.
+///
+/// The derived equality and hash need one representation per integer:
+/// [`StoredInteger::from_normalized`] is the only place that picks a variant.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+enum Words {
+    /// Zero, or the only word of a one-word value.
+    Inline(u64),
+    /// Two words or more.
+    Heap(Box<[u64]>),
 }
 
 impl StoredInteger {
+    const ZERO: Self = Self {
+        words: Words::Inline(0),
+    };
+
+    /// Stores normalized little-endian two's-complement words; zero is empty.
+    fn from_normalized<W>(words: W) -> Self
+    where
+        W: AsRef<[u64]> + Into<Box<[u64]>>,
+    {
+        let words = match *words.as_ref() {
+            [] => Words::Inline(0),
+            [word] => Words::Inline(word),
+            _ => Words::Heap(words.into()),
+        };
+        Self { words }
+    }
+
     /// Normalized little-endian two's-complement words; zero is empty.
     pub fn words(&self) -> &[u64] {
-        &self.words
+        match &self.words {
+            Words::Inline(0) => &[],
+            Words::Inline(word) => std::slice::from_ref(word),
+            Words::Heap(words) => words,
+        }
     }
 
     /// Whether this integer is exactly zero.
     pub fn is_zero(&self) -> bool {
-        self.words.is_empty()
+        matches!(self.words, Words::Inline(0))
     }
 
     /// Whether this integer is negative.
     pub fn is_negative(&self) -> bool {
-        self.words.last().is_some_and(|word| word >> 63 == 1)
+        match &self.words {
+            Words::Inline(word) => word >> 63 == 1,
+            Words::Heap(words) => words.last().is_some_and(|word| word >> 63 == 1),
+        }
+    }
+
+    /// Bytes of limb storage allocated outside this value.
+    pub fn heap_bytes(&self) -> usize {
+        match &self.words {
+            Words::Inline(_) => 0,
+            Words::Heap(words) => size_of_val(words.as_ref()),
+        }
     }
 }
 
@@ -303,9 +364,7 @@ impl From<&num_bigint::BigInt> for StoredInteger {
     fn from(value: &num_bigint::BigInt) -> Self {
         use num_bigint::{BigUint, Sign};
         if value.is_zero() {
-            return Self {
-                words: Box::default(),
-            };
+            return Self::ZERO;
         }
 
         let (sign, bytes) = value.to_bytes_le();
@@ -335,9 +394,24 @@ impl From<&num_bigint::BigInt> for StoredInteger {
                 break;
             }
         }
-        Self {
-            words: magnitude.into_boxed_slice(),
-        }
+        Self::from_normalized(magnitude)
+    }
+}
+
+impl From<&StoredInteger> for num_bigint::BigInt {
+    fn from(value: &StoredInteger) -> Self {
+        let bytes = value
+            .words()
+            .iter()
+            .flat_map(|word| word.to_le_bytes())
+            .collect::<Vec<_>>();
+        Self::from_signed_bytes_le(&bytes)
+    }
+}
+
+impl From<&i128> for StoredInteger {
+    fn from(value: &i128) -> Self {
+        Self::from(&Integer::<2>::from(*value))
     }
 }
 
@@ -345,9 +419,7 @@ impl<const LIMBS: usize> From<&Integer<LIMBS>> for StoredInteger {
     /// Stores a gadget-local fixed integer without changing its value.
     fn from(value: &Integer<LIMBS>) -> Self {
         if value.is_zero() {
-            return Self {
-                words: Box::default(),
-            };
+            return Self::ZERO;
         }
 
         let words = value.words();
@@ -361,9 +433,7 @@ impl<const LIMBS: usize> From<&Integer<LIMBS>> for StoredInteger {
                 break;
             }
         }
-        Self {
-            words: words[..len].into(),
-        }
+        Self::from_normalized(&words[..len])
     }
 }
 
@@ -386,6 +456,22 @@ impl IntegerProducts {
         self.a_mw.push(StoredInteger::from(&a));
         self.b_mw.push(StoredInteger::from(&b));
         self.c_mw.push(StoredInteger::from(&c));
+    }
+
+    /// Whether `A(Mw) * B(Mw) = C(Mw)` holds row by row over the integers
+    /// (hence modulo every prime).
+    pub fn is_satisfied<R>(&self) -> bool
+    where
+        R: BitzConstraintRing + for<'a> From<&'a StoredInteger>,
+    {
+        self.a_mw.len() == self.b_mw.len()
+            && self.a_mw.len() == self.c_mw.len()
+            && self
+                .a_mw
+                .par_iter()
+                .zip(&self.b_mw)
+                .zip(&self.c_mw)
+                .all(|((a, b), c)| R::from(a) * R::from(b) == R::from(c))
     }
 
     /// Reduces every materialized element modulo `modulus`.
@@ -433,12 +519,7 @@ mod tests {
     type R = num_bigint::BigInt;
 
     fn stored_ring(value: &StoredInteger) -> R {
-        let bytes = value
-            .words()
-            .iter()
-            .flat_map(|word| word.to_le_bytes())
-            .collect::<Vec<_>>();
-        R::from_signed_bytes_le(&bytes)
+        R::from(value)
     }
 
     fn direct_row(row: &SparseRow<R>, integer_witness: &PackedWitness) -> R {
@@ -524,6 +605,70 @@ mod tests {
                 runtime_modulus.reduce(&stored),
                 expected.to_biguint().unwrap().into_words()
             );
+        }
+    }
+
+    #[test]
+    fn products_are_satisfied_over_the_integers_only_when_exact() {
+        let mut products = IntegerProducts::default();
+        assert!(products.is_satisfied::<R>());
+        let z = |value: i128| Integer::<2>::from(value);
+        products.push(z(-3), z(5), z(-15));
+        products.push(
+            z(i128::from(i64::MIN)),
+            z(i128::from(i64::MIN)),
+            z(1 << 126),
+        );
+        assert!(products.is_satisfied::<R>());
+        products.push(z(2), z(2), z(5));
+        assert!(!products.is_satisfied::<R>());
+        products.c_mw.pop();
+        assert!(
+            !products.is_satisfied::<R>(),
+            "a missing row is not satisfied"
+        );
+    }
+
+    #[test]
+    fn every_source_stores_an_integer_alike() {
+        for value in [
+            0_i128,
+            1,
+            -1,
+            7,
+            -7,
+            i128::from(i64::MAX),
+            i128::from(i64::MIN),
+            1 << 100,
+            -(1 << 100),
+        ] {
+            let from_bigint = StoredInteger::from(&R::from(value));
+            assert_eq!(StoredInteger::from(&value), from_bigint, "{value}");
+            assert_eq!(
+                StoredInteger::from(&Integer::<2>::from(value)),
+                from_bigint,
+                "{value}"
+            );
+            assert_eq!(stored_ring(&from_bigint), R::from(value));
+        }
+    }
+
+    #[test]
+    fn only_values_wider_than_one_word_allocate_limbs() {
+        assert_eq!(size_of::<StoredInteger>(), 2 * size_of::<u64>());
+        for value in [0_i128, 1, -1, i128::from(i64::MAX), i128::from(i64::MIN)] {
+            let stored = StoredInteger::from(&value);
+            assert_eq!(stored.heap_bytes(), 0, "{value}");
+            assert_eq!(
+                StoredInteger::from(&R::from(value)).heap_bytes(),
+                0,
+                "{value}"
+            );
+        }
+        for value in [1_i128 << 63, -(1 << 63) - 1, 1 << 100, -(1 << 100)] {
+            let stored = StoredInteger::from(&value);
+            assert!(stored.words().len() >= 2, "{value}");
+            assert_eq!(stored.heap_bytes(), size_of_val(stored.words()), "{value}");
         }
     }
 

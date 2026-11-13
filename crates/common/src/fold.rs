@@ -1,11 +1,12 @@
 //! The column fold, and the round state both sides hold once it closes.
 
-use field::{F128, FixedBasePow, Fq};
+use crypto_primitives::Semiring;
+use field::{F128, FixedBasePow};
 use poly::DenseMultilinearExtension;
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
-use crate::{BitTable, LinearClaim, Shape};
+use crate::{BitTable, BitzClaimField, BitzSemiring, LinearClaim, Shape};
 
 /// A round whose parts do not describe the shape they belong to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,21 +20,20 @@ pub enum FoldError {
 
 /// `eta_j = sum_i pi_q^{-1}(v^(1)_i) f_ij`, over the integers.
 ///
-/// Walks the column's packed elements and adds the exponent of each set bit,
-/// rather than reading `k_1` bits one at a time. `F128` is only a 128-bit
-/// container here; no field arithmetic happens.
+/// Walks the column's words and adds the exponent of each set bit, rather
+/// than reading `k_1` bits one at a time.
 ///
 /// `exponents` must be the claim's own — [`LinearClaim::row_exponents`].
 /// That is what makes the sum safe: each is below `q` and there are `k_1` of
 /// them, so it is at most `k_1 (q - 1)`, which admissibility put below `|K|`.
-pub fn fold_column(table: &BitTable<'_>, exponents: &[u128], column: usize) -> u128 {
+pub fn fold_column<S: Semiring>(table: &BitTable<'_>, exponents: &[S], column: usize) -> S {
     table
         .column(column)
         .iter()
-        .fold((0usize, 0u128), |(base, mut total), &element| {
+        .fold((0usize, S::zero()), |(base, mut total), &element| {
             let mut remaining = element;
             while remaining != 0 {
-                total += exponents[base + remaining.trailing_zeros() as usize];
+                total += &exponents[base + remaining.trailing_zeros() as usize];
                 // Clears the lowest set bit.
                 remaining &= remaining - 1;
             }
@@ -46,7 +46,7 @@ pub fn fold_column(table: &BitTable<'_>, exponents: &[u128], column: usize) -> u
 ///
 /// Columns are independent and read disjoint slices of the witness, so the
 /// only sharing is the read-only `exponents`.
-pub fn fold_columns(table: &BitTable<'_>, exponents: &[u128]) -> Vec<u128> {
+pub fn fold_columns<S: Semiring>(table: &BitTable<'_>, exponents: &[S]) -> Vec<S> {
     let columns = 0..table.shape().columns();
     #[cfg(feature = "parallel")]
     {
@@ -69,14 +69,17 @@ pub fn fold_columns(table: &BitTable<'_>, exponents: &[u128]) -> Vec<u128> {
 /// at most `2^21` -- and each is a windowed exponentiation over the whole
 /// 128-bit range, so this is what the round costs once the fold itself runs in
 /// parallel.
-pub fn column_images(comb: &FixedBasePow, folds: &[u128]) -> Vec<F128> {
+pub fn column_images<S: BitzSemiring>(comb: &FixedBasePow, folds: &[S]) -> Vec<F128> {
     #[cfg(feature = "parallel")]
     {
-        folds.par_iter().map(|&fold| comb.pow(fold)).collect()
+        folds
+            .par_iter()
+            .map(|fold| comb.pow(fold.clone()))
+            .collect()
     }
     #[cfg(not(feature = "parallel"))]
     {
-        folds.iter().map(|&fold| comb.pow(fold)).collect()
+        folds.iter().map(|fold| comb.pow(fold.clone())).collect()
     }
 }
 
@@ -87,10 +90,13 @@ pub fn column_images(comb: &FixedBasePow, folds: &[u128]) -> Vec<F128> {
 ///
 /// Takes the exponents rather than the claim: the fold has already lifted
 /// them, and lifting is a pass over `k_1` weights.
-pub fn row_images(comb: &FixedBasePow, exponents: &[u128]) -> Vec<F128> {
+pub fn row_images<S>(comb: &FixedBasePow, exponents: &[S]) -> Vec<F128>
+where
+    S: BitzSemiring,
+{
     exponents
         .iter()
-        .map(|&exponent| comb.pow(exponent))
+        .map(|exponent| comb.pow(exponent.clone()))
         .collect()
 }
 
@@ -103,10 +109,10 @@ pub fn row_images(comb: &FixedBasePow, exponents: &[u128]) -> Vec<F128> {
 /// The length is checked rather than zipped away. A short `folds` would
 /// otherwise sum over a prefix and return a value that is right for no
 /// instance -- and for the common `y = 0` it would look correct.
-pub fn reconstruct<const Q: u128>(
-    claim: &LinearClaim<Fq<Q>>,
-    folds: &[u128],
-) -> Result<Fq<Q>, FoldError> {
+pub fn reconstruct<F: BitzClaimField>(
+    claim: &LinearClaim<F>,
+    folds: &[F::Integer],
+) -> Result<F, FoldError> {
     if folds.len() != claim.column_weights().len() {
         return Err(FoldError::ColumnCountMismatch);
     }
@@ -114,7 +120,7 @@ pub fn reconstruct<const Q: u128>(
         .column_weights()
         .iter()
         .zip(folds)
-        .map(|(&weight, &fold)| weight * Fq::from(fold))
+        .map(|(weight, fold)| F::from(fold) * weight)
         .sum())
 }
 
@@ -124,9 +130,9 @@ pub fn reconstruct<const Q: u128>(
 /// claim, or from the transcript, so the two sides must arrive at
 /// identical values.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Fold {
+pub struct Fold<S> {
     /// The column folds `eta_j`, as integers.
-    pub folds: Vec<u128>,
+    pub folds: Vec<S>,
     /// `g^{eta_j}` over `j in {0,1}^s`, derived on both sides rather than
     /// transmitted. The grand product reads the table; `e0` is its extension
     /// at `zeta`.
@@ -140,7 +146,7 @@ pub struct Fold {
     pub e0: F128,
 }
 
-impl Fold {
+impl<S: BitzSemiring> Fold<S> {
     /// Derives `e0` and takes ownership of the round.
     ///
     /// Every length is checked against `shape`, including `row_images`, which
@@ -148,7 +154,7 @@ impl Fold {
     /// consumed it.
     pub fn new(
         shape: &Shape,
-        folds: Vec<u128>,
+        folds: Vec<S>,
         images: Vec<F128>,
         row_images: Vec<F128>,
         zeta: Vec<F128>,
@@ -187,6 +193,8 @@ mod tests {
     use crate::{BitZParams, Shape};
 
     const Q114: u128 = (1 << 114) - 11;
+    type F = field::Fq<Q114>;
+
     /// Comb window: `FixedBasePow` always covers the full 128-bit exponent
     /// range, and `win` trades table size against multiplies per call.
     const WINDOW: u32 = 8;
@@ -196,7 +204,7 @@ mod tests {
         Shape::new(7, 15).unwrap()
     }
 
-    fn params() -> BitZParams<Q114> {
+    fn params() -> BitZParams<F> {
         BitZParams::new(shape(), smallest_generator()).unwrap()
     }
 
@@ -204,8 +212,8 @@ mod tests {
         FixedBasePow::new(smallest_generator(), WINDOW)
     }
 
-    fn claim(row_weights: Vec<Fq<Q114>>, column_weights: Vec<Fq<Q114>>) -> LinearClaim<Fq<Q114>> {
-        LinearClaim::new(&params(), row_weights, column_weights, Fq::from(0u128)).unwrap()
+    fn claim(row_weights: Vec<F>, column_weights: Vec<F>) -> LinearClaim<F> {
+        LinearClaim::new(&params(), row_weights, column_weights, F::from(0u128)).unwrap()
     }
 
     fn witness(shape: &Shape, bits: &[(usize, usize)]) -> Vec<F128> {
@@ -227,8 +235,8 @@ mod tests {
     fn a_fold_adds_the_weights_of_the_set_rows() {
         let shape = shape();
         let weights: Vec<u128> = (0..shape.rows()).map(|row| (row as u128) * 1_000).collect();
-        let field_weights: Vec<Fq<Q114>> = weights.iter().map(|&w| Fq::from(w)).collect();
-        let claim = claim(field_weights, vec![Fq::ONE; shape.columns()]);
+        let field_weights: Vec<F> = weights.iter().map(|&w| F::from(w)).collect();
+        let claim = claim(field_weights, vec![F::ONE; shape.columns()]);
 
         let packed = witness(&shape, &[(1, 0), (5, 0), (127, 0), (64, 4)]);
         let table = BitTable::new(shape, bytemuck::cast_slice(&packed)).unwrap();
@@ -246,8 +254,8 @@ mod tests {
         let shape = shape();
         // Every weight at `q - 1` and every bit of the column set.
         let claim = claim(
-            vec![Fq::from(Q114 - 1); shape.rows()],
-            vec![Fq::ONE; shape.columns()],
+            vec![F::from(Q114 - 1); shape.rows()],
+            vec![F::ONE; shape.columns()],
         );
         let all: Vec<(usize, usize)> = (0..shape.rows()).map(|row| (row, 0)).collect();
         let packed = witness(&shape, &all);
@@ -262,10 +270,10 @@ mod tests {
     #[test]
     fn the_fold_agrees_with_the_bit_by_bit_definition() {
         let shape = shape();
-        let weights: Vec<Fq<Q114>> = (0..shape.rows())
-            .map(|row| Fq::from((row as u128 + 1) * (Q114 / 137)))
+        let weights: Vec<F> = (0..shape.rows())
+            .map(|row| F::from((row as u128 + 1) * (Q114 / 137)))
             .collect();
-        let claim = claim(weights, vec![Fq::ONE; shape.columns()]);
+        let claim = claim(weights, vec![F::ONE; shape.columns()]);
 
         let bits: Vec<(usize, usize)> = (0..shape.rows())
             .filter(|row| row % 3 == 0 || row % 7 == 1)
@@ -284,22 +292,22 @@ mod tests {
     #[test]
     fn the_reconstruction_reduces_a_fold_that_runs_past_the_modulus() {
         let shape = shape();
-        let claim = claim(vec![Fq::ONE; shape.rows()], vec![Fq::ONE; shape.columns()]);
+        let claim = claim(vec![F::ONE; shape.rows()], vec![F::ONE; shape.columns()]);
 
         // One column folding to exactly `q` contributes nothing.
         let mut folds = vec![0u128; shape.columns()];
         folds[0] = Q114;
-        assert_eq!(reconstruct(&claim, &folds), Ok(Fq::from(0u128)));
+        assert_eq!(reconstruct(&claim, &folds), Ok(F::from(0u128)));
 
         folds[0] = Q114 + 5;
-        assert_eq!(reconstruct(&claim, &folds), Ok(Fq::from(5u128)));
+        assert_eq!(reconstruct(&claim, &folds), Ok(F::from(5u128)));
     }
 
     #[test]
     fn the_row_images_are_the_generator_raised_to_each_weight() {
         let shape = shape();
-        let weights: Vec<Fq<Q114>> = (0..shape.rows()).map(|row| Fq::from(row as u128)).collect();
-        let claim = claim(weights, vec![Fq::ONE; shape.columns()]);
+        let weights: Vec<F> = (0..shape.rows()).map(|row| F::from(row as u128)).collect();
+        let claim = claim(weights, vec![F::ONE; shape.columns()]);
         let comb = comb();
 
         let images = row_images(&comb, &claim.row_exponents());
@@ -312,7 +320,7 @@ mod tests {
     #[test]
     fn the_reconstruction_refuses_a_fold_vector_that_is_not_one_per_column() {
         let shape = shape();
-        let claim = claim(vec![Fq::ONE; shape.rows()], vec![Fq::ONE; shape.columns()]);
+        let claim = claim(vec![F::ONE; shape.rows()], vec![F::ONE; shape.columns()]);
 
         // The dangerous case: a short vector would sum over a prefix, and at
         // the common `y = 0` an empty one would look correct.
@@ -416,7 +424,7 @@ mod tests {
             .collect();
         let round = Fold::new(
             &shape,
-            vec![0; shape.columns()],
+            vec![0_u64; shape.columns()],
             images.clone(),
             vec![F128::ONE; shape.rows()],
             zeta.clone(),

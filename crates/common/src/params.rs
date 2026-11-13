@@ -1,9 +1,13 @@
 //! The protocol parameters: everything both sides fix before a claim exists.
 
-use field::{F128, gf128::is_generator};
+use crate::{BitTable, BitzClaimField, Shape, TableError, VirtualMap};
+use field::{
+    F128, FqDefault, MAX_MODULUS_BITS,
+    gf128::{MULT_ORDER, is_generator},
+};
+use num_traits::{CheckedMul, ToBytes};
 use spongefish::Encoding;
-
-use crate::{BitTable, Shape, TableError, VirtualMap};
+use std::marker::PhantomData;
 
 /// A parameter set one of the pre-claim gates rejects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,12 +21,41 @@ pub enum ParamsError {
     /// itself only needs `s >= 1`. This gate is stricter than that until it
     /// is revisited.
     ColumnCountTooNarrow,
-    /// `(k_1 + 1)(Q - 1)` reaches `ord(g)`, so two folds could collide in the
-    /// exponent.
+    /// `(k_1 + 1)(Q - 1)` reaches `ord(g)`, so a sent fold and the honest
+    /// exponent could collide in the exponent.
     FoldBoundExceeded,
     /// The generator's order is not the full group, so a fold is not the only
     /// exponent producing its image.
     GeneratorOrderNotFull,
+    /// The fold gate leaves the fingerprint prime narrower than
+    /// [`MIN_PRIME_BITS`]: the shape is too tall.
+    PrimeTooNarrow,
+}
+
+/// The narrowest fingerprint prime a proof is run over: the width of the
+/// default modulus. The PIOP's soundness error is of order `1/q`, so no shape
+/// may push the prime below what the fixed modulus gave.
+pub const MIN_PRIME_BITS: u32 = FqDefault::META.bits;
+
+/// Width of the fingerprint prime for `shape`: the largest `bits` such that
+/// every prime in `[2^(bits-1), 2^bits)` passes the fold gate of
+/// [`BitZParams::new`], capped by the field's [`MAX_MODULUS_BITS`].
+///
+/// The prime is drawn from this interval by both sides, so the width must
+/// be fixed by the shape.
+///
+/// Wider is sounder, so the interval is the widest the gate admits. The gate
+/// is the paper's `q < (|K| - 1) / k_1`, and with `k_1 = 2^log_rows` that is
+/// exactly `128 - log_rows` bits.
+pub fn prime_bits(shape: &Shape) -> Result<u32, ParamsError> {
+    // `rows * q < ord(g)` admits `q <= (ord(g) - 1) / rows`.
+    let max_modulus = (MULT_ORDER - 1) / shape.rows() as u128;
+    // `2^bits - 1 <= max_modulus < 2^(bits + 1) - 1`.
+    let bits = (max_modulus + 1).ilog2().min(MAX_MODULUS_BITS);
+    if bits < MIN_PRIME_BITS {
+        return Err(ParamsError::PrimeTooNarrow);
+    }
+    Ok(bits)
 }
 
 /// The shape, the modulus and the generator: what a proof is fixed against.
@@ -30,47 +63,52 @@ pub enum ParamsError {
 /// The two roles derive their own setups from this, so neither can be built
 /// against parameters the other did not see.
 ///
-/// `Q` is a const parameter, not a field: the weights are `Fq<Q>`, whose
-/// modulus lives in the type.
+/// The modulus is not a value here, it's accessible as `F::modulus()`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BitZParams<const Q: u128> {
+pub struct BitZParams<F> {
     shape: Shape,
     generator: F128,
+    _phantom: PhantomData<F>,
 }
 
-impl<const Q: u128> BitZParams<Q> {
+impl<F: BitzClaimField> BitZParams<F> {
     /// Runs the gates that need only the parameters.
     pub fn new(shape: Shape, generator: F128) -> Result<Self, ParamsError> {
-        // `Fq<Q>` asserts Q is an odd prime below 2^126 on its own behalf, so
-        // no modulus gate is needed here.
+        // The field asserts its modulus is an odd prime below 2^126 on its own
+        // behalf, so no modulus gate is needed here.
 
         // A limit of the transpose, not of the protocol; see the variant.
         if shape.columns() < BitTable::BITS {
             return Err(ParamsError::ColumnCountTooNarrow);
         }
 
-        // `ord(g) > (k_1 + 1)(Q - 1)`, the paper's requisite. A fold is an
-        // integer at most `k_1 (Q - 1)` while the value it is compared against
-        // is at most `Q - 1`, so the two differ by at most the sum; the
-        // exponent is only ever seen modulo `ord(g)`, and a gap that never
-        // reaches the group order cannot close.
+        // `g^{<f_j, gamma>} = g^{eta_j}` implies integer equality only if both
+        // sides, each in `[0, k_1 (Q - 1)]`, differ by less than `ord(g)`.
+        // The bound is the paper's `Q < (|K| - 1) / k_1`, under which Round 1
+        // of 4.3. "The BitZ IOP for the core LinBitsRings relation" is
+        // skipped: `k_1 Q < ord(g)`. With `k_1` a power of two it admits every
+        // `(128 - log_rows)`-bit prime, so a prime of the width [`prime_bits`]
+        // derives always passes.
         //
-        // Overflow is itself a rejection: past `2^128 - 1` there is no room
-        // left. `ord(g)` is `u128::MAX`, the full order the generator gate
-        // below establishes.
-        let Some(gap) = (Q - 1).checked_mul(shape.rows() as u128 + 1) else {
-            return Err(ParamsError::FoldBoundExceeded);
-        };
-        // A `u128` cannot exceed `ord(g)`, so equalling it is the only way
-        // left to reach it.
-        if gap == u128::MAX {
+        // `ord(g) = 2^128 - 1` is a property of `F128`, established by the
+        // generator gate below. A product that overflows exceeds it too.
+        let f128_order = F::Integer::from(MULT_ORDER);
+        let rows = F::Integer::from(shape.rows() as u64);
+        if !rows
+            .checked_mul(&F::modulus())
+            .is_some_and(|reach| reach < f128_order)
+        {
             return Err(ParamsError::FoldBoundExceeded);
         }
         if !is_generator(generator) {
             return Err(ParamsError::GeneratorOrderNotFull);
         }
 
-        Ok(Self { shape, generator })
+        Ok(Self {
+            shape,
+            generator,
+            _phantom: PhantomData,
+        })
     }
 
     /// Views a packed witness through the configured shape.
@@ -92,25 +130,24 @@ impl<const Q: u128> BitZParams<Q> {
     /// The largest fold the verifier may accept, `k_1 (Q - 1)`.
     ///
     /// [`Self::new`]'s gate puts it below `ord(g)`.
-    pub fn fold_bound(&self) -> u128 {
-        (self.shape.rows() as u128) * (Q - 1)
+    pub fn fold_bound(&self) -> F::Integer {
+        let rows = u64::try_from(self.shape.rows()).expect("Too many rows");
+        let rows = F::Integer::from(rows);
+        let max_f = F::max_value().lift();
+        rows.checked_mul(&max_f).expect("Multiplication overflow")
     }
 }
 
-/// Every field is fixed width, so distinct parameter sets cannot encode alike.
-impl<const Q: u128> Encoding<[u8]> for BitZParams<Q> {
+/// Every field is fixed width, the modulus at `F::Integer`'s, so distinct
+/// parameter sets cannot encode alike.
+impl<F: BitzClaimField> Encoding<[u8]> for BitZParams<F> {
     fn encode(&self) -> impl AsRef<[u8]> {
-        let mut frame = [0u8; 48];
-        let mut at = 0;
-        let mut put = |bytes: &[u8]| {
-            frame[at..at + bytes.len()].copy_from_slice(bytes);
-            at += bytes.len();
-        };
-
-        put(&(self.shape.log_rows() as u64).to_le_bytes());
-        put(&(self.shape.log_columns() as u64).to_le_bytes());
-        put(&Q.to_le_bytes());
-        put(&self.generator.to_bytes());
+        let modulus = F::modulus().to_le_bytes();
+        let mut frame = Vec::with_capacity(32 + modulus.as_ref().len());
+        frame.extend_from_slice(&(self.shape.log_rows() as u64).to_le_bytes());
+        frame.extend_from_slice(&(self.shape.log_columns() as u64).to_le_bytes());
+        frame.extend_from_slice(modulus.as_ref());
+        frame.extend_from_slice(&self.generator.to_bytes());
         frame
     }
 }
@@ -134,19 +171,19 @@ pub enum VirtualParamsError {
 /// exponent, and what the claim's weights are counted against. The committed
 /// shape belongs to `f` alone and reaches only the table and the opening.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct VirtualParams<const Q: u128> {
-    claim: BitZParams<Q>,
+pub struct VirtualParams<F> {
+    claim: BitZParams<F>,
     committed: Shape,
 }
 
-impl<const Q: u128> VirtualParams<Q> {
+impl<F: BitzClaimField> VirtualParams<F> {
     /// Checks both shapes against the map before either is used.
     ///
     /// Zero padding is what makes the inequalities rather than equalities: both
     /// vectors are padded up to their shape so that they have multilinear
     /// extensions, and padding contributes nothing.
     pub fn new(
-        claim: BitZParams<Q>,
+        claim: BitZParams<F>,
         committed: Shape,
         map: &impl VirtualMap,
     ) -> Result<Self, VirtualParamsError> {
@@ -165,7 +202,7 @@ impl<const Q: u128> VirtualParams<Q> {
     }
 
     /// The parameters the fold and the reduction read, shaped to `h`.
-    pub fn claim(&self) -> &BitZParams<Q> {
+    pub fn claim(&self) -> &BitZParams<F> {
         &self.claim
     }
 
@@ -183,12 +220,11 @@ impl<const Q: u128> VirtualParams<Q> {
 
 /// Distinct from a plain [`BitZParams`] frame by length, so a proof of one
 /// cannot replay as a proof of the other.
-impl<const Q: u128> Encoding<[u8]> for VirtualParams<Q> {
+impl<F: BitzClaimField> Encoding<[u8]> for VirtualParams<F> {
     fn encode(&self) -> impl AsRef<[u8]> {
-        let mut frame = [0u8; 64];
-        frame[..48].copy_from_slice(self.claim.encode().as_ref());
-        frame[48..56].copy_from_slice(&(self.committed.log_rows() as u64).to_le_bytes());
-        frame[56..].copy_from_slice(&(self.committed.log_columns() as u64).to_le_bytes());
+        let mut frame = self.claim.encode().as_ref().to_vec();
+        frame.extend_from_slice(&(self.committed.log_rows() as u64).to_le_bytes());
+        frame.extend_from_slice(&(self.committed.log_columns() as u64).to_le_bytes());
         frame
     }
 }
@@ -201,8 +237,9 @@ mod tests {
 
     /// The largest prime below `2^114`, the top of the sampling range.
     const Q114: u128 = (1 << 114) - 11;
+    type F = field::Fq<Q114>;
 
-    fn params_at(shape: Shape) -> Result<BitZParams<Q114>, ParamsError> {
+    fn params_at(shape: Shape) -> Result<BitZParams<F>, ParamsError> {
         BitZParams::new(shape, smallest_generator())
     }
 
@@ -220,6 +257,7 @@ mod tests {
     impl VirtualMap for Dimensions {
         fn transpose(
             &self,
+            _: &[F128],
             _: &[F128],
         ) -> Result<crate::TransposedWeights, crate::VirtualMapError> {
             unreachable!("the parameter gates never apply the map")
@@ -241,7 +279,7 @@ mod tests {
     fn virtual_params_for(
         h_len: usize,
         f_len: usize,
-    ) -> Result<VirtualParams<Q114>, VirtualParamsError> {
+    ) -> Result<VirtualParams<F>, VirtualParamsError> {
         VirtualParams::new(
             params_at(shape()).unwrap(),
             shape(),
@@ -297,8 +335,7 @@ mod tests {
     /// through.
     #[test]
     fn the_table_is_shaped_by_the_committed_bits() {
-        let claim =
-            BitZParams::<Q114>::new(Shape::new(8, 15).unwrap(), smallest_generator()).unwrap();
+        let claim = BitZParams::<F>::new(Shape::new(8, 15).unwrap(), smallest_generator()).unwrap();
         let committed = shape();
         let params =
             VirtualParams::new(claim, committed, &Dimensions { h_len: 4, f_len: 4 }).unwrap();
@@ -309,12 +346,11 @@ mod tests {
 
     #[test]
     fn rejects_a_shape_the_modulus_is_too_large_for() {
-        // `t = 13` is the widest row count this prime admits; 14 is not. The
-        // `+1` is what separates the two: `k_1 (Q - 1)` alone would still fit
-        // at `t = 14`.
-        assert!(params_at(Shape::new(13, 22).unwrap()).is_ok());
+        // `t = 14` is the widest row count this prime admits: `2^14 Q114` is
+        // `2^128 - 11 * 2^14`, under `ord(g)`; `2^15 Q114` is not.
+        assert!(params_at(Shape::new(14, 21).unwrap()).is_ok());
         assert_eq!(
-            params_at(Shape::new(14, 21).unwrap()).err(),
+            params_at(Shape::new(15, 20).unwrap()).err(),
             Some(ParamsError::FoldBoundExceeded)
         );
     }
@@ -325,7 +361,7 @@ mod tests {
         // that can fail: `Q114` already caps `t` at 13, and with it `s` at 9
         // or more.
         const Q100: u128 = (1 << 100) - 15;
-        let params_q100 = |shape| BitZParams::<Q100>::new(shape, smallest_generator());
+        let params_q100 = |shape| BitZParams::<field::Fq<Q100>>::new(shape, smallest_generator());
 
         assert!(params_q100(Shape::new(15, 7).unwrap()).is_ok());
         assert_eq!(
@@ -337,9 +373,63 @@ mod tests {
     #[test]
     fn rejects_a_generator_of_partial_order() {
         assert_eq!(
-            BitZParams::<Q114>::new(shape(), F128::ONE).err(),
+            BitZParams::<F>::new(shape(), F128::ONE).err(),
             Some(ParamsError::GeneratorOrderNotFull)
         );
+    }
+
+    /// The gate of [`BitZParams::new`] at the top of a `bits`-bit interval.
+    fn gate_admits(bits: u32, shape: &Shape) -> bool {
+        let top = (1u128 << bits) - 1;
+        top.checked_mul(shape.rows() as u128)
+            .is_some_and(|reach| reach < MULT_ORDER)
+    }
+
+    /// One shape per admissible row count.
+    fn shapes_by_rows() -> impl Iterator<Item = Shape> {
+        use crate::shape::{MAX_LOG_BITS, MIN_LOG_BITS, PACK_BITS};
+        (PACK_BITS as usize..=MAX_LOG_BITS)
+            .map(|log_rows| Shape::new(log_rows, MIN_LOG_BITS.saturating_sub(log_rows)).unwrap())
+    }
+
+    #[test]
+    fn the_prime_width_is_the_widest_interval_the_gate_admits() {
+        for shape in shapes_by_rows() {
+            match prime_bits(&shape) {
+                Ok(bits) => {
+                    assert!(bits >= MIN_PRIME_BITS, "{shape:?}");
+                    assert!(gate_admits(bits, &shape), "{shape:?}");
+                    assert!(
+                        bits == MAX_MODULUS_BITS || !gate_admits(bits + 1, &shape),
+                        "{shape:?}"
+                    );
+                }
+                Err(error) => {
+                    assert_eq!(error, ParamsError::PrimeTooNarrow, "{shape:?}");
+                    assert!(!gate_admits(MIN_PRIME_BITS, &shape), "{shape:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_prime_width_at_the_row_counts_in_use() {
+        for (log_rows, bits) in [(7, 121), (14, 114), (21, 107), (28, 100)] {
+            let shape = Shape::new(log_rows, 22usize.saturating_sub(log_rows)).unwrap();
+            assert_eq!(prime_bits(&shape), Ok(bits), "{log_rows}");
+        }
+        let shape = Shape::new(29, 0).unwrap();
+        assert_eq!(prime_bits(&shape), Err(ParamsError::PrimeTooNarrow));
+    }
+
+    /// Both the column-width gate and the prime-width gate must admit `Q114`.
+    #[test]
+    fn the_prime_width_agrees_with_the_gate() {
+        for shape in shapes_by_rows() {
+            let reaches = shape.columns() >= BitTable::BITS
+                && prime_bits(&shape).is_ok_and(|bits| bits >= F::META.bits);
+            assert_eq!(params_at(shape).is_ok(), reaches, "{shape:?}");
+        }
     }
 
     #[test]

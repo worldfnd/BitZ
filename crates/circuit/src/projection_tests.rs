@@ -1,7 +1,7 @@
 use std::array;
 
 use field::F128;
-use num_bigint::{BigInt, BigUint, Sign};
+use num_bigint::Sign;
 use num_traits::{One, Signed, Zero};
 
 use crate::constraints::BoolLinearCombination;
@@ -20,26 +20,29 @@ use crate::stats::Dummy;
 use crate::witgen::{PackedWitness, ProductWitgen};
 use crate::{Circuit, HintResult, PackedBits, ScalarBits, WitnessContext};
 
-fn from_hex(value: &[u8]) -> BigUint {
-    BigUint::parse_bytes(value, 16).unwrap()
+type S = num_bigint::BigUint;
+type R = num_bigint::BigInt;
+
+fn from_hex(value: &[u8]) -> S {
+    S::parse_bytes(value, 16).unwrap()
 }
 
-fn scalar_modulus() -> BigUint {
+fn scalar_modulus() -> S {
     from_hex(b"ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551")
 }
 
-fn inverse(value: &BigUint, modulus: &BigUint) -> BigUint {
-    let mut t = BigInt::zero();
-    let mut new_t = BigInt::one();
-    let mut r = BigInt::from(modulus.clone());
-    let mut new_r = BigInt::from(value.clone());
+fn inverse(value: &S, modulus: &S) -> S {
+    let mut t = R::zero();
+    let mut new_t = R::one();
+    let mut r = R::from(modulus.clone());
+    let mut new_r = R::from(value.clone());
     while !new_r.is_zero() {
         let quotient = &r / &new_r;
         (t, new_t) = (new_t.clone(), t - &quotient * new_t);
         (r, new_r) = (new_r.clone(), r - quotient * new_r);
     }
-    assert_eq!(r, BigInt::one());
-    let modulus = BigInt::from(modulus.clone());
+    assert_eq!(r, R::one());
+    let modulus = R::from(modulus.clone());
     let mut t = t % &modulus;
     if t.sign() == Sign::Minus {
         t += modulus;
@@ -47,7 +50,7 @@ fn inverse(value: &BigUint, modulus: &BigUint) -> BigUint {
     t.to_biguint().unwrap()
 }
 
-fn signature_aux(digest: &BigUint) -> [BigUint; 6] {
+fn signature_aux(digest: &S) -> [S; 6] {
     let modulus = scalar_modulus();
     let gx = from_hex(b"6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296");
     let gy = from_hex(b"4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5");
@@ -63,7 +66,7 @@ fn signature_aux(digest: &BigUint) -> [BigUint; 6] {
 }
 
 fn p256_input() -> Box<[bool; VERIFY_DIGEST_INPUT_BITS]> {
-    let digest = BigUint::one();
+    let digest = S::one();
     let aux = signature_aux(&digest);
     let bits: Box<[bool]> = (0..VERIFY_DIGEST_INPUT_BITS)
         .map(|index| {
@@ -102,17 +105,17 @@ fn dummy_inputs<const N: usize>() -> Box<[Dummy; N]> {
         .unwrap_or_else(|_| unreachable!("dummy input length is fixed"))
 }
 
-fn stored_bigint(value: &StoredInteger) -> BigInt {
+fn stored_bigint(value: &StoredInteger) -> R {
     let bytes = value
         .words()
         .iter()
         .flat_map(|word| word.to_le_bytes())
         .collect::<Vec<_>>();
-    BigInt::from_signed_bytes_le(&bytes)
+    R::from_signed_bytes_le(&bytes)
 }
 
-fn reduced_words(value: &BigInt, modulus: &BigUint) -> [u64; 2] {
-    let modulus = BigInt::from(modulus.clone());
+fn reduced_words(value: &R, modulus: &S) -> [u64; 2] {
+    let modulus = R::from(modulus.clone());
     let mut value = value % &modulus;
     if value.is_negative() {
         value += modulus;
@@ -134,12 +137,12 @@ struct DirectAbcProjector<'a> {
     integer_witness: &'a PackedWitness,
     exact: &'a IntegerProducts,
     reduced: MatrixProducts<2>,
-    modulus: BigUint,
+    modulus: S,
 }
 
 impl<'a> DirectAbcProjector<'a> {
     fn new(label: &'a str, witgen: &'a ProductWitgen) -> Self {
-        let modulus = (BigUint::one() << 128_usize) - BigUint::from(159_u64);
+        let modulus = (S::one() << 128_usize) - S::from(159_u64);
         let runtime_modulus = RuntimeModulus::<2>::new(modulus.clone()).unwrap();
         Self {
             label,
@@ -165,15 +168,15 @@ impl<'a> DirectAbcProjector<'a> {
 
 impl Circuit for DirectAbcProjector<'_> {
     type Bool = Dummy;
-    type Coefficient<const LIMBS: usize> = BigInt;
-    type Z<const LIMBS: usize> = BigInt;
+    type Coefficient<const LIMBS: usize> = R;
+    type Z<const LIMBS: usize> = R;
 
-    fn coefficient_from_le_words<const LIMBS: usize>(words: &[u64]) -> BigInt {
+    fn coefficient_from_le_words<const LIMBS: usize>(words: &[u64]) -> R {
         let bytes = words
             .iter()
             .flat_map(|word| word.to_le_bytes())
             .collect::<Vec<_>>();
-        BigInt::from_bytes_le(Sign::Plus, &bytes)
+        R::from_bytes_le(Sign::Plus, &bytes)
     }
 
     fn xor(&mut self, _: Dummy, _: Dummy) -> Dummy {
@@ -185,7 +188,7 @@ impl Circuit for DirectAbcProjector<'_> {
         _: H,
     ) -> ScalarBits<Dummy, N>
     where
-        H: Fn(&dyn WitnessContext<BigInt, Dummy, BigInt>) -> HintResult<PackedBits<N, M>>
+        H: Fn(&dyn WitnessContext<R, Dummy, R>) -> HintResult<PackedBits<N, M>>
             + Send
             + Sync
             + 'static,
@@ -194,18 +197,13 @@ impl Circuit for DirectAbcProjector<'_> {
         ScalarBits([Dummy; N])
     }
 
-    fn bitz<const LIMBS: usize>(&mut self, _: Dummy) -> BigInt {
+    fn bitz<const LIMBS: usize>(&mut self, _: Dummy) -> R {
         let witness = self.next_integer_witness;
         self.next_integer_witness += 1;
-        BigInt::from(self.integer_witness.bit(witness + 1))
+        R::from(self.integer_witness.bit(witness + 1))
     }
 
-    fn assert_r1c<const LIMBS: usize>(
-        &mut self,
-        expected_a: BigInt,
-        expected_b: BigInt,
-        expected_c: BigInt,
-    ) {
+    fn assert_r1c<const LIMBS: usize>(&mut self, expected_a: R, expected_b: R, expected_c: R) {
         let row = self.row;
         self.row += 1;
         assert_eq!(
@@ -246,10 +244,7 @@ impl Circuit for DirectAbcProjector<'_> {
         );
     }
 
-    fn sign_extend_z<const FROM_LIMBS: usize, const TO_LIMBS: usize>(
-        &mut self,
-        value: BigInt,
-    ) -> BigInt {
+    fn sign_extend_z<const FROM_LIMBS: usize, const TO_LIMBS: usize>(&mut self, value: R) -> R {
         assert!(TO_LIMBS >= FROM_LIMBS);
         value
     }

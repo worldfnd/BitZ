@@ -1043,7 +1043,7 @@ mod tests {
     }
 
     fn table(shape: Shape, packed: &[F128]) -> BitTable<'_> {
-        BitZParams::<Q>::new(shape, smallest_generator())
+        BitZParams::<field::Fq<Q>>::new(shape, smallest_generator())
             .unwrap()
             .table(packed)
             .unwrap()

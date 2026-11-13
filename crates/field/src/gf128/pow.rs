@@ -1,9 +1,10 @@
 //! Exponentiation, inversion, and the primitive-element test.
 
-use std::fmt::{Debug, Formatter, Result as FmtResult};
-
 use super::{F128, kernel};
-use num_traits::{ConstOne, Inv, Pow, Zero};
+use crypto_primitives::Semiring;
+use num_traits::{ConstOne, Inv, Pow, ToPrimitive, Zero};
+use std::fmt::{Debug, Formatter, Result as FmtResult};
+use std::ops::{BitAnd, ShrAssign};
 
 /// The order of the multiplicative group, `2^128 - 1`.
 ///
@@ -175,14 +176,19 @@ impl FixedBasePow {
         Self { table, win }
     }
 
-    pub fn pow(&self, exp: u128) -> F128 {
-        let mask = (1u128 << self.win) - 1;
+    pub fn pow<S>(&self, exp: S) -> F128
+    where
+        S: Semiring + BitAnd<Output = S> + ToPrimitive + ShrAssign<u32>,
+    {
+        let two = S::one() + S::one();
+        let mask = two.pow(self.win) - S::one();
         let mut acc = F128::ONE;
         let mut e = exp;
         let mut i = 0;
-        while e != 0 {
-            let d = (e & mask) as usize;
-            if d != 0 {
+        while !e.is_zero() {
+            let d = e.clone() & mask.clone();
+            if !d.is_zero() {
+                let d = d.to_usize().expect("Value is too large");
                 acc *= self.table[i][d];
             }
             e >>= self.win;

@@ -1,10 +1,10 @@
 //! `ProveBitZ`.
 
 use common::{
-    BitTable, ClaimError, LinearClaim, OpeningQuery, SecurityLevel, TableError, VirtualMap,
-    VirtualMapError, VirtualStatement,
+    BitTable, BitzClaimField, ClaimError, LinearClaim, OpeningQuery, SecurityLevel, TableError,
+    VirtualMap, VirtualMapError, VirtualStatement,
 };
-use field::{F128, Fq};
+use field::F128;
 use pcs::{CommitScheme, Pcs, ProveError as OpeningProveError, ProverData, StatementBinding};
 use transcript::ProverState;
 
@@ -39,7 +39,7 @@ pub struct VirtualWitness<'a> {
     pub virtual_bits: &'a [F128],
 }
 
-impl<const Q: u128> BitZProver<Q> {
+impl<F: BitzClaimField> BitZProver<F> {
     /// Proves the caller's linear claim about the committed bits.
     ///
     /// Call `Pcs::commit` on this transcript, then pass its retained
@@ -52,7 +52,7 @@ impl<const Q: u128> BitZProver<Q> {
     #[tracing::instrument(name = "Prove BitZ", skip_all)]
     pub fn prove(
         &self,
-        claim: &LinearClaim<Fq<Q>>,
+        claim: &LinearClaim<F>,
         pcs: &Pcs,
         data: &ProverData,
         packed: Vec<F128>,
@@ -95,7 +95,7 @@ impl<const Q: u128> BitZProver<Q> {
     #[tracing::instrument(name = "Prove virtual BitZ", skip_all)]
     pub fn prove_virtual(
         &self,
-        statement: &VirtualStatement<'_, Q, impl VirtualMap>,
+        statement: &VirtualStatement<'_, F, impl VirtualMap>,
         pcs: &Pcs,
         data: &ProverData,
         witness: VirtualWitness<'_>,
@@ -123,7 +123,8 @@ impl<const Q: u128> BitZProver<Q> {
         transcript.public_message(b"bitz/virtual-statement/v1");
         transcript.public_message(&com.0);
         transcript.public_message(params);
-        transcript.public_message(&statement.map().digest());
+        tracing::info_span!("Bind virtual map digest")
+            .in_scope(|| transcript.public_message(&statement.map().digest()));
         transcript.public_message(claim);
         transcript.public_message(pcs);
 
@@ -132,8 +133,8 @@ impl<const Q: u128> BitZProver<Q> {
         let query = self.fold_and_reduce(claim, &table, transcript, pcs.security_level())?;
 
         // Transpose the reduced claim from h to f, since the PCS commits to f.
-        let query = statement
-            .transpose_query(query)
+        let query = tracing::info_span!("Transpose claim")
+            .in_scope(|| statement.transpose_query(query))
             .map_err(ProveError::VirtualMap)?;
 
         // Step 6: the post-GKR sumcheck, ring switching, and opening on committed bits.
@@ -152,12 +153,13 @@ impl<const Q: u128> BitZProver<Q> {
     /// The caller binds the statement before this call and opens the returned claim.
     pub(crate) fn fold_and_reduce(
         &self,
-        claim: &LinearClaim<field::Fq<Q>>,
+        claim: &LinearClaim<F>,
         table: &BitTable<'_>,
         transcript: &mut ProverState,
         security: SecurityLevel,
     ) -> Result<OpeningQuery, ProveError> {
-        // Step 2 is absent: Q is fixed, and BitZParams::new checks its fold bound.
+        // Step 2 is absent: the field modulus is fixed, and BitZParams::new
+        // checks its fold bound.
 
         // Step 3: fold each column into an integer exponent.
         let fold = self

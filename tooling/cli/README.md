@@ -10,7 +10,7 @@ Select the PCS round budget with `--pcs-security-bits 100` or `128`; the default
 The implementation derives all internal parameters from the padded witness size.
 The `100` target uses list decoding and an initial out-of-domain (OOD) check.
 The `128` target uses unique decoding and omits that check.
-Spartan still uses `Q100`; this option does not set Spartan security.
+Spartan uses a transcript-drawn prime; this option does not set Spartan security.
 
 `--circuit` selects one of these compiled-in adapters:
 

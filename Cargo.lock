@@ -386,11 +386,13 @@ dependencies = [
  "crypto-primitives",
  "divan",
  "field",
+ "num-bigint 0.4.8",
  "num-traits",
  "poly",
  "rand 0.10.2",
  "rayon",
  "spongefish",
+ "transcript",
 ]
 
 [[package]]
@@ -677,6 +679,7 @@ dependencies = [
  "divan",
  "flock-core",
  "num-traits",
+ "pastey",
  "rand 0.10.2",
  "rand_core 0.10.1",
  "rand_pcg 0.10.2",
@@ -1825,6 +1828,7 @@ dependencies = [
  "blake3",
  "field",
  "spongefish",
+ "thiserror",
 ]
 
 [[package]]

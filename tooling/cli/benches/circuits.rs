@@ -1,12 +1,17 @@
 //! End-to-end and per-stage benchmarks; instance generation is outside timing.
 
 use bitz_cli::{
-    benchmark,
+    ProjectBigIntToField,
+    benchmark::run,
     circuits::{BuiltinCircuit, CircuitInstance},
     end_to_end::CircuitProofSystem,
 };
 use divan::Bencher;
 use pcs::SecurityLevel;
+
+type R = num_bigint::BigInt;
+type F = field::DynField;
+type Proj = ProjectBigIntToField;
 
 fn main() {
     divan::main();
@@ -18,10 +23,10 @@ fn instance(circuit: BuiltinCircuit) -> (CircuitInstance, Vec<bool>) {
     (statement, inputs)
 }
 
-fn setup(circuit: BuiltinCircuit) -> (CircuitProofSystem<CircuitInstance>, Vec<bool>) {
+fn setup(circuit: BuiltinCircuit) -> (CircuitProofSystem<CircuitInstance, F, R, Proj>, Vec<bool>) {
     let (statement, inputs) = instance(circuit);
     (
-        CircuitProofSystem::new(statement, SecurityLevel::Bits100).unwrap(),
+        CircuitProofSystem::<_, F, R, Proj>::new(statement, SecurityLevel::Bits100).unwrap(),
         inputs,
     )
 }
@@ -31,7 +36,7 @@ fn end_to_end(bencher: Bencher, circuit: BuiltinCircuit) {
     bencher
         .with_inputs(|| instance(circuit))
         .bench_local_values(|(statement, inputs)| {
-            benchmark::run(statement, &inputs, SecurityLevel::Bits100).unwrap()
+            run::<_, F, R, Proj>(statement, &inputs, SecurityLevel::Bits100).unwrap()
         });
 }
 
@@ -40,7 +45,7 @@ fn circuit_setup(bencher: Bencher, circuit: BuiltinCircuit) {
     bencher
         .with_inputs(|| CircuitInstance::random(circuit, None, None).unwrap())
         .bench_local_values(|statement| {
-            CircuitProofSystem::new(statement, SecurityLevel::Bits100).unwrap()
+            CircuitProofSystem::<_, F, R, Proj>::new(statement, SecurityLevel::Bits100).unwrap()
         });
 }
 

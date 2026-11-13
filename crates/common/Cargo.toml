@@ -19,9 +19,11 @@ spongefish = { workspace = true }
 poly = { workspace = true }
 rayon = { workspace = true, optional = true }
 num-traits = { workspace = true }
+transcript = { workspace = true }
 
 [dev-dependencies]
 divan = { workspace = true }
+num-bigint = { workspace = true }
 rand = { workspace = true }
 
 [[bench]]

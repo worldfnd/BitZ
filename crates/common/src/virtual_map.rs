@@ -10,14 +10,14 @@
 //! ```
 //!
 //! `M` stays with the caller. This crate needs only `M^T v` and a digest.
+//! `v` is passed as separate row and column factors.
 
-use field::{F128, Fq};
+use field::F128;
 use num_traits::ConstZero;
-#[cfg(feature = "parallel")]
-use rayon::prelude::*;
 
 use crate::{
-    BitZParams, ClaimError, LinearClaim, OpeningQuery, Shape, VirtualParams, VirtualParamsError,
+    BitZParams, BitzClaimField, ClaimError, LinearClaim, OpeningQuery, Shape, VirtualParams,
+    VirtualParamsError,
 };
 
 /// A claim on virtual bits `h = M (1 || f)` with checked dimensions.
@@ -25,10 +25,10 @@ use crate::{
 /// Both roles bind the virtual domain, commitment root, shapes, modulus,
 /// generator, map digest, and input claim to the transcript before folding.
 #[derive(Debug)]
-pub struct VirtualStatement<'a, const Q: u128, M: VirtualMap> {
-    params: VirtualParams<Q>,
+pub struct VirtualStatement<'a, F, M: VirtualMap> {
+    params: VirtualParams<F>,
     map: &'a M,
-    claim: &'a LinearClaim<Fq<Q>>,
+    claim: &'a LinearClaim<F>,
 }
 
 /// A map or claim with mismatched dimensions.
@@ -47,7 +47,8 @@ pub enum VirtualMapError {
     PointLengthMismatch,
     /// The inner-product coefficients do not cover the padded virtual witness.
     ClaimWeightCountMismatch,
-    /// The input omits coordinates of `h`, or the output does not have one weight per bit of `f`.
+    /// The input factors omit coordinates of `h` or have no power-of-two row count,
+    /// or the output does not have one weight per bit of `f`.
     WeightCountMismatch,
     /// The map's weights on `f` outnumber the committed bits.
     CommittedShapeTooSmall,
@@ -57,10 +58,19 @@ pub enum VirtualMapError {
 pub trait VirtualMap {
     /// Computes `M^T weights`, splitting off the constant-one coordinate.
     ///
-    /// `weights[i]` multiplies bit `h[i]`. At least `h_len()` weights are required;
-    /// any remaining weights multiply zero-padded bits of `h` and are ignored.
+    /// `weights` here are `(row_weights (x) column_weights)`.
+    ///
+    /// `row_weights[b] * column_weights[c]` multiplies bit `h[c * row_count + b]`,
+    /// with `row_count = row_weights.len()` a power of two. The factors must cover
+    /// `h_len()` bits; remaining weights multiply zero-padded bits of `h` and are
+    /// ignored.
+    ///
     /// The result has `f_len() - 1` bit weights and the constant-column weight.
-    fn transpose(&self, weights: &[F128]) -> Result<TransposedWeights, VirtualMapError>;
+    fn transpose(
+        &self,
+        row_weights: &[F128],
+        column_weights: &[F128],
+    ) -> Result<TransposedWeights, VirtualMapError>;
 
     /// Binds the map into the statement frame.
     ///
@@ -115,16 +125,16 @@ impl TransposedWeights {
     }
 }
 
-impl<'a, const Q: u128, M: VirtualMap> VirtualStatement<'a, Q, M> {
+impl<'a, F: BitzClaimField, M: VirtualMap> VirtualStatement<'a, F, M> {
     /// Checks the map and claim against both witness shapes.
     ///
     /// The statement retains the checked inputs. The map must keep the same
     /// linear transformation while the statement borrows it.
     pub fn new(
-        claim_params: BitZParams<Q>,
+        claim_params: BitZParams<F>,
         committed_shape: Shape,
         map: &'a M,
-        claim: &'a LinearClaim<Fq<Q>>,
+        claim: &'a LinearClaim<F>,
     ) -> Result<Self, VirtualStatementError> {
         let params = VirtualParams::new(claim_params, committed_shape, map)
             .map_err(VirtualStatementError::Parameters)?;
@@ -141,7 +151,7 @@ impl<'a, const Q: u128, M: VirtualMap> VirtualStatement<'a, Q, M> {
         Ok(Self { params, map, claim })
     }
 
-    pub fn params(&self) -> &VirtualParams<Q> {
+    pub fn params(&self) -> &VirtualParams<F> {
         &self.params
     }
 
@@ -149,25 +159,30 @@ impl<'a, const Q: u128, M: VirtualMap> VirtualStatement<'a, Q, M> {
         self.map
     }
 
-    pub fn claim(&self) -> &LinearClaim<Fq<Q>> {
+    pub fn claim(&self) -> &LinearClaim<F> {
         self.claim
     }
 
     /// Rewrites a claim on padded virtual bits into an opening on committed bits.
     ///
-    /// Coefficients use `column * row_count + row` order. The map drops weights on
-    /// virtual padding. The opening subtracts the constant-column weight from the
-    /// target and zero-pads the remaining weights to the commitment size, refusing
-    /// more weights than it has. A single-column `InnerProduct` holds the dense
-    /// weights with column weight one.
+    /// Coefficients use `column * row_count + row` order, so an `Mle` point splits
+    /// into its row and column coordinates. The map drops weights on virtual
+    /// padding. The opening subtracts the constant-column weight from the target
+    /// and zero-pads the remaining weights to the commitment size, refusing more
+    /// weights than it has. A single-column `InnerProduct` holds the dense weights
+    /// with column weight one.
     pub fn transpose_query(&self, query: OpeningQuery) -> Result<OpeningQuery, VirtualMapError> {
         let shape = self.params.claim().shape();
-        let (weights, target) = match query {
+        let (transposed, target) = match query {
             OpeningQuery::Mle { point, target } => {
                 if point.len() != shape.log_bits() {
                     return Err(VirtualMapError::PointLengthMismatch);
                 }
-                (poly::eq_table(&point), target)
+                let (row_point, column_point) = point.split_at(shape.log_rows());
+                let eq_row = poly::eq_table(row_point);
+                let eq_col = poly::eq_table(column_point);
+                let transposed = self.map.transpose(&eq_row, &eq_col)?;
+                (transposed, target)
             }
             OpeningQuery::InnerProduct { claim } => {
                 if claim.row_weights().len() != shape.rows()
@@ -175,14 +190,12 @@ impl<'a, const Q: u128, M: VirtualMap> VirtualStatement<'a, Q, M> {
                 {
                     return Err(VirtualMapError::ClaimWeightCountMismatch);
                 }
-                (
-                    flatten(claim.row_weights(), claim.column_weights()),
-                    claim.target(),
-                )
+                let transposed = self
+                    .map
+                    .transpose(claim.row_weights(), claim.column_weights())?;
+                (transposed, claim.target())
             }
         };
-        let transposed = self.map.transpose(&weights)?;
-        drop(weights);
         if Some(transposed.weights().len()) != self.map.f_len().checked_sub(1) {
             return Err(VirtualMapError::WeightCountMismatch);
         }
@@ -201,32 +214,13 @@ impl<'a, const Q: u128, M: VirtualMap> VirtualStatement<'a, Q, M> {
     }
 }
 
-/// `row_weights (x) column_weights` written out per bit of `h`, one column
-/// after another.
-fn flatten(row_weights: &[F128], column_weights: &[F128]) -> Vec<F128> {
-    let mut weights = vec![F128::ZERO; row_weights.len() * column_weights.len()];
-    let process_column = |(slot, &scale): (&mut [F128], &F128)| {
-        for (weight, &row) in slot.iter_mut().zip(row_weights) {
-            *weight = scale * row;
-        }
-    };
-    #[cfg(feature = "parallel")]
-    weights
-        .par_chunks_mut(row_weights.len())
-        .zip(column_weights)
-        .for_each(process_column);
-    #[cfg(not(feature = "parallel"))]
-    weights
-        .chunks_mut(row_weights.len())
-        .zip(column_weights)
-        .for_each(process_column);
-    weights
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use num_traits::{ConstOne, ConstZero};
+
+    const Q114: u128 = (1 << 114) - 11;
+    type F = field::Fq<Q114>;
 
     /// Dense `M`, the reference the sparse implementations are checked against.
     struct DenseMap {
@@ -236,15 +230,21 @@ mod tests {
     }
 
     impl VirtualMap for DenseMap {
-        fn transpose(&self, weights: &[F128]) -> Result<TransposedWeights, VirtualMapError> {
-            if weights.len() < self.h_len() {
+        fn transpose(
+            &self,
+            row_weights: &[F128],
+            column_weights: &[F128],
+        ) -> Result<TransposedWeights, VirtualMapError> {
+            let row_count = row_weights.len();
+            if row_count * column_weights.len() < self.h_len() {
                 return Err(VirtualMapError::WeightCountMismatch);
             }
             let mut transposed = vec![F128::ZERO; self.columns];
-            for (row, weight) in self.rows.iter().zip(weights) {
+            for (index, row) in self.rows.iter().enumerate() {
+                let weight = row_weights[index % row_count] * column_weights[index / row_count];
                 for (column, set) in row.iter().enumerate() {
                     if *set {
-                        transposed[column] += *weight;
+                        transposed[column] += weight;
                     }
                 }
             }
@@ -302,7 +302,7 @@ mod tests {
                 .filter(|(bit, _)| **bit)
                 .fold(F128::ZERO, |sum, (_, weight)| sum + *weight);
 
-            let transposed = map.transpose(&weights).unwrap();
+            let transposed = map.transpose(&weights, &[F128::ONE]).unwrap();
             let through_f = f
                 .iter()
                 .zip(transposed.weights())
@@ -331,7 +331,7 @@ mod tests {
     #[test]
     fn missing_virtual_witness_weights_are_rejected() {
         assert_eq!(
-            map().transpose(&[F128::ONE; 3]),
+            map().transpose(&[F128::ONE; 3], &[F128::ONE]),
             Err(VirtualMapError::WeightCountMismatch)
         );
     }
@@ -340,24 +340,28 @@ mod tests {
     fn weights_on_zero_padding_do_not_change_the_transpose() {
         let map = map();
         let weights = [F128::new(7, 11); 4];
+        let expected = map.transpose(&weights, &[F128::ONE]);
         let mut padded = weights.to_vec();
         padded.extend([F128::new(13, 17); 4]);
-        assert_eq!(map.transpose(&weights), map.transpose(&padded));
+        assert_eq!(map.transpose(&padded, &[F128::ONE]), expected);
+        // Padding as whole columns of `h`.
+        assert_eq!(
+            map.transpose(&weights, &[F128::ONE, F128::new(13, 17)]),
+            expected
+        );
     }
 
-    const Q: u128 = (1 << 114) - 11;
-
-    fn params() -> BitZParams<Q> {
+    fn params() -> BitZParams<F> {
         let shape = Shape::new(7, 15).unwrap();
         BitZParams::new(shape, field::gf128::smallest_generator()).unwrap()
     }
 
-    fn input_claim(params: &BitZParams<Q>) -> LinearClaim<Fq<Q>> {
+    fn input_claim(params: &BitZParams<F>) -> LinearClaim<F> {
         LinearClaim::new(
             params,
-            vec![Fq::ONE; params.shape().rows()],
-            vec![Fq::ONE; params.shape().columns()],
-            Fq::from(0u128),
+            vec![F::ONE; params.shape().rows()],
+            vec![F::ONE; params.shape().columns()],
+            F::from(0u128),
         )
         .unwrap()
     }
@@ -394,6 +398,39 @@ mod tests {
         assert_eq!(claim.row_weights()[1], (rows[2] + rows[3]) * columns[0]);
         assert!(claim.row_weights()[2..].iter().all(|w| *w == F128::ZERO));
         assert_eq!(claim.target(), target - rows[0] * columns[0]);
+    }
+
+    /// The split point must weigh virtual bit `i` by entry `i` of the equality
+    /// table over all the virtual bits.
+    #[test]
+    fn mle_queries_weigh_virtual_bits_by_the_equality_table() {
+        let params = params();
+        let row_count = params.shape().rows();
+        // `h_1 = f_0` in column zero, `h_far = f_0 + f_1` in column two.
+        let far = 2 * row_count + 5;
+        let mut map = DenseMap {
+            rows: vec![vec![false; 3]; far + 1],
+            columns: 3,
+        };
+        map.rows[1][1] = true;
+        map.rows[far][1] = true;
+        map.rows[far][2] = true;
+        let input_claim = input_claim(&params);
+        let statement = VirtualStatement::new(params, *params.shape(), &map, &input_claim).unwrap();
+        let point: Vec<_> = (0..params.shape().log_bits() as u64)
+            .map(|index| F128::new(7 + index, 11))
+            .collect();
+        let table = poly::eq_table(&point);
+        let target = F128::new(13, 17);
+        let OpeningQuery::InnerProduct { claim } = statement
+            .transpose_query(OpeningQuery::Mle { point, target })
+            .unwrap()
+        else {
+            panic!("transposition must produce an inner-product opening");
+        };
+        assert_eq!(claim.row_weights()[0], table[1] + table[far]);
+        assert_eq!(claim.row_weights()[1], table[far]);
+        assert_eq!(claim.target(), target);
     }
 
     #[test]

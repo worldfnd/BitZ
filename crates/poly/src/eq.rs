@@ -1,10 +1,9 @@
-use crypto_primitives::ConstField;
-#[cfg(feature = "parallel")]
-use rayon::prelude::*;
-
 use crate::mle::{DenseMleError, DenseMultilinearExtension};
 #[cfg(feature = "parallel")]
-use crate::parallel::workload_size;
+use crate::parallel;
+use crypto_primitives::Field;
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
 
 /// Evaluates the multilinear equality polynomial.
 ///
@@ -20,14 +19,14 @@ use crate::parallel::workload_size;
 /// saving one multiplication per coordinate compared with the defining
 /// expression. Seeding the accumulator with the first coordinate factor gives
 /// `2n - 1` multiplications for nonempty points.
-pub fn eq_eval<F: ConstField + Copy>(left: &[F], right: &[F]) -> F {
+pub fn eq_eval<F: Field + Copy>(left: &[F], right: &[F]) -> F {
     assert_eq!(
         left.len(),
         right.len(),
         "equality points must have the same length"
     );
 
-    let one = F::ONE;
+    let one = F::one();
     let mut coordinates = left.iter().copied().zip(right.iter().copied());
     let Some((first_left, first_right)) = coordinates.next() else {
         return one;
@@ -59,13 +58,13 @@ pub fn eq_eval<F: ConstField + Copy>(left: &[F], right: &[F]) -> F {
 /// `b_i = (j >> i) & 1`, so variable `i` corresponds to bit `i` of
 /// the index (little-endian order).
 ///
-/// For `n = 0`, the table is `[F::ONE]`, corresponding to the
+/// For `n = 0`, the table is `[F::one()]`, corresponding to the
 /// empty product.
-pub fn eq_table<F: ConstField + Copy>(r: &[F]) -> Vec<F> {
+pub fn eq_table<F: Field + Copy>(r: &[F]) -> Vec<F> {
     let n = 1 << r.len();
     // Allocate the final output once.
-    let mut table = vec![F::ZERO; n];
-    table[0] = F::ONE;
+    let mut table = vec![F::zero(); n];
+    table[0] = F::one();
 
     for (i, &r_i) in r.iter().enumerate() {
         let half = 1usize << i;
@@ -85,7 +84,7 @@ pub fn eq_table<F: ConstField + Copy>(r: &[F]) -> Vec<F> {
         // Per-level parallel doubling adapted from Flock:
         // https://github.com/succinctlabs/flock/blob/85fc0e7cc002e7ca4dffdff805ba89976e9a5293/crates/flock-core/src/pcs/ring_switch.rs#L276-L320
         #[cfg(feature = "parallel")]
-        if half >= workload_size::<F>() {
+        if half >= parallel::workload_size::<F>() {
             zero_children
                 .par_iter_mut()
                 .zip(one_children.par_iter_mut())
@@ -105,7 +104,7 @@ pub fn eq_table<F: ConstField + Copy>(r: &[F]) -> Vec<F> {
 /// The first MLE covers the low, earlier coordinates and the second covers the
 /// remaining high coordinates. Their tensor product is `eq(·, point)` under
 /// this crate's little-endian variable order.
-pub fn make_equality_factors<F: ConstField + Copy>(
+pub fn make_equality_factors<F: Field + Copy>(
     point: &[F],
 ) -> Result<(DenseMultilinearExtension<F>, DenseMultilinearExtension<F>), DenseMleError> {
     let split = point.len() / 2;
@@ -117,16 +116,17 @@ pub fn make_equality_factors<F: ConstField + Copy>(
 
 #[cfg(test)]
 pub mod tests {
-    use super::{eq_eval, eq_table, make_equality_factors};
-    use crypto_primitives::ConstField;
-    use field::{F128, FqDefault};
-    use num_traits::{ConstOne, ConstZero};
+    use super::*;
+    use field::F128;
+    use num_traits::{One, Zero};
     use proptest::prelude::*;
 
-    fn direct_table_entry<F: ConstField + Copy>(r: &[F], index: usize) -> F {
-        r.iter().enumerate().fold(F::ONE, |acc, (bit, &r_i)| {
+    type F = field::FqDefault;
+
+    fn direct_table_entry<F: Field + Copy>(r: &[F], index: usize) -> F {
+        r.iter().enumerate().fold(F::one(), |acc, (bit, &r_i)| {
             let factor = if (index >> bit) & 1 == 0 {
-                F::ONE - r_i
+                F::one() - r_i
             } else {
                 r_i
             };
@@ -136,17 +136,13 @@ pub mod tests {
 
     #[test]
     fn empty_eq_tables_contain_one() {
-        assert_eq!(eq_table::<F128>(&[]), vec![F128::ONE]);
-        assert_eq!(eq_table::<FqDefault>(&[]), vec![FqDefault::ONE]);
+        assert_eq!(eq_table::<F128>(&[]), vec![F128::one()]);
+        assert_eq!(eq_table::<F>(&[]), vec![F::one()]);
     }
 
     #[test]
     fn equality_factors_split_low_coordinates_first() {
-        let point = [
-            FqDefault::from(2u128),
-            FqDefault::from(3u128),
-            FqDefault::from(5u128),
-        ];
+        let point = [F::from(2u128), F::from(3u128), F::from(5u128)];
         let (low, high) = make_equality_factors(&point).unwrap();
 
         assert_eq!(low.num_vars(), 1);
@@ -166,9 +162,9 @@ pub mod tests {
         let (low, high) = make_equality_factors::<F128>(&[]).unwrap();
 
         assert_eq!(low.num_vars(), 0);
-        assert_eq!(low.iter().copied().collect::<Vec<_>>(), vec![F128::ONE]);
+        assert_eq!(low.iter().copied().collect::<Vec<_>>(), vec![F128::one()]);
         assert_eq!(high.num_vars(), 0);
-        assert_eq!(high.iter().copied().collect::<Vec<_>>(), vec![F128::ONE]);
+        assert_eq!(high.iter().copied().collect::<Vec<_>>(), vec![F128::one()]);
     }
 
     #[test]
@@ -178,21 +174,21 @@ pub mod tests {
         assert_eq!(
             eq_table(&[r_0, r_1]),
             vec![
-                (F128::ONE - r_0) * (F128::ONE - r_1),
-                r_0 * (F128::ONE - r_1),
-                (F128::ONE - r_0) * r_1,
+                (F128::one() - r_0) * (F128::one() - r_1),
+                r_0 * (F128::one() - r_1),
+                (F128::one() - r_0) * r_1,
                 r_0 * r_1,
             ]
         );
 
-        let r_0 = FqDefault::from(2u128);
-        let r_1 = FqDefault::from(7u128);
+        let r_0 = F::from(2u128);
+        let r_1 = F::from(7u128);
         assert_eq!(
             eq_table(&[r_0, r_1]),
             vec![
-                (FqDefault::ONE - r_0) * (FqDefault::ONE - r_1),
-                r_0 * (FqDefault::ONE - r_1),
-                (FqDefault::ONE - r_0) * r_1,
+                (F::one() - r_0) * (F::one() - r_1),
+                r_0 * (F::one() - r_1),
+                (F::one() - r_0) * r_1,
                 r_0 * r_1,
             ]
         );
@@ -205,16 +201,16 @@ pub mod tests {
             .map(|bit| F128::from((selected >> bit) & 1 == 1))
             .collect();
         let r_fq: Vec<_> = (0..4)
-            .map(|bit| FqDefault::from(((selected >> bit) & 1) as u128))
+            .map(|bit| F::from(((selected >> bit) & 1) as u128))
             .collect();
 
         for (index, &weight) in eq_table(&r_f128).iter().enumerate() {
             assert_eq!(
                 weight,
                 if index == selected {
-                    F128::ONE
+                    F128::one()
                 } else {
-                    F128::ZERO
+                    F128::zero()
                 }
             );
         }
@@ -222,9 +218,9 @@ pub mod tests {
             assert_eq!(
                 weight,
                 if index == selected {
-                    FqDefault::ONE
+                    F::one()
                 } else {
-                    FqDefault::ZERO
+                    F::zero()
                 }
             );
         }
@@ -232,14 +228,14 @@ pub mod tests {
 
     #[test]
     fn empty_vectors_give_one() {
-        assert_eq!(eq_eval::<F128>(&[], &[]), F128::ONE);
-        assert_eq!(eq_eval::<FqDefault>(&[], &[]), FqDefault::ONE);
+        assert_eq!(eq_eval::<F128>(&[], &[]), F128::one());
+        assert_eq!(eq_eval::<F>(&[], &[]), F::one());
     }
 
     #[test]
     fn one_coordinate_boolean_truth_table() {
-        let zero = F128::ZERO;
-        let one = F128::ONE;
+        let zero = F128::zero();
+        let one = F128::one();
 
         assert_eq!(eq_eval(&[zero], &[zero]), one);
         assert_eq!(eq_eval(&[zero], &[one]), zero);
@@ -249,8 +245,8 @@ pub mod tests {
 
     #[test]
     fn boolean_vectors_are_equality_indicators() {
-        let zero = F128::ZERO;
-        let one = F128::ONE;
+        let zero = F128::zero();
+        let one = F128::one();
 
         let x = [zero, one, one, zero];
         let equal = [zero, one, one, zero];
@@ -271,7 +267,7 @@ pub mod tests {
     #[test]
     #[should_panic(expected = "equality points must have the same length")]
     fn different_widths_panic() {
-        eq_eval(&[F128::ZERO], &[F128::ZERO, F128::ONE]);
+        eq_eval(&[F128::zero()], &[F128::zero(), F128::one()]);
     }
 
     #[test]
@@ -282,7 +278,7 @@ pub mod tests {
             F128::from(19u128),
             F128::from(31u128),
         ];
-        let mut sum = F128::ZERO;
+        let mut sum = F128::zero();
 
         for index in 0..1usize << r.len() {
             let point: Vec<_> = (0..r.len())
@@ -291,13 +287,13 @@ pub mod tests {
             sum += eq_eval(&point, &r);
         }
 
-        assert_eq!(sum, F128::ONE);
+        assert_eq!(sum, F128::one());
     }
 
     #[cfg(feature = "parallel")]
     #[test]
     fn parallel_eq_table_matches_serial_around_threshold() {
-        let threshold = crate::parallel::workload_size::<F128>();
+        let threshold = parallel::workload_size::<F128>();
         assert!(threshold.is_power_of_two());
 
         let threshold_log = threshold.trailing_zeros() as usize;
@@ -333,7 +329,7 @@ pub mod tests {
                 prop_assert_eq!(weight, direct_table_entry(&r_f128, index));
             }
 
-            let r_fq: Vec<_> = raw.iter().copied().map(FqDefault::from).collect();
+            let r_fq: Vec<_> = raw.iter().copied().map(F::from).collect();
             let table_fq = eq_table(&r_fq);
             prop_assert_eq!(table_fq.len(), 1usize << raw.len());
             for (index, &weight) in table_fq.iter().enumerate() {
@@ -348,14 +344,14 @@ pub mod tests {
             let r_f128: Vec<_> = raw.iter().copied().map(F128::from).collect();
             let sum_f128 = eq_table(&r_f128)
                 .into_iter()
-                .fold(F128::ZERO, |sum, weight| sum + weight);
-            prop_assert_eq!(sum_f128, F128::ONE);
+                .fold(F128::zero(), |sum, weight| sum + weight);
+            prop_assert_eq!(sum_f128, F128::one());
 
-            let r_fq: Vec<_> = raw.iter().copied().map(FqDefault::from).collect();
+            let r_fq: Vec<_> = raw.iter().copied().map(F::from).collect();
             let sum_fq = eq_table(&r_fq)
                 .into_iter()
-                .fold(FqDefault::ZERO, |sum, weight| sum + weight);
-            prop_assert_eq!(sum_fq, FqDefault::ONE);
+                .fold(F::zero(), |sum, weight| sum + weight);
+            prop_assert_eq!(sum_fq, F::one());
         }
 
         #[test]
@@ -373,12 +369,12 @@ pub mod tests {
                 .collect();
 
             let expected = x.iter().zip(&y).fold(
-                F128::ONE,
+                F128::one(),
                 |acc, (&x_i, &y_i)| {
                     acc * (
                         x_i * y_i
-                        + (F128::ONE - x_i)
-                            * (F128::ONE - y_i)
+                        + (F128::one() - x_i)
+                            * (F128::one() - y_i)
                     )
                 },
             );
