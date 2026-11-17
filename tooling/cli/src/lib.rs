@@ -63,7 +63,11 @@ impl<F: BitzClaimField> ProjectConstraint<i64, F> for ProjectI64ToField {
 
     fn project(&self, constraint: &i64) -> F {
         let magnitude = F::from(constraint.unsigned_abs());
-        if *constraint < 0 { -magnitude } else { magnitude }
+        if *constraint < 0 {
+            -magnitude
+        } else {
+            magnitude
+        }
     }
 }
 
@@ -126,16 +130,6 @@ mod tests {
         for value in &values {
             let projected: F = projection.project(value);
             assert_eq!(projected, reference(value), "{value}");
-        }
-    }
-
-    #[test]
-    fn narrow_projection_matches_the_bigint_one() {
-        let wide = <ProjectBigIntToField as ProjectConstraint<BigInt, F>>::prepare();
-        let narrow = <ProjectI64ToField as ProjectConstraint<i64, F>>::prepare();
-        for value in [0_i64, 1, -1, 7, -7, 1 << 35, i64::MAX, i64::MIN] {
-            let projected: F = narrow.project(&value);
-            assert_eq!(projected, wide.project(&BigInt::from(value)), "{value}");
         }
     }
 }

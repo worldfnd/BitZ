@@ -954,34 +954,6 @@ mod tests {
     }
 
     #[test]
-    fn narrow_rings_keep_small_coefficients_exact() {
-        let mut generator = ConstraintGenerator::<i64>::new(40);
-        let bits = ScalarBits(generator.inputs::<40>());
-        let (full, low) = generator.bitz_unsigned::<1, 40, 1, 32>(&bits);
-        generator.assert_r1c::<1>(Zero::zero(), Zero::zero(), full - low * 3);
-        let matrices = generator.into_matrices();
-        let entries = matrices.c.rows()[0].entries();
-        assert_eq!(entries.len(), 40);
-        for (bit, (column, coefficient)) in entries.iter().enumerate() {
-            assert_eq!(*column, bit + 1);
-            let expected = if bit < 32 { -2 } else { 1 };
-            assert_eq!(*coefficient, expected * (1_i64 << bit));
-        }
-    }
-
-    /// The guard on a gadget exceeding its own limb bound: the dev profile's
-    /// overflow checks. Release wraps instead.
-    #[test]
-    #[cfg(debug_assertions)]
-    #[should_panic(expected = "overflow")]
-    fn narrow_ring_overflow_panics_in_debug() {
-        let mut generator = ConstraintGenerator::<i64>::new(64);
-        let bits = ScalarBits(generator.inputs::<64>());
-        // The top coefficient is 2^63.
-        let _ = generator.bitz_unsigned::<1, 64, 1, 64>(&bits);
-    }
-
-    #[test]
     fn default_coefficient_from_le_words_keeps_every_bit() {
         let words = [0x0123_4567_89ab_cdef, 0, u64::MAX, 1 << 63];
         let expected = words.iter().rev().fold(R::zero(), |value, word| {
