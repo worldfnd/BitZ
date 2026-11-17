@@ -1,5 +1,5 @@
 use bitz_cli::{
-    ProjectBigIntToField,
+    ProjectI64ToField,
     circuits::{BuiltinCircuit, CircuitInstance},
     end_to_end::{CircuitProofSystem, CircuitStatement, Error},
 };
@@ -7,12 +7,11 @@ use circuit::{
     constraints::ConstraintGenerator,
     sha256::{ABC_BLOCK, ABC_DIGEST, INITIAL_STATE},
 };
-use num_traits::{Signed, ToPrimitive};
 use pcs::SecurityLevel;
 
-type R = num_bigint::BigInt;
+type R = i64;
 type F = field::DynField;
-type Proj = ProjectBigIntToField;
+type Proj = ProjectI64ToField;
 
 /// Every residual is below the narrowest prime a proof may draw, so no
 /// Boolean assignment satisfies a row modulo the prime without satisfying it
@@ -28,7 +27,7 @@ fn sha_constraint_residuals_cannot_wrap_modulo_the_prime() {
         statement.synthesize(&mut generator, &inputs).unwrap();
         let matrices = generator
             .into_matrices()
-            .map_coefficients(|coefficient| coefficient.abs().to_u128().unwrap());
+            .map_coefficients(|coefficient| u128::from(coefficient.unsigned_abs()));
         for ((a, b), c) in matrices
             .a
             .rows()

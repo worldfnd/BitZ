@@ -1,4 +1,4 @@
-use bitz_cli::{ProjectBigIntToField, ProjectConstraint};
+use bitz_cli::{ProjectConstraint, ProjectI64ToField};
 use circuit::constraints::ConstraintMatrices;
 use circuit::{
     constraints::ConstraintGenerator,
@@ -15,9 +15,9 @@ use spartan::{
 use std::array;
 use transcript::{build_prover, build_verifier};
 
-type R = num_bigint::BigInt;
+type R = i64;
 type F = field::FqDefault;
-type Proj = ProjectBigIntToField;
+type Proj = ProjectI64ToField;
 
 const SESSION: &[u8] = b"spartan/piop/sha256-compression/v1";
 const INSTANCE: &[u8] = b"abc-single-compression";

@@ -534,7 +534,7 @@ impl Circuit for MTransposeGenerator {
 
     fn bitz<const LIMBS: usize>(&mut self, value: MatrixBit) -> Z<LIMBS> {
         self.recorder.push_row(&value);
-        Z::from(u64::from(value.constant_term()))
+        Z::from(u32::from(value.constant_term()))
     }
 
     fn bitz_unsigned<const LIMBS: usize, const N: usize, const M: usize, const LOW: usize>(

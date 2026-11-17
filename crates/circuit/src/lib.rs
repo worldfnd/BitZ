@@ -96,7 +96,7 @@ pub trait WitnessContext<ZW, BW, C> {
 /// witness type so backends are not forced to use integers for coefficients.
 pub trait Coefficient:
     Clone
-    + From<u64>
+    + From<u32>
     + Zero
     + One
     + Add<Output = Self>
@@ -111,7 +111,7 @@ pub trait Coefficient:
 
 impl<T> Coefficient for T where
     T: Clone
-        + From<u64>
+        + From<u32>
         + Zero
         + One
         + Add<Output = T>
@@ -454,15 +454,17 @@ pub trait Circuit {
     /// The default only relies on ring operations. Fixed-integer backends
     /// should override this to copy limbs directly.
     fn coefficient_from_le_words<const LIMBS: usize>(words: &[u64]) -> Self::Coefficient<LIMBS> {
+        // 32-bit halves: `Coefficient` only promises `From<u32>`.
         let mut radix = Self::Coefficient::<LIMBS>::one();
-        for _ in 0..64 {
+        for _ in 0..32 {
             radix += radix.clone();
         }
         words
             .iter()
             .rev()
-            .fold(Self::Coefficient::<LIMBS>::zero(), |value, word| {
-                value * radix.clone() + Self::Coefficient::<LIMBS>::from(*word)
+            .flat_map(|word| [(word >> 32) as u32, *word as u32])
+            .fold(Self::Coefficient::<LIMBS>::zero(), |value, half| {
+                value * radix.clone() + Self::Coefficient::<LIMBS>::from(half)
             })
     }
 
@@ -592,8 +594,8 @@ mod tests {
         }
     }
 
-    impl From<u64> for Mod7 {
-        fn from(value: u64) -> Self {
+    impl From<u32> for Mod7 {
+        fn from(value: u32) -> Self {
             Self::new((value % 7) as i32)
         }
     }

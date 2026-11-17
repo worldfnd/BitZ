@@ -37,17 +37,7 @@ impl<F: BitzClaimField> ProjectConstraint<BigInt, F> for ProjectBigIntToField {
     fn project(&self, constraint: &BigInt) -> F {
         // Coefficients are small in practice; reduce them without the heap.
         if let Some(value) = constraint.to_i128() {
-            let magnitude = value.unsigned_abs();
-            let magnitude = if magnitude < self.modulus {
-                magnitude
-            } else {
-                magnitude % self.modulus
-            };
-            return F::from(if value < 0 && magnitude != 0 {
-                self.modulus - magnitude
-            } else {
-                magnitude
-            });
+            return F::from(canonical_residue(value, self.modulus));
         }
         let mut reduced = constraint % &self.wide_modulus;
         if reduced.is_negative() {
@@ -58,6 +48,41 @@ impl<F: BitzClaimField> ProjectConstraint<BigInt, F> for ProjectBigIntToField {
                 .to_u128()
                 .expect("a canonical residue always fits a u128"),
         )
+    }
+}
+
+/// Projects [`i64`] constraints onto a prime field by reducing them
+/// canonically modulo its modulus, read when prepared.
+#[derive(Debug, Clone)]
+pub struct ProjectI64ToField;
+
+impl<F: BitzClaimField> ProjectConstraint<i64, F> for ProjectI64ToField {
+    fn prepare() -> Self {
+        Self
+    }
+
+    fn project(&self, constraint: &i64) -> F {
+        let magnitude = F::from(constraint.unsigned_abs());
+        if *constraint < 0 {
+            -magnitude
+        } else {
+            magnitude
+        }
+    }
+}
+
+/// The canonical residue of `value` modulo `modulus`.
+fn canonical_residue(value: i128, modulus: u128) -> u128 {
+    let magnitude = value.unsigned_abs();
+    let magnitude = if magnitude < modulus {
+        magnitude
+    } else {
+        magnitude % modulus
+    };
+    if value < 0 && magnitude != 0 {
+        modulus - magnitude
+    } else {
+        magnitude
     }
 }
 

@@ -6,7 +6,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use bitz_cli::{ProjectBigIntToField, ProjectConstraint};
+use bitz_cli::{ProjectConstraint, ProjectI64ToField};
 use circuit::constraints::{ConstraintGenerator, ConstraintMatrices};
 use circuit::sha256::sha256_block_aligned_circuit;
 use circuit::witgen::ProductWitgen;
@@ -28,9 +28,9 @@ const INSTANCE: &[u8] = b"bench";
 /// 2^22-bit committed shape.
 const BLOCKS: &[usize] = &[608];
 
-type R = num_bigint::BigInt;
+type R = i64;
 type F = field::FqDefault;
-type Proj = ProjectBigIntToField;
+type Proj = ProjectI64ToField;
 
 /// An R1CS instance with a witness satisfying it.
 #[derive(Debug, Clone)]

@@ -203,8 +203,8 @@ impl CircuitStatement for CircuitInstance {
 
 fn constrain_bit<C: Circuit>(cs: &mut C, bit: C::Bool, expected: bool) {
     let value = cs.bitz::<1>(bit);
-    let one = C::Z::<1>::from(C::Coefficient::<1>::from(1u64));
-    let expected = C::Z::<1>::from(C::Coefficient::<1>::from(u64::from(expected)));
+    let one = C::Z::<1>::from(C::Coefficient::<1>::from(1u32));
+    let expected = C::Z::<1>::from(C::Coefficient::<1>::from(u32::from(expected)));
     cs.assert_r1c::<1>(one, value, expected);
 }
 

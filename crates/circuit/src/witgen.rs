@@ -108,11 +108,11 @@ impl<const LIMBS: usize> From<i128> for Z<LIMBS> {
     }
 }
 
-impl<const LIMBS: usize> From<u64> for Z<LIMBS> {
-    fn from(value: u64) -> Self {
-        let mut words = [0; LIMBS];
+impl<const LIMBS: usize> From<u32> for Z<LIMBS> {
+    fn from(value: u32) -> Self {
+        let mut words = [0_u64; LIMBS];
         if LIMBS != 0 {
-            words[0] = value;
+            words[0] = u64::from(value);
         }
         Self { words }
     }
@@ -130,7 +130,7 @@ impl<const LIMBS: usize> Zero for Z<LIMBS> {
 
 impl<const LIMBS: usize> One for Z<LIMBS> {
     fn one() -> Self {
-        Self::from(1_u64)
+        Self::from(1_u32)
     }
 }
 

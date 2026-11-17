@@ -11,7 +11,8 @@ use {
 };
 
 type F = field::DynField;
-type Proj = bitz_cli::ProjectBigIntToField;
+// Every builtin circuit is SHA-256, whose coefficients fit an `i64`.
+type Proj = bitz_cli::ProjectI64ToField;
 
 /// Prove generated circuit constraints over a transcript-drawn prime and verify the proof.
 #[derive(FromArgs, PartialEq, Debug)]

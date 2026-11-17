@@ -43,8 +43,8 @@ impl CircuitStatement for PublicBit {
     }
     fn synthesize<CS: Circuit>(&self, cs: &mut CS, inputs: &[CS::Bool]) -> Result<(), Error> {
         let bit = cs.bitz::<1>(inputs[0].clone());
-        let one = CS::Z::<1>::from(CS::Coefficient::<1>::from(1u64));
-        let expected = CS::Z::<1>::from(CS::Coefficient::<1>::from(u64::from(self.0)));
+        let one = CS::Z::<1>::from(CS::Coefficient::<1>::from(1u32));
+        let expected = CS::Z::<1>::from(CS::Coefficient::<1>::from(u32::from(self.0)));
         cs.assert_r1c::<1>(one, bit, expected);
         Ok(())
     }
@@ -118,7 +118,7 @@ impl CircuitStatement for PublicXor {
         let first = cs.bitz::<1>(inputs[0].clone());
         let xor = cs.xor(inputs[0].clone(), inputs[1].clone());
         let output = cs.bitz::<1>(xor);
-        let one = C::Z::<1>::from(C::Coefficient::<1>::from(1u64));
+        let one = C::Z::<1>::from(C::Coefficient::<1>::from(1u32));
         cs.assert_r1c::<1>(one.clone(), first.clone(), first);
         cs.assert_r1c::<1>(one.clone(), output, one);
         Ok(())

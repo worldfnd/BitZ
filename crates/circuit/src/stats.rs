@@ -21,8 +21,8 @@ impl From<bool> for Dummy {
     }
 }
 
-impl From<u64> for Dummy {
-    fn from(_: u64) -> Self {
+impl From<u32> for Dummy {
+    fn from(_: u32) -> Self {
         Self
     }
 }
