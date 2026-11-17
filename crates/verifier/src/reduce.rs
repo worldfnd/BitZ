@@ -28,12 +28,12 @@ pub(crate) fn gkr_reduce<S>(
     security: SecurityLevel,
 ) -> Result<OpeningQuery, ReduceError> {
     // Each layer halves the row count, leaving one product per column.
-    let r1 = fold.row_images.len().max(1).ilog2();
+    let r1 = fold.row_images.len().max(1).ilog2() as usize;
 
     let (point, mle_leaf_claim) =
         gkr::gpgkr_verify(transcript, fold.e0, &fold.zeta, r1, security).ok_or(ReduceError::GKR)?;
 
-    let r2 = point.len() - r1 as usize;
+    let r2 = point.len() - r1;
     // Columns occupy the low index bits of the GKR leaf table.
     let alfa_b = &point[r2..];
 
@@ -56,7 +56,7 @@ pub(crate) fn gkr_reduce<S>(
 mod round_trip_ai_test {
     use common::{BitZParams, Fold, Shape};
     use field::gf128::smallest_generator;
-    use gkr::{GrandProductCircuit, gpgkr_prove};
+    use gkr::{gpgkr_prove, grand_product};
     use num_traits::{ConstOne, ConstZero};
 
     use super::*;
@@ -102,26 +102,19 @@ mod round_trip_ai_test {
             .map(|i| F128::from((i as u128 + 3) * 0xABCDEF12345u128 + 1))
             .collect();
 
-        let circuit = GrandProductCircuit::new(&row_images, &table);
-        let (top_layer, witnesses) = circuit.batched_eval(shape.columns());
+        let (top_layer, witnesses) = grand_product(&row_images, &table);
 
         // Fold::new evaluates top_layer at zeta to obtain GKR's initial claim.
         let folds = vec![0u128; shape.columns()];
         let fold = Fold::new(&shape, folds, top_layer, row_images.clone(), zeta.clone()).unwrap();
 
         let mut prover = transcript::build_prover("verifier-round-trip", &F128::ZERO);
-        let (mut point, claim) = gpgkr_prove(
-            &mut prover,
-            table.shape().log_bits(),
-            &zeta,
-            witnesses,
-            SecurityLevel::Bits100,
-        );
+        let (mut point, claim) = gpgkr_prove(&mut prover, &zeta, witnesses, SecurityLevel::Bits100);
         let proof = prover.finish();
 
         // Derive the expected factors from the prover's terminal point.
-        let r1 = row_images.len().max(1).ilog2();
-        let r2 = point.len() - r1 as usize;
+        let r1 = row_images.len().max(1).ilog2() as usize;
+        let r2 = point.len() - r1;
         let expected_alfa_b = point.split_off(r2);
         let expected_u1: Vec<F128> = row_images
             .iter()

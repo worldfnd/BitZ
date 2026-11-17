@@ -14,13 +14,14 @@ use std::marker::PhantomData;
 pub enum ParamsError {
     /// Fewer than `128` columns (`s < 7`).
     ///
-    /// Not a protocol bound: it flows up from the prover's transpose. The
-    /// reduction reads the GKR leaves row by row through the
-    /// [`crate::BitMatrix::transpose`] of [`BitTable::as_matrix`], where each
-    /// transposed row holds one bit per column, and `bit_transpose` in
-    /// `crates/common/src/matrix.rs` only moves whole `128 x 128` blocks. Teaching it rows shorter than a word
-    /// lifts this gate; commit 336e8097225aca4f8146f35594740b0e5054d839 has
-    /// that version.
+    /// Not a protocol bound: it flowed up from the prover's transpose, when
+    /// `bit_transpose` in `crates/common/src/matrix.rs` moved only whole
+    /// `128 x 128` blocks. It now drops to narrower words, and the GKR
+    /// relayout transposes `4 * columns` by `rows / 4` bits, which needs only
+    /// `s >= 1`. GKR's lookup tables set the prover's floor at `s >= 4`:
+    /// round 1 reads a lookup table's nibbles, one per column, a `u64` at a
+    /// time (`LutLayers::new` in `crates/gkr/src/lib.rs`). This gate is
+    /// stricter than that until it is revisited.
     ColumnCountTooNarrow,
     /// `(k_1 + 1)(Q - 1)` reaches `ord(g)`, so a sent fold and the honest
     /// exponent could collide in the exponent.
