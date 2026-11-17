@@ -54,19 +54,16 @@ impl<F: BitzClaimField> ProjectConstraint<BigInt, F> for ProjectBigIntToField {
 /// Projects [`i64`] constraints onto a prime field by reducing them
 /// canonically modulo its modulus, read when prepared.
 #[derive(Debug, Clone)]
-pub struct ProjectI64ToField {
-    modulus: u128,
-}
+pub struct ProjectI64ToField;
 
 impl<F: BitzClaimField> ProjectConstraint<i64, F> for ProjectI64ToField {
     fn prepare() -> Self {
-        Self {
-            modulus: F::modulus().to_u128().expect("the modulus fits a u128"),
-        }
+        Self
     }
 
     fn project(&self, constraint: &i64) -> F {
-        F::from(canonical_residue(i128::from(*constraint), self.modulus))
+        let magnitude = F::from(constraint.unsigned_abs());
+        if *constraint < 0 { -magnitude } else { magnitude }
     }
 }
 
