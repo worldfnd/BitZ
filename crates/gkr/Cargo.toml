@@ -11,10 +11,10 @@ field = { workspace= true  }
 transcript = { workspace = true}
 common = { workspace = true }
 tracing = { workspace = true }
-poly = { workspace = true }
 num-traits = { workspace = true }
 rayon = { workspace = true }
 
 
 [dev-dependencies]
+poly = { workspace = true }
 proptest = "1.11.0"

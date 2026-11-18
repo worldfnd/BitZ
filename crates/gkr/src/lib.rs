@@ -9,6 +9,11 @@ pub type Field = F128;
 
 const CUBIC_GRINDING_LABEL: &[u8] = b"gkr/cubic/v1";
 
+// TODO replace this with a proper approach
+/// Matches `poly`'s `PARALLEL_FOLD_THRESHOLD`, chosen for the same per-round
+/// MLE-fold shape.
+const PARALLEL_MIN_LANES: usize = 1 << 12;
+
 /// Proves the layer-by-layer sumcheck reduction from a claim at `point`
 /// (an evaluation point on the output layer) down to a claim on the leaves.
 ///
@@ -43,7 +48,7 @@ pub fn gpgkr_prove(
     );
     // The leaves' sumcheck has the largest point, a coordinate per index bit
     // of its parent, layer 1.
-    let mut eq_memory = EqTables::alloc_storage(lut_layers.nodes::<LAYER1>());
+    let mut eq_memory = EqMemory::new(lut_layers.nodes::<LAYER1>(), lut_layers.eq_split());
     for children in upper_nodes.into_iter().rev() {
         (point, _) = prove_layer(ps, &mut eq_memory, &point, children, security);
     }
@@ -87,12 +92,12 @@ pub fn gpgkr_prove(
 /// `W(r, t) = L(r) + t · (R(r) - L(r))`.
 fn prove_layer(
     ps: &mut ProverState,
-    eq_memory: &mut [Field],
+    eq_memory: &mut EqMemory,
     point: &[Field],
     mut children: Vec<Field>,
     security: SecurityLevel,
 ) -> (Vec<Field>, Field) {
-    let eq_tables = EqTables::new(eq_memory, point);
+    let eq_tables = eq_memory.tables(point);
     // The top index bit of `children` picks the half: `L`, then `R`.
     let mid = children.len() / 2;
     let (left, right) = children.split_at_mut(mid);
@@ -106,7 +111,7 @@ fn prove_layer(
 /// here.
 fn prove_rounds(
     ps: &mut ProverState,
-    eq_tables: &EqTables,
+    eq_tables: &SplitEqTables,
     point: &[Field],
     round_one: Option<Field>,
     mut left: &mut [Field],
@@ -133,7 +138,7 @@ fn prove_rounds(
 
         // Branch once per round: `round_sums` takes `b` as a const generic,
         // so the hot fold has no per-element check.
-        let eq = eq_tables.below(i);
+        let eq = eq_tables.round(i);
         let (sum_b, sum_inf) = if sends_one(z) {
             round_sums::<true>(left0, left1, right0, right1, eq)
         } else {
@@ -161,23 +166,58 @@ fn prove_rounds(
 /// `Σ eq · L(b) · R(b)` and `Σ eq · ΔL · ΔR` over the free variables: the
 /// round's sum at the boolean point `b` (`1` if `AT_ONE`) and its leading
 /// coefficient, without `eq_bound` and left unreduced.
+///
+/// Above the split, the positions are summed in parts of at most
+/// `PARALLEL_MIN_LANES`, each within one block: first under the inner
+/// weights, then the part's sums are multiplied by its block's outer weight.
+#[tracing::instrument(name = "Accumulate round coefficients", level = "debug", skip_all)]
 fn round_sums<const AT_ONE: bool>(
     left0: &[Field],
     left1: &[Field],
     right0: &[Field],
     right1: &[Field],
-    eq: &[Field],
+    eq: EqFactors,
 ) -> (Wide256, Wide256) {
     let at = |v0: Field, v1: Field| if AT_ONE { v1 } else { v0 };
+    debug_assert_eq!(eq.inner.len() * eq.outer.len(), left0.len());
 
     // The last round has a single summand, and `eq` there is the empty
     // product `1`: no multiplication by it, and too few for two lanes.
-    if let [_] = eq {
+    if eq.inner.len() == 1 {
         let (l0, l1, r0, r1) = (left0[0], left1[0], right0[0], right1[0]);
         return (
             Wide256::mul(at(l0, l1), at(r0, r1)),
             Wide256::mul(l1 - l0, r1 - r0),
         );
+    }
+
+    // Above the split: a block per outer weight.
+    // A part is `min(block_len, PARALLEL_MIN_LANES)` and is summed serially.
+    if eq.outer.len() > 1 {
+        let block_len = eq.inner.len();
+        let part_len = block_len.min(PARALLEL_MIN_LANES);
+        return left0
+            .par_chunks_exact(part_len)
+            .zip(left1.par_chunks_exact(part_len))
+            .zip(right0.par_chunks_exact(part_len))
+            .zip(right1.par_chunks_exact(part_len))
+            .enumerate()
+            .with_min_len(PARALLEL_MIN_LANES / part_len)
+            .map(|(p, (((l0, l1), r0), r1))| {
+                let start = p * part_len;
+                let inner = &eq.inner[start % block_len..][..part_len];
+                let sums = l0
+                    .chunks_exact(2)
+                    .zip(l1.chunks_exact(2))
+                    .zip(r0.chunks_exact(2))
+                    .zip(r1.chunks_exact(2))
+                    .zip(inner.chunks_exact(2))
+                    .fold(no_sums(), |sums, ((((l0, l1), r0), r1), e)| {
+                        add_lanes::<AT_ONE>(sums, l0, l1, r0, r1, e)
+                    });
+                scale_sums(eq.outer[start / block_len], sums)
+            })
+            .reduce(no_sums, add_sums);
     }
 
     // Two lanes per step: independent multiplication chains. Chunking also
@@ -187,35 +227,65 @@ fn round_sums<const AT_ONE: bool>(
         .zip(left1.par_chunks_exact(2))
         .zip(right0.par_chunks_exact(2))
         .zip(right1.par_chunks_exact(2))
-        .zip(eq.par_chunks_exact(2))
+        .zip(eq.inner.par_chunks_exact(2))
         // Chunked by 2, so the element-count threshold below is halved in
         // terms of chunks.
         .with_min_len(PARALLEL_MIN_LANES / 2)
-        .fold(
-            || (Wide256::zero(), Wide256::zero()),
-            |(mut sum_b, mut sum_inf), ((((l0, l1), r0), r1), e)| {
-                // `e · L(b) · R(b)` into `sum_b` and `e · ΔL · ΔR` into
-                // `sum_inf`, with `e` joining the left factor through a reduced
-                // multiply so that the right one can stay wide.
-                //
-                // Steps, products, then sums, each for both lanes: this order
-                // puts every load of the step ahead of the first multiply.
-                // Lane by lane is 1.1-1.4% slower single-threaded.
-                let (d_l0, d_r0) = (l1[0] - l0[0], r1[0] - r0[0]);
-                let (d_l1, d_r1) = (l1[1] - l0[1], r1[1] - r0[1]);
-                let (a0, b0) = (e[0] * at(l0[0], l1[0]), e[0] * d_l0);
-                let (a1, b1) = (e[1] * at(l0[1], l1[1]), e[1] * d_l1);
-                sum_b += Wide256::mul(a0, at(r0[0], r1[0]));
-                sum_inf += Wide256::mul(b0, d_r0);
-                sum_b += Wide256::mul(a1, at(r0[1], r1[1]));
-                sum_inf += Wide256::mul(b1, d_r1);
-                (sum_b, sum_inf)
-            },
-        )
-        .reduce(
-            || (Wide256::zero(), Wide256::zero()),
-            |(x_b, x_inf), (y_b, y_inf)| (x_b + y_b, x_inf + y_inf),
-        )
+        .fold(no_sums, |sums, ((((l0, l1), r0), r1), e)| {
+            add_lanes::<AT_ONE>(sums, l0, l1, r0, r1, e)
+        })
+        .reduce(no_sums, add_sums)
+}
+
+/// One step of [`round_sums`]: adds the terms of two positions, the lanes,
+/// to the sums.
+#[inline(always)]
+fn add_lanes<const AT_ONE: bool>(
+    (mut sum_b, mut sum_inf): (Wide256, Wide256),
+    l0: &[Field],
+    l1: &[Field],
+    r0: &[Field],
+    r1: &[Field],
+    e: &[Field],
+) -> (Wide256, Wide256) {
+    let at = |v0: Field, v1: Field| if AT_ONE { v1 } else { v0 };
+    // `e · L(b) · R(b)` into `sum_b` and `e · ΔL · ΔR` into
+    // `sum_inf`, with `e` joining the left factor through a reduced
+    // multiply so that the right one can stay wide.
+    //
+    // Steps, products, then sums, each for both lanes: this order
+    // puts every load of the step ahead of the first multiply.
+    // Lane by lane is 1.1-1.4% slower single-threaded.
+    let (d_l0, d_r0) = (l1[0] - l0[0], r1[0] - r0[0]);
+    let (d_l1, d_r1) = (l1[1] - l0[1], r1[1] - r0[1]);
+    let (a0, b0) = (e[0] * at(l0[0], l1[0]), e[0] * d_l0);
+    let (a1, b1) = (e[1] * at(l0[1], l1[1]), e[1] * d_l1);
+    sum_b += Wide256::mul(a0, at(r0[0], r1[0]));
+    sum_inf += Wide256::mul(b0, d_r0);
+    sum_b += Wide256::mul(a1, at(r0[1], r1[1]));
+    sum_inf += Wide256::mul(b1, d_r1);
+    (sum_b, sum_inf)
+}
+
+/// A round's two sums before any term: `(0, 0)`.
+fn no_sums() -> (Wide256, Wide256) {
+    (Wide256::zero(), Wide256::zero())
+}
+
+/// The sums of two parts of a round.
+fn add_sums(
+    (x_b, x_inf): (Wide256, Wide256),
+    (y_b, y_inf): (Wide256, Wide256),
+) -> (Wide256, Wide256) {
+    (x_b + y_b, x_inf + y_inf)
+}
+
+/// A block's sums under the inner weights, times its outer weight `e`.
+fn scale_sums(e: Field, (sum_b, sum_inf): (Wide256, Wide256)) -> (Wide256, Wide256) {
+    (
+        Wide256::mul(e, sum_b.reduce()),
+        Wide256::mul(e, sum_inf.reduce()),
+    )
 }
 
 /// Binds the variable that splits each pair of halves to `r`, writing the
@@ -322,15 +392,19 @@ impl LutLayers {
         (1 << self.log_trees).min(PARALLEL_MIN_LANES)
     }
 
-    /// Round 1's positions `0..half` in pieces, as a parallel iterator
-    /// taking at least `PARALLEL_MIN_LANES` positions per task, whatever the
-    /// number of trees.
+    /// Eq tables split point: a block of positions is a piece of round 1,
+    /// so the inner table has at most `PARALLEL_MIN_LANES` weights and every
+    /// piece reads it whole.
+    fn eq_split(&self) -> usize {
+        // Measured alternatives:
+        // * splitting at the tree bits, `log_trees` - the same up to `s = 15`, worse above
+        // * a block of `PARALLEL_MIN_LANES` positions whatever `s` - no improvement
+        self.piece().ilog2() as usize
+    }
+
+    /// Round 1's positions `0..half` in pieces; see [`pieces`].
     fn pieces(&self, half: usize) -> impl IndexedParallelIterator<Item = Range<usize>> + use<> {
-        let piece = self.piece();
-        (0..half / piece)
-            .into_par_iter()
-            .with_min_len(PARALLEL_MIN_LANES / piece)
-            .map(move |p| p * piece..(p + 1) * piece)
+        pieces(half, self.piece())
     }
 
     /// The pairs that round 1 binds at `positions`, which lie in one lookup
@@ -381,6 +455,16 @@ impl LutLayers {
     }
 }
 
+/// The positions `0..half` in pieces of `piece`, as a parallel iterator
+/// taking at least `PARALLEL_MIN_LANES` positions per task, whatever the
+/// piece.
+fn pieces(half: usize, piece: usize) -> impl IndexedParallelIterator<Item = Range<usize>> {
+    (0..half / piece)
+        .into_par_iter()
+        .with_min_len(PARALLEL_MIN_LANES / piece)
+        .map(move |p| p * piece..(p + 1) * piece)
+}
+
 /// The operands `[l0, l1, r0, r1]` of one position of round 1 of layer
 /// `LAYER`, from their lookup tables and nibbles.
 fn operands<const LAYER: usize>(
@@ -396,20 +480,21 @@ fn operands<const LAYER: usize>(
 /// `bound_children`; the rounds after it are dense.
 fn prove_lut_layer<const LAYER: usize>(
     ps: &mut ProverState,
-    eq_memory: &mut [Field],
+    eq_memory: &mut EqMemory,
     point: &[Field],
     lut_layers: &LutLayers,
     bound_children: &mut [Field],
     security: SecurityLevel,
 ) -> (Vec<Field>, Field) {
-    let eq_tables = EqTables::new(eq_memory, point);
+    let eq_tables = eq_memory.tables(point);
     let top = point.len() - 1;
 
     // Nothing is bound before round 1, so its sums go out as they are.
+    let eq = eq_tables.round(top);
     let (sum_b, sum_inf) = if sends_one(point[top]) {
-        round_one_sums::<LAYER, true>(lut_layers, &eq_tables, point)
+        round_one_sums::<LAYER, true>(lut_layers, eq)
     } else {
-        round_one_sums::<LAYER, false>(lut_layers, &eq_tables, point)
+        round_one_sums::<LAYER, false>(lut_layers, eq)
     };
     ps.prover_message(&[sum_b.reduce(), sum_inf.reduce()]);
 
@@ -426,49 +511,37 @@ fn prove_lut_layer<const LAYER: usize>(
 /// layer 1 sum their eq weights in buckets. Layer 2 pairs whole nibbles of
 /// two lookup tables, 256 keys per product, which costs more to finish than
 /// a piece saves at small `s`, so it works node by node.
+#[tracing::instrument(name = "Accumulate round 1 coefficients", level = "debug", skip_all)]
 fn round_one_sums<const LAYER: usize, const AT_ONE: bool>(
     lut_layers: &LutLayers,
-    eq_tables: &EqTables,
-    point: &[Field],
+    eq: EqFactors,
 ) -> (Wide256, Wide256) {
     match LAYER {
-        LEAVES => bucket_sums(lut_layers, eq_tables, point, leaf_buckets::<AT_ONE>),
-        LAYER1 => bucket_sums(lut_layers, eq_tables, point, layer1_buckets::<AT_ONE>),
-        LAYER2 => layer2_sums::<AT_ONE>(lut_layers, eq_tables.below(point.len() - 1)),
+        LEAVES => piece_sums(lut_layers, eq, leaf_buckets::<AT_ONE>),
+        LAYER1 => piece_sums(lut_layers, eq, layer1_buckets::<AT_ONE>),
+        LAYER2 => piece_sums(lut_layers, eq, layer2_nodes::<AT_ONE>),
         _ => unreachable!("layers 0 to 2 are the LUT-backed ones"),
     }
 }
 
-/// Round 1's sums a piece at a time, with `buckets` summing each piece's eq
-/// weights by the nibble bits that `L·R` reads and multiplying each bucket
-/// once. The weight splits as `eq(z_{<top}, k) = eq_hi[g] · eq_lo[c]` for
-/// `k = (g << s) | c`, so the buckets sum `eq_lo`, which stays in cache, and
-/// `eq_hi` joins once per piece.
-fn bucket_sums(
+/// Round 1's sums a piece at a time: `sums` gives those of a piece under its
+/// inner eq weights, which stay in cache, and the outer weight of the
+/// piece's block joins them once.
+fn piece_sums(
     lut_layers: &LutLayers,
-    eq_tables: &EqTables,
-    point: &[Field],
-    buckets: impl Fn(&LutLayers, Range<usize>, &[Field]) -> (Wide256, Wide256) + Sync,
+    eq: EqFactors,
+    sums: impl Fn(&LutLayers, Range<usize>, &[Field]) -> (Wide256, Wide256) + Sync,
 ) -> (Wide256, Wide256) {
-    let top = point.len() - 1;
-    let (half, s) = (1 << top, lut_layers.log_trees);
-    let eq_lo = eq_tables.below(s);
-    let eq_hi = poly::eq_table(&point[s..top]);
-    lut_layers
-        .pieces(half)
+    let block = eq.inner.len();
+    // A piece lies in one block, as it lies in one lookup table's run.
+    let piece = lut_layers.piece().min(block);
+    pieces(block * eq.outer.len(), piece)
         .map(|positions| {
-            let h = eq_hi[positions.start >> s];
-            let eq_lo = &eq_lo[positions.start % (1 << s)..][..positions.len()];
-            let (sum_b, sum_inf) = buckets(lut_layers, positions, eq_lo);
-            (
-                Wide256::mul(h, sum_b.reduce()),
-                Wide256::mul(h, sum_inf.reduce()),
-            )
+            let e = eq.outer[positions.start / block];
+            let inner = &eq.inner[positions.start % block..][..positions.len()];
+            scale_sums(e, sums(lut_layers, positions, inner))
         })
-        .reduce(
-            || (Wide256::zero(), Wide256::zero()),
-            |(x_b, x_inf), (y_b, y_inf)| (x_b + y_b, x_inf + y_inf),
-        )
+        .reduce(no_sums, add_sums)
 }
 
 /// The piece of round 1 for the leaves at `positions`, its weights in `eq`.
@@ -543,29 +616,25 @@ fn dot(bucket: &[Field; LUT_ENTRIES], value: &[Field; LUT_ENTRIES]) -> Wide256 {
         .fold(Wide256::zero(), |acc, (&b, &v)| acc + Wide256::mul(b, v))
 }
 
-/// Round 1's sums for layer 2, node by node, as [`round_sums`] forms them,
-/// with the operands read from the lookup tables.
-fn layer2_sums<const AT_ONE: bool>(lut_layers: &LutLayers, eq: &[Field]) -> (Wide256, Wide256) {
+/// The piece of round 1 for layer 2 at `positions`, its weights in `eq`: node
+/// by node, as [`round_sums`] forms them, with the operands read from the
+/// lookup tables.
+fn layer2_nodes<const AT_ONE: bool>(
+    lut_layers: &LutLayers,
+    positions: Range<usize>,
+    eq: &[Field],
+) -> (Wide256, Wide256) {
     let at = |v0: Field, v1: Field| if AT_ONE { v1 } else { v0 };
-    let half = eq.len();
-    lut_layers
-        .pieces(half)
-        .map(|positions| {
-            let (luts, pairs) = lut_layers.pairs::<LAYER2>(positions.clone());
-            let (mut sum_b, mut sum_inf) = (Wide256::zero(), Wide256::zero());
-            for (word, eq) in pairs.zip(eq[positions].chunks_exact(NIBBLES_IN_WORD)) {
-                for (n, &e) in word.zip(eq) {
-                    let [l0, l1, r0, r1] = operands::<LAYER2>(&luts, n);
-                    sum_b += Wide256::mul(e * at(l0, l1), at(r0, r1));
-                    sum_inf += Wide256::mul(e * (l1 - l0), r1 - r0);
-                }
-            }
-            (sum_b, sum_inf)
-        })
-        .reduce(
-            || (Wide256::zero(), Wide256::zero()),
-            |(x_b, x_inf), (y_b, y_inf)| (x_b + y_b, x_inf + y_inf),
-        )
+    let (luts, pairs) = lut_layers.pairs::<LAYER2>(positions);
+    let (mut sum_b, mut sum_inf) = no_sums();
+    for (word, eq) in pairs.zip(eq.chunks_exact(NIBBLES_IN_WORD)) {
+        for (n, &e) in word.zip(eq) {
+            let [l0, l1, r0, r1] = operands::<LAYER2>(&luts, n);
+            sum_b += Wide256::mul(e * at(l0, l1), at(r0, r1));
+            sum_inf += Wide256::mul(e * (l1 - l0), r1 - r0);
+        }
+    }
+    (sum_b, sum_inf)
 }
 
 /// Round 1's bind, `left′[k] = l0 + r·(l1 − l0)` and
@@ -631,16 +700,119 @@ fn eq_factor(r: Field, z: Field) -> Field {
     Field::ONE + r + z
 }
 
-/// `eq(z_{<i}, ·)` for every round `i` of a layer, in one buffer.
+/// `eq(z_{<i}, ·)` for every round `i` of a layer, as two factors. Index bit
+/// `split` divides a position, `x = (g << split) | k`, and
+/// `eq(z_{<i}, x) = eq(z_{[split, i)}, g) · eq(z_{<split}, k)`.
+///
+/// The split in defined in ePrint 2025/1117, 5.2. "Algorithm 5: Additional Speedup
+/// via Splitting Eq-Poly" in "Speeding Up Sum-Check Proving".
+///
+/// Rounds bind the top coordinate first, so the low factor is the one that stays,
+/// and its positions are contiguous: a round above the split sums each block of
+/// `2^split` positions under the low weights, then multiplies the block's
+/// sums by its high weight. A round at or below the split has one block, and
+/// its weights are a low table.
+#[derive(Debug)]
+struct SplitEqTables<'a> {
+    /// `eq(z_{<j}, ·)` for `j in 0..=split`.
+    low: EqTables<'a>,
+    /// `eq(z_{[split, split + j)}, ·)` for `j in 0..=(top - split)`, where `top`
+    /// is the index of the top coordinate.
+    high: EqTables<'a>,
+    /// Split point between `low` and `high`.
+    /// Minimum of requested split, and index of the top coordinate.
+    split: usize,
+}
+
+impl SplitEqTables<'_> {
+    /// The weights of round `i`, which sums over the index bits below `i`.
+    fn round(&self, i: usize) -> EqFactors<'_> {
+        let above_split = i.saturating_sub(self.split);
+        EqFactors {
+            inner: self.low.below(i - above_split),
+            outer: self.high.below(above_split),
+        }
+    }
+}
+
+/// The eq weights of a round:
+/// Position `(g << m) | k` weighs `outer[g] · inner[k]`, where `inner` has `2^m` weights.
+/// At or below the split `outer` is `[1]`.
+#[derive(Debug)]
+struct EqFactors<'a> {
+    inner: &'a [Field],
+    outer: &'a [Field],
+}
+
+/// The lowest split point: round 1 of the LUT-backed layers reads whole words
+/// of nibbles, so a block holds at least one.
+const MIN_EQ_SPLIT: usize = NIBBLES_IN_WORD.ilog2() as usize;
+
+/// The buffers of [`SplitEqTables`], allocated once for all layers.
+#[derive(Debug)]
+struct EqMemory {
+    low: Vec<Field>,
+    high: Vec<Field>,
+    split: usize,
+    /// The longest point the buffers have room for.
+    coordinates: usize,
+}
+
+impl EqMemory {
+    /// Room for the tables of every sumcheck whose parent layer has up to
+    /// `nodes` nodes. Its point has a coordinate per index bit of the parent,
+    /// and its tables split at `split`, or at its top coordinate if that is
+    /// lower: `2^(split + 1) - 1` low entries, and as many high ones as the
+    /// positions above the split count.
+    ///
+    /// # Panics
+    ///
+    /// If `split` is below [`MIN_EQ_SPLIT`].
+    fn new(nodes: usize, split: usize) -> Self {
+        assert!(
+            split >= MIN_EQ_SPLIT,
+            "a block of the eq split holds at least a word of nibbles"
+        );
+        let coordinates = nodes.ilog2() as usize;
+        let split_bit = split.min(coordinates.saturating_sub(1));
+        Self {
+            low: Field::zeroed_vec((2 << split_bit) - 1),
+            high: Field::zeroed_vec((1 << (coordinates - split_bit)) - 1),
+            split,
+            coordinates,
+        }
+    }
+
+    /// Builds the tables of `point`; nothing is allocated here.
+    ///
+    /// # Panics
+    ///
+    /// If `point` is empty or longer than the buffers have room for.
+    #[tracing::instrument(name = "Build eq tables", level = "debug", skip_all)]
+    fn tables(&mut self, point: &[Field]) -> SplitEqTables<'_> {
+        assert!(
+            point.len() <= self.coordinates,
+            "the point has more coordinates than the eq tables have room for"
+        );
+        let top = point
+            .len()
+            .checked_sub(1)
+            .expect("a sumcheck has a round per coordinate, so at least one");
+        let split = self.split.min(top);
+        SplitEqTables {
+            low: EqTables::new(&mut self.low, &point[..=split]),
+            high: EqTables::new(&mut self.high, &point[split..]),
+            split,
+        }
+    }
+}
+
+/// `eq(z_{<i}, ·)` for every `i` below the length of a point `z`, in one
+/// buffer: a factor of [`SplitEqTables`].
 ///
 /// The former `SuffixTable` with the point little-endian instead of reversed:
 /// the summed coordinates are the prefix `z[..i]`, not a suffix. Same entries.
-///
-/// Keeping every table takes twice the memory of the largest one. Keeping
-/// only the largest and halving it between rounds (`low[k] += high[k]`)
-/// would save that half, but it measured 7.5-12% slower, as it adds a pass
-/// over memory. Splitting the table makes the trade moot.
-// TODO: Split the table. The buckets already do a kind of splitting
+#[derive(Debug)]
 struct EqTables<'a> {
     storage: &'a [Field],
 }
@@ -655,13 +827,13 @@ impl<'a> EqTables<'a> {
         &self.storage[start..end]
     }
 
-    /// Builds every table of `point` in `storage`, a buffer from
-    /// [`EqTables::alloc_storage`]; nothing is allocated here.
+    /// Builds every table of `point` in `storage`, `2^point.len() - 1`
+    /// entries; nothing is allocated here.
     // Inlining or not doesn't improve performance, but it does hide it in
     // profiling therefore it has been annotated with inline never.
     #[inline(never)]
     fn new(storage: &'a mut [Field], point: &[Field]) -> EqTables<'a> {
-        // Round `i` reads only the coordinates below `i`, so the top one
+        // Table `i` reads only the coordinates below `i`, so the top one
         // never enters a table.
         let (_, below_top) = point
             .split_last()
@@ -691,21 +863,7 @@ impl<'a> EqTables<'a> {
         }
         EqTables { storage }
     }
-
-    /// Room for every table of a sumcheck whose parent layer has up to
-    /// `nodes` nodes, allocated once for all layers. Its point has a
-    /// coordinate per index bit of the parent, so the tables take
-    /// `nodes - 1` entries. All the tables in one buffer take as much space
-    /// as a double buffer would.
-    fn alloc_storage(nodes: usize) -> Vec<Field> {
-        Field::zeroed_vec(nodes - 1)
-    }
 }
-
-// TODO replace this with a proper approach
-/// Matches `poly`'s `PARALLEL_FOLD_THRESHOLD`, chosen for the same per-round
-/// MLE-fold shape.
-const PARALLEL_MIN_LANES: usize = 1 << 12;
 
 /// Verifies what [`gpgkr_prove`] proves: `layers` layer sumchecks, from
 /// `claim`, the output's MLE at `point`, down to a claim on the leaves.
@@ -1178,23 +1336,11 @@ mod tests {
         let (_, witnesses) = grand_product(&row_images, &table);
         let lut_layers = witnesses.lut_layers;
         let mut bound_children = Field::zeroed_vec(lut_layers.nodes::<LAYER1>());
-        let mut eq_memory = EqTables::alloc_storage(lut_layers.nodes::<LAYER1>());
+        let mut eq_memory = EqMemory::new(lut_layers.nodes::<LAYER1>(), lut_layers.eq_split());
 
         let mut draws = stream(5);
         for layer in [LEAVES, LAYER1, LAYER2] {
-            type Prove = fn(
-                &mut ProverState,
-                &mut [Field],
-                &[Field],
-                &LutLayers,
-                &mut [Field],
-                SecurityLevel,
-            ) -> (Vec<Field>, Field);
-            let prove: Prove = match layer {
-                LEAVES => prove_lut_layer::<LEAVES>,
-                LAYER1 => prove_lut_layer::<LAYER1>,
-                _ => prove_lut_layer::<LAYER2>,
-            };
+            let prove = lut_prover(layer);
             let (children, parent) = (&layers[layer], &layers[layer + 1]);
             for top in [Field::ZERO, Field::from(7u128)] {
                 let mut point: Vec<Field> = (0..parent.len().ilog2())
@@ -1223,6 +1369,283 @@ mod tests {
                 assert_eq!(terminal.1, mle(children, &terminal.0));
             }
         }
+    }
+
+    type ProveLut = fn(
+        &mut ProverState,
+        &mut EqMemory,
+        &[Field],
+        &LutLayers,
+        &mut [Field],
+        SecurityLevel,
+    ) -> (Vec<Field>, Field);
+
+    /// [`prove_lut_layer`] of the LUT-backed layer `layer`.
+    fn lut_prover(layer: usize) -> ProveLut {
+        match layer {
+            LEAVES => prove_lut_layer::<LEAVES>,
+            LAYER1 => prove_lut_layer::<LAYER1>,
+            _ => prove_lut_layer::<LAYER2>,
+        }
+    }
+
+    /// A point of `len` coordinates that cycles through zero, one and a drawn
+    /// element, `shift` into the cycle: whatever the split point, every kind
+    /// lies on both sides of it.
+    fn cycling_point(
+        len: usize,
+        shift: usize,
+        draws: &mut impl Iterator<Item = u64>,
+    ) -> Vec<Field> {
+        (0..len)
+            .map(|i| match (i + shift) % 3 {
+                0 => Field::ZERO,
+                1 => Field::ONE,
+                _ => element(draws),
+            })
+            .collect()
+    }
+
+    /// The dense reference of [`prove_layer`]: a term at a time, every weight
+    /// read from `poly::eq_table`.
+    fn prove_layer_dense(
+        ps: &mut ProverState,
+        point: &[Field],
+        children: &[Field],
+        security: SecurityLevel,
+    ) -> (Vec<Field>, Field) {
+        let n = point.len();
+        let (left, right) = children.split_at(children.len() / 2);
+        let (mut left, mut right) = (left.to_vec(), right.to_vec());
+        let mut next_point = vec![Field::ZERO; n + 1];
+        let mut eq_bound = Field::ONE;
+
+        for (i, &z) in point.iter().enumerate().rev() {
+            let half = 1 << i;
+            let (mut sum_b, mut sum_inf) = (Field::ZERO, Field::ZERO);
+            for (x, e) in poly::eq_table(&point[..i]).into_iter().enumerate() {
+                let (l0, l1, r0, r1) = (left[x], left[x + half], right[x], right[x + half]);
+                sum_b += e * if sends_one(z) { l1 * r1 } else { l0 * r0 };
+                sum_inf += e * (l1 - l0) * (r1 - r0);
+            }
+            ps.prover_message(&[eq_bound * sum_b, eq_bound * sum_inf]);
+
+            ps.grind(CUBIC_GRINDING_LABEL, security.grinding_bits(3));
+            let r = ps.verifier_message();
+            for x in 0..half {
+                left[x] = interpolate(left[x], left[x + half], r);
+                right[x] = interpolate(right[x], right[x + half], r);
+            }
+            next_point[i] = r;
+            eq_bound *= eq_factor(r, z);
+        }
+
+        ps.prover_message(&[left[0], right[0]]);
+        let t = ps.verifier_message();
+        next_point[n] = t;
+        (next_point, interpolate(left[0], right[0], t))
+    }
+
+    /// Every round's factors multiply to the dense table, at every split
+    /// point: below the top coordinate, at it, and past it, where the tables
+    /// split at the top instead.
+    #[test]
+    fn split_eq_factors_multiply_to_the_dense_table() {
+        const COORDINATES: usize = 9;
+        let mut draws = stream(7);
+        for shift in 0..3 {
+            let point = cycling_point(COORDINATES, shift, &mut draws);
+            for split in MIN_EQ_SPLIT..=COORDINATES {
+                // One buffer for points of every length, as the layers of a
+                // proof share one; the longest first, so that every shorter
+                // one finds the buffers written.
+                let mut eq_memory = EqMemory::new(1 << COORDINATES, split);
+                for len in (1..=COORDINATES).rev() {
+                    let tables = eq_memory.tables(&point[..len]);
+                    for i in 0..len {
+                        let eq_factors = tables.round(i);
+                        let outer_len = eq_factors.outer.len();
+                        let inner_len = eq_factors.inner.len();
+                        // A block of `2^split` positions per outer weight.
+                        assert_eq!(outer_len, 1 << i.saturating_sub(split));
+                        let dense = poly::eq_table(&point[..i]);
+                        assert_eq!(inner_len * outer_len, dense.len());
+                        for (x, &weight) in dense.iter().enumerate() {
+                            assert_eq!(
+                                eq_factors.outer[x / inner_len] * eq_factors.inner[x % inner_len],
+                                weight,
+                                "split {split}, {len} coordinates, round {i}, position {x}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Checks that a dense layer of `n` coordinates sends the dense
+    /// reference's messages at each of `splits`, from points with zero and
+    /// one coordinates on both sides of them.
+    fn dense_layer_proves_the_reference(
+        n: usize,
+        splits: std::ops::RangeInclusive<usize>,
+        draws: &mut impl Iterator<Item = u64>,
+    ) {
+        let children: Vec<Field> = (0..2 << n).map(|_| element(draws)).collect();
+        for shift in 0..3 {
+            let point = cycling_point(n, shift, draws);
+            let mut reference = transcript::build_prover("dense-layer", &point);
+            let terminal = prove_layer_dense(&mut reference, &point, &children, Bits100);
+            let expected = (terminal, reference.finish());
+
+            for split in splits.clone() {
+                let mut eq_memory = EqMemory::new(1 << n, split);
+                let mut prover = transcript::build_prover("dense-layer", &point);
+                let terminal = prove_layer(
+                    &mut prover,
+                    &mut eq_memory,
+                    &point,
+                    children.clone(),
+                    Bits100,
+                );
+                assert!(
+                    (terminal, prover.finish()) == expected,
+                    "{n} coordinates, shift {shift}, split {split}"
+                );
+            }
+        }
+    }
+
+    /// Dense layers of up to `MIN_EQ_SPLIT + 5` coordinates, at every split
+    /// point: a block is never longer than a part.
+    #[test]
+    fn dense_layers_prove_the_reference_at_every_split() {
+        let mut draws = stream(8);
+        // `n` coordinates: every round is at or below the lowest split point
+        // up to `MIN_EQ_SPLIT + 1` of them, and rounds above it follow.
+        for n in 1..=MIN_EQ_SPLIT + 5 {
+            let splits = MIN_EQ_SPLIT..=n.max(MIN_EQ_SPLIT);
+            dense_layer_proves_the_reference(n, splits, &mut draws);
+        }
+    }
+
+    /// A block longer than `PARALLEL_MIN_LANES` is summed in parts of that
+    /// many positions: blocks of one, two and four parts, each with rounds
+    /// above its split point.
+    #[test]
+    fn dense_layers_prove_the_reference_with_blocks_in_parts() {
+        let log_part = PARALLEL_MIN_LANES.ilog2() as usize;
+        let splits = log_part..=log_part + 2;
+        dense_layer_proves_the_reference(log_part + 4, splits, &mut stream(15));
+    }
+
+    /// Each LUT-backed layer sends the dense reference's messages, from
+    /// points whose top coordinate, round 1's, is zero, one or neither, with
+    /// the split point at:
+    /// - `MIN_EQ_SPLIT`: a block is a word of nibbles, shorter than a piece;
+    /// - `eq_split()`, the prover's: a block is a piece;
+    /// - `s`: a block is a lookup table's run, two pieces at this shape;
+    /// - the coordinate below the top: round 1 has two blocks;
+    /// - the top coordinate: one block in every round, the dense tables.
+    #[test]
+    fn lut_layers_prove_the_reference_at_every_split() {
+        let (shape, packed, row_images) = instance(SMALLEST, Bits::Drawn, 9);
+        let table = table(shape, &packed);
+        // The leaves and every layer above, built one leaf at a time.
+        let (_, layers) = fold_layers(leaves(&table, &row_images), shape.columns());
+        let (_, witnesses) = grand_product(&row_images, &table);
+        let lut_layers = witnesses.lut_layers;
+        let mut bound_children = Field::zeroed_vec(lut_layers.nodes::<LAYER1>());
+
+        let mut draws = stream(10);
+        for layer in [LEAVES, LAYER1, LAYER2] {
+            let prove = lut_prover(layer);
+            let (children, parent) = (&layers[layer], &layers[layer + 1]);
+            let n = parent.len().ilog2() as usize;
+            for shift in 0..3 {
+                let point = cycling_point(n, shift, &mut draws);
+                let mut reference = transcript::build_prover("lut-layer-split", &point);
+                let terminal = prove_layer_dense(&mut reference, &point, children, Bits100);
+                let expected = (terminal, reference.finish());
+
+                for split in [
+                    MIN_EQ_SPLIT,
+                    lut_layers.eq_split(),
+                    lut_layers.log_trees,
+                    n - 2,
+                    n - 1,
+                ] {
+                    let mut eq_memory = EqMemory::new(parent.len(), split);
+                    let mut prover = transcript::build_prover("lut-layer-split", &point);
+                    let terminal = prove(
+                        &mut prover,
+                        &mut eq_memory,
+                        &point,
+                        &lut_layers,
+                        &mut bound_children,
+                        Bits100,
+                    );
+                    assert!(
+                        (terminal, prover.finish()) == expected,
+                        "layer {layer}, shift {shift}, split {split}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The whole proof is the dense reference's, byte for byte: every layer
+    /// built one leaf at a time and proved by `prove_layer_dense`.
+    #[test]
+    fn gpgkr_proves_the_dense_reference() {
+        // A piece of round 1 is part of a lookup table's run at `s = 13`, and
+        // a whole run, shorter than `PARALLEL_MIN_LANES`, at `s = 7`.
+        for (shape, shift, security) in [
+            (SMALLEST, 0, Bits100),
+            (SMALLEST, 1, Bits128),
+            ((13, 7), 2, Bits100),
+        ] {
+            let (shape, packed, row_images) = instance(shape, Bits::Drawn, 11);
+            let table = table(shape, &packed);
+            let (_, layers) = fold_layers(leaves(&table, &row_images), shape.columns());
+            let s = shape.log_columns();
+
+            let point = cycling_point(s, shift, &mut stream(12));
+            let mut reference = transcript::build_prover("gkr-dense", &point);
+            let mut expected = (point.clone(), Field::ZERO);
+            for children in layers.iter().rev() {
+                expected = prove_layer_dense(&mut reference, &expected.0, children, security);
+            }
+
+            let (_, witnesses) = grand_product(&row_images, &table);
+            let mut prover = transcript::build_prover("gkr-dense", &point);
+            let terminal = gpgkr_prove(&mut prover, &point, witnesses, security);
+            assert_eq!(terminal, expected, "s = {s}, shift {shift}");
+            assert!(
+                prover.finish() == reference.finish(),
+                "s = {s}, shift {shift}"
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "more coordinates than the eq tables have room for")]
+    fn eq_memory_rejects_a_point_longer_than_its_tables() {
+        let mut eq_memory = EqMemory::new(1 << 6, MIN_EQ_SPLIT);
+        let _ = eq_memory.tables(&[Field::ONE; 7]);
+    }
+
+    #[test]
+    #[should_panic(expected = "a round per coordinate, so at least one")]
+    fn eq_memory_rejects_an_empty_point() {
+        let mut eq_memory = EqMemory::new(1 << 6, MIN_EQ_SPLIT);
+        let _ = eq_memory.tables(&[]);
+    }
+
+    #[test]
+    #[should_panic(expected = "at least a word of nibbles")]
+    fn eq_memory_rejects_a_split_below_a_word_of_nibbles() {
+        let _ = EqMemory::new(1 << 6, MIN_EQ_SPLIT - 1);
     }
 
     /// The output and every layer from layer 3 up match the circuit built one
@@ -1270,6 +1693,28 @@ mod tests {
             assert!(
                 !verify(&leaves, &output, &truncated, Bits100),
                 "accepted {len} bytes"
+            );
+        }
+    }
+
+    #[test]
+    fn gpgkr_verify_rejects_every_changed_message() {
+        let (shape, packed, row_images) = instance(SMALLEST, Bits::Drawn, 13);
+        let table = table(shape, &packed);
+        let leaves = leaves(&table, &row_images);
+        let (output, proof) = prove(&table, &row_images, Bits100);
+        assert!(verify(&leaves, &output, &proof, Bits100));
+
+        // Without grinding the proof is field elements only: two per round,
+        // and two that close each layer.
+        const ELEMENT_BYTES: usize = size_of::<Field>();
+        assert_eq!(proof.narg_string.len() % ELEMENT_BYTES, 0);
+        for element in 0..proof.narg_string.len() / ELEMENT_BYTES {
+            let mut changed = proof.clone();
+            changed.narg_string[element * ELEMENT_BYTES] ^= 1;
+            assert!(
+                !verify(&leaves, &output, &changed, Bits100),
+                "accepted a change to element {element}"
             );
         }
     }
