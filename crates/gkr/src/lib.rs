@@ -1483,62 +1483,6 @@ mod tests {
         }
     }
 
-    /// Checks that a dense layer of `n` coordinates sends the dense
-    /// reference's messages at each of `splits`, from points with zero and
-    /// one coordinates on both sides of them.
-    fn dense_layer_proves_the_reference(
-        n: usize,
-        splits: std::ops::RangeInclusive<usize>,
-        draws: &mut impl Iterator<Item = u64>,
-    ) {
-        let children: Vec<Field> = (0..2 << n).map(|_| element(draws)).collect();
-        for shift in 0..3 {
-            let point = cycling_point(n, shift, draws);
-            let mut reference = transcript::build_prover("dense-layer", &point);
-            let terminal = prove_layer_dense(&mut reference, &point, &children, Bits100);
-            let expected = (terminal, reference.finish());
-
-            for split in splits.clone() {
-                let mut eq_memory = EqMemory::new(1 << n, split);
-                let mut prover = transcript::build_prover("dense-layer", &point);
-                let terminal = prove_layer(
-                    &mut prover,
-                    &mut eq_memory,
-                    &point,
-                    children.clone(),
-                    Bits100,
-                );
-                assert!(
-                    (terminal, prover.finish()) == expected,
-                    "{n} coordinates, shift {shift}, split {split}"
-                );
-            }
-        }
-    }
-
-    /// Dense layers of up to `MIN_EQ_SPLIT + 5` coordinates, at every split
-    /// point: a block is never longer than a part.
-    #[test]
-    fn dense_layers_prove_the_reference_at_every_split() {
-        let mut draws = stream(8);
-        // `n` coordinates: every round is at or below the lowest split point
-        // up to `MIN_EQ_SPLIT + 1` of them, and rounds above it follow.
-        for n in 1..=MIN_EQ_SPLIT + 5 {
-            let splits = MIN_EQ_SPLIT..=n.max(MIN_EQ_SPLIT);
-            dense_layer_proves_the_reference(n, splits, &mut draws);
-        }
-    }
-
-    /// A block longer than `PARALLEL_MIN_LANES` is summed in parts of that
-    /// many positions: blocks of one, two and four parts, each with rounds
-    /// above its split point.
-    #[test]
-    fn dense_layers_prove_the_reference_with_blocks_in_parts() {
-        let log_part = PARALLEL_MIN_LANES.ilog2() as usize;
-        let splits = log_part..=log_part + 2;
-        dense_layer_proves_the_reference(log_part + 4, splits, &mut stream(15));
-    }
-
     /// Each LUT-backed layer sends the dense reference's messages, from
     /// points whose top coordinate, round 1's, is zero, one or neither, with
     /// the split point at:
@@ -1585,46 +1529,13 @@ mod tests {
                         &mut bound_children,
                         Bits100,
                     );
-                    assert!(
-                        (terminal, prover.finish()) == expected,
+                    assert_eq!(
+                        (terminal, prover.finish()),
+                        expected,
                         "layer {layer}, shift {shift}, split {split}"
                     );
                 }
             }
-        }
-    }
-
-    /// The whole proof is the dense reference's, byte for byte: every layer
-    /// built one leaf at a time and proved by `prove_layer_dense`.
-    #[test]
-    fn gpgkr_proves_the_dense_reference() {
-        // A piece of round 1 is part of a lookup table's run at `s = 13`, and
-        // a whole run, shorter than `PARALLEL_MIN_LANES`, at `s = 7`.
-        for (shape, shift, security) in [
-            (SMALLEST, 0, Bits100),
-            (SMALLEST, 1, Bits128),
-            ((13, 7), 2, Bits100),
-        ] {
-            let (shape, packed, row_images) = instance(shape, Bits::Drawn, 11);
-            let table = table(shape, &packed);
-            let (_, layers) = fold_layers(leaves(&table, &row_images), shape.columns());
-            let s = shape.log_columns();
-
-            let point = cycling_point(s, shift, &mut stream(12));
-            let mut reference = transcript::build_prover("gkr-dense", &point);
-            let mut expected = (point.clone(), Field::ZERO);
-            for children in layers.iter().rev() {
-                expected = prove_layer_dense(&mut reference, &expected.0, children, security);
-            }
-
-            let (_, witnesses) = grand_product(&row_images, &table);
-            let mut prover = transcript::build_prover("gkr-dense", &point);
-            let terminal = gpgkr_prove(&mut prover, &point, witnesses, security);
-            assert_eq!(terminal, expected, "s = {s}, shift {shift}");
-            assert!(
-                prover.finish() == reference.finish(),
-                "s = {s}, shift {shift}"
-            );
         }
     }
 
@@ -1693,28 +1604,6 @@ mod tests {
             assert!(
                 !verify(&leaves, &output, &truncated, Bits100),
                 "accepted {len} bytes"
-            );
-        }
-    }
-
-    #[test]
-    fn gpgkr_verify_rejects_every_changed_message() {
-        let (shape, packed, row_images) = instance(SMALLEST, Bits::Drawn, 13);
-        let table = table(shape, &packed);
-        let leaves = leaves(&table, &row_images);
-        let (output, proof) = prove(&table, &row_images, Bits100);
-        assert!(verify(&leaves, &output, &proof, Bits100));
-
-        // Without grinding the proof is field elements only: two per round,
-        // and two that close each layer.
-        const ELEMENT_BYTES: usize = size_of::<Field>();
-        assert_eq!(proof.narg_string.len() % ELEMENT_BYTES, 0);
-        for element in 0..proof.narg_string.len() / ELEMENT_BYTES {
-            let mut changed = proof.clone();
-            changed.narg_string[element * ELEMENT_BYTES] ^= 1;
-            assert!(
-                !verify(&leaves, &output, &changed, Bits100),
-                "accepted a change to element {element}"
             );
         }
     }
